@@ -89,6 +89,12 @@ public final class TypeAutoTraits {
                     Optional.of(named.arguments().isEmpty() ? SCALAR : NONE);
             case "ActorRef" ->
                     Optional.of(named.arguments().size() == 1 ? SCALAR : NONE);
+            // A NIO socket is an affine, single-owner execution capability:
+            // moving it to an independent task is safe, sharing/copying it
+            // is not. Listener stays non-Send and remains in the owner task.
+            case "NioConnection", "NioReader", "NioWriter" ->
+                    Optional.of(named.arguments().isEmpty()
+                            ? new Capabilities(true, false, false) : NONE);
             case "OptionUnwrapError" ->
                     Optional.of(named.arguments().isEmpty() ? SCALAR : NONE);
             case "Option", "IteratorResult", "ActorMail", "ActorOutput" ->
@@ -104,7 +110,12 @@ public final class TypeAutoTraits {
             case "Weak" -> Optional.of(wrapped(named, Kind.WEAK, true, nested));
             case "Rc" -> Optional.of(wrapped(named, Kind.RC, false, nested));
             case "RefCell" -> Optional.of(wrapped(named, Kind.REFCELL, false, nested));
-            case "Mutex" -> Optional.of(wrapped(named, Kind.MUTEX, false, nested));
+            // Mutex<T> is pinned to the actor/execution domain that created it: the
+            // runtime refuses to move one across an async task boundary and throws
+            // WrongMutexDomainException on foreign access. Rust's "Send if T is Send"
+            // would admit programs that can only fail at runtime. SharedMutex is the
+            // shareable form.
+            case "Mutex" -> Optional.of(NONE);
             case "RwLock" -> Optional.of(wrapped(named, Kind.RWLOCK, false, nested));
             case "SharedMutex" -> {
                 if (named.arguments().size() != 1) yield Optional.of(NONE);
@@ -115,7 +126,26 @@ public final class TypeAutoTraits {
                 yield Optional.of(new Capabilities(
                         child.send(), child.send(), child.send()));
             }
-            case "Channel", "Future", "Iterator", "AsyncIterator",
+            // A Channel<T> handle is a runtime-synchronized, bounded transport
+            // (like SharedMutex it supplies its own synchronization), so it may
+            // be moved or shared between tasks when its payload is Send. This
+            // is what lets a request carry its reply channel (CSP style).
+            // Actor mail boundaries still reject Channel<T> separately.
+            case "Channel" -> {
+                if (named.arguments().size() != 1) yield Optional.of(NONE);
+                boolean payload = nested.apply(named.arguments().getFirst()).send();
+                yield Optional.of(new Capabilities(payload, payload, payload));
+            }
+            // Bytes v1 is an immutable, move-only owned byte string.
+            case "Bytes" -> Optional.of(named.arguments().isEmpty()
+                    ? new Capabilities(true, false, false) : NONE);
+            // A typed Map owns its keys and values; moving it moves them.
+            case "Map" -> {
+                if (named.arguments().size() != 2) yield Optional.of(NONE);
+                Capabilities entries = combine(named.arguments(), nested);
+                yield Optional.of(new Capabilities(entries.send(), false, false));
+            }
+            case "Future", "Iterator", "AsyncIterator",
                     "MutexGuard", "SelectCase", "SelectSet", "SelectResult",
                     "TcpConnection", "HttpExchange", "HttpServer",
                     "HttpHandler", "HttpResponse", "HttpResponseDraft" ->

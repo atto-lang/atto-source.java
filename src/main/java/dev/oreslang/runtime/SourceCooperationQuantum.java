@@ -28,6 +28,10 @@ public final class SourceCooperationQuantum {
     // Persistent across await/resume: short turns cannot evade cold checks.
     private int pollPhase;
     private boolean pollDue;
+    // A requested handoff belongs to the logical task, not one carrier turn.
+    private boolean pendingHandoff;
+    // Prevent a completed 512-edge turn from relatching after real cooperation.
+    private boolean acknowledgedCooperate;
 
     /** Production clock, injected in tests to validate exact clock-read cost. */
     public SourceCooperationQuantum() {
@@ -42,8 +46,16 @@ public final class SourceCooperationQuantum {
 
     /** Refresh only the fairness quantum; keep the logical cooperation clock. */
     public void beginDispatch() {
+        // Await/carrier migration is not a cooperation. Keep overdue work
+        // pending until the logical task actually hands off.
+        if (!acknowledgedCooperate
+                && backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
+            pendingHandoff = true;
+        }
+        acknowledgedCooperate = false;
         dispatchStartedAtNanos = monotonicNanos.getAsLong();
         backedgesThisDispatch = 0;
+        // A new physical dispatch must earn a fresh poll ticket.
         pollDue = false;
     }
 
@@ -78,16 +90,44 @@ public final class SourceCooperationQuantum {
             return false;
         }
         pollDue = false;
-        if (watchdogRequested || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
+        if (pendingHandoff || watchdogRequested
+                || backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH) {
+            pendingHandoff = true;
             return true;
         }
-        return monotonicNanos.getAsLong() - dispatchStartedAtNanos
-                >= SOFT_DISPATCH_QUANTUM_NANOS;
+        if (elapsedNanosOrOverdue(
+                monotonicNanos.getAsLong(), dispatchStartedAtNanos)
+                >= SOFT_DISPATCH_QUANTUM_NANOS) {
+            pendingHandoff = true;
+            return true;
+        }
+        return false;
     }
 
     /** Called only for an actual rt cooperate / automatic scheduler handoff. */
     public void recordedCooperate() {
         lastCooperateAtNanos = monotonicNanos.getAsLong();
+        pollDue = false;
+        pendingHandoff = false;
+        acknowledgedCooperate = true;
+    }
+
+    /**
+     * Clock-free indication for a compiler-verified no-yield-scope exit.
+     * This is a request only; it never authorizes suspension by itself.
+     */
+    public boolean pendingHandoffOnNoYieldExit() {
+        return pendingHandoff
+                || (!acknowledgedCooperate
+                    && backedgesThisDispatch >= MAX_BACKEDGES_PER_DISPATCH);
+    }
+
+    private static long elapsedNanosOrOverdue(long now, long started) {
+        // A regressing clock or signed subtraction overflow must fail toward
+        // fairness, never make an overdue task appear to have a fresh quantum.
+        if (now < started) return Long.MAX_VALUE;
+        long elapsed = now - started;
+        return elapsed < 0 ? Long.MAX_VALUE : elapsed;
     }
 
     /**
@@ -95,7 +135,8 @@ public final class SourceCooperationQuantum {
      * Its sole call-site should be deliberate diagnostics or a slow path.
      */
     public long timeSinceLastCooperateNanos() {
-        return Math.max(0L, monotonicNanos.getAsLong() - lastCooperateAtNanos);
+        return elapsedNanosOrOverdue(
+                monotonicNanos.getAsLong(), lastCooperateAtNanos);
     }
 
     public long completedBackedgesThisDispatch() {

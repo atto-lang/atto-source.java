@@ -175,4 +175,29 @@ final class SourceCooperationQuantumTest {
         }
         assertEquals(2, clock.reads.get());
     }
+
+    @Test
+    void stalePollTicketCannotBeReplayedAfterPhysicalRedispatch() {
+        Clock clock = new Clock();
+        SourceCooperationQuantum q = new SourceCooperationQuantum(clock::read);
+        q.beginDispatch();
+        for (int i = 1; i <= 128; i++) {
+            assertEquals(i == 128, q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.shouldCooperateAtCheck(true));
+        assertFalse(q.shouldCooperateAtCheck(true), "ticket is single-use");
+        assertEquals(2, clock.reads.get());
+        q.beginDispatch();
+        assertFalse(q.shouldCooperateAtCheck(true),
+                "a new carrier must earn a fresh 128-backedge ticket");
+        assertEquals(3, clock.reads.get(),
+                "only beginDispatch may sample the clock here");
+        for (int i = 1; i <= 128; i++) {
+            assertEquals(i == 128, q.completedBackedgeNeedsCheck());
+        }
+        assertTrue(q.shouldCooperateAtCheck(true),
+                "unacknowledged watchdog debt remains task-owned");
+        assertFalse(q.shouldCooperateAtCheck(true), "new ticket is also single-use");
+        assertEquals(3, clock.reads.get());
+    }
 }

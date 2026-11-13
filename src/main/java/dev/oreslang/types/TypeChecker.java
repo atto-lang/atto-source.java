@@ -42,7 +42,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
-            "Symbol", "Array", "List", "Vector", "Slice",
+            "Symbol", "Bytes", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
@@ -3083,6 +3083,10 @@ public final class TypeChecker {
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
+            String integerIntrinsic = integerIntrinsicName(call, env);
+            if (integerIntrinsic != null) {
+                return typeIntegerIntrinsicCall(integerIntrinsic, call, env, generics, self);
+            }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
             if (booleanIntrinsic != null) {
                 return typeBooleanIntrinsicCall(booleanIntrinsic, call, env, generics, self);
@@ -3122,6 +3126,42 @@ public final class TypeChecker {
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
+            }
+            if (call.callee() instanceof Ast.MemberExpr bytesCall
+                    && bytesCall.receiver() instanceof Ast.NameExpr bytesFactory
+                    && bytesFactory.name().equals("Bytes")
+                    && env.lookup("Bytes") == null
+                    && findClass("Bytes") == null) {
+                // Bytes v1 constructors (spec chapter 26). Each returns a
+                // fresh immutable owned value.
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("Bytes constructors take no type arguments");
+                }
+                switch (bytesCall.member()) {
+                    case "empty" -> {
+                        if (!call.arguments().isEmpty()) {
+                            throw new IllegalArgumentException("Bytes.empty() takes no arguments");
+                        }
+                    }
+                    case "from_list" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("Bytes.from_list expects one List<int>");
+                        }
+                        requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                                new ListType(Primitive.INT), "Bytes.from_list argument");
+                    }
+                    case "from_string" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("Bytes.from_string expects one string");
+                        }
+                        requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                                Primitive.STRING, "Bytes.from_string argument");
+                    }
+                    default -> throw new IllegalArgumentException(
+                            "unknown Bytes constructor " + bytesCall.member()
+                                    + "; use Bytes.empty(), Bytes.from_list(List<int>) or Bytes.from_string(string)");
+                }
+                return new Named("Bytes", List.of());
             }
             if (call.callee() instanceof Ast.MemberExpr channelCall
                     && channelCall.receiver() instanceof Ast.NameExpr factory
@@ -3650,6 +3690,11 @@ public final class TypeChecker {
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
                 if (collectionBuiltin != null) {
+                    if (receiver instanceof Named map && map.name().equals("Map")
+                            && (member.member().equals("set")
+                                    || member.member().equals("delete"))) {
+                        requireMapMutablePlace(member.receiver(), env, member.member());
+                    }
                     if (!(collectionBuiltin instanceof Function builtin)) {
                         throw new IllegalArgumentException(
                                 "collection member '" + member.member() + "' is not callable");
@@ -4070,6 +4115,11 @@ public final class TypeChecker {
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
                 return new Function(List.of(), Primitive.STRING);
             }
+            if (member.receiver() instanceof Ast.NameExpr sleepName && sleepName.name().equals("process")
+                    && env.lookup("process") == null && member.member().equals("sleep_async")) {
+                // Nonblocking timer: suspends the caller, never a scheduler thread.
+                return new Function(List.of(Primitive.INT), new Named("Future", List.of(Primitive.VOID)));
+            }
             if (member.receiver() instanceof Ast.NameExpr clockName && clockName.name().equals("process")
                     && env.lookup("process") == null
                     && (member.member().equals("monotonic_ns") || member.member().equals("unix_ms"))) {
@@ -4198,6 +4248,14 @@ public final class TypeChecker {
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
+            if (collectionMember != null
+                    && sumReceiver instanceof Named map && map.name().equals("Map")
+                    && (member.member().equals("set") || member.member().equals("delete")
+                            || member.member().equals("get_optional"))) {
+                throw new IllegalArgumentException(
+                        "Map." + member.member() + " is direct-call-only: "
+                                + "mutable Map method values cannot be captured or transported");
+            }
             if (isStringLike(sumReceiver)) {
                 return switch (member.member()) {
                     case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
@@ -4264,7 +4322,11 @@ public final class TypeChecker {
             if (receiver instanceof Named named
                     && named.name().equals("stdio.stdin")
                     && member.member().equals("read_line")) {
-                return new Function(List.of(), Primitive.STRING);
+                // StdinFacade.readLine returns Some(line) or None at EOF.
+                // An implicit Option<T> -> T conversion would hide EOF and
+                // break the guest's explicit Option.is_none()/unwrap() guard.
+                return new Function(
+                        List.of(), new Named("Option", List.of(Primitive.STRING)));
             }
             if (member.receiver() instanceof Ast.NameExpr name
                     && (name.name().equals("process")
@@ -4357,6 +4419,24 @@ public final class TypeChecker {
             String constantKey = constantStringKey(indexed.index(), env);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
                     ? env.lookup(ownerName.name()) : null;
+            // Indexed read of the compiler-owned scalar Map<K,V> is a checked
+            // key lookup, not integer array indexing or dynamic host reflection.
+            // Keep the narrow String/Symbol key and copyable scalar value gate
+            // used by Map literal construction. All broader Map operations and
+            // move-only value graphs remain explicitly unsupported.
+            if (receiver instanceof Named typedMap
+                    && typedMap.name().equals("Map")
+                    && typedMap.arguments().size() == 2
+                    && findClass("Map") == null) {
+                Type mapKey = typedMap.arguments().get(0);
+                Type mapValue = typedMap.arguments().get(1);
+                if (!closedScalarMapDomains(typedMap)) {
+                    throw new IllegalArgumentException(
+                            "Map indexed read requires a proven String/Symbol/Bytes key and copyable scalar value");
+                }
+                requireAssignable(index, mapKey, "typed Map index key");
+                return mapValue;
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
                 Map<String, Type> indexableMembers = indexableRecordMembers(record);
@@ -4709,7 +4789,7 @@ public final class TypeChecker {
                 }
 
                 checkValueMatchCoverage(
-                        valueMatch.arms(), subject, generics, self);
+                        valueMatch.arms(), subject, generics, self, valueMatch.first());
                 return result;
             } finally {
                 // Only the selected arm executes at runtime. Type-checking all
@@ -4738,6 +4818,91 @@ public final class TypeChecker {
                 element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
             }
             return new ListType(element);
+        }
+        if (expr instanceof Ast.MapLiteralExpr mapLiteral) {
+            Ast.TypeRef witness = mapLiteral.mapType();
+            if (witness == null) {
+                throw new IllegalArgumentException(
+                        "nonempty Map literal requires a directly declared Map<K,V> "
+                                + "or explicit ~map<K,V>(...) type witness");
+            }
+            // Use the same narrow, compiler-owned typed-map proof as the
+            // already admitted empty constructor. This rejects aliases,
+            // nominal shadowing, unknown K/V and unsupported value graphs.
+            Type result = typeOf(new Ast.TypedEmptyAggregateExpr(witness),
+                    env, generics, self);
+            if (!(result instanceof Named named)
+                    || !named.name().equals("Map")
+                    || named.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        "nonempty map literal did not resolve to Map<K,V>");
+            }
+            Type expectedKey = named.arguments().get(0);
+            Type expectedValue = named.arguments().get(1);
+            for (Ast.MapLiteralEntry entry : mapLiteral.entries()) {
+                Type actualKey = typeOf(entry.key(), env, generics, self);
+                Type actualValue = typeOf(entry.value(), env, generics, self);
+                if (actualKey == Unknown.INSTANCE
+                        || actualValue == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "Map literal cannot admit unresolved key/value expression types");
+                }
+                requireAssignable(actualKey, expectedKey, "Map literal key");
+                requireAssignable(actualValue, expectedValue, "Map literal value");
+            }
+            return result;
+        }
+        if (expr instanceof Ast.ContextualEmptyMapExpr) {
+            throw new IllegalArgumentException(
+                    "~map() requires a directly declared Map<K,V> type; "
+                            + "unresolved contextual map literals cannot be lowered");
+        }
+        if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
+            // First proven slice: syntactically concrete, zero-field readonly
+            // records and zero-arity tuples. Both use the canonical existing
+            // type/layout and runtime representations. Do not accept aliases,
+            // nominal types, generic placeholders or Maps until their
+            // compile-time kind and zero-construction proofs are implemented.
+            Ast.TypeRef witness = typed.aggregateType();
+            if (witness.isReadonlyRecordType() && witness.recordMembers().isEmpty()) {
+                return new Record(Map.of(), true, AggregateKind.RECORD);
+            }
+            if (witness.isTupleType() && witness.arguments().isEmpty()) {
+                return new Tuple(List.of(), TupleKind.TUPLE);
+            }
+            if (witness.name().equals("Map") && !witness.inferArguments()
+                    && witness.arguments().size() == 2) {
+                if (findClass("Map") != null) {
+                    throw new IllegalArgumentException(
+                            "typed empty Map requires the canonical built-in Map<K,V>, not a shadowing class");
+                }
+                Ast.TypeRef key = witness.arguments().get(0);
+                Ast.TypeRef value = witness.arguments().get(1);
+                if (!isAdmittedEmptyMapScalarKey(key)
+                        || !isAdmittedEmptyMapScalarValue(value)) {
+                    throw new IllegalArgumentException(
+                            "typed empty Map is currently limited to String/Symbol/Bytes keys "
+                                    + "and primitive int/bool/string/Symbol/Bytes values; "
+                                    + "unverified key/value domain " + witness);
+                }
+                Type map = resolve(witness, generics, self);
+                if (!(map instanceof Named named) || !named.name().equals("Map")
+                        || named.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "typed empty Map must resolve to canonical Map<K,V>");
+                }
+                return map;
+            }
+            if (witness.isRecordType() && !witness.recordMembers().isEmpty()
+                    || witness.isTupleType() && !witness.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "typed empty aggregate cannot synthesize required record fields "
+                                + "or tuple elements: " + witness);
+            }
+            throw new IllegalArgumentException(
+                    "typed empty aggregate requires compile-time aggregate-kind and "
+                            + "zero-initialization proof plus typed guest lowering; "
+                            + "unresolved or unsupported witness " + witness);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
             return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
@@ -5087,6 +5252,52 @@ public final class TypeChecker {
         return null;
     }
 
+    /**
+     * Guest named arithmetic is a sealed intrinsic namespace, not Java interop.
+     * A lexical binding, user class/module or explicit import named Integer
+     * takes precedence, so the compiler cannot capture a user-provided value.
+     */
+    private String integerIntrinsicName(Ast.CallExpr call, Env env) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr owner)
+                || !owner.name().equals("Integer")
+                || env.lookup("Integer") != null
+                || importedNames.contains("Integer")
+                || modules.containsKey("Integer")
+                || findClass("Integer") != null) return null;
+        return switch (member.member()) {
+            case "rem", "mod", "pow", "bitXor" -> member.member();
+            default -> null;
+        };
+    }
+
+    private Type typeIntegerIntrinsicCall(
+            String name,
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "Integer." + name + " does not accept type arguments");
+        }
+        if (call.arguments().size() != 2) {
+            throw new IllegalArgumentException(
+                    "Integer." + name + " expects exactly two int arguments");
+        }
+        for (int i = 0; i < 2; i++) {
+            Ast.Expr argument = call.arguments().get(i);
+            if (argument instanceof Ast.SpreadExpr) {
+                throw new IllegalArgumentException(
+                        "Integer." + name + " does not admit spreads");
+            }
+            requireInteger(
+                    deref(typeOf(argument, env, generics, self)),
+                    "Integer." + name + " argument " + (i + 1));
+        }
+        return Primitive.INT;
+    }
+
     private Type typeBooleanIntrinsicCall(
             String name,
             Ast.CallExpr call,
@@ -5191,6 +5402,23 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    /** Transitional statically typed Map constructor gate. No inferred/alias
+     * key or value kind is accepted before the compiler-owned descriptor and
+     * zero-copy/ownership representation have been proven end-to-end. */
+    private static boolean isAdmittedEmptyMapScalarKey(Ast.TypeRef type) {
+        return !type.inferArguments() && type.arguments().isEmpty()
+                && (type.name().equals("string") || type.name().equals("String")
+                        || type.name().equals("Symbol") || type.name().equals("Bytes"));
+    }
+
+    private static boolean isAdmittedEmptyMapScalarValue(Ast.TypeRef type) {
+        return !type.inferArguments() && type.arguments().isEmpty()
+                && (type.name().equals("int") || type.name().equals("bool")
+                        || type.name().equals("Bool") || type.name().equals("string")
+                        || type.name().equals("String") || type.name().equals("Symbol")
+                        || type.name().equals("Bytes"));
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
@@ -5878,6 +6106,34 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        // Bytes methods are synchronous: never mis-type them as Future<T>.
+        if (named.name().equals("Bytes")) {
+            return switch (name) {
+                case "size" -> new Function(List.of(), Primitive.INT);
+                case "byte_at" -> new Function(List.of(Primitive.INT), Primitive.INT);
+                case "take" -> new Function(List.of(), new Named("Bytes", List.of()));
+                case "slice" -> new Function(
+                        List.of(Primitive.INT, Primitive.INT), new Named("Bytes", List.of()));
+                case "index_of" -> new Function(
+                        List.of(Primitive.INT, Primitive.INT), Primitive.INT);
+                case "concat" -> new Function(
+                        List.of(new Named("Bytes", List.of())), new Named("Bytes", List.of()));
+                case "equals" -> new Function(
+                        List.of(new Named("Bytes", List.of())), Primitive.BOOL);
+                case "copy" -> new Function(List.of(), new Named("Bytes", List.of()));
+                case "to_list" -> new Function(List.of(), new ListType(Primitive.INT));
+                case "to_utf8" -> new Function(
+                        List.of(), new Named("Option", List.of(Primitive.STRING)));
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> throw new IllegalArgumentException("unknown Bytes member " + name);
+            };
+        }
+        // Async TCP v1.1: split is synchronous and consumes the connection.
+        if (named.name().equals("NioConnection") && name.equals("split")) {
+            return new Function(List.of(), new Tuple(
+                    List.of(new Named("NioReader", List.of()), new Named("NioWriter", List.of())),
+                    TupleKind.TUPLE));
+        }
         if (named.name().equals("env")) {
             switch (name) {
                 case "get": return new Function(List.of(Primitive.STRING),
@@ -5922,8 +6178,86 @@ public final class TypeChecker {
                 }
             }
             case "network", "net" -> {
-                if (!name.equals("connect") && !name.equals("connect_blocking")) return null;
-                result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
+                switch (name) {
+                    case "listen_async" -> {
+                        result = new Named("NioListener", List.of());
+                        parameters = List.of(Primitive.STRING, Primitive.INT);
+                    }
+                    case "connect", "connect_blocking" -> {
+                        result = new Named("TcpConnection", List.of());
+                        parameters = List.of(Primitive.STRING, Primitive.INT);
+                    }
+                    default -> { return null; }
+                }
+            }
+            case "NioListener" -> {
+                switch (name) {
+                    case "accept_async" -> {
+                        result = new Named("NioConnection", List.of()); parameters = List.of();
+                    }
+                    case "local_port_async" -> {
+                        result = Primitive.INT; parameters = List.of();
+                    }
+                    case "close_async" -> {
+                        result = Primitive.VOID; parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown NioListener member " + name);
+                }
+            }
+            case "NioReader" -> {
+                switch (name) {
+                    case "read_owned_bytes_async" -> {
+                        result = new Named("Bytes", List.of()); parameters = List.of(Primitive.INT);
+                    }
+                    case "read_bytes_async" -> {
+                        result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
+                    }
+                    case "close_async" -> {
+                        result = Primitive.VOID; parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown NioReader member " + name);
+                }
+            }
+            case "NioWriter" -> {
+                switch (name) {
+                    case "write_owned_bytes_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new Named("Bytes", List.of()));
+                    }
+                    case "write_bytes_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new ListType(Primitive.INT));
+                    }
+                    case "close_async" -> {
+                        result = Primitive.VOID; parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown NioWriter member " + name);
+                }
+            }
+            case "NioConnection" -> {
+                switch (name) {
+                    case "read_bytes_async" -> {
+                        result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
+                    }
+                    case "read_owned_bytes_async" -> {
+                        result = new Named("Bytes", List.of()); parameters = List.of(Primitive.INT);
+                    }
+                    case "write_owned_bytes_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new Named("Bytes", List.of()));
+                    }
+                    case "read_resp2_hex_async" -> {
+                        result = new ListType(Primitive.STRING); parameters = List.of();
+                    }
+                    case "write_resp2_hex_async" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of(Primitive.STRING, Primitive.STRING);
+                    }
+                    case "write_bytes_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new ListType(Primitive.INT));
+                    }
+                    case "close_async" -> {
+                        result = Primitive.VOID; parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown NioConnection member " + name);
+                }
             }
             case "TcpConnection" -> {
                 switch (name) {
@@ -6600,7 +6934,38 @@ public final class TypeChecker {
             List<Ast.MatchValueArm> arms,
             Type subject,
             Set<String> generics,
-            Type self) {
+            Type self,
+            boolean first) {
+        // Ordinary match is a proof-checked partition. A final, unguarded
+        // wildcard, default or binding arm is the fallback and never counts as an overlapping explicit
+        // pattern. 'match first' explicitly chooses ordered priority and may
+        // overlap; both still require exhaustive coverage.
+        if (!first) {
+            int explicitEnd = arms.size();
+            Ast.MatchValueArm last = arms.getLast();
+            if (last.guard() == null && (last.pattern() instanceof Ast.WildcardPattern
+                    || last.pattern() instanceof Ast.BindingPattern)) {
+                // An unguarded final binding (on x -> ...) is irrefutable: it is the
+                // catch-all fallback exactly like `_ ->` and `default ->`.
+                explicitEnd--;
+            }
+            for (int i = 0; i < explicitEnd; i++) {
+                Ast.MatchValueArm arm = arms.get(i);
+                for (int j = 0; j < i; j++) {
+                    Ast.MatchValueArm previous = arms.get(j);
+                    boolean patternDisjoint = patternsProvablyDisjoint(
+                            previous.pattern(), arm.pattern(), subject, generics, self);
+                    boolean guardDisjoint = previous.guard() != null && arm.guard() != null
+                            && guardsProvablyDisjoint(previous.guard(), arm.guard());
+                    if (!patternDisjoint && !guardDisjoint) {
+                        throw new IllegalArgumentException(
+                                "ordinary match requires provably disjoint explicit patterns "
+                                        + (j + 1) + " and " + (i + 1)
+                                        + "; use 'match first' for ordered overlap");
+                    }
+                }
+            }
+        }
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchValueArm arm = arms.get(i);
 
@@ -6701,6 +7066,40 @@ public final class TypeChecker {
                         targetShape.members(), true, AggregateKind.CONTRACT);
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.RecordPattern fields) {
+            if (!(subject instanceof Record record)
+                    || record.kind() == AggregateKind.CONTRACT
+                    || record.kind() == AggregateKind.STRUCT && !fields.structural()) {
+                throw new IllegalArgumentException(
+                        "record field pattern requires a checked readonly record or explicit "
+                                + "'structural' projection of a concrete struct; "
+                                + "nominal classes and actor state remain sealed");
+            }
+            for (Ast.RecordFieldPattern field : fields.fields()) {
+                Type fieldType = record.members().get(field.name());
+                if (fieldType == null) {
+                    throw new IllegalArgumentException(
+                            "record pattern field '" + field.name()
+                                    + "' is not statically visible");
+                }
+                // Copyable scalar-only field projection prevents a match from
+                // moving resources, manufacturing a loan, or reading sealed state.
+                boolean safeScalar = fieldType == Primitive.INT
+                        || fieldType == Primitive.BOOL
+                        || fieldType == Primitive.STRING
+                        || fieldType instanceof StringLiteral
+                        || fieldType instanceof Named symbol
+                        && symbol.name().equals("$builtin$Symbol")
+                        && symbol.arguments().isEmpty();
+                if (!safeScalar) {
+                    throw new IllegalArgumentException(
+                            "record pattern field '" + field.name()
+                                    + "' is not a proven copyable scalar");
+                }
+                checkPattern(field.value(), fieldType, bindings, generics, self);
             }
             return;
         }
@@ -6966,6 +7365,22 @@ public final class TypeChecker {
             Ast.Pattern left, Ast.Pattern right, Type subject, Set<String> generics, Type self) {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
                 || left instanceof Ast.BindingPattern || right instanceof Ast.BindingPattern) return false;
+        if (left instanceof Ast.RecordPattern a && right instanceof Ast.RecordPattern b
+                && subject instanceof Record record) {
+            // A single provably disjoint shared field is sufficient to prove
+            // these two record patterns cannot both match the same value.
+            for (Ast.RecordFieldPattern x : a.fields()) {
+                for (Ast.RecordFieldPattern y : b.fields()) {
+                    if (!x.name().equals(y.name())) continue;
+                    Type fieldType = record.members().get(x.name());
+                    if (fieldType != null && patternsProvablyDisjoint(
+                            x.value(), y.value(), fieldType, generics, self)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
         if (left instanceof Ast.LiteralPattern a && right instanceof Ast.LiteralPattern b) {
             // Do not certify 1 and 1.0 as disjoint: runtime equality
             // intentionally permits equal values across numeric types.
@@ -7910,8 +8325,86 @@ public final class TypeChecker {
                 where + " requires SelectCase values; got " + value);
     }
 
+    /**
+     * Closed scalar Map domain shared by indexed reads and method admission.
+     * A mere nominal Map<K,V> annotation does not prove a safe guest Map:
+     * otherwise unreachable generic parameters could open mutable host paths.
+     */
+    /** Built-in immutable, move-only Bytes (not a user class named Bytes). */
+    private boolean isBuiltinBytes(Type type) {
+        return type instanceof Named bytes && bytes.name().equals("Bytes")
+                && bytes.arguments().isEmpty() && findClass("Bytes") == null;
+    }
+
+    private boolean closedScalarMapDomains(Named mapType) {
+        if (!mapType.name().equals("Map") || mapType.arguments().size() != 2
+                || findClass("Map") != null) return false;
+        Type key = mapType.arguments().get(0);
+        Type value = mapType.arguments().get(1);
+        boolean keyOk = key == Primitive.STRING
+                || key instanceof Named symbol
+                        && symbol.name().equals("$builtin$Symbol")
+                        && symbol.arguments().isEmpty()
+                || isBuiltinBytes(key);
+        boolean valueOk = value == Primitive.INT || value == Primitive.BOOL
+                || value == Primitive.STRING
+                || value instanceof Named symbol
+                        && symbol.name().equals("$builtin$Symbol")
+                        && symbol.arguments().isEmpty()
+                || isBuiltinBytes(value);
+        return keyOk && valueOk;
+    }
+
+    /**
+     * Narrow, fail-closed writable-place admission until an owner-capability
+     * backed Map receiver is available. Do not allow a function parameter,
+     * const binding, temporary, borrow or arbitrary expression to mutate a
+     * map; the callable must be a direct invocation on a writable owner.
+     */
+    private void requireMapMutablePlace(Ast.Expr target, Env env, String operation) {
+        if (target instanceof Ast.NameExpr variable) {
+            Env.Binding binding = env.lookup(variable.name());
+            if (binding != null && binding.kind() == Ast.BindingKind.LET) return;
+        } else if (target instanceof Ast.MemberExpr field
+                && field.receiver() instanceof Ast.NameExpr selfName
+                && selfName.name().equals("self")
+                && currentClassOwner != null
+                && currentClassOwner.actorKind() != Ast.ActorKind.NONE) {
+            for (Ast.FieldDecl owned : currentClassOwner.fields()) {
+                if (owned.name().equals(field.member())
+                        && owned.bindingKind() == Ast.BindingKind.LET) return;
+            }
+        }
+        throw new IllegalArgumentException(
+                "Map." + operation + " requires a directly owned writable let binding "
+                        + "or a writable actor self field; mutable Map receiver "
+                        + "loans, const/val and captured method values are not admitted");
+    }
+
     private Type builtinCollectionMember(Type receiver, String member) {
         receiver = deref(receiver);
+        if (receiver instanceof Named named && named.name().equals("Map")
+                && named.arguments().size() == 2 && findClass("Map") == null) {
+            if (!closedScalarMapDomains(named)) {
+                throw new IllegalArgumentException(
+                        "Map member requires a proven String/Symbol/Bytes key "
+                                + "and copyable scalar value domain");
+            }
+            // Restrict all Map methods to the same closed witness as reads.
+            // Runtime revalidates domains, quota and atomic mutation.
+            return switch (member) {
+                case "size" -> Primitive.INT;
+                case "set" -> new Function(
+                        List.of(named.arguments().get(0), named.arguments().get(1)),
+                        Primitive.VOID);
+                case "delete" -> new Function(
+                        List.of(named.arguments().get(0)), Primitive.BOOL);
+                case "get_optional" -> new Function(
+                        List.of(named.arguments().get(0)),
+                        new Named("Option", List.of(named.arguments().get(1))));
+                default -> null;
+            };
+        }
         if (receiver instanceof ListType list) {
             return switch (member) {
                 case "size" -> Primitive.INT;
@@ -9989,6 +10482,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Bytes" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Bytes is a non-generic linear value type");
+                }
+                yield new Named("Bytes", List.of());
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");

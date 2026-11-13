@@ -156,6 +156,11 @@ public final class OresMutex {
         return LIVE_GUARDS.get() != 0;
     }
 
+    /** Diagnostic: guards created and not yet released, process-wide. */
+    public static long liveGuardCount() {
+        return LIVE_GUARDS.get();
+    }
+
     public interface Guard<T> extends AutoCloseable {
         T value();
         boolean released();
