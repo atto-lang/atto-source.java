@@ -282,10 +282,11 @@ final class ActorCriticalStateSyntaxV2Test {
         var build = physicalBuild();
         Path path = root.resolve("src/counter/receive.atto");
         Files.writeString(path, Files.readString(path).replace(
-                "self.send(s.total);", "s.total = 99;"));
+                "critical-read |s| -> s.total",
+                "critical-read |s| -> s.total = 99"));
         var failure = assertThrows(IllegalArgumentException.class,
                 build::auditDeclaredActors);
-        assertTrue(failure.getMessage().contains("critical-read permits only"),
+        assertTrue(failure.getMessage().contains("critical-read snapshot"),
                 failure.getMessage());
     }
 
