@@ -126,7 +126,26 @@ public final class TypeAutoTraits {
                 yield Optional.of(new Capabilities(
                         child.send(), child.send(), child.send()));
             }
-            case "Channel", "Future", "Iterator", "AsyncIterator",
+            // A Channel<T> handle is a runtime-synchronized, bounded transport
+            // (like SharedMutex it supplies its own synchronization), so it may
+            // be moved or shared between tasks when its payload is Send. This
+            // is what lets a request carry its reply channel (CSP style).
+            // Actor mail boundaries still reject Channel<T> separately.
+            case "Channel" -> {
+                if (named.arguments().size() != 1) yield Optional.of(NONE);
+                boolean payload = nested.apply(named.arguments().getFirst()).send();
+                yield Optional.of(new Capabilities(payload, payload, payload));
+            }
+            // Bytes v1 is an immutable, move-only owned byte string.
+            case "Bytes" -> Optional.of(named.arguments().isEmpty()
+                    ? new Capabilities(true, false, false) : NONE);
+            // A typed Map owns its keys and values; moving it moves them.
+            case "Map" -> {
+                if (named.arguments().size() != 2) yield Optional.of(NONE);
+                Capabilities entries = combine(named.arguments(), nested);
+                yield Optional.of(new Capabilities(entries.send(), false, false));
+            }
+            case "Future", "Iterator", "AsyncIterator",
                     "MutexGuard", "SelectCase", "SelectSet", "SelectResult",
                     "TcpConnection", "HttpExchange", "HttpServer",
                     "HttpHandler", "HttpResponse", "HttpResponseDraft" ->
