@@ -45,6 +45,44 @@ final class ActorGuestStackCurrentRuntimeTest {
     }
 
     @Test
+    void scopeFreeInvalidUnwindFailStopsOnlyCurrentActor() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var doomed = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                ActorGuestStack owner = ActorRuntime.currentActorGuestStack();
+                assertNotNull(owner);
+                assertEquals(0, owner.activeFrames());
+                assertThrows(IllegalStateException.class,
+                        () -> GuestCallDepthGuard.leave(1));
+                // Even after the trusted callback swallows the exception,
+                // the runtime must fail the actor at the mailbox boundary.
+                assertTrue(owner.isPoisoned());
+            });
+            var sibling = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                assertEquals("alive", message);
+                ActorGuestStack owner = ActorRuntime.currentActorGuestStack();
+                assertNotNull(owner);
+                assertFalse(owner.isPoisoned());
+                int depth = GuestCallDepthGuard.enter();
+                try {
+                    assertEquals(1, depth);
+                } finally {
+                    GuestCallDepthGuard.leave(depth);
+                }
+                turn.self().stop();
+            });
+            doomed.send("bad-unwind");
+            assertTrue(doomed.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(doomed.failure().isPresent(),
+                    "a swallowed malformed unwind must still fail-stop its actor");
+            sibling.send("alive");
+            assertTrue(sibling.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(sibling.failure().isEmpty(),
+                    "the next actor on the same SHARED carrier must survive");
+        }
+    }
+
+    @Test
     void actorKeepsLogicalStackAcrossMailboxTurns() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {

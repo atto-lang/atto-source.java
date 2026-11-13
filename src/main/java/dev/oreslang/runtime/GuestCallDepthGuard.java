@@ -70,7 +70,12 @@ public final class GuestCallDepthGuard {
         Scope scope = CURRENT.get();
         if (enteredDepth <= 0 || scope == null || scope.depth != enteredDepth
                 || scope.actorStack != ActorRuntime.currentActorGuestStack()) {
+            // A malformed unwind with no carrier scope still belongs to the
+            // current actor. Poison that incarnation even if trusted host
+            // code catches this exception; never let the next mail run.
+            ActorGuestStack current = ActorRuntime.currentActorGuestStack();
             if (scope != null && scope.actorStack != null) scope.actorStack.poison();
+            if (current != null) current.poison();
             CURRENT.remove();
             throw new IllegalStateException(
                     "unbalanced synchronous guest-call guard on carrier");
