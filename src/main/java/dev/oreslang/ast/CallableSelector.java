@@ -31,6 +31,23 @@ public record CallableSelector(Kind kind, String name, int arity) {
                 method.arity());
     }
 
+    /**
+     * Compiler and standard built-in call names are resolved before lexical
+     * implicit receiver lookup. A user-declared same-named instance method
+     * requires the explicit self.method(...) spelling.
+     *
+     * <p>This is shared by type checking, ownership capture analysis and
+     * the runtime so their direct-call dispatch cannot disagree.
+     */
+    public static boolean reservedImplicitReceiverCallName(String name) {
+        return switch (name) {
+            case "init", "Some", "Ok", "Err", "And", "Or", "Xor",
+                    "print", "task_context", "task_cancel_requested",
+                    "$task_context_enter", "$task_context_exit" -> true;
+            default -> false;
+        };
+    }
+
     public static CallableSelector instance(String name, int arity) {
         return new CallableSelector(Kind.INSTANCE, name, arity);
     }
