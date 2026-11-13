@@ -114,6 +114,8 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    // Compiler-known lexical observer aliases; never declared as guest values.
+    private final Set<String> activeTelemetryAliases = new HashSet<>();
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -2016,12 +2018,10 @@ public final class TypeChecker {
     }
 
     /**
-     * Initial, intentionally narrow admission for parser-lowered telemetry
-     * scopes. Ordinary method-call checking only proves close_scope exists:
-     * this guard additionally requires a nominal SpanScope and a synchronous,
-     * non-generic, zero-argument void cleanup. Full transitive effect,
-     * ownership-escape and native telemetry-provenance proofs are separate
-     * gates; never report this as a certified ScopedResource protocol.
+     * Compiler-owned scoped tracing admission. The historical synthetic AST
+     * shape preserves source provenance but neither its resource factory nor
+     * its cleanup call is executed as guest code. The runtime intercepts the
+     * marked scope and uses native, non-guest-visible SpanToken handles.
      */
     private void verifyTelemetryScopeContract(
             Ast.BlockStmt scope, Env env, Set<String> generics, Type self) {
@@ -2060,6 +2060,8 @@ public final class TypeChecker {
                 || !(factory.receiver() instanceof Ast.NameExpr namespace)
                 || !namespace.name().equals("telemetry")
                 || env.lookup("telemetry") != null
+                || modules.containsKey("telemetry")
+                || importedNames.contains("telemetry")
                 || create.typeArgumentsPresent()) {
             throw new IllegalArgumentException(
                     "using telemetry scope requires the unshadowed telemetry.span factory");
@@ -2088,33 +2090,15 @@ public final class TypeChecker {
         // is introduced, including nested scopes with the same alias.
         // Otherwise a nested cleanup or observer could resolve a different
         // live resource under the same source-level name.
-        if (env.lookup(acquired.name()) != null) {
+        if (env.lookup(acquired.name()) != null
+                || activeTelemetryAliases.contains(acquired.name())) {
             throw new IllegalArgumentException(
                     "using SpanScope alias must not shadow an existing local or live scope: "
                             + acquired.name());
         }
-        Type resourceType = typeOf(acquired.initializer(), env, generics, self);
-        if (!(resourceType instanceof Named nominal)
-                || !(nominal.name().equals("SpanScope")
-                    || nominal.name().equals("telemetry.SpanScope"))
-                || !nominal.arguments().isEmpty()) {
-            throw new IllegalArgumentException(
-                    "using telemetry.span must acquire a nominal SpanScope, got " + resourceType);
-        }
-        Ast.ClassDecl owner = classes.get(nominal.name());
-        if (owner == null) owner = classes.get("telemetry.SpanScope");
-        if (owner == null) owner = classes.get("SpanScope");
-        if (owner == null || owner.actorKind() != Ast.ActorKind.NONE) {
-            throw new IllegalArgumentException(
-                    "using telemetry.span requires a declared non-actor SpanScope class");
-        }
-        List<Ast.MethodDecl> closing = owner.methods().stream()
-                .filter(method -> method.name().equals("close_scope"))
-                .toList();
-        if (closing.size() != 1) {
-            throw new IllegalArgumentException(
-                    "using SpanScope requires exactly one close_scope() method");
-        }
+        // NO nominal SpanScope class check here: the scoped factory is an
+        // intrinsic identified by parser provenance, not a callable guest
+        // telemetry module or a user-definable lookalike class.
         // Phase-one affine safety: until a full ScopedResource borrow
         // checker exists, allow only direct, known non-transfer observer calls
         // on the scope alias. All other references (return, capture, send,
@@ -2148,17 +2132,6 @@ public final class TypeChecker {
                                 + " lifetime cannot yet be proven", unsupported);
             }
         }
-        Ast.MethodDecl close = closing.getFirst();
-        if (close.isStatic() || close.isAbstract() || close.async() || close.suspends()
-                || !close.parameters().isEmpty() || !close.genericParameters().isEmpty()
-                || !close.returnType().name().equals("void")
-                || !close.returnType().arguments().isEmpty()
-                || !close.effects().isEmpty()
-                || close.visibility() != Ast.Visibility.PUBLIC) {
-            throw new IllegalArgumentException(
-                    "using SpanScope.close_scope must be public, synchronous, zero-argument,"
-                    + " non-generic, void and free of declared throw/raise/panic effects");
-        }
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
@@ -2179,6 +2152,10 @@ public final class TypeChecker {
                             + "lifetime checking and evaluator lowering; feature is not enabled");
         }
         if (stmt instanceof Ast.BindingStmt binding) {
+            if (activeTelemetryAliases.contains(binding.name())) {
+                throw new IllegalArgumentException(
+                        "native SpanScope alias must not be shadowed by guest binding: " + binding.name());
+            }
             String inferredName = binding.inferredTypeName() != null
                     ? binding.inferredTypeName() : shortInferredTypeNames.get(binding);
             boolean namedInference = inferredName != null;
@@ -2313,6 +2290,17 @@ public final class TypeChecker {
         if (stmt instanceof Ast.BlockStmt block) {
             if (block.usingTelemetryScope()) {
                 verifyTelemetryScopeContract(block, env, generics, self);
+                Ast.BindingStmt acquire = (Ast.BindingStmt) block.body().getFirst();
+                Ast.TryStmt body = (Ast.TryStmt) block.body().get(1);
+                if (!activeTelemetryAliases.add(acquire.name())) {
+                    throw new IllegalArgumentException("native SpanScope alias is already active");
+                }
+                try {
+                    checkBlock(body.body(), env, generics, expectedReturn, self);
+                } finally {
+                    activeTelemetryAliases.remove(acquire.name());
+                }
+                return;
             }
             checkBlock(block.body(), env, generics, expectedReturn, self);
             return;
@@ -3138,6 +3126,25 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            // These are typed, compiler-owned observer operations. The lexical
+            // alias does not exist as a guest value, class or first-class handle.
+            if (call.callee() instanceof Ast.MemberExpr observer
+                    && observer.receiver() instanceof Ast.NameExpr receiver
+                    && activeTelemetryAliases.contains(receiver.name())) {
+                int count = observer.member().equals("set_attribute") ? 2 : 1;
+                if (!Set.of("set_attribute", "add_event", "record_error", "set_status")
+                        .contains(observer.member())
+                        || call.typeArgumentsPresent() || call.arguments().size() != count) {
+                    throw new IllegalArgumentException(
+                            "native SpanScope only permits typed observer calls");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    Type observed = typeOf(argument, env, generics, self);
+                    requireAssignable(observed, Primitive.STRING,
+                            "native SpanScope observer string argument");
+                }
+                return Primitive.VOID;
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
