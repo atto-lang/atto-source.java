@@ -4909,9 +4909,48 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                if (object.explicitStruct()) {
+                    throw new IllegalArgumentException(
+                            "explicit struct spread requires exact declared-field initialization proof");
+                }
+                // An aggregate spread is a static row expansion, not dynamic Map
+                // reflection. The first executable slice admits only immutable
+                // scalar fields whose copying cannot carry a borrow, actor
+                // capability or mutable reference across ownership domains.
+                Map<String, Type> expanded = new LinkedHashMap<>();
+                for (Ast.ObjectField field : object.fields()) {
+                    if (field.spread()) {
+                        Type sourceType = deref(typeOf(field.value(), env, generics, self));
+                        if (!(sourceType instanceof Record source)
+                                || source.kind() == AggregateKind.CONTRACT) {
+                            throw new IllegalArgumentException(
+                                    "aggregate spread requires a closed record or struct, not "
+                                            + sourceType);
+                        }
+                        for (Map.Entry<String, Type> entry : source.members().entrySet()) {
+                            Type member = entry.getValue();
+                            if (!(member == Primitive.INT || member == Primitive.FLOAT
+                                    || member == Primitive.BOOL || member == Primitive.STRING
+                                    || member instanceof StringLiteral
+                                    || member instanceof Types.BoolLiteral)) {
+                                throw new IllegalArgumentException(
+                                        "aggregate spread field '" + entry.getKey()
+                                                + "' is not a proven copyable scalar: " + member);
+                            }
+                            expanded.put(entry.getKey(), member);
+                        }
+                    } else {
+                        Type type = typeOf(field.value(), env, generics, self);
+                        expanded.put(field.name(), object.inferredFieldTypes()
+                                ? widenCollectionElement(type) : type);
+                    }
+                }
+                if (object.structuralRecord()) {
+                    return new Record(expanded, true, AggregateKind.RECORD);
+                }
+                if (object.inferredStruct()) return Record.struct(expanded);
                 throw new IllegalArgumentException(
-                        "aggregate spread is parsed but not yet type/ownership/lowering checked; "
-                                + "use explicit static field initializers until the v1 contract is implemented");
+                        "unsupported aggregate spread target kind " + object.kind());
             }
             if (object.explicitStruct()) {
                 Map<String, Type> members = new LinkedHashMap<>();
