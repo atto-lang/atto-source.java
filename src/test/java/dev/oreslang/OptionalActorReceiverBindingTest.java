@@ -19,7 +19,7 @@ final class OptionalActorReceiverBindingTest {
     private static final String NS = "namespace workers;\n";
     private static final String ACTOR = NS + "declare pub actor Worker;";
     private static final String STATE = NS
-            + "define state on actor Worker as { let int v = 5; }";
+            + "define state on actor Worker as { let int v : 5; }";
 
     private static Map<String, Ast.Program> sourceSet(String methods) {
         Map<String, Ast.Program> units = new LinkedHashMap<>();
