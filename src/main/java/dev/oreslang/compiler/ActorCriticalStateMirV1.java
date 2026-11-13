@@ -137,12 +137,19 @@ public final class ActorCriticalStateMirV1 {
         ActorReceiverBinder.SourceBinding ingress = null;
         for (var binding : witness.boundMethods().entrySet()) {
             var key = binding.getKey();
-            if (key.packageIdentity().equals(packageIdentity)
-                    && key.namespace().equals(actorKey.namespace())
-                    && key.actor().equals(actorKey.actor())
-                    && key.name().equals("receive")) {
+            if (!key.packageIdentity().equals(packageIdentity)
+                    || !key.namespace().equals(actorKey.namespace())
+                    || !key.actor().equals(actorKey.actor())) continue;
+            var linked = binding.getValue();
+            // An explicit external init is semantically significant. Silently
+            // skipping it and seeding only the state literal would miscompile
+            // source programs with a user-defined lifecycle initializer.
+            if (linked.nominalBinding().method().runtimeOnly()
+                    && !key.name().equals("receive"))
+                throw deny("runtime init/other lifecycle methods need their own lowering");
+            if (key.name().equals("receive")) {
                 if (ingress != null) throw deny("duplicate receive ingress");
-                ingress = binding.getValue();
+                ingress = linked;
             }
         }
         if (ingress == null) throw deny("missing manifest-linked receive ingress");
