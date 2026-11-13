@@ -19,7 +19,9 @@ This applies to both ordinary classes and actors; it does **not** turn actor met
 5. The syntactic call must have `CallOrigin.DIRECT`; piped call rewriting must not invent `self`.
 6. Free functions and static methods have no implicit receiver. A bare `f` is never a captured bound method value, including when a method named `f` exists. A lexical variable or parameter literally named `self` is **not** proof of instance-method authority.
 7. Only a compiler-created instance-method entry frame may grant the implicit receiver identity; child lexical frames inherit it, nonlexical/detached boundaries must revoke it. Constructor and field-initializer frames must not inherit or fabricate this identity. Runtime-linked/unchecked AST paths must independently enforce the same gate.
-8. Nonlexical closures, async handoffs and task boundaries do not acquire new actor-self capture rights. An implicit call must pass exactly the explicit receiver ownership and effects checks.
+8. Compiler-owned direct calls (`Some`, `Ok`, `Err`, Boolean intrinsics, `init`, `print`, and task-context internals) retain priority over user method families. The shared `CallableSelector.reservedImplicitReceiverCallName` predicate is mandatory in the type checker, ownership checker, closure capture scanner, and Graal evaluator. User methods of those names require explicit `self.method(...)`.
+9. Capture analysis must treat an unqualified method call in a lexical closure as capturing the identical borrowed `self` that `self.method(...)` would capture, even before AST lowering. Ordinary borrowed-self captures cannot escape through lambdas; nonlexical closures have no such inherited capability.
+10. Nonlexical closures, async handoffs and task boundaries do not acquire new actor-self capture rights. An implicit call must pass exactly the explicit receiver ownership and effects checks.
 
 ## Reserved actor state method
 
