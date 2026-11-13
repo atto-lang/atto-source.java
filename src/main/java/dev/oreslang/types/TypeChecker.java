@@ -4115,6 +4115,11 @@ public final class TypeChecker {
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
                 return new Function(List.of(), Primitive.STRING);
             }
+            if (member.receiver() instanceof Ast.NameExpr sleepName && sleepName.name().equals("process")
+                    && env.lookup("process") == null && member.member().equals("sleep_async")) {
+                // Nonblocking timer: suspends the caller, never a scheduler thread.
+                return new Function(List.of(Primitive.INT), new Named("Future", List.of(Primitive.VOID)));
+            }
             if (member.receiver() instanceof Ast.NameExpr clockName && clockName.name().equals("process")
                     && env.lookup("process") == null
                     && (member.member().equals("monotonic_ns") || member.member().equals("unix_ms"))) {
@@ -6123,6 +6128,12 @@ public final class TypeChecker {
                 default -> throw new IllegalArgumentException("unknown Bytes member " + name);
             };
         }
+        // Async TCP v1.1: split is synchronous and consumes the connection.
+        if (named.name().equals("NioConnection") && name.equals("split")) {
+            return new Function(List.of(), new Tuple(
+                    List.of(new Named("NioReader", List.of()), new Named("NioWriter", List.of())),
+                    TupleKind.TUPLE));
+        }
         if (named.name().equals("env")) {
             switch (name) {
                 case "get": return new Function(List.of(Primitive.STRING),
@@ -6191,6 +6202,34 @@ public final class TypeChecker {
                         result = Primitive.VOID; parameters = List.of();
                     }
                     default -> throw new IllegalArgumentException("unknown NioListener member " + name);
+                }
+            }
+            case "NioReader" -> {
+                switch (name) {
+                    case "read_owned_bytes_async" -> {
+                        result = new Named("Bytes", List.of()); parameters = List.of(Primitive.INT);
+                    }
+                    case "read_bytes_async" -> {
+                        result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
+                    }
+                    case "close_async" -> {
+                        result = Primitive.VOID; parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown NioReader member " + name);
+                }
+            }
+            case "NioWriter" -> {
+                switch (name) {
+                    case "write_owned_bytes_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new Named("Bytes", List.of()));
+                    }
+                    case "write_bytes_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new ListType(Primitive.INT));
+                    }
+                    case "close_async" -> {
+                        result = Primitive.VOID; parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown NioWriter member " + name);
                 }
             }
             case "NioConnection" -> {

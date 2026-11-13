@@ -518,10 +518,86 @@ public final class AsyncNioTcp {
             }
         }
 
+        // ---- split halves (spec chapter 26, Async TCP v1.1) ----------------
+        private final AtomicBoolean split = new AtomicBoolean();
+        private final AtomicInteger liveHalves = new AtomicInteger();
+
+        /**
+         * Consume this connection into an independently owned read half and
+         * write half. The socket already admits one pending read and one
+         * pending write at a time, so two tasks may each own one direction.
+         * The socket closes once both halves are closed.
+         */
+        public Halves split() {
+            if (closed.get() || !split.compareAndSet(false, true)) {
+                throw new IllegalStateException("closed or already split NioConnection");
+            }
+            liveHalves.set(2);
+            return new Halves(new ReadHalf(this), new WriteHalf(this));
+        }
+
+        private void releaseHalf(boolean readSide) {
+            try {
+                if (readSide) channel.shutdownInput(); else channel.shutdownOutput();
+            } catch (IOException | RuntimeException ignored) {
+                // The peer may already be gone; the full close below still runs.
+            }
+            if (liveHalves.decrementAndGet() == 0) closeQuietly();
+        }
+
         @Override public void close() throws IOException {
             if (!closed.compareAndSet(false, true)) return;
             context.nativeIo().unregister(this);
             channel.close();
+        }
+    }
+
+    /** Result of {@link Connection#split()}: guest value Tuple[NioReader, NioWriter]. */
+    public record Halves(ReadHalf reader, WriteHalf writer) { }
+
+    /** Read direction of a split connection; affine Send, never shared. */
+    public static final class ReadHalf {
+        private final Connection connection;
+        private final AtomicBoolean released = new AtomicBoolean();
+        private ReadHalf(Connection connection) { this.connection = connection; }
+
+        private void requireLive() {
+            if (released.get()) throw new IllegalStateException("closed NioReader");
+        }
+        public OresFuture<OresBytes> readOwnedBytesAsync(int maxBytes) {
+            requireLive();
+            return connection.readOwnedBytesAsync(maxBytes);
+        }
+        public OresFuture<List<Integer>> readBytesAsync(int maxBytes) {
+            requireLive();
+            return connection.readBytesAsync(maxBytes);
+        }
+        public OresFuture<Void> closeAsync() {
+            if (released.compareAndSet(false, true)) connection.releaseHalf(true);
+            return OresFuture.completed(null);
+        }
+    }
+
+    /** Write direction of a split connection; affine Send, never shared. */
+    public static final class WriteHalf {
+        private final Connection connection;
+        private final AtomicBoolean released = new AtomicBoolean();
+        private WriteHalf(Connection connection) { this.connection = connection; }
+
+        private void requireLive() {
+            if (released.get()) throw new IllegalStateException("closed NioWriter");
+        }
+        public OresFuture<Void> writeOwnedBytesAsync(OresBytes bytes) {
+            requireLive();
+            return connection.writeOwnedBytesAsync(bytes);
+        }
+        public OresFuture<Void> writeBytesAsync(List<?> bytes) {
+            requireLive();
+            return connection.writeBytesAsync(bytes);
+        }
+        public OresFuture<Void> closeAsync() {
+            if (released.compareAndSet(false, true)) connection.releaseHalf(false);
+            return OresFuture.completed(null);
         }
     }
 }
