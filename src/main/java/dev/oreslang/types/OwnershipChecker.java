@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
@@ -1677,7 +1678,7 @@ public final class OwnershipChecker {
         if (currentInstanceMethodOwner != null
                 && call.origin() == Ast.CallOrigin.DIRECT
                 && call.callee() instanceof Ast.NameExpr implicit
-                && !isBooleanIntrinsicName(implicit.name())
+                && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
                 && scope.lookup(implicit.name()) == null) {
             VarState receiver = scope.lookup("self");
             if (receiver != null) {
@@ -3382,7 +3383,7 @@ public final class OwnershipChecker {
             if (currentInstanceMethodOwner != null
                     && e.origin() == Ast.CallOrigin.DIRECT
                     && e.callee() instanceof Ast.NameExpr implicit
-                    && !isBooleanIntrinsicName(implicit.name())
+                    && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
                     && !locals.contains(implicit.name())
                     && outer.lookup(implicit.name()) == null
                     && hasMethodNamed(
