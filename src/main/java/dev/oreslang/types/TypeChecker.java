@@ -2127,8 +2127,20 @@ public final class TypeChecker {
                 constantString = constantStringKey(binding.initializer(), env);
             }
 
+            // A direct aggregate literal has an exact runtime field set. An
+            // exact alias preserves it only when its declared type does not
+            // erase fields through structural-row width subtyping.
+            boolean exactAggregate = actual instanceof Record actualRow
+                    && declared instanceof Record declaredRow
+                    && actualRow.kind() == declaredRow.kind()
+                    && actualRow.members().keySet().equals(declaredRow.members().keySet())
+                    && (binding.initializer() instanceof Ast.ObjectExpr
+                        || (binding.initializer() instanceof Ast.NameExpr sourceName
+                                && env.lookup(sourceName.name()) != null
+                                && env.lookup(sourceName.name()).exactAggregate()));
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            if (exactAggregate) env.lookup(binding.name()).setExactAggregate(true);
             if (binding.kind() == Ast.BindingKind.CONST) {
                 if (constantInteger != null) {
                     env.defineConstantInteger(binding.name(), constantInteger);
@@ -4927,6 +4939,19 @@ public final class TypeChecker {
                                     "aggregate spread requires a closed record or struct, not "
                                             + sourceType);
                         }
+                        if (source.kind() == AggregateKind.RECORD
+                                && !(field.value() instanceof Ast.ObjectExpr)
+                                && !(field.value() instanceof Ast.NameExpr name
+                                        && env.lookup(name.name()) != null
+                                        && env.lookup(name.name()).exactAggregate())) {
+                            // Readonly record row compatibility permits width
+                            // narrowing. Without an exact provenance proof, a
+                            // runtime row can contain keys absent from its
+                            // static type. Never silently copy hidden keys.
+                            throw new IllegalArgumentException(
+                                    "record spread requires a proven exact source shape; "
+                                            + "project narrowed rows with explicit field initializers");
+                        }
                         for (Map.Entry<String, Type> entry : source.members().entrySet()) {
                             Type member = entry.getValue();
                             if (!(member == Primitive.INT || member == Primitive.FLOAT
@@ -4937,7 +4962,9 @@ public final class TypeChecker {
                                         "aggregate spread field '" + entry.getKey()
                                                 + "' is not a proven copyable scalar: " + member);
                             }
-                            expanded.put(entry.getKey(), member);
+                            expanded.put(entry.getKey(),
+                                    object.inferredFieldTypes()
+                                            ? widenCollectionElement(member) : member);
                         }
                     } else {
                         Type type = typeOf(field.value(), env, generics, self);
@@ -11277,6 +11304,7 @@ public final class TypeChecker {
             private final Type type;
             private final Ast.BindingKind kind;
             private final Set<String> uninitializedFields;
+            private boolean exactAggregate;
 
             private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields) {
                 this.type = type;
@@ -11285,6 +11313,8 @@ public final class TypeChecker {
             }
             private Type type() { return type; }
             private Ast.BindingKind kind() { return kind; }
+            private boolean exactAggregate() { return exactAggregate; }
+            private void setExactAggregate(boolean value) { exactAggregate = value; }
             private boolean hasUninitializedFields() { return !uninitializedFields.isEmpty(); }
             private boolean isUninitialized(String field) { return uninitializedFields.contains(field); }
             private Set<String> uninitializedFields() {
