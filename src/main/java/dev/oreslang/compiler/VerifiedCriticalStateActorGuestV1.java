@@ -107,7 +107,7 @@ final class VerifiedCriticalStateActorGuestV1 implements ActorRuntime.ActorCodeE
         ActorRuntime.PrivateMemoryBlock block = slice.allocatePrivateBytes(Long.BYTES);
         try {
             block.writeLong(0, plan.initialValue());
-            return new State(context, block);
+            return new State(context, block, image);
         } catch (RuntimeException | Error failure) {
             block.close();
             throw failure;
@@ -180,12 +180,15 @@ final class VerifiedCriticalStateActorGuestV1 implements ActorRuntime.ActorCodeE
         private final ActorRuntime.ActorId owner;
         private final long generation;
         private final ActorRuntime.PrivateMemoryBlock block;
+        private final SharedCodeImageStore.CodeImage codeImage;
         private final AtomicInteger activeLoan = new AtomicInteger();
         private boolean closed;
 
         private State(ActorRuntime.ActorContext<Object> context,
-                      ActorRuntime.PrivateMemoryBlock block) {
+                      ActorRuntime.PrivateMemoryBlock block,
+                      SharedCodeImageStore.CodeImage codeImage) {
             runtime = context.runtime();
+            this.codeImage = codeImage;
             owner = context.self().id();
             generation = context.self().generation();
             this.block = block;
@@ -198,6 +201,7 @@ final class VerifiedCriticalStateActorGuestV1 implements ActorRuntime.ActorCodeE
                     || context.runtime() != runtime
                     || ActorRuntime.currentActorRuntime() != runtime
                     || !owner.equals(ActorRuntime.currentActorId().orElse(null))
+                    || context.codeImage().orElse(null) != codeImage
                     || context.kind() != ActorRuntime.ActorKind.PRIVATE
                     || context.self().generation() != generation
                     || !owner.equals(context.self().id())
