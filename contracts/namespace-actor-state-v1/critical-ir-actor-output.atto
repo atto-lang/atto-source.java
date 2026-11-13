@@ -21,9 +21,13 @@ critical mtd (Probe p) debit(int delta): void {
     p.state.budget = p.state.budget - delta;
 }
 
+critical mtd (Probe p) current(): int {
+    return p.state.received;
+}
+
 external mtd (Probe p) receive(ActorMail<int> mail): void {
     p.add(mail.value);
     p.debit(mail.value);
-    p.send(p.state.received);
+    p.send(p.current());
     return;
 }
