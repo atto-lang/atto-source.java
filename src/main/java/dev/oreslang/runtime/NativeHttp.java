@@ -748,12 +748,27 @@ public final class NativeHttp implements AutoCloseable {
                     // point; wait out any pre-seal handoffs before closing the
                     // actor mailbox. Never strand an accepted send by sealing
                     // its actor before it has finished transferring the token.
-                    if (worker.admission.quiescent()
-                            && worker.shutdownStopRequested.compareAndSet(false, true)) {
-                        // ActorRuntime.gracefulStop atomically rejects all NEW
-                        // actor mailbox admission, drains accepted messages,
-                        // and publishes DONE only after physical finalization.
-                        context.actors().gracefulStop(worker.actor);
+                    if (worker.admission.quiescent()) {
+                        // A Handler pool may be used by multiple HTTP listeners.
+                        // Stopping this actor would ALSO seal another listener's
+                        // in-flight continuations. Once all pre-seal handoffs
+                        // have settled, the historical association set is a
+                        // conservative cross-listener ownership receipt.
+                        // Until per-listener actor ownership is implemented,
+                        // fail this shutdown explicitly rather than canceling
+                        // unrelated live guest work or claiming false success.
+                        if (worker.served.stream().anyMatch(other -> other != this)) {
+                            failDrain(new IllegalStateException(
+                                    "HTTP pooled actor generation still shared with another"
+                                    + " listener; independent physical drain is unsupported"));
+                            return;
+                        }
+                        if (worker.shutdownStopRequested.compareAndSet(false, true)) {
+                            // For an exclusively associated generation,
+                            // ActorRuntime.gracefulStop seals future messages,
+                            // drains accepted mail and waits for finalization.
+                            context.actors().gracefulStop(worker.actor);
+                        }
                     }
                     // A point-in-time idle snapshot is NOT a shutdown proof:
                     // require a terminal ActorRuntime DONE after the durable
