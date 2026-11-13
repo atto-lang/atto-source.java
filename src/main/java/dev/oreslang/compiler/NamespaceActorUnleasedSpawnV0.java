@@ -4,6 +4,7 @@ import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.nodes.Node;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
@@ -51,6 +52,106 @@ public final class NamespaceActorUnleasedSpawnV0 {
     private record Plan(Ast.Program program, String codeUnitId,
                         String actorType, List<Action> actions, long result) {
         private Plan { actions = List.copyOf(actions); }
+    }
+
+    /**
+     * Real Truffle child nodes produced from the *already admitted* Atto AST,
+     * not a runtime re-interpretation of the Plan's Spawn/Send records.
+     * The only mutable execution scope is per-evaluation and cannot escape
+     * into source/guest values, another context or an actor-owned heap.
+     *
+     * This is an incremental, closed-world lowering for actor actions.
+     * Guest await/reply and general expression lowering are NOT implemented.
+     */
+    private abstract static class GuestActionNode extends Node {
+        abstract void execute(GuestSession session) throws Exception;
+    }
+
+    private static final class GuestSession {
+        private final OresContext context;
+        private final ActorRuntime.ActorCodeExecutor code;
+        private final String actorName;
+        private final Map<String, ActorRuntime.ActorRef<Object>> refs =
+                new LinkedHashMap<>();
+        private final Map<String, Long> counts = new LinkedHashMap<>();
+
+        private GuestSession(OresContext context,
+                ActorRuntime.ActorCodeExecutor code, String actorName) {
+            this.context = Objects.requireNonNull(context);
+            this.code = Objects.requireNonNull(code);
+            this.actorName = Objects.requireNonNull(actorName);
+        }
+    }
+
+    private static final class SpawnNode extends GuestActionNode {
+        private final String variable;
+        private SpawnNode(String variable) { this.variable = variable; }
+
+        @Override void execute(GuestSession session) throws Exception {
+            spawnAndAwait(session);
+        }
+
+        @TruffleBoundary
+        private void spawnAndAwait(GuestSession session) throws Exception {
+            if (session.refs.containsKey(variable)) {
+                throw new SecurityException("duplicate checked actor spawn binding");
+            }
+            var ref = session.context.actors().spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, session.code, session.actorName);
+            // Register before the readiness await: a constructor/activation
+            // failure must still clean up and retire the actor incarnation.
+            session.refs.put(variable, ref);
+            session.counts.put(variable, 0L);
+            ref.ready().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    private static final class SendNode extends GuestActionNode {
+        private final String variable;
+        private final long value;
+        private final int count;
+        private SendNode(String variable, long value, int count) {
+            this.variable = variable;
+            this.value = value;
+            this.count = count;
+        }
+
+        @Override void execute(GuestSession session) {
+            dispatchCheckedMessages(session);
+        }
+
+        @TruffleBoundary
+        private void dispatchCheckedMessages(GuestSession session) {
+            var ref = session.refs.get(variable);
+            if (ref == null) {
+                throw new SecurityException("source attempted send before actor spawn");
+            }
+            for (int i = 0; i < count; i++) {
+                ref.send(value);
+                // Count *admitted* sends only. An admission failure cannot
+                // produce an artificial success count.
+                session.counts.put(variable,
+                        Math.addExact(session.counts.get(variable), 1L));
+            }
+        }
+    }
+
+    private static GuestActionNode[] lowerActions(List<Action> verified) {
+        GuestActionNode[] children = new GuestActionNode[verified.size()];
+        for (int i = 0; i < verified.size(); i++) {
+            Action action = verified.get(i);
+            if (action instanceof Spawn spawn) {
+                children[i] = new SpawnNode(spawn.variable());
+            } else if (action instanceof Send send) {
+                children[i] = new SendNode(
+                        send.variable(), send.value(), send.count());
+            } else {
+                // Deliberate fail-closed compiler rule: there is no fallback
+                // interpreted or host-callable action path.
+                throw reject("unlowered actor main expression");
+            }
+        }
+        return children;
     }
 
     /**
@@ -228,9 +329,12 @@ public final class NamespaceActorUnleasedSpawnV0 {
 
     private static final class GuestRoot extends RootNode {
         private final Plan plan;
+        @Children private final GuestActionNode[] loweredActions;
+
         private GuestRoot(OresLanguage language, Plan plan) {
             super(language);
             this.plan = plan;
+            this.loweredActions = lowerActions(plan.actions());
         }
         @Override public String getName() { return "atto-namespace-actor-spawn-v0"; }
         @Override public boolean isInternal() { return true; }
@@ -238,7 +342,6 @@ public final class NamespaceActorUnleasedSpawnV0 {
             return executeBody(OresContext.get(this), frame.getArguments());
         }
 
-        @TruffleBoundary
         private long executeBody(OresContext context, Object[] arguments) {
             if (arguments.length != 0) throw new SecurityException(
                     "checked namespace-actor main accepts no host arguments");
@@ -260,51 +363,17 @@ public final class NamespaceActorUnleasedSpawnV0 {
                         || descriptor.codeImage() != code.codeImage()) {
                     throw new SecurityException("actor code image/descriptor mismatch");
                 }
-                Map<String, ActorRuntime.ActorRef<Object>> refs = new LinkedHashMap<>();
-                Map<String, Long> counts = new LinkedHashMap<>();
+                GuestSession session =
+                        new GuestSession(context, code, descriptor.actorName());
                 try {
-                    for (Action action : plan.actions()) {
-                        if (action instanceof Spawn spawn) {
-                            var ref = context.actors().spawnCodeActor(
-                                    ActorRuntime.ActorKind.SHARED, code, descriptor.actorName());
-                            ref.ready().get(5, TimeUnit.SECONDS);
-                            refs.put(spawn.variable(), ref);
-                            counts.put(spawn.variable(), 0L);
-                        } else if (action instanceof Send send) {
-                            var ref = refs.get(send.variable());
-                            if (ref == null) throw new SecurityException(
-                                    "source attempted send before actor spawn");
-                            for (int i = 0; i < send.count(); i++) ref.send(send.value());
-                            counts.put(send.variable(), Math.addExact(
-                                    counts.get(send.variable()), send.count()));
-                        }
-                    }
-                    for (var entry : refs.entrySet()) {
-                        entry.getValue().drain().get(15, TimeUnit.SECONDS);
-                        if (entry.getValue().failure().isPresent()) {
-                            throw new IllegalStateException(
-                                    "checked source actor terminated during mailbox dispatch");
-                        }
-                        var receipt = NamespaceActorCriticalIrCompiler.receiptAfterDrain(
-                                code, entry.getValue());
-                        if (receipt.processed() != counts.get(entry.getKey())
-                                || !receipt.actorId().equals(entry.getValue().id())
-                                || receipt.generation() != entry.getValue().generation()) {
-                            throw new SecurityException(
-                                    "source actor mailbox receipt invalid or incorrect");
-                        }
-                    }
+                    // Actions were statically lowered into actual Truffle
+                    // child nodes at parse/admission time. Each invocation
+                    // uses a fresh owner-bound session and CodeImage.
+                    for (GuestActionNode node : loweredActions) node.execute(session);
+                    verifyDrainedActors(session);
                     return plan.result();
                 } finally {
-                    for (var ref : refs.values()) {
-                        ref.stop();
-                    }
-                    for (var ref : refs.values()) {
-                        if (!ref.awaitTermination(5, TimeUnit.SECONDS)) {
-                            throw new IllegalStateException(
-                                    "actor failed to quiesce before code-image retirement");
-                        }
-                    }
+                    retireActors(session);
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -312,6 +381,53 @@ public final class NamespaceActorUnleasedSpawnV0 {
             } catch (Exception failure) {
                 throw new IllegalStateException("checked source actor main failed", failure);
             }
+        }
+
+        @TruffleBoundary
+        private static void verifyDrainedActors(GuestSession session)
+                throws Exception {
+            for (var entry : session.refs.entrySet()) {
+                var ref = entry.getValue();
+                ref.drain().get(15, TimeUnit.SECONDS);
+                if (ref.failure().isPresent()) {
+                    throw new IllegalStateException(
+                            "checked source actor terminated during mailbox dispatch");
+                }
+                var receipt = NamespaceActorCriticalIrCompiler.receiptAfterDrain(
+                        session.code, ref);
+                if (receipt.processed() != session.counts.get(entry.getKey())
+                        || !receipt.actorId().equals(ref.id())
+                        || receipt.generation() != ref.generation()) {
+                    throw new SecurityException(
+                            "source actor mailbox receipt invalid or incorrect");
+                }
+            }
+        }
+
+        @TruffleBoundary
+        private static void retireActors(GuestSession session) throws Exception {
+            Exception firstFailure = null;
+            // A failing stop must not prevent siblings from being stopped.
+            for (var ref : session.refs.values()) {
+                try {
+                    ref.stop();
+                } catch (Exception failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+            }
+            for (var ref : session.refs.values()) {
+                try {
+                    if (!ref.awaitTermination(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "actor failed to quiesce before code-image retirement");
+                    }
+                } catch (Exception failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+            }
+            if (firstFailure != null) throw firstFailure;
         }
     }
 }
