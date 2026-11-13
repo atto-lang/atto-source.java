@@ -11118,18 +11118,13 @@ public final class OresEvalRootNode extends RootNode {
                         "actor state field '" + object.klass.name() + "." + name
                                 + "' is read before initialization");
             }
-            if (!writable && value != null
-                    && !(value instanceof String || value instanceof Boolean
-                        || value instanceof Character || value instanceof Byte
-                        || value instanceof Short || value instanceof Integer
-                        || value instanceof Long || value instanceof Float
-                        || value instanceof Double
-                        || value instanceof java.math.BigInteger
-                        || value instanceof java.math.BigDecimal)) {
-                // Composite values may contain mutable aliases. Fail closed
-                // until a provably immutable/snapshot view is implemented.
+            if (!isImmutableStateScalar(value)) {
+                // Writable loans must reject composites too: handing a mutable
+                // object to the callback would let it mutate the published
+                // snapshot without going through the staged write set.
                 throw new IllegalArgumentException(
-                        "critical[read] state loan only supports scalar state values");
+                        "sealed actor state loan only supports immutable scalar values;"
+                                + " composite snapshot lowering is not implemented");
             }
             return value;
         }
@@ -11145,7 +11140,41 @@ public final class OresEvalRootNode extends RootNode {
                         "actor state field '" + object.klass.name() + "." + name
                                 + "' is immutable");
             }
+            if (!isImmutableStateScalar(value)) {
+                throw new IllegalArgumentException(
+                        "sealed actor state loan cannot stage a mutable composite value");
+            }
+            // Defense in depth against unchecked/untyped AST execution:
+            // never let a scalar field's runtime shape change on publication.
+            String target = field.type().name();
+            boolean compatible = switch (target) {
+                case "int" -> value instanceof Byte || value instanceof Short
+                        || value instanceof Integer || value instanceof Long
+                        || (value instanceof java.math.BigInteger integer
+                            && integer.bitLength() <= 63);
+                case "bool" -> value instanceof Boolean;
+                case "string", "String" -> value instanceof String;
+                case "char" -> value instanceof Character;
+                case "float", "double", "f32", "f64" ->
+                        value instanceof Float || value instanceof Double;
+                default -> false;
+            };
+            if (!compatible) {
+                throw new IllegalArgumentException(
+                        "sealed actor state field '" + name
+                                + "' requires a checked scalar of type " + target);
+            }
             staged.put(name, value);
+        }
+
+        private static boolean isImmutableStateScalar(Object value) {
+            return value instanceof String || value instanceof Boolean
+                    || value instanceof Character || value instanceof Byte
+                    || value instanceof Short || value instanceof Integer
+                    || value instanceof Long || value instanceof Float
+                    || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal;
         }
 
         private void commit() {
