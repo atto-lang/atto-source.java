@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.ActorReceiverBinder;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
@@ -37,6 +38,38 @@ final class ExternalActorRuntimeIngressSyntaxTest {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(NS
                         + "external mtd (Counter self) receive(ActorMail<int> mail): void { return; }")));
+    }
+
+    @Test
+    void nominalBindingDifferentiatesRuntimeIngressFromOrdinaryMethods() {
+        var legal = Parser.parse(NS + """
+                declare pub actor Counter;
+                external mtd (Counter c) init(): void { return; }
+                external mtd (Counter c) receive(ActorMail<int> mail): void { return; }
+                pub mtd (Counter c) echo(int value): int { return value; }
+                """);
+        var bound = ActorReceiverBinder.bind(legal);
+        assertEquals(3, bound.size());
+        assertTrue(bound.get(new ActorReceiverBinder.Slot(
+                Parser.ROOT_MODULE, "Counter", "init", 0)).method().runtimeOnly());
+        assertTrue(bound.get(new ActorReceiverBinder.Slot(
+                Parser.ROOT_MODULE, "Counter", "receive", 1)).method().runtimeOnly());
+        assertFalse(bound.get(new ActorReceiverBinder.Slot(
+                Parser.ROOT_MODULE, "Counter", "echo", 1)).method().runtimeOnly());
+
+        var spoof = Parser.parse(NS + """
+                declare pub actor Counter;
+                mtd (Counter c) receive(ActorMail<int> mail): void { return; }
+                """);
+        var denied = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bind(spoof));
+        assertTrue(denied.getMessage().contains("runtime-only"), denied.getMessage());
+
+        var rawInit = Parser.parse(NS + """
+                declare pub actor Counter;
+                mtd (Counter c) init(): void { return; }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> ActorReceiverBinder.bind(rawInit));
     }
 
     @Test
