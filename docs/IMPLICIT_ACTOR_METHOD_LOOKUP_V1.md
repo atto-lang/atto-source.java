@@ -17,8 +17,9 @@ This applies to both ordinary classes and actors; it does **not** turn actor met
 3. Existing explicitly imported / qualified / module / file callables follow their ordinary rules. Actor dependency isolation does **not** become weaker; actors must still import external dependencies explicitly. The separate draft for `pkg::` / `imports::` qualification is **not** implied by this implementation.
 4. Actor lifecycle entry points `on_start` and `receive`, constructors, private/protected members from unauthorized scopes and unsafe method values remain forbidden exactly as for explicit self.
 5. The syntactic call must have `CallOrigin.DIRECT`; piped call rewriting must not invent `self`.
-6. Free functions and static methods have no implicit receiver. A bare `f` is never a captured bound method value, including when a method named `f` exists.
-7. Nonlexical closures, async handoffs and task boundaries do not acquire new actor-self capture rights. An implicit call must pass exactly the explicit receiver ownership and effects checks.
+6. Free functions and static methods have no implicit receiver. A bare `f` is never a captured bound method value, including when a method named `f` exists. A lexical variable or parameter literally named `self` is **not** proof of instance-method authority.
+7. Only a compiler-created instance-method entry frame may grant the implicit receiver identity; child lexical frames inherit it, nonlexical/detached boundaries must revoke it. Constructor and field-initializer frames must not inherit or fabricate this identity. Runtime-linked/unchecked AST paths must independently enforce the same gate.
+8. Nonlexical closures, async handoffs and task boundaries do not acquire new actor-self capture rights. An implicit call must pass exactly the explicit receiver ownership and effects checks.
 
 ## Reserved actor state method
 
@@ -32,6 +33,6 @@ Both spellings must require the same actor state schema, critical admission for 
 
 Positive: explicit/implicit class equivalence; direct actor-to-own-method calls; class and actor name collision with root function; local function binding shadows method; private/inherited dispatch where valid.
 
-Negative: mismatched method arity cannot fall back to root; noncallable lexical shadow; bare method value; free function lacks receiver; constructor cannot call instance method; actor lifecycle entry points stay reserved; undeclared `handle_state` and unlowered `state {}` remain denied.
+Negative: mismatched method arity cannot fall back to root; noncallable lexical shadow; bare method value; free function and static method (even with a parameter named `self`) lack receiver authority; constructor cannot call instance method; actor lifecycle entry points stay reserved; undeclared `handle_state` and unlowered `state {}` remain denied.
 
 Execution gates: parse, type and ownership check all tests; GraalVM guest runtime, sync and suspendable call paths; existing actor isolation and loan regressions; AOT when available. A workflow with zero executed steps is NOT test evidence. Promotion requires exact PR-head SHA/tree and nonzero executed test receipts.
