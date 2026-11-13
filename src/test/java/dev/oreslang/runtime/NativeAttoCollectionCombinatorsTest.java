@@ -23,6 +23,10 @@ final class NativeAttoCollectionCombinatorsTest {
                 CoreLibrarySources.oresCoreUnitId("ores.core/collections.atto"));
         assertEquals("@ores.core/numeric.ores",
                 CoreLibrarySources.oresCoreUnitId("ores.core/numeric"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.oresCoreUnitId("ores.core/numeric.atto"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.oresCoreUnitId("ores.core/collections.ores"));
         String code = CoreLibrarySources.oresCoreSource("ores.core/collections");
         assertTrue(code.contains("define module collections"));
         for (String kind : new String[] {"array", "vector", "list"}) {
