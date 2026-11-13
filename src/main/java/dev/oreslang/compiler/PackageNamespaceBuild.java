@@ -222,6 +222,21 @@ public final class PackageNamespaceBuild {
                 packageIdentity, source.parsed(), audit);
     }
 
+    /**
+     * Bounded source-typed critical state MIR, NOT executable guest code.
+     *
+     * Both source parsing and the actor/loan witness originate from exactly
+     * one canonical manifest snapshot. Public build() and TypeChecker remain
+     * fail-closed until a runtime owner/context verifier lowers this IR.
+     * Never take this result as a token authorizing a mailbox or state loan.
+     */
+    public synchronized ActorCriticalStateMirV1.Plan lowerCriticalStateMirV1()
+            throws IOException {
+        SourceSnapshot source = snapshot();
+        ActorAudit audit = auditSnapshot(source);
+        return ActorCriticalStateMirV1.lower(packageIdentity, source.parsed(), audit);
+    }
+
     public synchronized Result build() throws IOException {
         SourceSnapshot source = snapshot();
         if (hasDeclaredActors(source.parsed())) {
