@@ -41,9 +41,9 @@ authority is added here.
 ## Exact-head execution gate
 
 `.github/workflows/atto-telemetry-using-exact-head.yml` runs on GraalVM
-JDK 25 and requires at least **39 executed cases**:
+JDK 25 and requires at least **40 executed cases**:
 
-- 25 `UsingTelemetrySpanScopeTest` methods (compiler + real `.atto` guest
+- 26 `UsingTelemetrySpanScopeTest` methods (compiler + real `.atto` guest
   output on restricted synchronous paths, negative impersonation/escape and
   typed-observer admission tests)
 - at least one `UsingRequestBorrowScopeParserTest` transport-loan regression
@@ -53,7 +53,7 @@ Surefire must contain all three named suites, with nonzero executed counts,
 zero failures, zero errors, and zero skipped cases. No synthetic fixture or
 source-only assertion can substitute for that receipt.
 
-**The 39-case Java gate is NOT EXECUTED.** The preceding Java source workflow
+**The 40-case Java gate is NOT EXECUTED.** The preceding Java source workflow
 [run #43334977144](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/43334977144)
 failed with **zero job steps**, before compiler or test execution. A newer
 source-head run (if it appears) is not a pass until its job steps and receipts
@@ -66,6 +66,8 @@ are checked. No private Java source has been transferred to a new runner.
   round-trip/source span fidelity remains unproven.
 - The current direct-observer subset is deliberately narrow; nested observers
   and transitive effect calls require identity-bound MIR/ownership proofs.
+  Until those effect summaries exist, arbitrary user call expressions inside
+  the scoped body fail closed during type checking.
   Observer calls are *counted*, not yet exported as trace metadata.
 - `await`, `yield`, `select`, source tasks, generator/async/suspends
   callables, and actor-scoped execution remain blocked until continuation-owned
