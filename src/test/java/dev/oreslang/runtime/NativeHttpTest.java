@@ -578,7 +578,7 @@ class NativeHttpTest {
         String text = output.toString(StandardCharsets.UTF_8);
         assertTrue(firstDrain.isDone(), "A never completed successful physical drain: " + text);
         assertTrue(text.contains("other-listener-still-served"), text);
-        assertTrue(text.endsWith("2\\n1\\n"),
+        assertTrue(text.endsWith("2\n1\n"),
                 "each listener must own a distinct actor; B must reuse only B's worker: " + text);
     }
 
