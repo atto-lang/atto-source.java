@@ -42,7 +42,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
-            "Symbol", "Array", "List", "Vector", "Slice",
+            "Symbol", "Bytes", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
@@ -6064,6 +6064,16 @@ public final class TypeChecker {
 
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
+        // Bytes methods are synchronous: never mis-type them as Future<T>.
+        if (named.name().equals("Bytes")) {
+            return switch (name) {
+                case "size" -> new Function(List.of(), Primitive.INT);
+                case "byte_at" -> new Function(List.of(Primitive.INT), Primitive.INT);
+                case "take" -> new Function(List.of(), new Named("Bytes", List.of()));
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> throw new IllegalArgumentException("unknown Bytes member " + name);
+            };
+        }
         if (named.name().equals("env")) {
             switch (name) {
                 case "get": return new Function(List.of(Primitive.STRING),
@@ -6108,8 +6118,58 @@ public final class TypeChecker {
                 }
             }
             case "network", "net" -> {
-                if (!name.equals("connect") && !name.equals("connect_blocking")) return null;
-                result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
+                switch (name) {
+                    case "listen_async" -> {
+                        result = new Named("NioListener", List.of());
+                        parameters = List.of(Primitive.STRING, Primitive.INT);
+                    }
+                    case "connect", "connect_blocking" -> {
+                        result = new Named("TcpConnection", List.of());
+                        parameters = List.of(Primitive.STRING, Primitive.INT);
+                    }
+                    default -> { return null; }
+                }
+            }
+            case "NioListener" -> {
+                switch (name) {
+                    case "accept_async" -> {
+                        result = new Named("NioConnection", List.of()); parameters = List.of();
+                    }
+                    case "local_port_async" -> {
+                        result = Primitive.INT; parameters = List.of();
+                    }
+                    case "close_async" -> {
+                        result = Primitive.VOID; parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown NioListener member " + name);
+                }
+            }
+            case "NioConnection" -> {
+                switch (name) {
+                    case "read_bytes_async" -> {
+                        result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
+                    }
+                    case "read_owned_bytes_async" -> {
+                        result = new Named("Bytes", List.of()); parameters = List.of(Primitive.INT);
+                    }
+                    case "write_owned_bytes_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new Named("Bytes", List.of()));
+                    }
+                    case "read_resp2_hex_async" -> {
+                        result = new ListType(Primitive.STRING); parameters = List.of();
+                    }
+                    case "write_resp2_hex_async" -> {
+                        result = Primitive.VOID;
+                        parameters = List.of(Primitive.STRING, Primitive.STRING);
+                    }
+                    case "write_bytes_async" -> {
+                        result = Primitive.VOID; parameters = List.of(new ListType(Primitive.INT));
+                    }
+                    case "close_async" -> {
+                        result = Primitive.VOID; parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown NioConnection member " + name);
+                }
             }
             case "TcpConnection" -> {
                 switch (name) {
@@ -10323,6 +10383,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Bytes" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Bytes is a non-generic linear value type");
+                }
+                yield new Named("Bytes", List.of());
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");

@@ -8067,6 +8067,31 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof dev.oreslang.runtime.OresBytes bytes) {
+                return switch (name) {
+                    case "size" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.size");
+                        return bytes.size();
+                    };
+                    case "byte_at" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.byte_at");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
+                            throw new IllegalArgumentException("Bytes.byte_at needs an integer offset");
+                        }
+                        return bytes.byteAt(n.intValue());
+                    };
+                    case "take" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.take");
+                        return bytes.take();
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.close");
+                        bytes.close();
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException("unknown Bytes member " + name);
+                };
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -8224,6 +8249,15 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
+                    case "listen_async" -> (Invokable) args -> {
+                        requireTwo(args, "network.listen_async");
+                        String host = requireString(args.get(0), "network.listen_async host");
+                        if (!(args.get(1) instanceof Number port) || !isIntegral(port)) {
+                            throw new IllegalArgumentException("listener port must be integer");
+                        }
+                        return dev.oreslang.runtime.AsyncNioTcp.listenAsync(
+                                context, host, port.intValue());
+                    };
                     case "connect", "connect_blocking" -> (Invokable) args -> {
                         requireTwo(args, "network." + name);
                         String host = requireString(args.get(0), "host");
@@ -8233,6 +8267,70 @@ public final class OresEvalRootNode extends RootNode {
                                 "network." + name, () -> network.connect(values));
                     };
                     default -> throw new IllegalArgumentException("unknown network member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Listener listener) {
+                return switch (name) {
+                    case "accept_async" -> (Invokable) args -> {
+                        requireZero(args, "listener.accept_async");
+                        return listener.acceptAsync();
+                    };
+                    case "local_port_async" -> (Invokable) args -> {
+                        requireZero(args, "listener.local_port_async");
+                        return dev.oreslang.runtime.OresFuture.completed(listener.port());
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "listener.close_async");
+                        return listener.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown async NIO listener member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
+                return switch (name) {
+                    case "read_resp2_hex_async" -> (Invokable) args -> {
+                        requireZero(args, "socket.read_resp2_hex_async");
+                        return socket.readResp2HexAsync();
+                    };
+                    case "write_resp2_hex_async" -> (Invokable) args -> {
+                        requireTwo(args, "socket.write_resp2_hex_async");
+                        String status = requireString(args.get(0), "RESP reply kind");
+                        String payload = requireString(args.get(1), "RESP reply payload");
+                        return socket.writeResp2HexAsync(status, payload);
+                    };
+                    case "read_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.read_owned_bytes_async");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
+                            throw new IllegalArgumentException("read owned byte limit must be integer");
+                        }
+                        return socket.readOwnedBytesAsync(n.intValue());
+                    };
+                    case "write_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_owned_bytes_async");
+                        if (!(args.getFirst() instanceof dev.oreslang.runtime.OresBytes bytes)) {
+                            throw new IllegalArgumentException("write_owned_bytes_async needs Bytes");
+                        }
+                        return socket.writeOwnedBytesAsync(bytes);
+                    };
+                    case "read_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.read_bytes_async");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
+                            throw new IllegalArgumentException("read byte limit must be integer");
+                        }
+                        return socket.readBytesAsync(n.intValue());
+                    };
+                    case "write_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_bytes_async");
+                        if (!(args.getFirst() instanceof List<?> data)) {
+                            throw new IllegalArgumentException("write_bytes_async needs a byte list");
+                        }
+                        return socket.writeBytesAsync(data);
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "socket.close_async");
+                        return socket.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown async NIO socket member " + name);
                 };
             }
             if (receiver instanceof NativeIo.TcpConnection socket) {
@@ -10299,6 +10397,7 @@ public final class OresEvalRootNode extends RootNode {
                     || name.equals("decimal")) return value instanceof Float || value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
+            if (name.equals("Bytes")) return value instanceof dev.oreslang.runtime.OresBytes;
             if (name.equals("Symbol") && findClass("Symbol") == null)
                 return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
