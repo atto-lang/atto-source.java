@@ -60,8 +60,8 @@ collector/exporter and does not claim disabled fast-path allocation bounds.
 
 1. **Run** `mvn -B -ntp -DfailIfNoTests=true -Dtest=UsingTelemetrySpanScopeTest,UsingRequestBorrowScopeParserTest clean test`
    with GraalVM/JDK25 against the exact branch HEAD. The guarded workflow now
-   requires at least 33 executed cases (22 scoped tests, the borrow regression,
-   and 10 native continuation-lifecycle tests),
+   requires at least 34 executed cases (22 scoped tests, the borrow regression,
+   and 11 native continuation-lifecycle tests),
    zero skipped/failing/error cases and both Surefire suite receipts.
    Source Actions still fail with **zero job steps** (most recently workflow
    `atto-telemetry-using-exact-head` run `43329579902` at Java head
@@ -136,7 +136,7 @@ than a Java thread. The trusted host API provides:
 - strict UTF-8 operation validation (1..256 bytes, no unpaired surrogates)
 - host-only off/on/off/on recording toggle; no implicit network egress
 
-The new `NativeTelemetryScopesTest` defines **10 host Java JUnit tests**
+The new `NativeTelemetryScopesTest` defines **11 host Java JUnit tests**
 for lifecycle, limits, cancellation-style retirement, cross-carrier rejection,
 worker-thread migration, and toggle accounting. **These tests are currently
 UNEXECUTED in source CI**; they are not actual .atto guest/scheduler tests.
@@ -159,5 +159,5 @@ before any live tracing deployment.
 4. Install authorized host-only probe controller and Truffle tags; do not
    equate the standalone toggle unit test with same-process Atto JIT attach.
 5. Obtain exact-head GraalVM execution on an independently approved carrier,
-   with all **33 required non-skipped JUnit cases**. Keep draft until this
+   with all **34 required non-skipped JUnit cases**. Keep draft until this
    gate and runtime provenance review pass.
