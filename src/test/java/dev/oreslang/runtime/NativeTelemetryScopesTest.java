@@ -233,6 +233,21 @@ final class NativeTelemetryScopesTest {
     }
 
     @Test
+    void oversizedObserverMetadataIsDroppedWithoutGuestFailure() {
+        NativeTelemetryScopes runtime = new NativeTelemetryScopes();
+        NativeTelemetryScopes.Carrier carrier = runtime.createCarrierForTrustedRuntime();
+        runtime.setEnabledFromTrustedHost(true);
+        NativeTelemetryScopes.SpanToken span =
+                runtime.beginFromTrustedRuntime(carrier, "checkout");
+        runtime.observeFromTrustedRuntime(carrier, span,
+                "add_event", List.of("x".repeat(1025)));
+        runtime.endFromTrustedRuntime(carrier, span);
+        assertEquals(0, runtime.snapshotForTrustedHost().observerCalls());
+        assertEquals(1, runtime.snapshotForTrustedHost().dropped());
+        assertEquals(1, runtime.snapshotForTrustedHost().ended());
+    }
+
+    @Test
     void fullObserverBudgetDropsEventsWithoutChangingApplicationResults() {
         NativeTelemetryScopes runtime = new NativeTelemetryScopes();
         NativeTelemetryScopes.Carrier carrier = runtime.createCarrierForTrustedRuntime();
