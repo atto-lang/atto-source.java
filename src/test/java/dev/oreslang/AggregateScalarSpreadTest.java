@@ -45,6 +45,50 @@ final class AggregateScalarSpreadTest {
     }
 
     @Test
+    void suspendableFieldEvaluationSnapshotsPriorSpreads() throws Exception {
+        String source = """
+                async fnc answer(): int { return 7; }
+
+                pub async fnc main(): void {
+                  val source = infer struct{age: 37, name: "Ada"};
+                  const snapshot = record{
+                    ...source,
+                    answer: await answer(),
+                    mutation_result: (source.age = 99)
+                  };
+                  stdio.println(snapshot.age);
+                  stdio.println(source.age);
+                  stdio.println(snapshot.answer);
+                  stdio.println(snapshot.mutation_result);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = Source.newBuilder(OresLanguage.ID, source, "spread-across-await.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(program);
+        }
+        assertEquals("37\\n99\\n7\\n99\\n",
+                output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n"));
+    }
+
+    @Test
+    void supportsCrossCategoryScalarProjectionWithoutImplicitTypeErasure() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                fnc accepted(): int {
+                  const initial = record{age: 37};
+                  const as_struct = infer struct{...initial, active: true};
+                  const as_record = record{...as_struct, age: 40};
+                  return as_record.age;
+                }
+                """));
+    }
+
+    @Test
     void rejectsDynamicMapsAndNonCopyableFields() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 fnc invalid(): void {
