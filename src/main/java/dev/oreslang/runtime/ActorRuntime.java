@@ -1087,11 +1087,12 @@ public final class ActorRuntime implements AutoCloseable {
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
 
     /**
-     * Logical actor-confined memory slice for one private actor.
+     * Logical actor-confined memory slice for one private actor or for sealed
+     * state owned by a compiler-backed SHARED declared actor.
      *
      * This is independent of carrier threads. Mailbox payloads and persistent
      * actor-state allocations share one budget. The current JVM backend uses
-     * accounting plus alias isolation; a native/polyglot-isolate backend can map
+     * owner-checked direct memory and alias isolation; native backends can map
      * this same contract to a physically separate heap/arena.
      */
     public final class ActorMemorySlice implements AutoCloseable {
