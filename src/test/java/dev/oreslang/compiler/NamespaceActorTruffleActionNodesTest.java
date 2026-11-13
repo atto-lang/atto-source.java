@@ -31,7 +31,8 @@ final class NamespaceActorTruffleActionNodesTest {
     private static RootCallTarget lower(String text, String unit) {
         RootCallTarget target = NamespaceActorUnleasedSpawnV0.tryCreate(
                 new OresLanguage(), unit, text);
-        return assertNotNull(target, "declared actor must be admitted only after exact AST proof");
+        assertNotNull(target, "declared actor must be admitted only after exact AST proof");
+        return target;
     }
 
     private static List<Node> children(RootCallTarget target) {
