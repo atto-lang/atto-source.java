@@ -379,6 +379,10 @@ public final class ActorReceiverBinder {
                                     + "' conflicts with an in-class actor method");
                 }
             }
+            if (method.runtimeOnly() && !(target instanceof Ast.DeclaredActorDecl)) {
+                throw new IllegalArgumentException(
+                        "private external init/receive requires a declaration-only nominal actor");
+            }
             validateHookShape(method);
             Slot key = new Slot(
                     module.name(), method.actorName(), method.name(),
@@ -402,13 +406,16 @@ public final class ActorReceiverBinder {
 
     private static void validateHookShape(Ast.ExternalActorMethodDecl method) {
         String name = method.name();
-        // init is a privileged, one-shot actor bootstrap operation. An external
-        // attachment cannot manufacture a pre-publication state permit, nor
-        // return a raw actor identity through an ordinary callable slot.
+        // The explicit `external mtd` marker is a static ingress *identity*,
+        // never the capability to enter an actor's private runtime turn.
+        // Ordinary out-of-line "init"/"receive" declarations cannot spoof it.
         if (name.equals("init")) {
-            throw new IllegalArgumentException(
-                    "external actor init is reserved for one-shot actor-owned initialization; "
-                            + "namespace receiver methods cannot implement init");
+            if (!method.runtimeOnly() || method.visibility() != Ast.Visibility.PRIVATE
+                    || !method.parameters().isEmpty() || !isVoid(method.returnType())) {
+                throw new IllegalArgumentException(
+                        "private external init must be zero-argument, void and runtime-only");
+            }
+            return;
         }
         if (Set.of("on_panic", "on_throw", "on_throws", "on_raise",
                 "on_recover", "handle_state", "on_stop", "on_restart").contains(name)) {
@@ -417,10 +424,9 @@ public final class ActorReceiverBinder {
                             + "' cannot implement a compiler-owned or unverified CONTROL hook");
         }
         if (name.equals("receive")) {
-            // Same private ActorMail<T> -> void ABI as the existing actor-local
-            // receive hook; never authorize public or arbitrary typed-message
-            // overloads through a static nominal binding.
-            if (method.visibility() != Ast.Visibility.PRIVATE
+            // Only explicitly marked runtime ingress may name this slot.
+            // This is metadata, never compiler-generated authorization.
+            if (!method.runtimeOnly() || method.visibility() != Ast.Visibility.PRIVATE
                     || method.parameters().size() != 1
                     || !method.parameters().getFirst().type().name().equals("ActorMail")
                     || method.parameters().getFirst().type().arguments().size() != 1
