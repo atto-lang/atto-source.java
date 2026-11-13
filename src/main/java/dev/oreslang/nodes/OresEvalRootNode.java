@@ -8863,13 +8863,37 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (receiver instanceof OresKeyedMap<?, ?> guestMap) {
-                // The minimal scalar-domain map surface is compiler owned.
-                // No host reflection, mutable Java Map view, or unverified
-                // put/get/transport operation is exposed by this path.
-                if (name.equals("size")) return (long) guestMap.size();
-                throw new IllegalArgumentException(
-                        "guest Map member '" + name
-                                + "' is not admitted before typed ownership lowering");
+                // Explicit scalar Map operations only: this never exports a
+                // host Map, iterator, transport lease or mutable backing view.
+                return switch (name) {
+                    case "size" -> (long) guestMap.size();
+                    case "set" -> (Invokable) args -> {
+                        if (args.size() != 2) {
+                            throw new IllegalArgumentException(
+                                    "Map.set expects exactly 2 arguments");
+                        }
+                        @SuppressWarnings("unchecked")
+                        OresKeyedMap<Object, Object> typed =
+                                (OresKeyedMap<Object, Object>) guestMap;
+                        // Runtime checks key/value domain, quota, and nested
+                        // mutation before changing the canonical map.
+                        typed.put(args.get(0), args.get(1));
+                        return null;
+                    };
+                    case "delete" -> (Invokable) args -> {
+                        requireOne(args, "Map.delete");
+                        return guestMap.take(args.getFirst()).present();
+                    };
+                    case "get_optional" -> (Invokable) args -> {
+                        requireOne(args, "Map.get_optional");
+                        // Atomic lookup: no contains/get interleaving on shared maps.
+                        OresKeyedMap.Lookup<?> found = guestMap.lookup(args.getFirst());
+                        return new OptionValue(found.present(), found.value());
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "guest Map member '" + name
+                                    + "' is not admitted before typed ownership lowering");
+                };
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown struct/map member " + name);
