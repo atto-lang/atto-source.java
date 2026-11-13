@@ -173,6 +173,23 @@ public final class OresEvalRootNode extends RootNode {
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+        // Static AST analyses are pure functions of the immutable AST and this
+        // evaluator's load-time declaration tables, yet they were recomputed on
+        // every statement execution (about 20% of a Redis-style workload's CPU).
+        // Memoize the top-level results per node IDENTITY (records hash
+        // structurally, which would be slow and conflate equal subtrees).
+        private record NodeId(Object node) {
+            @Override public boolean equals(Object other) {
+                return other instanceof NodeId that && that.node == node;
+            }
+            @Override public int hashCode() { return System.identityHashCode(node); }
+        }
+        private final java.util.concurrent.ConcurrentHashMap<NodeId, Boolean> inlineStatementCache =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        private final java.util.concurrent.ConcurrentHashMap<NodeId, Boolean> expressionSuspensionCache =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        private final java.util.concurrent.ConcurrentHashMap<NodeId, Boolean> callableSuspensionCache =
+                new java.util.concurrent.ConcurrentHashMap<>();
         private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> declarationModules =
                 new IdentityHashMap<>();
@@ -1906,10 +1923,41 @@ public final class OresEvalRootNode extends RootNode {
         private boolean functionContainsPotentialSuspension(
                 Ast.FunctionDecl function) {
             if (function.suspends()) return true;
-            return functionContainsPotentialSuspension(
+            NodeId key = new NodeId(function);
+            Boolean cached = callableSuspensionCache.get(key);
+            if (cached != null) return cached;
+            boolean result = functionContainsPotentialSuspension(
                     function,
                     java.util.Collections.newSetFromMap(
                             new IdentityHashMap<>()));
+            callableSuspensionCache.put(key, result);
+            return result;
+        }
+
+        /** Cached: may this statement run on the synchronous fast path? */
+        private boolean statementRunsInline(Ast.Stmt stmt) {
+            NodeId key = new NodeId(stmt);
+            Boolean cached = inlineStatementCache.get(key);
+            if (cached != null) return cached;
+            boolean inline = !(stmt instanceof Ast.ReturnStmt)
+                    && !containsSourceLoop(stmt)
+                    && !statementContainsPotentialSuspension(
+                            stmt,
+                            java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+            inlineStatementCache.put(key, inline);
+            return inline;
+        }
+
+        /** Cached top-level expression suspension analysis. */
+        private boolean expressionMaySuspend(Ast.Expr expr) {
+            NodeId key = new NodeId(expr);
+            Boolean cached = expressionSuspensionCache.get(key);
+            if (cached != null) return cached;
+            boolean result = expressionContainsPotentialSuspension(
+                    expr,
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+            expressionSuspensionCache.put(key, result);
+            return result;
         }
 
         private boolean functionContainsPotentialSuspension(
@@ -2284,12 +2332,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.Stmt stmt = statements.get(index);
             // Source tasks must carry returns as SourceFlow, not as a tail-call
             // signal, including when a discarded do-select value is a call.
-            if (!(stmt instanceof Ast.ReturnStmt)
-                    && !containsSourceLoop(stmt)
-                    && !statementContainsPotentialSuspension(
-                    stmt,
-                    java.util.Collections.newSetFromMap(
-                            new IdentityHashMap<>()))) {
+            if (statementRunsInline(stmt)) {
                 try {
                     executeStatement(stmt, env, defers, false);
                 } catch (ReturnSignal returned) {
@@ -3965,9 +4008,7 @@ public final class OresEvalRootNode extends RootNode {
             // Deliver the non-suspending hot path outside the evaluation catch.
             boolean canSuspend;
             try {
-                canSuspend = expressionContainsPotentialSuspension(
-                        expr,
-                        java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+                canSuspend = expressionMaySuspend(expr);
             } catch (RuntimeException | Error failure) {
                 downstream.accept(task, null, failure);
                 return;
@@ -6215,6 +6256,15 @@ public final class OresEvalRootNode extends RootNode {
         private boolean methodContainsPotentialSuspension(
                 Ast.MethodDecl method) {
             if (method.suspends()) return true;
+            NodeId key = new NodeId(method);
+            Boolean cached = callableSuspensionCache.get(key);
+            if (cached != null) return cached;
+            boolean result = methodBodyMaySuspend(method);
+            callableSuspensionCache.put(key, result);
+            return result;
+        }
+
+        private boolean methodBodyMaySuspend(Ast.MethodDecl method) {
             for (Ast.Stmt stmt : method.body()) {
                 if (statementContainsPotentialSuspension(
                         stmt,
