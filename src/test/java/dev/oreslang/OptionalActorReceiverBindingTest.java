@@ -178,6 +178,26 @@ final class OptionalActorReceiverBindingTest {
     }
 
     @Test
+    void programmaticActorReceiversMustMatchLexerIdentifierBoundaries() {
+        for (String forged : new String[]{
+                "other.member", "other/name", "two tokens", "$compiler",
+                "#symbol", "9worker", "a-b", "a::b"}) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new Ast.ExternalActorMethodDecl(
+                            "Worker", forged, "method", Ast.Visibility.PRIVATE,
+                            List.of(), Ast.TypeRef.simple("void"), List.of()),
+                    forged);
+            assertTrue(error.getMessage().contains("source identifier"), forged);
+        }
+        Ast.ExternalActorMethodDecl unicode =
+                new Ast.ExternalActorMethodDecl(
+                        "Worker", "wörker_2", "method", Ast.Visibility.PRIVATE,
+                        List.of(), Ast.TypeRef.simple("void"), List.of());
+        assertEquals("wörker_2", unicode.receiverName());
+    }
+
+    @Test
     void declaredActorContractHeaderAcceptsAnonymousReceiverMethodsAtParseTime() {
         Ast.Program program = Parser.parse(NS + """
                 declare actor Worker implements Actor;
