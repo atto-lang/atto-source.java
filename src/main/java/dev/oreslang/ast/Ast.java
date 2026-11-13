@@ -188,7 +188,16 @@ public final class Ast {
     public record ExternalActorMethodDecl(
             String actorName, String receiverName, String name,
             Visibility visibility, List<Param> parameters,
-            TypeRef returnType, List<Stmt> body) implements Decl {
+            TypeRef returnType, List<Stmt> body, boolean runtimeOnly) implements Decl {
+        // Existing out-of-line mtd declarations retain metadata-only semantics.
+        // Only a separately checked explicit `external mtd` can carry the
+        // private lifecycle-ingress bit; this is NOT execution authority.
+        public ExternalActorMethodDecl(String actorName, String receiverName,
+                String name, Visibility visibility, List<Param> parameters,
+                TypeRef returnType, List<Stmt> body) {
+            this(actorName, receiverName, name, visibility, parameters, returnType, body, false);
+        }
+
         public ExternalActorMethodDecl {
             if (actorName == null || actorName.isBlank()
                     || receiverName == null || receiverName.isBlank()
