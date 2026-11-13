@@ -594,7 +594,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env initializerEnv =
                         new Env(null, false, fieldOwner, object);
                 initializerEnv.define("self", object, Ast.BindingKind.VAL, fieldOwner);
-                fields.put(
+                object.fields.put(
                         field.name(),
                         eval(field.initializer(), initializerEnv));
             }
@@ -611,7 +611,9 @@ public final class OresEvalRootNode extends RootNode {
                 executeActorStartup(object, startup);
             }
 
-            for (Map.Entry<String, Object> field : fields.entrySet()) {
+            // Startup state-loan commit may replace the constructor map:
+            // validate the published snapshot, not a stale local reference.
+            for (Map.Entry<String, Object> field : object.fields.entrySet()) {
                 if (field.getValue() == UNINITIALIZED_FIELD) {
                     throw new IllegalStateException(
                             "actor '" + klass.name()
