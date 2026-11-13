@@ -67,7 +67,8 @@ final class TypedEmptyMapGuestTest {
         IllegalArgumentException missing = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse(fixture("empty-map-untyped.atto")));
-        assertTrue(missing.getMessage().contains("directly declared Map<K,V>"),
+        assertTrue(missing.getMessage().contains("directly declared")
+                        && missing.getMessage().contains("Map<K,V>"),
                 missing.getMessage());
         IllegalArgumentException wrongType = assertThrows(
                 IllegalArgumentException.class,
@@ -92,6 +93,18 @@ final class TypedEmptyMapGuestTest {
             assertTrue(failure.getMessage().contains("unverified key/value domain"),
                     file + ": " + failure.getMessage());
         }
+    }
+
+    @Test
+    void unresolvedContextualMapPostfixCannotEvadeTypeOrOwnershipChecks() {
+        // The parser retains a scoped contextual AST inside member access,
+        // but no generated guest or host Map may escape type/ownership admission.
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        "fnc bad(): void { const value = ~map().size; return; }"));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(
+                        "fnc bad(): void { const value = ~map().missing; return; }"));
     }
 
     @Test
