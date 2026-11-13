@@ -71,6 +71,26 @@ final class ActorCriticalStateSyntaxV2Test {
     }
 
     @Test
+    void ordinaryTypeCheckerRejectsSnapshotsInBindingsAndNestedCallArguments() {
+        for (String expression : new String[] {
+                "val int value = self.handle_state(critical-read |s| -> s.total);",
+                "stdio.println(self.handle_state(critical-read |s| -> s.total));"
+        }) {
+            String source = NS + """
+                    pub fnc illegal_snapshot(): void {
+                      %s
+                      return;
+                    }
+                    """.formatted(expression);
+            var parsed = Parser.parse(source);
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(parsed), expression);
+            assertTrue(denied.getMessage().contains("ACTOR_CRITICAL_STATE_MIR_UNSUPPORTED"),
+                    denied.getMessage());
+        }
+    }
+
+    @Test
     void detachedScalarReadIsDistinctAstAndCannotEmbedEffects() {
         var method = method(NS + """
                 external mtd (Counter c) receive(ActorMail<int> mail): void {
