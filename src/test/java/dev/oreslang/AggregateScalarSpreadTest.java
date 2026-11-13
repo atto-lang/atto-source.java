@@ -89,6 +89,22 @@ final class AggregateScalarSpreadTest {
     }
 
     @Test
+    void rejectsSpreadFromStructurallyNarrowedRecordView() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                    type Thin = {name: string};
+                    fnc invalid(): void {
+                      const Thin hidden = record{name: "Ada", private_note: "secret"};
+                      const leaked = record{...hidden};
+                      return;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("proven exact source shape"),
+                failure.getMessage());
+    }
+
+    @Test
     void rejectsDynamicMapsAndNonCopyableFields() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 fnc invalid(): void {
