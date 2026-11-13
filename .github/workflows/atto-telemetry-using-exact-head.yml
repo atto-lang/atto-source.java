@@ -8,6 +8,8 @@ on:
       - 'src/main/java/dev/oreslang/ast/Ast.java'
       - 'src/test/java/dev/oreslang/UsingTelemetrySpanScopeTest.java'
       - 'src/test/java/dev/oreslang/UsingRequestBorrowScopeParserTest.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeTelemetryScopes.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeTelemetryScopesTest.java'
       - '.github/workflows/atto-telemetry-using-exact-head.yml'
   workflow_dispatch:
 
@@ -48,7 +50,7 @@ jobs:
           java -version
           mvn -B -ntp \
             -DfailIfNoTests=true \
-            -Dtest=UsingTelemetrySpanScopeTest,UsingRequestBorrowScopeParserTest \
+            -Dtest=UsingTelemetrySpanScopeTest,UsingRequestBorrowScopeParserTest,NativeTelemetryScopesTest \
             clean test
       - name: Verify strict nonzero real Surefire case counts and no skips
         shell: bash
@@ -60,6 +62,7 @@ jobs:
           required = (
               'dev.oreslang.UsingTelemetrySpanScopeTest',
               'dev.oreslang.UsingRequestBorrowScopeParserTest',
+              'dev.oreslang.runtime.NativeTelemetryScopesTest',
           )
           root = Path('target/surefire-reports')
           assert root.is_dir(), 'Surefire reports unavailable'
@@ -78,7 +81,7 @@ jobs:
               )
               print(f'ATTO_USING_JAVA_VERIFIED_SUITE={suite} executed={count}')
               total += count
-          assert total >= 23, f'Expected at least twenty-two span tests and borrow regression: {total}'
+          assert total >= 33, f'Expected 22 scope cases, borrow regression and 10 native lifecycle cases: {total}'
           print(f'ATTO_USING_JAVA_GUEST_JUNIT_PASS={total}')
           PY
       - name: Preserve exact-head guest proof reports
