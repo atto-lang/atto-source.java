@@ -2761,13 +2761,26 @@ public final class Parser {
         return expr;
     }
 
+    /**
+     * An inline spawn-rooted chain can use '|' as the actor-graph spelling.
+     * Preserve ordinary integer '|' and pipe-lambda delimiters; never infer
+     * graph authority for arbitrary identifier operands at parse time.
+     */
+    private static boolean isSpawnRootedActorPipe(Ast.Expr expr) {
+        if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            return runtime.operation().equals("spawn");
+        }
+        return expr instanceof Ast.BinaryExpr binary && binary.operator().equals("pipe");
+    }
+
     private Ast.Expr parseBitwiseOr() {
         Ast.Expr expr = parseBitwiseXor();
         while (true) {
             if (matchContextualIdentifier("pipe")) {
                 expr = new Ast.BinaryExpr("pipe", expr, parseBitwiseXor());
             } else if (!isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
-                expr = new Ast.BinaryExpr("|", expr, parseBitwiseXor());
+                Ast.Expr right = parseBitwiseXor();
+                expr = new Ast.BinaryExpr(isSpawnRootedActorPipe(expr) ? "pipe" : "|", expr, right);
             } else break;
         }
         return expr;

@@ -59,6 +59,40 @@ final class ActorStreamPipeExecutionTest {
         assertEquals("PIPE_15_RESULT_32", execute(source.replace(from,to)));
     }
 
+    private static String symbolicFifteenActorSource() throws Exception {
+        String source = program();
+        int start = source.indexOf("    return ActorUtils::pipe(");
+        int end = source.indexOf("\n}", start);
+        if (start < 0 || end < 0) throw new IllegalStateException("fixture factory changed");
+        java.util.ArrayList<String> stages = new java.util.ArrayList<>();
+        stages.add("spawn Source()");
+        for (int i = 0; i < 13; i++) stages.add("spawn Transform()");
+        stages.add("spawn Sink()");
+        return source.substring(0, start)
+                + "    return " + String.join(" | ", stages) + ";"
+                + source.substring(end);
+    }
+
+    @Test void fifteenActorsCompileAndRoundTripWithSymbolicActorPipe() throws Exception {
+        assertEquals("PIPE_15_RESULT_32", execute(symbolicFifteenActorSource()));
+    }
+
+    @Test void symbolicPipeRejectsNonActorStageBeforeAnyGuestIngress() throws Exception {
+        String invalid = symbolicFifteenActorSource().replace(" | spawn Sink();", " | 123;");
+        assertNotEquals(symbolicFifteenActorSource(), invalid);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+    }
+
+    @Test void integerBitwiseOrStaysIntegerBitwiseOr() throws Exception {
+        assertEquals("7", execute("""
+                pub async routine main(): void {
+                    stdio.stdout.write(5 | 2);
+                    return;
+                }
+                """));
+    }
+
     @Test void staticResolutionDelimiterWorksForOrdinaryClassStaticFunctions() throws Exception {
         assertEquals("42", execute("""
                 define class Utility as

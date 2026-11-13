@@ -46,3 +46,17 @@ as sufficient evidence. Cancelling an observation cannot cancel the actors.
 The pipeline remains a single-flow construct: only one root DATA ingress
 may complete. Replaying a root message or sending directly to a middle
 actor is not equivalent to `ActorStream.send`.
+
+## Symbolic `|` actor route (stacked experimental change)
+
+A direct `spawn A() | spawn B() | spawn C()` chain is parsed into the **same**
+`pipe` actor-graph AST as `spawn A() pipe spawn B() pipe spawn C()`.
+This is a narrowly scoped syntax alias for *spawn-rooted* chains only;
+`ActorRef` identifiers separated by `|` are not admitted as actor routes yet.
+Ordinary integer bitwise `|`, lambda delimiters, and `|>` value piping retain
+their existing behavior. An actor chain with a scalar stage is rejected by
+type checking before graph ingress. The JUnit guest execution regression
+reuses the same 15-actor forward/backward fixture and expected 32 receipt for
+both spellings. Tests are **authored, not yet executed on this new head**;
+source-guest parity with `emit`, bounded one-way actor pipelines and other
+backends remains separate work. Do not treat the playground preview as proof.
