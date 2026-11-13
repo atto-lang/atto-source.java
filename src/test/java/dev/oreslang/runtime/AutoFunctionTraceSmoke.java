@@ -94,6 +94,16 @@ public final class AutoFunctionTraceSmoke {
         var errScope = full.begin(3, root.context());
         full.finish(errScope, false, true);
         check(full.counts().completed() == 1, "error completion");
+        var bounded = tracing("--instrument=calls", "--ores-trace-calls=true");
+        for (int i = 0; i < 1025; i++) {
+            var s = bounded.begin(11, null);
+            bounded.finish(s, false, false);
+        }
+        check(bounded.counts().completed() == 1025, "all logical spans finish");
+        check(bounded.counts().dropped() == 1, "saturated queue counts one dropped receipt");
+        int drained = 0;
+        while (bounded.pollReceipt() != null) drained++;
+        check(drained == 1024, "bounded receipts never exceed 1024");
         System.out.println("AUTO_FUNCTION_TRACE_PASS assertions=" + assertions);
     }
 }
