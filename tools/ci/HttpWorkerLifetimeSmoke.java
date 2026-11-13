@@ -135,12 +135,56 @@ public final class HttpWorkerLifetimeSmoke {
                 "closing A destroyed B's live worker");
     }
 
+    private static final class OwnedWorker {
+        final Object owner;
+        OwnedWorker(Object owner) { this.owner = owner; }
+    }
+
+    private static void concurrentListenerIsolation() throws Exception {
+        final int listeners = 32;
+        final int rotations = 128;
+        var slots = new HttpPooledWorkerListenerSlots<Object, OwnedWorker>(3);
+        var ready = new CountDownLatch(listeners);
+        var go = new CountDownLatch(1);
+        try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            var workers = new ArrayList<Future<?>>();
+            for (int i = 0; i < listeners; i++) {
+                final Object owner = new Object();
+                workers.add(threads.submit(() -> {
+                    ready.countDown();
+                    if (!go.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("listener stress start deadline");
+                    }
+                    for (int turn = 0; turn < rotations; turn++) {
+                        // Match the atomic next + replace operation performed
+                        // under the production Handler monitor.
+                        synchronized (slots) {
+                            var selected = slots.next(owner);
+                            if (selected.previous() != null
+                                    && selected.previous().owner != owner) {
+                                throw new AssertionError("worker crossed listener boundary");
+                            }
+                            slots.replace(owner, selected, new OwnedWorker(owner));
+                        }
+                    }
+                    return null;
+                }));
+            }
+            require(ready.await(5, TimeUnit.SECONDS), "not all listeners started");
+            go.countDown();
+            for (Future<?> worker : workers) worker.get(10, TimeUnit.SECONDS);
+            require(slots.listenerCount() == listeners,
+                    "parallel worker rotations merged listener identities");
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         for (int round = 0; round < 100; round++) {
             admissionFence();
             historicalGenerations();
             concurrentGenerationStop();
             isolatedListenerSlots();
+            concurrentListenerIsolation();
         }
         System.out.printf(
                 "PASS: %,d assertions; 100 concurrent rounds x 96 virtual-thread producers (JDK %s)%n",
