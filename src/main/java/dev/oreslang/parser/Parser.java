@@ -5318,6 +5318,13 @@ public final class Parser {
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
+        if (check(SELF) && current + 3 < tokens.size()
+                && tokens.get(current + 1).type() == DOT
+                && tokens.get(current + 2).type() == IDENT
+                && tokens.get(current + 2).lexeme().equals("handle_state")
+                && tokens.get(current + 3).type() == LPAREN) {
+            return parseActorStateSnapshotExpr();
+        }
         if (match(SELF)) return new Ast.NameExpr("self");
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
@@ -5927,6 +5934,42 @@ public final class Parser {
      * Never accept the spelling as a runtime-lookup call or an expression
      * whose borrowed state view can be returned/stored.
      */
+    /**
+     * Closed V1 value form: critical-read copies exactly one named scalar
+     * field and closes its lexical loan before the surrounding expression
+     * can publish to another actor. Full type/effect verification belongs to
+     * the manifest-derived critical-state MIR, not this parser.
+     */
+    private Ast.ActorStateSnapshotExpr parseActorStateSnapshotExpr() {
+        consume(SELF, "critical-read snapshot requires actor-local self");
+        consume(DOT, "critical-read snapshot requires self.handle_state");
+        consumeContextualIdentifier("handle_state",
+                "critical-read snapshot requires compiler-owned handle_state");
+        consume(LPAREN, "critical-read snapshot requires '('");
+        if (!isAdjacentCompoundKeyword("critical", "read")) {
+            throw error(peek(), "value-producing handle_state requires adjacent critical-read");
+        }
+        advance();
+        consume(MINUS, "critical-read snapshot requires adjacent '-'");
+        consumeContextualIdentifier("read", "critical-read snapshot requires read mode");
+        consume(PIPE, "critical-read snapshot requires '|view|'");
+        String view = consume(IDENT, "critical-read snapshot requires a named view").lexeme();
+        consume(PIPE, "critical-read snapshot requires closing '|'");
+        consume(ARROW, "critical-read snapshot requires '->'");
+        String receiver = consume(IDENT, "critical-read snapshot requires view.field").lexeme();
+        if (!receiver.equals(view)) {
+            throw error(previous(), "critical-read snapshot must select its own lexical view");
+        }
+        consume(DOT, "critical-read snapshot requires view.field");
+        String field = consume(IDENT, "critical-read snapshot requires a field name").lexeme();
+        consume(RPAREN, "critical-read snapshot must contain one field access and no effects");
+        try {
+            return new Ast.ActorStateSnapshotExpr(view, field);
+        } catch (IllegalArgumentException invalid) {
+            throw error(previous(), invalid.getMessage());
+        }
+    }
+
     private Ast.ActorStateAccessStmt parseActorStateAccessStatement() {
         consume(SELF, "critical state access requires actor-local self");
         consume(DOT, "critical state access requires self.handle_state");
