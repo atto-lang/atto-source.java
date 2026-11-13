@@ -6058,6 +6058,11 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof OptionUnwrapError) {
                 return value;
             }
+            // Bytes v1 is immutable and move-only: the caller binding is already
+            // consumed, so the same handle transfers without a deep copy.
+            if (value instanceof dev.oreslang.runtime.OresBytes) {
+                return value;
+            }
 
             if (visiting.put(value, Boolean.TRUE) != null) {
                 throw new IllegalArgumentException(

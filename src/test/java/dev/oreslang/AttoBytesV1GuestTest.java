@@ -77,6 +77,34 @@ final class AttoBytesV1GuestTest {
     }
 
     @Test
+    void bytesMoveIntoAsyncCallsAndCollectionSizeBindsAsScalar() throws Exception {
+        // Bytes (alone or inside a List) crosses an async call by move, and
+        // `val int n = list.size` is a scalar read, not a mutable list alias.
+        assertEquals(String.join("\n", "7", "2"), run("""
+                pub async fnc total(List<Bytes> args): int {
+                  val int count = args.size;
+                  let int sum = 0;
+                  let int i = 0;
+                  loop {
+                    if i == count then break; fi
+                    sum = sum + args.get(i).copy().size();
+                    i = i + 1;
+                  }
+                  return sum;
+                }
+                pub async fnc width(Bytes b): int { return b.size(); }
+                pub async routine main(): void {
+                  let mut List<Bytes> parts = [];
+                  parts.add(Bytes.from_string("abc"));
+                  parts.add(Bytes.from_string("defg"));
+                  stdio.println(await total(parts));
+                  stdio.println(await width(Bytes.from_list([1, 2])));
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void bytesAreMoveOnly() {
         RuntimeException moved = assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
