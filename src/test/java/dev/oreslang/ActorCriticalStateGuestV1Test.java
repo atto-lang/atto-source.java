@@ -62,7 +62,7 @@ final class ActorCriticalStateGuestV1Test {
              var runtime = new ActorRuntime()) {
             var compiled = build.compileCriticalStateActorGuestV1(images);
             var worker = runtime.spawnCodeActor(
-                    ActorRuntime.ActorKind.PRIVATE, compiled, "Counter");
+                    ActorRuntime.ActorKind.SHARED, compiled, "Counter");
             worker.getReady().get(10, TimeUnit.SECONDS);
             for (long message : new long[] { 1, 2, 3, 4 }) worker.send(message);
             assertEquals(List.of(1L, 3L, 6L, 10L), outputs(worker, 4));
@@ -82,8 +82,8 @@ final class ActorCriticalStateGuestV1Test {
         try (var images = new SharedCodeImageStore();
              var runtime = new ActorRuntime()) {
             var compiled = build.compileCriticalStateActorGuestV1(images);
-            var a = runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE, compiled, "Counter");
-            var b = runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE, compiled, "Counter");
+            var a = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, compiled, "Counter");
+            var b = runtime.spawnCodeActor(ActorRuntime.ActorKind.SHARED, compiled, "Counter");
             a.getReady().get(10, TimeUnit.SECONDS);
             b.getReady().get(10, TimeUnit.SECONDS);
             a.send(1L); a.send(2L); a.send(3L);
@@ -108,9 +108,9 @@ final class ActorCriticalStateGuestV1Test {
              var runtime = new ActorRuntime()) {
             var compiled = build.compileCriticalStateActorGuestV1(images);
             var overflowing = runtime.spawnCodeActor(
-                    ActorRuntime.ActorKind.PRIVATE, compiled, "Counter");
+                    ActorRuntime.ActorKind.SHARED, compiled, "Counter");
             var peer = runtime.spawnCodeActor(
-                    ActorRuntime.ActorKind.PRIVATE, compiled, "Counter");
+                    ActorRuntime.ActorKind.SHARED, compiled, "Counter");
             overflowing.getReady().get(10, TimeUnit.SECONDS);
             peer.getReady().get(10, TimeUnit.SECONDS);
             overflowing.send(Long.MAX_VALUE);
@@ -143,7 +143,7 @@ final class ActorCriticalStateGuestV1Test {
              var runtime = new ActorRuntime()) {
             var compiled = build.compileCriticalStateActorGuestV1(images);
             var worker = runtime.spawnCodeActor(
-                    ActorRuntime.ActorKind.PRIVATE, compiled, "Counter");
+                    ActorRuntime.ActorKind.SHARED, compiled, "Counter");
             worker.getReady().get(10, TimeUnit.SECONDS);
             worker.send(7L);
             worker.send(2L);
@@ -160,7 +160,7 @@ final class ActorCriticalStateGuestV1Test {
              var runtime = new ActorRuntime()) {
             var compiled = build.compileCriticalStateActorGuestV1(images);
             var worker = runtime.spawnCodeActor(
-                    ActorRuntime.ActorKind.PRIVATE, compiled, "Counter");
+                    ActorRuntime.ActorKind.SHARED, compiled, "Counter");
             worker.getReady().get(10, TimeUnit.SECONDS);
             worker.send("4");
             assertThrows(ExecutionException.class,
