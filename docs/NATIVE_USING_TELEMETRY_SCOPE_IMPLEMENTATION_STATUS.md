@@ -39,7 +39,7 @@ Other unrecognized resource factories still parse-reject.
 ## Candidate executable tests
 
 `src/test/java/dev/oreslang/UsingTelemetrySpanScopeTest.java` currently defines
-21 JUnit test methods (source-defined, **NOT EXECUTED on Java/Graal CI**):
+22 JUnit test methods (source-defined, **NOT EXECUTED on Java/Graal CI**):
 
 - lexer/parser lowering shape and exact single synthetic cleanup site
 - sync guest fallthrough, return and nested scope cleanup
@@ -49,6 +49,7 @@ Other unrecognized resource factories still parse-reject.
 - extra conditional taken/not-taken guest cleanup assertions, manual-close rejection
 - exactly one nonempty literal operation (1..256 UTF-8 bytes) matching LLVM's current narrow subset
 - fail-closed parser denial for `await`, `yield`, `select`, `task scope`, and `task {}` inside telemetry scopes
+- type-checker rejection of async, suspending, generator, and actor callables until continuation frames are integrated
 - explicit parser denial for typed `throw`, `raise`, and `panic` (these are **NOT** unwind execution receipts)
 
 Test guest code defines a small native Atto `telemetry.span` provider in the
@@ -59,7 +60,8 @@ collector/exporter and does not claim disabled fast-path allocation bounds.
 
 1. **Run** `mvn -B -ntp -DfailIfNoTests=true -Dtest=UsingTelemetrySpanScopeTest,UsingRequestBorrowScopeParserTest clean test`
    with GraalVM/JDK25 against the exact branch HEAD. The guarded workflow now
-   requires at least 22 executed cases (21 scoped tests plus the borrow regression),
+   requires at least 33 executed cases (22 scoped tests, the borrow regression,
+   and 10 native continuation-lifecycle tests),
    zero skipped/failing/error cases and both Surefire suite receipts.
    Source Actions still fail with **zero job steps** (most recently workflow
    `atto-telemetry-using-exact-head` run `43329579902` at Java head
@@ -118,3 +120,44 @@ protected-main/V3 attestation **before** any private source transfer.
 No Java-source carrier has been authorized by the changes in this PR.
 Do not substitute a synthetic local fixture, off-branch run, or zero-step
 source-org workflow for exact-head execution.
+
+## Standalone Java runtime-owned scope primitive (not compiler-integrated)
+
+The candidate `dev.oreslang.runtime.NativeTelemetryScopes` implements
+**host-created, non-guest-visible** opaque `SpanToken` values with private
+construction. Tokens are tied to a logical continuation `Carrier` rather
+than a Java thread. The trusted host API provides:
+
+- disabled fast path reusing a carrier-owned preallocated token (no token
+  allocation, no clock read on begin/end)
+- enabled bounded 64-deep LIFO stack, cross-carrier and stale token denial
+- end exactly once even if host recording is disabled between enter/exit
+- continuation retirement draining enabled scopes once in LIFO order
+- strict UTF-8 operation validation (1..256 bytes, no unpaired surrogates)
+- host-only off/on/off/on recording toggle; no implicit network egress
+
+The new `NativeTelemetryScopesTest` defines **10 host Java JUnit tests**
+for lifecycle, limits, cancellation-style retirement, cross-carrier rejection,
+worker-thread migration, and toggle accounting. **These tests are currently
+UNEXECUTED in source CI**; they are not actual .atto guest/scheduler tests.
+The current compiler `using` lowering **still uses a guest-declared nominal
+`SpanScope` mock** and is NOT wired to this native lifecycle primitive.
+A public Java API marked `FromTrustedHost` is not itself a permission
+boundary for arbitrary host integrations; enforce real controller authority
+before any live tracing deployment.
+
+### Required integration follow-up (P0)
+
+1. Bind the parsed compiler-owned `using` marker to an unforgeable native
+   `SpanToken` and compiler-issued begin/end, not to a guest-defined
+   `telemetry.SpanScope` constructor or guest-overridable `close_scope()`.
+2. Treat `SpanToken` as opaque; no projection into generic guest objects,
+   messages, closures, returns, or persistent fields. Observers need typed
+   compiler/runtime dispatch rather than arbitrary method overrides.
+3. Attach the `Carrier` to each source Task/actor continuation and retire it
+   on cancellation/actor death; only then relax the current async/actor gates.
+4. Install authorized host-only probe controller and Truffle tags; do not
+   equate the standalone toggle unit test with same-process Atto JIT attach.
+5. Obtain exact-head GraalVM execution on an independently approved carrier,
+   with all **33 required non-skipped JUnit cases**. Keep draft until this
+   gate and runtime provenance review pass.
