@@ -2069,6 +2069,23 @@ public final class OwnershipChecker {
                     return bytesResult;
                 }
             }
+            // Async TCP v1.1: split() CONSUMES the connection and yields two
+            // independently owned, affine halves.
+            if (concreteReceiver != null
+                    && concreteReceiver.name().equals("NioConnection")
+                    && concreteReceiver.arguments().isEmpty()
+                    && findClass("NioConnection") == null
+                    && member.member().equals("split")
+                    && call.arguments().isEmpty()) {
+                if (member.receiver() instanceof Ast.NameExpr socketName) {
+                    VarState socketState = scope.lookup(socketName.name());
+                    if (socketState != null) move(socketState, socketName.name());
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.tupleType(List.of(
+                                Ast.TypeRef.simple("NioReader"), Ast.TypeRef.simple("NioWriter"))),
+                        ValueKind.MOVE_ONLY, null);
+            }
             // Typed Map lookups only READ their key: a move-only Bytes key is
             // borrowed, never consumed. Map.set still moves key and value in.
             if (concreteReceiver != null
@@ -4553,6 +4570,11 @@ public final class OwnershipChecker {
         // per direction; the caller loses the handle on task capture.
         if (name.equals("NioConnection")) {
             return type.arguments().isEmpty() && findClass("NioConnection") == null
+                    ? new AutoTraitRules.Capabilities(true, false, false) : none;
+        }
+        // Split halves are affine like the connection they came from.
+        if (name.equals("NioReader") || name.equals("NioWriter")) {
+            return type.arguments().isEmpty() && declaredClass == null
                     ? new AutoTraitRules.Capabilities(true, false, false) : none;
         }
 

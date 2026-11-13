@@ -92,7 +92,7 @@ public final class TypeAutoTraits {
             // A NIO socket is an affine, single-owner execution capability:
             // moving it to an independent task is safe, sharing/copying it
             // is not. Listener stays non-Send and remains in the owner task.
-            case "NioConnection" ->
+            case "NioConnection", "NioReader", "NioWriter" ->
                     Optional.of(named.arguments().isEmpty()
                             ? new Capabilities(true, false, false) : NONE);
             case "OptionUnwrapError" ->
