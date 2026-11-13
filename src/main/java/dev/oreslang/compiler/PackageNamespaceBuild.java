@@ -237,6 +237,26 @@ public final class PackageNamespaceBuild {
         return ActorCriticalStateMirV1.lower(packageIdentity, source.parsed(), audit);
     }
 
+    /**
+     * Experimental, compiler-emitted mailbox receive executor for precisely
+     * one manifest-checked scalar declared actor. This consumes the *same*
+     * snapshot as the typed MIR check, and only the VM-owned CodeImage store
+     * may publish the resulting source image. The interpreter's ordinary
+     * build()/TypeChecker and the Atto main callable remain fail-closed.
+     *
+     * NOT a general actor backend or a substitute for compiling main.atto.
+     * The host must spawnCodeActor(PRIVATE, executor, actorTypeName), and only
+     * the runtime dispatcher may initialize or enter its sealed state.
+     */
+    public synchronized dev.oreslang.runtime.ActorRuntime.ActorCodeExecutor
+            compileCriticalStateActorGuestV1(
+                    dev.oreslang.runtime.SharedCodeImageStore images) throws IOException {
+        SourceSnapshot source = snapshot();
+        ActorAudit audit = auditSnapshot(source);
+        return VerifiedCriticalStateActorGuestV1.lower(
+                packageIdentity, source.parsed(), audit, images);
+    }
+
     public synchronized Result build() throws IOException {
         SourceSnapshot source = snapshot();
         if (hasDeclaredActors(source.parsed())) {
