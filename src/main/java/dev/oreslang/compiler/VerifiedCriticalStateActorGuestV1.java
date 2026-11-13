@@ -197,7 +197,7 @@ final class VerifiedCriticalStateActorGuestV1 implements ActorRuntime.ActorCodeE
             if (context == null || closed || block.closed()
                     || context.runtime() != runtime
                     || ActorRuntime.currentActorRuntime() != runtime
-                    || !ActorRuntime.currentActorId().orElse(null).equals(owner)
+                    || !owner.equals(ActorRuntime.currentActorId().orElse(null))
                     || context.kind() != ActorRuntime.ActorKind.PRIVATE
                     || context.self().generation() != generation
                     || !owner.equals(context.self().id())
