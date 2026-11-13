@@ -816,12 +816,26 @@ public final class NativeHttp implements AutoCloseable {
             }
         }
 
+        private void forgetPooledListenerSlots() {
+            // The registry keeps physical worker generations independently
+            // of Handler slots. Releasing this server's slots after its final
+            // shutdown receipt avoids retaining terminated listeners forever.
+            // Do not take the Handler monitor under the listener monitor.
+            for (Handler pool : List.copyOf(pools)) pool.forgetListener(this);
+        }
+
         private void succeedDrain() {
             OresFuture<Object> completedDrain;
             synchronized (this) {
                 if (forcedCloseClaimed.get() || drainOutcomeClaimed || drained == null) return;
                 drainOutcomeClaimed = true;
                 completedDrain = drained;
+            }
+            try {
+                forgetPooledListenerSlots();
+            } catch (RuntimeException failure) {
+                completedDrain.failFromRuntime(failure);
+                return;
             }
             completedDrain.completeFromRuntime(null);
         }
@@ -832,6 +846,11 @@ public final class NativeHttp implements AutoCloseable {
                 if (drainOutcomeClaimed || drained == null) return;
                 drainOutcomeClaimed = true;
                 failedDrain = drained;
+            }
+            try {
+                forgetPooledListenerSlots();
+            } catch (RuntimeException cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
             }
             failedDrain.failFromRuntime(failure);
         }
@@ -876,6 +895,9 @@ public final class NativeHttp implements AutoCloseable {
                     pooledWorkers.clear();
                     servers.remove(this);
                     completeDrain();
+                    // Forced close does not pass the graceful drain success
+                    // gate, but must still drop this listener's pool slots.
+                    forgetPooledListenerSlots();
                 }
             }
         }
