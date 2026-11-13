@@ -4547,7 +4547,9 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(
                                             t,
                                             failure == null
-                                                    ? List.copyOf(values)
+                                                    // Async guest List literals must remain mutable
+                                                    // like the synchronous eval(ListExpr) path.
+                                                    ? new ArrayList<>(values)
                                                     : null,
                                             failure));
                     return;
@@ -5654,6 +5656,17 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof OresKeyedMap<?, ?> typedMap) {
+                // The source checker has admitted only typed String/Symbol keys
+                // and copyable scalar values. Dispatch through the canonical
+                // guest Map runtime; never expose a host Map or partial storage.
+                if (!(index instanceof String
+                        || index instanceof dev.oreslang.runtime.OresSymbol)) {
+                    throw new IllegalArgumentException(
+                            "typed Map index must be a String or Symbol");
+                }
+                return typedMap.getRequired(index);
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
@@ -6005,6 +6018,22 @@ public final class OresEvalRootNode extends RootNode {
                     // Actor/mailbox boundary capabilities remain forbidden.
                     // Nested channel capabilities still fail detachAsyncValue.
                     detached.add(channel);
+                } else if (arg instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
+                    // An accepted NIO connection is an affine, single-owner
+                    // capability: it MOVES (never copies or shares) into the
+                    // async callee. The ownership checker has already consumed
+                    // the caller binding; this runtime gate also requires the
+                    // formal to declare an owned NioConnection so host-entered
+                    // callables cannot smuggle a socket into another parameter.
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"NioConnection".equals(formal.name())
+                            || !formal.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "async task argument " + (i + 1)
+                                        + " moves a NIO connection and requires an owned NioConnection parameter");
+                    }
+                    detached.add(socket);
                 } else {
                     detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
                 }
@@ -6031,6 +6060,11 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof java.util.UUID
                     || value instanceof Complex
                     || value instanceof OptionUnwrapError) {
+                return value;
+            }
+            // Bytes v1 is immutable and move-only: the caller binding is already
+            // consumed, so the same handle transfers without a deep copy.
+            if (value instanceof dev.oreslang.runtime.OresBytes) {
                 return value;
             }
 
@@ -7523,6 +7557,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("Bytes")) return BytesFactory.INSTANCE;
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("SelectPlan")) return new SelectPlanFactory(this, false);
@@ -7916,6 +7951,84 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
+            if (expr instanceof Ast.MapLiteralExpr mapLiteral) {
+                if (mapLiteral.mapType() == null) {
+                    throw new IllegalArgumentException(
+                            "unresolved Map<K,V> literal cannot execute");
+                }
+                // Delegate descriptor validation and allocation to the exact
+                // existing typed-empty Map runtime path; never allocate an
+                // untyped host dictionary for the published guest value.
+                Object allocated = eval(
+                        new Ast.TypedEmptyAggregateExpr(mapLiteral.mapType()), env);
+                if (!(allocated instanceof OresKeyedMap<?, ?> rawMap)) {
+                    throw new IllegalArgumentException(
+                            "Map literal did not produce canonical guest storage");
+                }
+                // Evaluate key/value expressions in source order exactly once.
+                // No partially built map escapes to a guest binding. The
+                // stage rejects duplicate logical String/Symbol keys before
+                // OresKeyedMap.putAll performs atomic domain/quota validation.
+                LinkedHashMap<Object, Object> entries = new LinkedHashMap<>();
+                for (Ast.MapLiteralEntry entry : mapLiteral.entries()) {
+                    Object key = eval(entry.key(), env);
+                    Object value = eval(entry.value(), env);
+                    if (entries.containsKey(key)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical key in Map literal");
+                    }
+                    entries.put(key, value);
+                }
+                @SuppressWarnings("unchecked")
+                OresKeyedMap<Object, Object> target =
+                        (OresKeyedMap<Object, Object>) rawMap;
+                target.putAll(entries);
+                return target;
+            }
+            if (expr instanceof Ast.ContextualEmptyMapExpr) {
+                throw new IllegalArgumentException(
+                        "unresolved ~map() cannot execute without typed Map<K,V> admission");
+            }
+            if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
+                // Defensive runtime check: only canonical, fully concrete
+                // aggregate shapes previously admitted by type+ownership
+                // checking may reach this branch.
+                Ast.TypeRef witness = typed.aggregateType();
+                if (witness.isReadonlyRecordType() && witness.recordMembers().isEmpty()) {
+                    return new ReadonlyRecordValue(new LinkedHashMap<>());
+                }
+                if (witness.isTupleType() && witness.arguments().isEmpty()) {
+                    return List.of();
+                }
+                if (witness.name().equals("Map") && !witness.inferArguments()
+                        && witness.arguments().size() == 2) {
+                    Ast.TypeRef key = witness.arguments().get(0);
+                    Ast.TypeRef value = witness.arguments().get(1);
+                    if (key.inferArguments() || !key.arguments().isEmpty()
+                            || value.inferArguments() || !value.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "unverified Map<K,V> key/value type arguments");
+                    }
+                    OresKeyedMap.ValueDomain valueDomain = switch (value.name()) {
+                        case "int" -> OresKeyedMap.ValueDomain.INT;
+                        case "bool", "Bool" -> OresKeyedMap.ValueDomain.BOOL;
+                        case "string", "String" -> OresKeyedMap.ValueDomain.STRING;
+                        case "Symbol" -> OresKeyedMap.ValueDomain.SYMBOL;
+                        case "Bytes" -> OresKeyedMap.ValueDomain.BYTES;
+                        default -> throw new IllegalArgumentException(
+                                "unverified Map<K,V> value domain " + value);
+                    };
+                    return switch (key.name()) {
+                        case "string", "String" -> OresKeyedMap.stringKeys(valueDomain);
+                        case "Symbol" -> OresKeyedMap.symbolKeys(valueDomain);
+                        case "Bytes" -> OresKeyedMap.bytesKeys(valueDomain);
+                        default -> throw new IllegalArgumentException(
+                                "unverified Map<K,V> key domain " + key);
+                    };
+                }
+                throw new IllegalArgumentException(
+                        "unverified typed empty aggregate cannot execute: " + witness);
+            }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
                 if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
@@ -7984,6 +8097,68 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof dev.oreslang.runtime.OresBytes bytes) {
+                return switch (name) {
+                    case "size" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.size");
+                        return bytes.size();
+                    };
+                    case "byte_at" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.byte_at");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
+                            throw new IllegalArgumentException("Bytes.byte_at needs an integer offset");
+                        }
+                        return bytes.byteAt(n.intValue());
+                    };
+                    case "take" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.take");
+                        return bytes.take();
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.close");
+                        bytes.close();
+                        return null;
+                    };
+                    case "slice" -> (Invokable) args -> {
+                        requireTwo(args, "Bytes.slice");
+                        return bytes.slice(bytesIndex(args.get(0), "Bytes.slice start"),
+                                bytesIndex(args.get(1), "Bytes.slice end"));
+                    };
+                    case "index_of" -> (Invokable) args -> {
+                        requireTwo(args, "Bytes.index_of");
+                        return (long) bytes.indexOf(bytesIndex(args.get(0), "Bytes.index_of value"),
+                                bytesIndex(args.get(1), "Bytes.index_of start"));
+                    };
+                    case "concat" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.concat");
+                        if (!(args.getFirst() instanceof dev.oreslang.runtime.OresBytes other)) {
+                            throw new IllegalArgumentException("Bytes.concat requires Bytes");
+                        }
+                        return bytes.concat(other);
+                    };
+                    case "equals" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.equals");
+                        if (!(args.getFirst() instanceof dev.oreslang.runtime.OresBytes other)) {
+                            throw new IllegalArgumentException("Bytes.equals requires Bytes");
+                        }
+                        return bytes.equals(other);
+                    };
+                    case "copy" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.copy");
+                        return dev.oreslang.runtime.OresBytes.copyOf(bytes.toArrayCopy());
+                    };
+                    case "to_list" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.to_list");
+                        return bytes.toList();
+                    };
+                    case "to_utf8" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.to_utf8");
+                        String decoded = bytes.toUtf8OrNull();
+                        return decoded == null ? new OptionValue(false, null) : new OptionValue(true, decoded);
+                    };
+                    default -> throw new IllegalArgumentException("unknown Bytes member " + name);
+                };
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -8141,6 +8316,15 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
+                    case "listen_async" -> (Invokable) args -> {
+                        requireTwo(args, "network.listen_async");
+                        String host = requireString(args.get(0), "network.listen_async host");
+                        if (!(args.get(1) instanceof Number port) || !isIntegral(port)) {
+                            throw new IllegalArgumentException("listener port must be integer");
+                        }
+                        return dev.oreslang.runtime.AsyncNioTcp.listenAsync(
+                                context, host, port.intValue());
+                    };
                     case "connect", "connect_blocking" -> (Invokable) args -> {
                         requireTwo(args, "network." + name);
                         String host = requireString(args.get(0), "host");
@@ -8150,6 +8334,70 @@ public final class OresEvalRootNode extends RootNode {
                                 "network." + name, () -> network.connect(values));
                     };
                     default -> throw new IllegalArgumentException("unknown network member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Listener listener) {
+                return switch (name) {
+                    case "accept_async" -> (Invokable) args -> {
+                        requireZero(args, "listener.accept_async");
+                        return listener.acceptAsync();
+                    };
+                    case "local_port_async" -> (Invokable) args -> {
+                        requireZero(args, "listener.local_port_async");
+                        return dev.oreslang.runtime.OresFuture.completed(listener.port());
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "listener.close_async");
+                        return listener.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown async NIO listener member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
+                return switch (name) {
+                    case "read_resp2_hex_async" -> (Invokable) args -> {
+                        requireZero(args, "socket.read_resp2_hex_async");
+                        return socket.readResp2HexAsync();
+                    };
+                    case "write_resp2_hex_async" -> (Invokable) args -> {
+                        requireTwo(args, "socket.write_resp2_hex_async");
+                        String status = requireString(args.get(0), "RESP reply kind");
+                        String payload = requireString(args.get(1), "RESP reply payload");
+                        return socket.writeResp2HexAsync(status, payload);
+                    };
+                    case "read_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.read_owned_bytes_async");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
+                            throw new IllegalArgumentException("read owned byte limit must be integer");
+                        }
+                        return socket.readOwnedBytesAsync(n.intValue());
+                    };
+                    case "write_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_owned_bytes_async");
+                        if (!(args.getFirst() instanceof dev.oreslang.runtime.OresBytes bytes)) {
+                            throw new IllegalArgumentException("write_owned_bytes_async needs Bytes");
+                        }
+                        return socket.writeOwnedBytesAsync(bytes);
+                    };
+                    case "read_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.read_bytes_async");
+                        if (!(args.getFirst() instanceof Number n) || !isIntegral(n)) {
+                            throw new IllegalArgumentException("read byte limit must be integer");
+                        }
+                        return socket.readBytesAsync(n.intValue());
+                    };
+                    case "write_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "socket.write_bytes_async");
+                        if (!(args.getFirst() instanceof List<?> data)) {
+                            throw new IllegalArgumentException("write_bytes_async needs a byte list");
+                        }
+                        return socket.writeBytesAsync(data);
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "socket.close_async");
+                        return socket.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown async NIO socket member " + name);
                 };
             }
             if (receiver instanceof NativeIo.TcpConnection socket) {
@@ -8458,6 +8706,27 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member " + name);
+                };
+            }
+            if (receiver == BytesFactory.INSTANCE) {
+                return switch (name) {
+                    case "empty" -> (Invokable) args -> {
+                        requireZero(args, "Bytes.empty");
+                        return dev.oreslang.runtime.OresBytes.empty();
+                    };
+                    case "from_list" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.from_list");
+                        if (!(args.getFirst() instanceof List<?> values)) {
+                            throw new IllegalArgumentException("Bytes.from_list requires List<int>");
+                        }
+                        return dev.oreslang.runtime.OresBytes.fromList(values);
+                    };
+                    case "from_string" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.from_string");
+                        return dev.oreslang.runtime.OresBytes.fromString(
+                                requireString(args.getFirst(), "Bytes.from_string"));
+                    };
+                    default -> throw new IllegalArgumentException("unknown Bytes constructor " + name);
                 };
             }
             if (receiver instanceof ChannelFactory factory) {
@@ -8777,6 +9046,39 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown List member " + name);
+                };
+            }
+            if (receiver instanceof OresKeyedMap<?, ?> guestMap) {
+                // Explicit scalar Map operations only: this never exports a
+                // host Map, iterator, transport lease or mutable backing view.
+                return switch (name) {
+                    case "size" -> (long) guestMap.size();
+                    case "set" -> (Invokable) args -> {
+                        if (args.size() != 2) {
+                            throw new IllegalArgumentException(
+                                    "Map.set expects exactly 2 arguments");
+                        }
+                        @SuppressWarnings("unchecked")
+                        OresKeyedMap<Object, Object> typed =
+                                (OresKeyedMap<Object, Object>) guestMap;
+                        // Runtime checks key/value domain, quota, and nested
+                        // mutation before changing the canonical map.
+                        typed.put(args.get(0), args.get(1));
+                        return null;
+                    };
+                    case "delete" -> (Invokable) args -> {
+                        requireOne(args, "Map.delete");
+                        return guestMap.take(args.getFirst()).present();
+                    };
+                    case "get_optional" -> (Invokable) args -> {
+                        requireOne(args, "Map.get_optional");
+                        // Atomic lookup: no contains/get interleaving on shared maps.
+                        OresKeyedMap.Lookup<?> found = guestMap.lookup(args.getFirst());
+                        return new OptionValue(found.present(), found.value());
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "guest Map member '" + name
+                                    + "' is not admitted before typed ownership lowering");
                 };
             }
             if (receiver instanceof Map<?, ?> map) {
@@ -9946,6 +10248,30 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return true;
             }
+            if (pattern instanceof Ast.RecordPattern recordPattern) {
+                // Never project host Map, class/actor fields or mutable runtime
+                // capabilities by shape. Only guest record and concrete struct
+                // representations admitted by static checker are observable.
+                for (Ast.RecordFieldPattern field : recordPattern.fields()) {
+                    Object fieldValue;
+                    if (value instanceof ReadonlyRecordValue record) {
+                        if (!record.containsKey(field.name())) return false;
+                        fieldValue = record.get(field.name());
+                    } else if (value instanceof MutableStructValue struct) {
+                        if (!recordPattern.structural()
+                                || !struct.containsKey(field.name())) return false;
+                        fieldValue = struct.get(field.name());
+                    } else {
+                        return false;
+                    }
+                    if (fieldValue == UNINITIALIZED_FIELD) {
+                        throw new IllegalStateException(
+                                "record pattern observed an uninitialized field");
+                    }
+                    if (!patternMatches(field.value(), fieldValue, bindings)) return false;
+                }
+                return true;
+            }
             if (pattern instanceof Ast.TuplePattern tuplePattern) {
                 if (!(value instanceof List<?> tuple)
                         || tuple.size() != tuplePattern.elements().size()) return false;
@@ -10159,6 +10485,7 @@ public final class OresEvalRootNode extends RootNode {
                     || name.equals("decimal")) return value instanceof Float || value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
+            if (name.equals("Bytes")) return value instanceof dev.oreslang.runtime.OresBytes;
             if (name.equals("Symbol") && findClass("Symbol") == null)
                 return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
@@ -11490,6 +11817,19 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    /** Static receiver for the Bytes v1 constructors. */
+    private static final class BytesFactory {
+        static final BytesFactory INSTANCE = new BytesFactory();
+        private BytesFactory() { }
+    }
+
+    private static int bytesIndex(Object value, String what) {
+        if (!(value instanceof Number n) || n.doubleValue() != Math.rint(n.doubleValue())) {
+            throw new IllegalArgumentException(what + " must be an integer");
+        }
+        return Math.toIntExact(n.longValue());
+    }
+
     private static final class ChannelFactory {
         private Object create(List<Object> args) {
             requireOne(args, "Channel.new<T>");
