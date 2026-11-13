@@ -1,0 +1,13 @@
+pub fnc main(): void {
+    const Map<string, int> counts = ~map(
+        "alpha" => 1,
+        "beta" => 2
+    );
+    const flags: Map<Symbol, bool> = ~(
+        #ready => true,
+        #done => false
+    );
+    stdio.println(counts.size);
+    stdio.println(flags.size);
+    return;
+}

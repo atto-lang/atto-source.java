@@ -75,6 +75,9 @@ final class TildeRecordLiteralGuestTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
                 fixture("records-explicit-empty-pass.atto")));
 
+        // These forms now have a dedicated map AST. They remain invalid
+        // without an explicit or directly declared Map<K,V> witness and must
+        // fail compilation (not necessarily parsing).
         for (String file : List.of(
                 "maps-short-string-not-enabled.atto",
                 "maps-short-symbol-not-enabled.atto",
@@ -82,10 +85,8 @@ final class TildeRecordLiteralGuestTest {
                 "maps-identifier-key-not-enabled.atto",
                 "maps-computed-key-not-enabled.atto",
                 "maps-indexed-key-not-enabled.atto")) {
-            IllegalArgumentException diagnostic = assertThrows(
-                    IllegalArgumentException.class, () -> Parser.parse(fixture(file)), file);
-            assertTrue(diagnostic.getMessage().contains("typed Map<K,V>"),
-                    file + ": " + diagnostic.getMessage());
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(fixture(file)), file);
         }
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(fixture("records-bare-spread-reject.atto")));
