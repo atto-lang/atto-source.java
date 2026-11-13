@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.ActorCriticalStateMirV1;
 import dev.oreslang.compiler.PackageNamespaceBuild;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
@@ -144,6 +145,64 @@ final class ActorCriticalStateSyntaxV2Test {
                 build::compileStatelessActorGuestV1);
         assertTrue(blocked.getMessage().contains("sealed state/critical loans"),
                 blocked.getMessage());
+    }
+
+    @Test
+    void canonicalPhysicalCounterProducesTypedNonExecutableMir() throws Exception {
+        var build = physicalBuild();
+        var mir = build.lowerCriticalStateMirV1();
+        assertEquals(build.packageIdentity(), mir.packageIdentity());
+        assertEquals("counter", mir.namespace());
+        assertEquals("Counter", mir.actor());
+        assertEquals("src/counter/state.atto", mir.stateSourceUnit());
+        assertEquals("src/counter/receive.atto", mir.ingressSourceUnit());
+        assertEquals("total", mir.field());
+        assertEquals("mail", mir.mailParameter());
+        assertEquals(0L, mir.initialValue());
+        assertEquals(4L, mir.stopOnMailValue());
+        assertEquals(3, mir.operations().size());
+        assertEquals(ActorCriticalStateMirV1.Opcode.CHECKED_ADD_MAIL_I64,
+                mir.operations().get(0).opcode());
+        assertEquals(ActorCriticalStateMirV1.Opcode.COPY_I64_TO_ACTOR_OUTPUT,
+                mir.operations().get(1).opcode());
+        assertEquals(ActorCriticalStateMirV1.Opcode.STOP_ON_MAIL_I64,
+                mir.operations().get(2).opcode());
+        var audit = build.auditDeclaredActors();
+        assertEquals(audit.manifestSha256(), mir.manifestSha256());
+        assertEquals(audit.sourceSha256(), mir.sourceSha256());
+        assertThrows(UnsupportedOperationException.class,
+                () -> mir.sourceSha256().put("src/spoof.atto", "forged"));
+        var rejected = assertThrows(IllegalArgumentException.class, build::build);
+        assertTrue(rejected.getMessage().contains("DECLARED_ACTOR_CODEGEN_UNSUPPORTED"));
+    }
+
+    @Test
+    void forgedOrComplexStatefulIngressNeverMintsTypedMir() throws Exception {
+        var build = physicalBuild();
+        Path path = root.resolve("src/counter/receive.atto");
+        String canonical = Files.readString(path);
+        for (var mutation : new String[] {
+                canonical.replace("s.total = s.total + mail.value;",
+                        "s.total = s.total + 1;"),
+                canonical.replace("if mail.value == 4; do",
+                        "if mail.value == 5; do self.send(0);"),
+                canonical.replace("if mail.value == 4; do",
+                        "if mail.value == 4; do self.send(0);"),
+                canonical.replace("self.send(s.total);",
+                        "self.send(mail.value);"),
+                canonical.replace("self.end();", "self.send(42);"),
+                canonical.replace("if mail.value == 4; do",
+                        "self.send(666); if mail.value == 4; do")
+        }) {
+            Files.writeString(path, mutation);
+            var rejected = assertThrows(IllegalArgumentException.class,
+                    build::lowerCriticalStateMirV1, mutation);
+            assertFalse(rejected.getMessage().isBlank());
+        }
+        Files.writeString(path, canonical);
+        // The read-only MIR cannot be used to promote guest execution:
+        assertThrows(IllegalArgumentException.class, build::build);
+        assertThrows(IllegalArgumentException.class, build::compileStatelessActorGuestV1);
     }
 
     @Test
