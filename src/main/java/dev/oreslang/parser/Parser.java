@@ -183,6 +183,17 @@ public final class Parser {
                 continue;
             }
 
+            // Explicit private runtime-only init/receive is distinct from an
+            // ordinary out-of-line actor method; no execution permit is minted.
+            if (isContextualIdentifier("external")) {
+                advance();
+                if (!isExternalActorMethodHead()) {
+                    throw error(previous(), "external requires private mtd (Actor receiver) init/receive");
+                }
+                rootDeclarations.add(parseExternalActorMethod(annotations, modifiers, true));
+                continue;
+            }
+
             // Canonical namespace attachment may omit 'define': pub mtd (Foo f) bar().
             // It is still typed as a non-executable actor receiver, never a free fnc.
             if (isExternalActorMethodHead()) {
@@ -774,6 +785,12 @@ public final class Parser {
 
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
             List<Ast.Annotation> annotations, Modifiers modifiers) {
+        return parseExternalActorMethod(annotations, modifiers, false);
+    }
+
+    private Ast.ExternalActorMethodDecl parseExternalActorMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers,
+            boolean explicitlyExternal) {
         validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
         rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
         rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
@@ -799,6 +816,14 @@ public final class Parser {
                 "on_recover").contains(name)) {
             throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
         }
+        if (explicitlyExternal) {
+            if (modifiers.visibility != Ast.Visibility.PRIVATE) {
+                throw error(previous(), "external init/receive entrypoint must be private");
+            }
+            if (!name.equals("init") && !name.equals("receive")) {
+                throw error(previous(), "external mtd is reserved for runtime init/receive ingress");
+            }
+        }
         consume(LPAREN, "expected '(' before external receiver method parameters");
         List<Ast.Param> parameters = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after external receiver method parameters");
@@ -815,7 +840,7 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.ExternalActorMethodDecl(
                 receiverType.name(), receiverName, name,
-                modifiers.visibility, parameters, returns, body);
+                modifiers.visibility, parameters, returns, body, explicitlyExternal);
     }
 
     private Ast.ClassDecl parseClass(
