@@ -6014,6 +6014,22 @@ public final class OresEvalRootNode extends RootNode {
                     // Actor/mailbox boundary capabilities remain forbidden.
                     // Nested channel capabilities still fail detachAsyncValue.
                     detached.add(channel);
+                } else if (arg instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
+                    // An accepted NIO connection is an affine, single-owner
+                    // capability: it MOVES (never copies or shares) into the
+                    // async callee. The ownership checker has already consumed
+                    // the caller binding; this runtime gate also requires the
+                    // formal to declare an owned NioConnection so host-entered
+                    // callables cannot smuggle a socket into another parameter.
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"NioConnection".equals(formal.name())
+                            || !formal.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "async task argument " + (i + 1)
+                                        + " moves a NIO connection and requires an owned NioConnection parameter");
+                    }
+                    detached.add(socket);
                 } else {
                     detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
                 }
