@@ -2,8 +2,9 @@ package dev.oreslang.runtime;
 
 import java.security.SecureRandom;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.ArrayBlockingQueue;
 
 /**
  * Host-owned automatic trace sites for the existing source-task lowering.
@@ -45,7 +46,8 @@ public final class AutoFunctionTraceV1 {
 
     private final TraceInstrumentationControlV1 policy;
     private final SecureRandom entropy;
-    private final ArrayBlockingQueue<Receipt> receipts;
+    private final ConcurrentLinkedQueue<Receipt> receipts;
+    private final AtomicInteger reservedReceipts = new AtomicInteger();
     private final AtomicLong nextExecutionId = new AtomicLong();
     private final AtomicLong completed = new AtomicLong();
     private final AtomicLong suspended = new AtomicLong();
@@ -56,7 +58,7 @@ public final class AutoFunctionTraceV1 {
         this.policy = new TraceInstrumentationControlV1(buildMode);
         // No clock, random generator or span-guard allocation when disabled.
         this.entropy = active ? new SecureRandom() : null;
-        this.receipts = active ? new ArrayBlockingQueue<>(MAX_RECEIPTS) : null;
+        this.receipts = active ? new ConcurrentLinkedQueue<>() : null;
         if (active) policy.configure(TraceInstrumentationControlV1.CALL);
     }
 
@@ -182,15 +184,30 @@ public final class AutoFunctionTraceV1 {
             return;
         }
         completed.incrementAndGet();
-        // Never block a carrier, call user code or perform network I/O.
-        if (!receipts.offer(new Receipt(scope.child, scope.parent, completion))) {
+        // Bounded CAS reservation and a nonblocking queue: no carrier lock,
+        // unbounded spin, guest callback or exporter I/O. Drop on contention.
+        boolean reserved = false;
+        for (int tries = 0; tries < 4; tries++) {
+            int pending = reservedReceipts.get();
+            if (pending >= MAX_RECEIPTS) break;
+            if (reservedReceipts.compareAndSet(pending, pending + 1)) {
+                reserved = true;
+                break;
+            }
+        }
+        if (reserved) {
+            receipts.offer(new Receipt(scope.child, scope.parent, completion));
+        } else {
             dropped.incrementAndGet();
         }
     }
 
     /** Host-only drain point; an exporter must run off-carrier. */
     public Receipt pollReceipt() {
-        return receipts == null ? null : receipts.poll();
+        if (receipts == null) return null;
+        Receipt receipt = receipts.poll();
+        if (receipt != null) reservedReceipts.decrementAndGet();
+        return receipt;
     }
 
     public Counts counts() {
