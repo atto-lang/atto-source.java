@@ -6,6 +6,7 @@ import dev.oreslang.types.ActorReceiverBinder;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -148,6 +149,32 @@ final class OptionalActorReceiverBindingTest {
                 Parser.parse(NS + "pub mtd (Worker) expose(): void { return; }"));
         assertThrows(IllegalArgumentException.class, () ->
                 ActorReceiverBinder.bindSourceSet("demo@1.0.0", units));
+    }
+
+    @Test
+    void forgedAstReceiversCannotBypassParserNormalizationOrReservedNames() {
+        Ast.ExternalActorMethodDecl normalized =
+                new Ast.ExternalActorMethodDecl(
+                        "Worker", "_", "hello", Ast.Visibility.PRIVATE,
+                        List.of(), Ast.TypeRef.simple("void"), List.of());
+        assertEquals("self", normalized.receiverName(),
+                "a bypass of the parser must not retain a usable underscore name");
+
+        for (String alias : new String[]{"handle_state", "state",
+                "on_panic", "on_throws", "on_restart", "tear_down"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new Ast.ExternalActorMethodDecl(
+                            "Worker", alias, "hello", Ast.Visibility.PRIVATE,
+                            List.of(), Ast.TypeRef.simple("void"), List.of()),
+                    alias);
+        }
+        for (String alias : new String[]{"self", "named", "_"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new Ast.ExternalActorMethodDecl(
+                            "Worker", alias, "hello", Ast.Visibility.PRIVATE,
+                            List.of(new Ast.Param(Ast.TypeRef.simple("int"), "self")),
+                            Ast.TypeRef.simple("void"), List.of()), alias);
+        }
     }
 
     @Test
