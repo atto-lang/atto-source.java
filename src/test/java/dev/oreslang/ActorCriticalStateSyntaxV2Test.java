@@ -206,6 +206,26 @@ final class ActorCriticalStateSyntaxV2Test {
     }
 
     @Test
+    void criticalStateViewMustNotShadowOwnedMailOrNominalReceiver() throws Exception {
+        var build = physicalBuild();
+        Path path = root.resolve("src/counter/receive.atto");
+        String canonical = Files.readString(path);
+        for (String shadow : new String[] {"mail", "c"}) {
+            String altered = canonical.replace(
+                    "critical-write |s| -> {\n    s.total = s.total + mail.value;",
+                    "critical-write |" + shadow + "| -> {\n    " + shadow
+                            + ".total = " + shadow + ".total + mail.value;");
+            assertNotEquals(canonical, altered, "mutation fixture must alter writer");
+            Files.writeString(path, altered);
+            var denied = assertThrows(IllegalArgumentException.class,
+                    build::auditDeclaredActors, shadow);
+            assertTrue(denied.getMessage().contains("may not shadow"),
+                    denied.getMessage());
+            assertThrows(IllegalArgumentException.class, build::lowerCriticalStateMirV1);
+        }
+    }
+
+    @Test
     void directStateFieldAccessOutsideLoanFailsManifestPreflight() throws Exception {
         var build = physicalBuild();
         Path path = root.resolve("src/counter/receive.atto");
