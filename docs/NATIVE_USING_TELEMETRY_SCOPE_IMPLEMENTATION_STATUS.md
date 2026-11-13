@@ -27,7 +27,9 @@ analysis. Those synthetic calls are **never executed as guest code**:
    Normal return and nested unwinding use the same runtime-owned close path.
 4. The native Java core enforces 64-deep LIFO, exact-once close, cross-carrier
    denial, strict UTF-8 operation validation, optional host-only dormant
-   recording toggles, and bounded typed observer accounting. **No production
+   recording toggles, and bounded typed observer accounting. Instrumentation depth, observer count,
+   and oversized metadata budgets drop probes rather than alter application
+   results. **No production
    span attribute/event export, OTLP, or authorized Truffle attach exists.**
 
 The native per-context tracer is **disabled by default**. The synthetic
@@ -41,19 +43,19 @@ authority is added here.
 ## Exact-head execution gate
 
 `.github/workflows/atto-telemetry-using-exact-head.yml` runs on GraalVM
-JDK 25 and requires at least **40 executed cases**:
+JDK 25 and requires at least **42 executed cases**:
 
 - 26 `UsingTelemetrySpanScopeTest` methods (compiler + real `.atto` guest
   output on restricted synchronous paths, negative impersonation/escape and
   typed-observer admission tests)
 - at least one `UsingRequestBorrowScopeParserTest` transport-loan regression
-- 13 `NativeTelemetryScopesTest` host lifecycle cases
+- 15 `NativeTelemetryScopesTest` host lifecycle cases
 
 Surefire must contain all three named suites, with nonzero executed counts,
 zero failures, zero errors, and zero skipped cases. No synthetic fixture or
 source-only assertion can substitute for that receipt.
 
-**The 40-case Java gate is NOT EXECUTED.** The preceding Java source workflow
+**The 42-case Java gate is NOT EXECUTED.** The preceding Java source workflow
 [run #43334977144](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/43334977144)
 failed with **zero job steps**, before compiler or test execution. A newer
 source-head run (if it appears) is not a pass until its job steps and receipts
