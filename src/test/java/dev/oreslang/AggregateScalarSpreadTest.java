@@ -72,8 +72,8 @@ final class AggregateScalarSpreadTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(program);
         }
-        assertEquals("37\\n99\\n7\\n99\\n",
-                output.toString(StandardCharsets.UTF_8).replace("\\r\\n", "\\n"));
+        assertEquals("37\n99\n7\n99\n",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
     @Test
