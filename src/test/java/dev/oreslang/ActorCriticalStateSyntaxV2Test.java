@@ -1,16 +1,20 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.ActorCriticalStateMirLayoutV1;
 import dev.oreslang.compiler.PackageNamespaceBuild;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.ActorContractWitness;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -240,6 +244,8 @@ final class ActorCriticalStateSyntaxV2Test {
         var read = plan.operations().get(1);
         assertEquals(0, write.fieldIndex());
         assertEquals(0, read.fieldIndex());
+        assertEquals(audit.sourceSha256().get(write.sourceUnit()), write.methodSourceSha256());
+        assertEquals(audit.sourceSha256().get(read.sourceUnit()), read.methodSourceSha256());
         assertEquals(dev.oreslang.compiler.ActorCriticalStateMirLayoutV1.Opcode.CHECKED_ADD_MAIL_I64,
                 write.opcode());
         assertEquals(dev.oreslang.compiler.ActorCriticalStateMirLayoutV1.Opcode.COPY_I64_TO_ACTOR_MAILBOX,
@@ -254,5 +260,67 @@ final class ActorCriticalStateSyntaxV2Test {
         var blocked = assertThrows(IllegalArgumentException.class,
                 physicalBuild()::compileStatelessActorGuestV1);
         assertTrue(blocked.getMessage().contains("sealed state/critical loans"));
+    }
+
+    @Test
+    void stagedPlanRejectsNoncanonicalSlotsForgedOperationsAndMutableEscalation() throws Exception {
+        var plan = physicalBuild().auditDeclaredActors().stagedCriticalStateMir().getFirst();
+        var slot = plan.slots().getFirst();
+        var write = plan.operations().getFirst();
+        var read = plan.operations().get(1);
+
+        var shifted = new ActorCriticalStateMirLayoutV1.Slot(
+                1, slot.name(), slot.scalarType(), slot.mutable(), slot.literalDefault());
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorCriticalStateMirLayoutV1.Plan(plan.packageIdentity(), plan.namespace(),
+                        plan.actor(), plan.stateUnit(), plan.stateSourceSha256(),
+                        plan.manifestSha256(), List.of(shifted), plan.operations()));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorCriticalStateMirLayoutV1.Plan(plan.packageIdentity(), plan.namespace(),
+                        plan.actor(), plan.stateUnit(), plan.stateSourceSha256(),
+                        plan.manifestSha256(), List.of(slot, slot), plan.operations()));
+
+        var nonexistent = new ActorCriticalStateMirLayoutV1.Operation(
+                write.sourceUnit(), write.methodSourceSha256(), write.method(),
+                write.opcode(), write.mode(), 31);
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorCriticalStateMirLayoutV1.Plan(plan.packageIdentity(), plan.namespace(),
+                        plan.actor(), plan.stateUnit(), plan.stateSourceSha256(),
+                        plan.manifestSha256(), plan.slots(), List.of(nonexistent)));
+
+        var immutable = new ActorCriticalStateMirLayoutV1.Slot(
+                0, slot.name(), "int", false, slot.literalDefault());
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorCriticalStateMirLayoutV1.Plan(plan.packageIdentity(), plan.namespace(),
+                        plan.actor(), plan.stateUnit(), plan.stateSourceSha256(),
+                        plan.manifestSha256(), List.of(immutable), List.of(write)));
+
+        var booleanSlot = new ActorCriticalStateMirLayoutV1.Slot(0, slot.name(), "bool", true, true);
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorCriticalStateMirLayoutV1.Plan(plan.packageIdentity(), plan.namespace(),
+                        plan.actor(), plan.stateUnit(), plan.stateSourceSha256(),
+                        plan.manifestSha256(), List.of(booleanSlot), List.of(read)));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                new ActorCriticalStateMirLayoutV1.Operation(
+                        read.sourceUnit(), "fake-digest", read.method(), read.opcode(),
+                        read.mode(), read.fieldIndex()));
+    }
+
+    @Test
+    void layoutRejectsForgedWitnessEvenWithPlausibleHashesAndOperations() throws Exception {
+        var audit = physicalBuild().auditDeclaredActors();
+        var parsed = new TreeMap<String, Ast.Program>();
+        for (String sourceUnit : audit.sourceSha256().keySet()) {
+            parsed.put(sourceUnit, Parser.parse(Files.readString(root.resolve(sourceUnit))));
+        }
+        var forged = new ActorContractWitness.Result(
+                "incorrect-package-identity", audit.contractWitness().actors(),
+                audit.contractWitness().boundMethods());
+        var failure = assertThrows(IllegalArgumentException.class, () ->
+                ActorCriticalStateMirLayoutV1.stage(parsed, forged, audit.sourceSha256(),
+                        audit.manifestSha256(), audit.criticalOperations()));
+        assertTrue(failure.getMessage().contains("witness"), failure.getMessage());
     }
 }

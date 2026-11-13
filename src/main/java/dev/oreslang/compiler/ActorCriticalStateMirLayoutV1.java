@@ -27,6 +27,7 @@ public final class ActorCriticalStateMirLayoutV1 {
                        boolean mutable, Object literalDefault) {
         public Slot {
             if (index < 0 || index >= 32 || name == null || name.isBlank()
+                    || name.length() > 1024
                     || !("int".equals(scalarType) || "bool".equals(scalarType))
                     || (scalarType.equals("int") && !(literalDefault instanceof Long))
                     || (scalarType.equals("bool") && !(literalDefault instanceof Boolean))) {
@@ -35,11 +36,15 @@ public final class ActorCriticalStateMirLayoutV1 {
         }
     }
 
-    public record Operation(String sourceUnit, String method, Opcode opcode,
+    public record Operation(String sourceUnit, String methodSourceSha256,
+                            String method, Opcode opcode,
                             Ast.CriticalStateMode mode, int fieldIndex) {
         public Operation {
-            Objects.requireNonNull(sourceUnit);
-            Objects.requireNonNull(method);
+            if (sourceUnit == null || sourceUnit.isBlank()
+                    || method == null || method.isBlank()) {
+                throw new IllegalArgumentException("critical operation requires source and method");
+            }
+            requireSha256(methodSourceSha256);
             Objects.requireNonNull(opcode);
             Objects.requireNonNull(mode);
             if (fieldIndex < 0 || fieldIndex >= 32
@@ -57,16 +62,35 @@ public final class ActorCriticalStateMirLayoutV1 {
                        String manifestSha256, List<Slot> slots,
                        List<Operation> operations) {
         public Plan {
-            Objects.requireNonNull(packageIdentity);
-            Objects.requireNonNull(namespace);
-            Objects.requireNonNull(actor);
-            Objects.requireNonNull(stateUnit);
+            if (packageIdentity == null || packageIdentity.isBlank()
+                    || namespace == null || namespace.isBlank()
+                    || actor == null || actor.isBlank()
+                    || stateUnit == null || stateUnit.isBlank()) {
+                throw new IllegalArgumentException("actor layout requires complete nominal identity");
+            }
             requireSha256(stateSourceSha256);
             requireSha256(manifestSha256);
             slots = List.copyOf(slots);
             operations = List.copyOf(operations);
             if (slots.isEmpty() || slots.size() > 32) {
                 throw new IllegalArgumentException("invalid actor state layout size");
+            }
+            var names = new java.util.HashSet<String>();
+            for (int i = 0; i < slots.size(); i++) {
+                Slot slot = slots.get(i);
+                if (slot.index() != i || !names.add(slot.name())) {
+                    throw new IllegalArgumentException("noncanonical or duplicate actor state slot");
+                }
+            }
+            for (Operation op : operations) {
+                if (op.fieldIndex() >= slots.size()) {
+                    throw new IllegalArgumentException("critical state operation references absent slot");
+                }
+                Slot slot = slots.get(op.fieldIndex());
+                if (!"int".equals(slot.scalarType())
+                        || (op.mode() == Ast.CriticalStateMode.WRITE && !slot.mutable())) {
+                    throw new IllegalArgumentException("critical state operation violates slot type/mutability");
+                }
             }
         }
     }
@@ -97,6 +121,12 @@ public final class ActorCriticalStateMirLayoutV1 {
             throw new IllegalArgumentException("state layout source snapshot mismatch");
         }
         for (String digest : sourceSha256.values()) requireSha256(digest);
+        // A caller may construct the public witness record directly. Do not
+        // trust that record without independently linking the exact AST set.
+        if (!ActorContractWitness.linkSourceSet(witness.packageIdentity(), units)
+                .equals(witness)) {
+            throw new IllegalArgumentException("state layout actor witness does not match source");
+        }
         if (!ActorCriticalStatePreflight.verify(units, witness).equals(preflight)) {
             throw new IllegalArgumentException("state layout requires original verified operations");
         }
@@ -144,7 +174,8 @@ public final class ActorCriticalStateMirLayoutV1 {
                         || !sourceSha256.containsKey(op.sourceUnit())) {
                     throw new IllegalArgumentException("critical state operation changed its verified field");
                 }
-                ops.add(new Operation(op.sourceUnit(), op.method(),
+                ops.add(new Operation(op.sourceUnit(),
+                        sourceSha256.get(op.sourceUnit()), op.method(),
                         op.mode() == Ast.CriticalStateMode.WRITE
                                 ? Opcode.CHECKED_ADD_MAIL_I64
                                 : Opcode.COPY_I64_TO_ACTOR_MAILBOX,
