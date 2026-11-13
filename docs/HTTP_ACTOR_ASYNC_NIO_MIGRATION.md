@@ -78,7 +78,7 @@ No throughput or five-backend parity claim should treat it as NIO-complete.
 | Partial frame on each read | Request parses once, with bounded retained buffer |
 | Partial response write and client half-close | No duplicate headers or stale OP_WRITE wakeups |
 | Channel capacity exhausted | `try_send` rejects immediately; awaited send suspends without parking a carrier |
-| A shuts down while B uses shared pool | New B dispatch uses a replacement sealed-generation worker |
+| A shuts down while B uses the same Handler | A drains only A-owned actors; B retains/reuses its distinct worker |
 | Unpooled actor terminal callback held | DONE does not release request admission before final carrier exit |
 | Force-close during pending body write | One terminal owner, bounded completion, no use-after-recycle |
 | Slow client / large body | Enforced memory and deadline budgets, no unbounded virtual threads |
