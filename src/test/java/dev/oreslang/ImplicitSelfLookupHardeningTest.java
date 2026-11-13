@@ -229,6 +229,19 @@ final class ImplicitSelfLookupHardeningTest {
     }
 
     @Test
+    void staticMethodParameterNamedSelfCannotInventImplicitReceiver() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub value(): int { return 7; }
+                          pub static fnc invalid(Box self): int {
+                            return value();
+                          }
+                        end
+                        """)));
+    }
+
+    @Test
     void freeFunctionCannotAcquireImplicitSelf() {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
