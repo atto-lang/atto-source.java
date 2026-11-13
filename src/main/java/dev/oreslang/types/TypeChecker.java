@@ -6849,13 +6849,16 @@ public final class TypeChecker {
             Type self,
             boolean first) {
         // Ordinary match is a proof-checked partition. A final, unguarded
-        // wildcard is the fallback and never counts as an overlapping explicit
+        // wildcard, default or binding arm is the fallback and never counts as an overlapping explicit
         // pattern. 'match first' explicitly chooses ordered priority and may
         // overlap; both still require exhaustive coverage.
         if (!first) {
             int explicitEnd = arms.size();
             Ast.MatchValueArm last = arms.getLast();
-            if (last.guard() == null && last.pattern() instanceof Ast.WildcardPattern) {
+            if (last.guard() == null && (last.pattern() instanceof Ast.WildcardPattern
+                    || last.pattern() instanceof Ast.BindingPattern)) {
+                // An unguarded final binding (on x -> ...) is irrefutable: it is the
+                // catch-all fallback exactly like `_ ->` and `default ->`.
                 explicitEnd--;
             }
             for (int i = 0; i < explicitEnd; i++) {
