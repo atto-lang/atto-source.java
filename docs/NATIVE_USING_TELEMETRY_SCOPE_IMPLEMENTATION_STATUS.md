@@ -1,163 +1,103 @@
-# Native Atto `using` telemetry span scope — Java compiler milestone
+# Native Atto `using telemetry.span` — Java compiler/runtime milestone
 
-**Status (2026-11-12): IMPLEMENTATION CANDIDATE, GUEST EXECUTION NOT YET VERIFIED.**
-This change is the first limited executable guest-scope slice after the shared
-automatic-instrumentation proposal in common-source
-[#279](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/279)
-and language-spec
-[#44](https://github.com/ores-truffle-oreslang/attolang-language-spec.md/pull/44).
+**Status (2026-11-12): source-implemented synchronous compiler-owned scope; exact-head GraalVM guest execution NOT VERIFIED. Keep PR DRAFT.**
 
-## Candidate implementation
+## Compiler/runtime path
 
-`src/main/java/dev/oreslang/parser/Parser.java` recognizes the existing
-contextual `using` statement in the exact expression form
-`using telemetry.span(...) as alias { body }`. During this initial
-compiler milestone, only a non-generic `*.span(...)` member factory is
-admitted for **generic scope lowering**, subject to ordinary method/type
-checking. This is **not** an arbitrary `ScopedResource` implementation
-or a production OTel SDK. It lowers once into:
+The parser recognizes `using telemetry.span("operation") as span { body }`
+without adding a new language keyword. It stores the original syntax on a
+compiler-marked `Ast.BlockStmt(usingTelemetryScope=true)`, still carrying
+historical synthetic lexical/finalizer nodes for provenance and static
+analysis. Those synthetic calls are **never executed as guest code**:
 
-```atto
-block {
-    val alias = telemetry.span(...);
-    try {
-        body
-    } finally {
-        alias.close_scope();
-    }
-}
-```
+1. `TypeChecker` validates the marker, one literal operation of 1..256 strict
+   UTF-8 bytes, no guest `telemetry` module/import impersonation, and a
+   synchronous, non-generator, non-actor lexical owner. It validates only the
+   typed direct observers `set_attribute`, `add_event`, `record_error`,
+   `set_status`; alias escape, shadowing, manual close, and unrelated calls
+   fail closed. This is a restricted compiler-owned protocol, **not** a
+   general `ScopedResource` implementation.
+2. `OwnershipChecker` checks the real user body and typed observer arguments
+   without constructing a movable guest `SpanScope` owner.
+3. `OresEvalRootNode` intercepts the marker, creates/reuses a logical
+   `NativeTelemetryScopes.Carrier` held in private lexical `Env` metadata,
+   obtains a private `SpanToken`, executes the user body behind a tail-call
+   barrier, and closes the token in a Java `finally`. No token is added to
+   a guest-visible `Env.Slot`. An outermost scope retires its carrier.
+   Normal return and nested unwinding use the same runtime-owned close path.
+4. The native Java core enforces 64-deep LIFO, exact-once close, cross-carrier
+   denial, strict UTF-8 operation validation, optional host-only dormant
+   recording toggles, and bounded typed observer accounting. **No production
+   span attribute/event export, OTLP, or authorized Truffle attach exists.**
 
-This is *conceptual* lowered Atto source: the real implementation builds
-equivalent existing AST nodes, rather than rewrites user source text.
-The resource expression is evaluated exactly once, cleanup is scoped to
-the original binding, and user-visible return/control follows the existing
-`try/finally` evaluator. Explicit `*.borrow()` retains its separate
-`UsingBorrowStmt` and the existing typechecker/evaluator fail-closed gate.
-Other unrecognized resource factories still parse-reject.
+The native per-context tracer is **disabled by default**. The synthetic
+`close_scope()` call in the AST is not a guest operation. This remains a
+source implementation candidate until the full suite actually executes.
 
-## Candidate executable tests
+Transport `using request.borrow()` remains a separate `UsingBorrowStmt`
+with its existing fail-closed loan gate; no implicit transport borrowing
+authority is added here.
 
-`src/test/java/dev/oreslang/UsingTelemetrySpanScopeTest.java` currently defines
-22 JUnit test methods (source-defined, **NOT EXECUTED on Java/Graal CI**):
+## Exact-head execution gate
 
-- lexer/parser lowering shape and exact single synthetic cleanup site
-- sync guest fallthrough, return and nested scope cleanup
-- type checker rejection if `close_scope` does not exist
-- preservation of `request.borrow()` transport-loan rejection
-- malformed alias rejection and unchanged expression calls named `using`
-- extra conditional taken/not-taken guest cleanup assertions, manual-close rejection
-- exactly one nonempty literal operation (1..256 UTF-8 bytes) matching LLVM's current narrow subset
-- fail-closed parser denial for `await`, `yield`, `select`, `task scope`, and `task {}` inside telemetry scopes
-- type-checker rejection of async, suspending, generator, and actor callables until continuation frames are integrated
-- explicit parser denial for typed `throw`, `raise`, and `panic` (these are **NOT** unwind execution receipts)
+`.github/workflows/atto-telemetry-using-exact-head.yml` runs on GraalVM
+JDK 25 and requires at least **39 executed cases**:
 
-Test guest code defines a small native Atto `telemetry.span` provider in the
-same source for **compiler-execution proof only**; it is not a real trace
-collector/exporter and does not claim disabled fast-path allocation bounds.
+- 25 `UsingTelemetrySpanScopeTest` methods (compiler + real `.atto` guest
+  output on restricted synchronous paths, negative impersonation/escape and
+  typed-observer admission tests)
+- at least one `UsingRequestBorrowScopeParserTest` transport-loan regression
+- 13 `NativeTelemetryScopesTest` host lifecycle cases
 
-## Explicit unresolved gates before promotion
+Surefire must contain all three named suites, with nonzero executed counts,
+zero failures, zero errors, and zero skipped cases. No synthetic fixture or
+source-only assertion can substitute for that receipt.
 
-1. **Run** `mvn -B -ntp -DfailIfNoTests=true -Dtest=UsingTelemetrySpanScopeTest,UsingRequestBorrowScopeParserTest clean test`
-   with GraalVM/JDK25 against the exact branch HEAD. The guarded workflow now
-   requires at least 34 executed cases (22 scoped tests, the borrow regression,
-   and 11 native continuation-lifecycle tests),
-   zero skipped/failing/error cases and both Surefire suite receipts.
-   Source Actions still fail with **zero job steps** (most recently workflow
-   `atto-telemetry-using-exact-head` run `43329579902` at Java head
-   `10cda295778311e27025c55b5c106d0069d93449` before subsequent doc edits).
-   **No real Java guest JUnit execution receipt exists.**
-2. Add a dedicated `UsingScopeStmt` or equivalent source-provenance
-   metadata if the formatter/source mapper needs to preserve original
-   `using` syntax. Current AST desugaring does **not** guarantee
-   `using` formatter round-trips or accurate `using` source spans.
-3. Add compiler-verified `ScopedResource` admission and a close contract
-   that is nonthrowing/nonsuspending for `SpanScope` plus ownership/escape
-   checks. The current method-call typecheck proves only callable
-   `close_scope()`, not its complete exceptional/async effects.
-4. Validate `using` resource scope across async `await`, task cancellation,
-   actor restarts, `?` early return, `trap` and `raise/panic` once those
-   guest effects are supported. Existing `try/finally` tests are
-   encouraging but are **not** direct `using` test evidence.
-5. Implement the actual native `.atto` trace context/span/collector API;
-   this PR does not introduce a production stdlib module or default-off
-   allocation-free, clock-free noop span yet.
-6. Real JIT instrumentation: the current Java interpreter executes guest
-   callables from `OresEvalRootNode`'s monolithic Evaluator and does not
-   currently expose individually tagged Truffle `InstrumentableNode`
-   function bodies. Truffle Instrumenter feasibility is **conditional**
-   on exposing proper per-callable tagged AST/bytecode operations with
-   source identifiers, host authorization, bounded deoptimization and
-   independent runtime tests. Do **not** claim live attach already works.
-7. Independently implement and prove LLVM full guest AOT scopes plus
-   precompiled dormant probe enable; later prove Forge, .NET Native AOT
-   and Wasm according to the common contract.
+**The 39-case Java gate is NOT EXECUTED.** The preceding Java source workflow
+[run #43334977144](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/43334977144)
+failed with **zero job steps**, before compiler or test execution. A newer
+source-head run (if it appears) is not a pass until its job steps and receipts
+are checked. No private Java source has been transferred to a new runner.
 
-## CI and security
+## Security and correctness limitations
 
-At this branch's initial head, source-org GitHub Actions workflows report
-failure with `steps=[]`: treat as **NOT EXECUTED** rather than compilation
-failure or passing tests. Do not weaken assertions, install unsafe
-fallbacks, or copy private source into a new organization without
-approved source-side authorization/security review and exact-blob proofs.
+- A compiler-marked `BlockStmt` is still an AST-lowering bridge, not a
+  dedicated `UsingSpanStmt` with full source provenance. Formatter
+  round-trip/source span fidelity remains unproven.
+- The current direct-observer subset is deliberately narrow; nested observers
+  and transitive effect calls require identity-bound MIR/ownership proofs.
+  Observer calls are *counted*, not yet exported as trace metadata.
+- `await`, `yield`, `select`, source tasks, generator/async/suspends
+  callables, and actor-scoped execution remain blocked until continuation-owned
+  frames and scheduler migration/cancellation cleanup are integrated.
+- Typed `throw`, `raise` and `panic` are still parser-rejected in this
+  compiler. Generic Java finally code is not executed actor-supervision proof.
+- The public Java method name `setEnabledFromTrustedHost` is **not itself**
+  host authentication. Keep recording disabled without an explicit authorized
+  control plane; Truffle attach/detach and source-tag/deopt proof remain P1.
+- The Java path is not equivalent to the LLVM restricted AOT subset until
+  exact-head executed guest validation and independent code review pass.
 
+## Existing LLVM acceptance receipt
 
-## Latest native LLVM evidence and Java authorization boundary
-
-LLVM [PR #1716](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1716)
-has an **executed restricted AOT** acceptance receipt at source commit
+[LLVM PR #1716](https://github.com/ores-truffle-oreslang/oreslang-source.llvm/pull/1716)
+has an executed, source-blob-verified restricted AOT receipt from source head
 `3466e3702094eaeb413382c16cdadd9a7a56161f`:
-[approved private run #43325381462](https://github.com/streempilot-test/browser-studio-e2e/actions/runs/43325381462).
-That run attested 48 exact source blobs, five positive and five negative real
-guest cases at Clang O0/O2, and a same-process trusted-host off/on/off/on
-probe toggle producing two spans with unchanged guest result 51. This is
-**dormant AOT probe activation**, not JIT insertion.
+[approved private CI #43325381462](https://github.com/streempilot-test/browser-studio-e2e/actions/runs/43325381462).
+The verified 48-file subset covered five positive/five negative compiler
+guest cases, native Clang O0/O2, and trusted host off/on/off/on activation of
+**precompiled dormant AOT probes** without a process restart. This does not
+prove dynamic JIT insertion or general async parity.
 
-The Java source allowlist file
-`.github/private-ci-approved-repositories.txt` specifies an external private
-carrier candidate but requires an independent @ORESoftware approval and
-protected-main/V3 attestation **before** any private source transfer.
-No Java-source carrier has been authorized by the changes in this PR.
-Do not substitute a synthetic local fixture, off-branch run, or zero-step
-source-org workflow for exact-head execution.
+## Runner authorization
 
-## Standalone Java runtime-owned scope primitive (not compiler-integrated)
+The Java source policy `.github/private-ci-approved-repositories.txt`
+requires independent @ORESoftware approval, immutable repository-ID review,
+and protected-main/V3 attestation **before** any private source transfer.
+Review remains requested on Java PR #2993. Neither candidate status, existing
+LLVM carrier approval, nor Actions minutes exhaustion authorizes exporting
+the Java repository to an unapproved organization.
 
-The candidate `dev.oreslang.runtime.NativeTelemetryScopes` implements
-**host-created, non-guest-visible** opaque `SpanToken` values with private
-construction. Tokens are tied to a logical continuation `Carrier` rather
-than a Java thread. The trusted host API provides:
-
-- disabled fast path reusing a carrier-owned preallocated token (no token
-  allocation, no clock read on begin/end)
-- enabled bounded 64-deep LIFO stack, cross-carrier and stale token denial
-- end exactly once even if host recording is disabled between enter/exit
-- continuation retirement draining enabled scopes once in LIFO order
-- strict UTF-8 operation validation (1..256 bytes, no unpaired surrogates)
-- host-only off/on/off/on recording toggle; no implicit network egress
-
-The new `NativeTelemetryScopesTest` defines **11 host Java JUnit tests**
-for lifecycle, limits, cancellation-style retirement, cross-carrier rejection,
-worker-thread migration, and toggle accounting. **These tests are currently
-UNEXECUTED in source CI**; they are not actual .atto guest/scheduler tests.
-The current compiler `using` lowering **still uses a guest-declared nominal
-`SpanScope` mock** and is NOT wired to this native lifecycle primitive.
-A public Java API marked `FromTrustedHost` is not itself a permission
-boundary for arbitrary host integrations; enforce real controller authority
-before any live tracing deployment.
-
-### Required integration follow-up (P0)
-
-1. Bind the parsed compiler-owned `using` marker to an unforgeable native
-   `SpanToken` and compiler-issued begin/end, not to a guest-defined
-   `telemetry.SpanScope` constructor or guest-overridable `close_scope()`.
-2. Treat `SpanToken` as opaque; no projection into generic guest objects,
-   messages, closures, returns, or persistent fields. Observers need typed
-   compiler/runtime dispatch rather than arbitrary method overrides.
-3. Attach the `Carrier` to each source Task/actor continuation and retire it
-   on cancellation/actor death; only then relax the current async/actor gates.
-4. Install authorized host-only probe controller and Truffle tags; do not
-   equate the standalone toggle unit test with same-process Atto JIT attach.
-5. Obtain exact-head GraalVM execution on an independently approved carrier,
-   with all **34 required non-skipped JUnit cases**. Keep draft until this
-   gate and runtime provenance review pass.
+**Next gate:** obtain approved Java execution receipts at the exact PR head,
+fix genuine compiler/runtime failures without skipping tests, then integrate
+continuation/actor cleanup and a separately authorized Truffle live controller.
