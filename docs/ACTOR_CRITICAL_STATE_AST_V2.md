@@ -99,7 +99,16 @@ an immutable **whole-source-set** `CodeImage` whose identity includes the
 manifest SHA-256 and every physical source-unit digest. The compiler creates
 an `ActorCodeExecutor` from the validated MIR, not a user-authored Java
 Counter handler. The caller may only attach that executor through the
-existing `ActorRuntime.spawnCodeActor(PRIVATE, ..., "Counter")` API.
+existing `ActorRuntime.spawnCodeActor(SHARED, ..., "Counter")` API.
+
+The canonical `declare actor` has `Ast.ActorKind.SHARED` identity in
+the current Java language AST. This implementation **does not change it to
+PRIVATE**. `ActorRuntime` now provisions a per-actor `ActorMemorySlice`
+for code-executor-backed SHARED actors as well as PRIVATE/UNTRUSTED actors.
+The sole extra memory allocator is the runtime-bound source executor's own
+owner-checked turn. Normal shared host actors receive no private slice.
+Source actor DATA remains shared-kind data transport, while the mutable
+guest state is actor-confined. It is not a shared mutable JVM field.
 
 On a genuine actor startup turn, `initializeActor` allocates an eight-byte
 persistent `ActorMemorySlice.PrivateMemoryBlock` and writes the default
