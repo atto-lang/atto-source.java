@@ -1,0 +1,93 @@
+name: Implicit self lookup exact-head Graal guest
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/implicit-self-lookup-exact-head.yml
+      - src/main/java/dev/oreslang/types/TypeChecker.java
+      - src/main/java/dev/oreslang/types/OwnershipChecker.java
+      - src/main/java/dev/oreslang/nodes/OresEvalRootNode.java
+      - src/test/java/dev/oreslang/ImplicitSelfLookupHardeningTest.java
+      - docs/IMPLICIT_ACTOR_METHOD_LOOKUP_V1.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: implicit-self-java-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  executable-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact contributor PR head, not synthetic merge commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify immutable checked-out source and clean Git tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          printf 'IMPLICIT_SELF_SOURCE_COMMIT=%s\n' "$EXPECTED_HEAD"
+          printf 'IMPLICIT_SELF_SOURCE_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+          bash scripts/verify-source-tree.sh "$EXPECTED_HEAD"
+
+      - name: Set up Java 25 / GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+
+      - name: Execute all focused type, ownership and real Graal guest cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=ImplicitSelfLookupHardeningTest \
+            -DfailIfNoTests=true test
+
+      - name: Require non-vacuous unskipped JUnit/Surefire XML
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          path = Path("target/surefire-reports/TEST-dev.oreslang.ImplicitSelfLookupHardeningTest.xml")
+          if not path.is_file():
+              raise SystemExit("NO_EXECUTED_TEST_RECEIPT: missing focused Surefire XML")
+          root = ET.parse(path).getroot()
+          cases = root.findall(".//testcase")
+          if root.tag != "testsuite" or root.attrib.get("name") != "dev.oreslang.ImplicitSelfLookupHardeningTest":
+              raise SystemExit("INVALID_TEST_RECEIPT: unexpected suite identity")
+          count = int(root.attrib.get("tests", "-1"))
+          failures = int(root.attrib.get("failures", "-1"))
+          errors = int(root.attrib.get("errors", "-1"))
+          skipped = int(root.attrib.get("skipped", "-1"))
+          if (count, failures, errors, skipped) != (22, 0, 0, 0) or len(cases) != 22:
+              raise SystemExit(f"INCOMPLETE_TEST_RECEIPT: tests={count} failures={failures} errors={errors} skipped={skipped} testcase_elements={len(cases)}")
+          names = [case.attrib.get("name") for case in cases]
+          if any(not name for name in names) or len(set(names)) != len(names):
+              raise SystemExit("INVALID_TEST_RECEIPT: duplicate or missing testcase names")
+          print(f"IMPLICIT_SELF_JAVA_GRAAL_EXECUTED=PASS tests={count} failures={failures} errors={errors} skipped={skipped}")
+          PY
+
+      - name: Immutable test receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'IMPLICIT_SELF_EXECUTED_HEAD=%s\n' "$(git rev-parse HEAD)"
+          printf 'IMPLICIT_SELF_EXECUTED_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+          printf 'RUN_ID=%s RUN_ATTEMPT=%s RUNNER_NAME=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_NAME"
