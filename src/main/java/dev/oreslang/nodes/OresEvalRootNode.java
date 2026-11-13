@@ -7111,7 +7111,7 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.CallExpr implicitSelfMethodCall(Ast.CallExpr call, Env env) {
             if (call.origin() != Ast.CallOrigin.DIRECT
                     || !(call.callee() instanceof Ast.NameExpr name)
-                    || isBooleanIntrinsicName(name.name())
+                    || CallableSelector.reservedImplicitReceiverCallName(name.name())
                     || env.lookup(name.name()) != Env.MISSING) return null;
             // Lookup uses the *declaring lexical class*, not the dynamic
             // receiver's subclass. The selected explicit call still performs
