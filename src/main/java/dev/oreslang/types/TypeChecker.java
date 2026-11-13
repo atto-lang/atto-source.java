@@ -2071,12 +2071,17 @@ public final class TypeChecker {
         // in a scope advertised as equivalent to that native subset.
         if (create.arguments().size() != 1
                 || !(create.arguments().getFirst() instanceof Ast.LiteralExpr operation)
-                || !(operation.value() instanceof String operationName)
-                || operationName.isEmpty()
-                || operationName.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 256) {
+                || !(operation.value() instanceof String operationName)) {
             throw new IllegalArgumentException(
                     "using telemetry.span requires one nonempty literal operation"
                             + " name of at most 256 UTF-8 bytes (LLVM AOT subset)");
+        }
+        try {
+            dev.oreslang.runtime.NativeTelemetryScopes.validateOperationLiteral(operationName);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalArgumentException(
+                    "using telemetry.span requires a well-formed nonempty literal"
+                            + " operation of at most 256 UTF-8 bytes", invalid);
         }
         // The scope alias is an affine capability, not an ordinary
         // shadowable binding. Reject collisions before the lexical binding
