@@ -19,6 +19,7 @@ top_level_item  = annotated_module_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
+                | generator_decl
                 | class_decl
                 | interface_decl
                 | trait_decl
@@ -48,6 +49,14 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 callable_kind   = "fnc" | "routine" ;
+
+generator_decl  = { annotation } visibility [ "async" | "suspend" | "suspends" ]
+                  generator_marker callable_name [ generic_params ]
+                  ( "(" [ param_list ] ")" return_spec block
+                  | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
+generator_marker = "gen" "*" | "generator" "*" ;
+(* Legacy compatibility also permits generator/gen* in callable-modifier
+   position around fnc/routine. Canonical source omits fnc/routine. *)
 
 actor_callable_decl
                 = { annotation } visibility { "async" | "nlex" | "structural" | "shared" } "actor" "fnc" callable_name [ generic_params ]
