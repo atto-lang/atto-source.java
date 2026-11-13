@@ -51,6 +51,45 @@ multi-file source linker and matching MIR are implemented. Neither
 the earlier Java stateless guest execution nor the older LLVM
 legacy-field native Counter proves the V2 guest runnable.
 
+## New manifest-bound typed MIR v1 (STILL NOT EXECUTABLE)
+
+`PackageNamespaceBuild.lowerCriticalStateMirV1()` now snapshots the
+complete canonical `.atto.pkg.toml` source set, derives the same nominal
+actor/receiver/state witness as the existing audit, and produces a private-
+constructor `ActorCriticalStateMirV1.Plan`. The plan retains package identity,
+actor identity, source-unit locations, manifest SHA-256 and each source SHA-256.
+It contains no guest-reachable mutable state pointer, capability or executor.
+
+This first **narrow** typed instruction sequence is:
+
+1. `CHECKED_ADD_MAIL_I64`: take the explicitly owned `ActorMail<int>`
+   operand and update precisely one `let int` field under a write loan.
+2. `COPY_I64_TO_ACTOR_OUTPUT`: copy that field under a read loan, then
+   send the scalar output without exporting a state alias.
+3. `STOP_ON_MAIL_I64`: evaluate the canonical literal equality and
+   request only the current actor's `self.end()`.
+
+It requires **exactly** two verified critical scopes in that order, private
+`external mtd receive` ingress, one scalar state field, and one checked
+stop branch. A literal write increment, extra callback, wrong field, mutable
+read, extra statement, or alias shadowing the receiver/message is rejected
+before any executable compiler path is available. This plan is not intended
+to be extensible by mutation; it is a bounded front-end proof of source
+operands and effect shape only.
+
+**No actual critical loan, generation fence or JVM/GraalVM guest execution
+has been granted by this change.** Ordinary `build()`, standalone
+`compile(Map)` and `TypeChecker.check` remain fail-closed. The dedicated
+`actor-critical-mir-junit.yml` workflow runs two targeted JDK25 JUnit
+suites, requires positive test counts and zero skipped tests, and prints
+`GUEST_NOT_EXECUTED=true`. Runner admission must be verified separately.
+
+The next executable step is lowerer-generated, actor-owned state layout and
+authenticated scope acquisition/release inside the **existing** runtime
+`ActorCodeExecutor` mailbox turn. It must not use a hand-written Java
+Counter handler, a trusted host replay loop, or a synthetic expected-output
+oracle to stand in for `.atto` execution.
+
 ## Manifest-owned semantic preflight
 
 The `PackageNamespaceBuild.auditDeclaredActors()` pipeline now runs
