@@ -1261,7 +1261,23 @@ public final class Parser {
                     throw error(criticalToken,
                             "critical actor method cannot have modifiers or annotations");
                 }
+                int criticalBodyStartToken = current;
                 Ast.MethodDecl parsed = parseMethod(List.of(), mods);
+                // No nested await or cooperative yield can run while an
+                // actor-owned exclusive state loan is held. Scan the complete
+                // parsed method token span, including lambda/defer/loop bodies;
+                // merely checking the outer method's suspends flag is unsafe.
+                // Once checked MIR exists it must enforce this transitively
+                // through the complete call graph as well.
+                for (int i = criticalBodyStartToken; i < current; i++) {
+                    Token token = tokens.get(i);
+                    if (token.type() == AWAIT
+                            || (token.type() == RT && i + 1 < current
+                                    && tokens.get(i + 1).lexeme().equals("cooperate"))) {
+                        throw error(token,
+                                "critical state loan cannot await or cooperate");
+                    }
+                }
                 if (parsed.name().equals("receive") || parsed.name().equals("on_start")
                         || parsed.name().equals("tear_down") || parsed.name().equals("handle_state")
                         || parsed.name().equals("on_panic")) {

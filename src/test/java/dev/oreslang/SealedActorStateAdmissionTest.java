@@ -173,6 +173,27 @@ final class SealedActorStateAdmissionTest {
                 """, "expected method name");
     }
 
+    @Test void criticalCannotSuspendInsideNestedBodies() {
+        rejected("""
+                define actor Ledger as
+                  critical increment(): void {
+                    await compute();
+                    return;
+                  }
+                end
+                """, "critical state loan cannot await or cooperate");
+        rejected("""
+                define actor Ledger as
+                  critical increment(): void {
+                    self.handle_state(|mut s| -> {
+                      await compute();
+                    });
+                    return;
+                  }
+                end
+                """, "critical state loan cannot await or cooperate");
+    }
+
     @Test void criticalStateLoanLambdaPreservesMutableAlias() {
         var parsed = Parser.parse("""
                 define actor Ledger as
