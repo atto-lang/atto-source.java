@@ -10,6 +10,8 @@ on:
       - "src/test/java/dev/oreslang/runtime/HttpPooledWorkerAdmissionFenceTest.java"
       - "src/test/java/dev/oreslang/runtime/HttpPooledWorkerGenerationRegistryTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorCarrierQuiescencePollingTest.java"
+      - "tools/ci/HttpWorkerLifetimeSmoke.java"
+      - "tools/test-http-worker-lifetime-smoke.sh"
       - ".github/workflows/http-actor-dispatch-handoff.yml"
 permissions:
   contents: read
@@ -39,6 +41,9 @@ jobs:
           java-version: "25"
           distribution: graalvm
           cache: maven
+      - name: Compile and exercise exact production worker gates without Maven
+        run: |
+          bash tools/test-http-worker-lifetime-smoke.sh
       - name: Execute native HTTP host and actor handoff regressions
         run: |
           mvn -B -ntp -Dtest=NativeHttpTest,ActorCarrierQuiescencePollingTest,HttpPooledWorkerAdmissionFenceTest,HttpPooledWorkerGenerationRegistryTest test
