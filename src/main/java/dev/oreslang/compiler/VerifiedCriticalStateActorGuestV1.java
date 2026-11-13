@@ -93,15 +93,15 @@ final class VerifiedCriticalStateActorGuestV1 implements ActorRuntime.ActorCodeE
             String actorTypeName, ActorRuntime.ActorContext<Object> context) {
         validateActorType(actorTypeName);
         Objects.requireNonNull(context, "actor initialization context");
-        if (context.kind() != ActorRuntime.ActorKind.PRIVATE
+        if (context.kind() != ActorRuntime.ActorKind.SHARED
                 || ActorRuntime.currentActorRuntime() != context.runtime()
                 || !ActorRuntime.currentActorId().orElseThrow().equals(context.self().id())
                 || context.codeImage().orElseThrow() != image
                 || context.currentMail().isPresent()) {
-            throw new SecurityException("declared actor state requires its own private startup turn");
+            throw new SecurityException("declared actor state requires its own declared SHARED startup turn");
         }
         ActorRuntime.ActorMemorySlice slice = context.privateMemory().orElseThrow(
-                () -> new SecurityException("private actor has no arena-backed state slice"));
+                () -> new SecurityException("declared actor has no owner-backed state slice"));
         if (!slice.owner().equals(context.self().id()))
             throw new SecurityException("actor state owner does not match current runtime turn");
         ActorRuntime.PrivateMemoryBlock block = slice.allocatePrivateBytes(Long.BYTES);
@@ -202,7 +202,7 @@ final class VerifiedCriticalStateActorGuestV1 implements ActorRuntime.ActorCodeE
                     || ActorRuntime.currentActorRuntime() != runtime
                     || !owner.equals(ActorRuntime.currentActorId().orElse(null))
                     || context.codeImage().orElse(null) != codeImage
-                    || context.kind() != ActorRuntime.ActorKind.PRIVATE
+                    || context.kind() != ActorRuntime.ActorKind.SHARED
                     || context.self().generation() != generation
                     || !owner.equals(context.self().id())
                     || !owner.equals(block.owner())) {
