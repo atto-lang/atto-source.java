@@ -190,12 +190,13 @@ public final class NativeHttp implements AutoCloseable {
         private Handler(ActorRuntime.ActorCodeExecutor code, String type, ActorRuntime.ActorKind kind) {
             this.code = code; this.type = type; this.kind = kind;
         }
-        private Worker[] workers;
-        // Replaced incarnations can outlive their pool slot while serving
-        // other listeners. Keep every generation until physical retirement.
+        private HttpPooledWorkerListenerSlots<Server, Worker> listenerSlots;
+        // Slots are listener-owned, even if the Handler is passed to several
+        // listeners. Every displaced actor generation remains globally tracked
+        // until physical carrier retirement; closing one listener cannot
+        // accidentally seal an actor serving another listener.
         private final HttpPooledWorkerGenerationRegistry<Worker> generations =
                 new HttpPooledWorkerGenerationRegistry<>();
-        private int cursor;
         private long created, reused;
         public boolean isolated() { return kind == ActorRuntime.ActorKind.PRIVATE; }
         private void supervisor() {
@@ -207,20 +208,21 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (NativeHttp.this) {
                 if (closed) throw new IllegalStateException("HTTP runtime closed");
                 Handler pool = new Handler(code, type, kind);
-                pool.workers = new Worker[size];
+                pool.listenerSlots = new HttpPooledWorkerListenerSlots<>(size);
                 pools.add(pool);
                 return pool;
             }
         }
         public synchronized long created() { supervisor(); return created; }
         public synchronized long reused() { supervisor(); return reused; }
-        private synchronized Worker worker() {
-            if (closed || generations.stopping()) {
-                throw new IllegalStateException("HTTP runtime or worker pool closed");
+        private synchronized Worker worker(Server listener) {
+            if (closed || generations.stopping() || listener.stopped) {
+                throw new IllegalStateException("HTTP runtime, listener or worker pool closed");
             }
-            int slot = cursor;
-            cursor = (cursor + 1) % workers.length;
-            Worker worker = workers[slot];
+            // The slot registry is keyed by Server reference identity. Two
+            // listeners using the SAME Handler never receive the same ActorRef.
+            var selected = listenerSlots.next(listener);
+            Worker worker = selected.previous();
             if (worker != null && !worker.actor.done().isDone()) {
                 // FIRST check the admission fence. A worker sealed by another
                 // listener is intentionally stopping and MUST be replaced,
@@ -242,19 +244,25 @@ public final class NativeHttp implements AutoCloseable {
                 // historical registry until physical retirement. This slot
                 // can immediately point to a fresh incarnation.
             }
-            worker = new Worker(context.actors().spawnCodeActor(kind, code, type));
+            worker = new Worker(context.actors().spawnCodeActor(kind, code, type), listener);
             if (!worker.admission.tryReserve()) {
                 throw new IllegalStateException("new HTTP worker was unexpectedly sealed");
             }
-            // Registration precedes publishing the replacement slot. stopPool
-            // takes the Handler monitor before closing the registry; a worker
-            // cannot spawn after its final-generation snapshot.
+            // Registration precedes slot publication. stopPool takes this
+            // Handler monitor before taking the generation snapshot.
             if (!generations.register(worker)) {
                 worker.admission.seal();
+                worker.admission.release();
                 worker.actor.cancel();
                 throw new RejectedExecutionException("HTTP worker pool stopping");
             }
-            workers[slot] = worker;
+            // Even a worker spawned during a concurrent listener shutdown
+            // must be owned by that listener and included in its physical
+            // carrier barrier. Its accepted request retains the dispatch
+            // lease until this worker either attaches or is rejected.
+            listener.pooledWorkers.add(worker);
+            worker.served.add(listener);
+            listenerSlots.replace(listener, selected, worker);
             created++;
             Worker attached = worker;
             worker.actor.done().whenCompleteRuntime((ignored, failure) -> {
@@ -315,10 +323,17 @@ public final class NativeHttp implements AutoCloseable {
             generations.retire(attached);
         }
 
+        private synchronized void forgetListener(Server listener) {
+            if (listenerSlots != null && listener.stopped) {
+                listenerSlots.forget(listener);
+            }
+        }
+
         private void stopPool() {
             List<Worker> snapshot;
             synchronized (this) {
                 snapshot = generations.stopAndSnapshot();
+                if (listenerSlots != null) listenerSlots.clear();
             }
             RuntimeException failure = null;
             for (Worker worker : snapshot) {
@@ -334,6 +349,7 @@ public final class NativeHttp implements AutoCloseable {
         }
         private final class Worker {
             final ActorRuntime.ActorRef<Object> actor;
+            final Server owner;
             final Set<State> requests = ConcurrentHashMap.newKeySet();
             final Set<Server> served = ConcurrentHashMap.newKeySet();
             final HttpPooledWorkerAdmissionFence admission =
@@ -342,7 +358,10 @@ public final class NativeHttp implements AutoCloseable {
             // generation. The ActorRuntime then seals ALL actor messages,
             // including non-HTTP continuations, before finalizing physically.
             final AtomicBoolean shutdownStopRequested = new AtomicBoolean();
-            Worker(ActorRuntime.ActorRef<Object> actor) { this.actor = actor; }
+            Worker(ActorRuntime.ActorRef<Object> actor, Server owner) {
+                this.actor = actor;
+                this.owner = owner;
+            }
         }
         public void dispatch(Exchange exchange) {
             if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
@@ -368,10 +387,10 @@ public final class NativeHttp implements AutoCloseable {
             }
             long perf = CorePerf.start();
             try {
-                if (workers != null) {
+                if (listenerSlots != null) {
                     Worker worker = null;
                     try {
-                        worker = worker();
+                        worker = worker(state.server);
                         boolean denyWorkerDispatch;
                         synchronized (state) {
                             // Recheck after choosing the worker; a concurrent
@@ -379,6 +398,10 @@ public final class NativeHttp implements AutoCloseable {
                             denyWorkerDispatch = state.terminal
                                     || !mayBeginDispatch(closed, state.server.stopped);
                             if (!denyWorkerDispatch) {
+                                if (worker.owner != state.server) {
+                                    throw new IllegalStateException(
+                                            "HTTP worker must be owned by the request listener");
+                                }
                                 state.poolWorker = worker;
                                 worker.requests.add(state);
                                 // Track ALL previously associated pooled workers
@@ -749,18 +772,14 @@ public final class NativeHttp implements AutoCloseable {
                     // actor mailbox. Never strand an accepted send by sealing
                     // its actor before it has finished transferring the token.
                     if (worker.admission.quiescent()) {
-                        // A Handler pool may be used by multiple HTTP listeners.
-                        // Stopping this actor would ALSO seal another listener's
-                        // in-flight continuations. Once all pre-seal handoffs
-                        // have settled, the historical association set is a
-                        // conservative cross-listener ownership receipt.
-                        // Until per-listener actor ownership is implemented,
-                        // fail this shutdown explicitly rather than canceling
-                        // unrelated live guest work or claiming false success.
-                        if (worker.served.stream().anyMatch(other -> other != this)) {
+                        // Defensive ownership proof. Worker slots are scoped to
+                        // a single Server identity, even when multiple Servers
+                        // share the Handler. A foreign worker must fail closed
+                        // before any actor-level mailbox seal can touch it.
+                        if (worker.owner != this ||
+                                worker.served.stream().anyMatch(other -> other != this)) {
                             failDrain(new IllegalStateException(
-                                    "HTTP pooled actor generation still shared with another"
-                                    + " listener; independent physical drain is unsupported"));
+                                    "HTTP worker ownership crossed listener boundary"));
                             return;
                         }
                         if (worker.shutdownStopRequested.compareAndSet(false, true)) {
