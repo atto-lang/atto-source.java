@@ -1292,7 +1292,7 @@ public final class OwnershipChecker {
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
                     requireUsable(receiverState, receiverName.name(), false);
                     Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
-                    Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
                     if (klass != null) {
                         ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                         if (target != null) {
@@ -1611,12 +1611,14 @@ public final class OwnershipChecker {
                 boolean primitiveKey = !key.inferArguments()
                         && key.arguments().isEmpty()
                         && (key.name().equals("string") || key.name().equals("String")
-                                || key.name().equals("Symbol"));
+                                || key.name().equals("Symbol")
+                                || key.name().equals("Bytes") && findClass("Bytes") == null);
                 boolean primitiveValue = !value.inferArguments()
                         && value.arguments().isEmpty()
-                        && java.util.Set.of(
+                        && (java.util.Set.of(
                                 "int", "bool", "Bool", "string", "String", "Symbol")
-                                .contains(value.name());
+                                .contains(value.name())
+                                || value.name().equals("Bytes") && findClass("Bytes") == null);
                 if (!primitiveKey || !primitiveValue) {
                     throw error("unproved typed empty Map key/value domain " + witness);
                 }
@@ -1710,6 +1712,18 @@ public final class OwnershipChecker {
                 checkExpr(argument, scope, false);
             }
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+        }
+        // Bytes v1 constructors return a fresh, uniquely owned immutable value.
+        if (call.callee() instanceof Ast.MemberExpr bytesCtor
+                && bytesCtor.receiver() instanceof Ast.NameExpr bytesName
+                && bytesName.name().equals("Bytes")
+                && scope.lookup("Bytes") == null
+                && findClass("Bytes") == null
+                && (bytesCtor.member().equals("empty")
+                        || bytesCtor.member().equals("from_list")
+                        || bytesCtor.member().equals("from_string"))) {
+            for (Ast.Expr argument : call.arguments()) checkExpr(argument, scope, false);
+            return new ValueInfo(Ast.TypeRef.simple("Bytes"), ValueKind.MOVE_ONLY, null);
         }
         // Exact built-in NIO2 provenance, independently rechecked in
         // TypeChecker: a source-owned listener yields an affine connection.
@@ -2006,6 +2020,52 @@ public final class OwnershipChecker {
             if (concreteReceiver == null) {
                 concreteReceiver = receiverValue.type.isBorrow()
                         ? receiverValue.type.borrowedTarget() : receiverValue.type;
+            }
+            // Bytes v1 (spec chapter 26): read-only members never consume the
+            // receiver; equals/concat only read their argument. Results are
+            // fresh owned values (move-only Bytes/List) or copyable scalars.
+            if (concreteReceiver != null && !concreteReceiver.isBorrow()
+                    && concreteReceiver.name().equals("Bytes")
+                    && concreteReceiver.arguments().isEmpty()
+                    && findClass("Bytes") == null) {
+                ValueInfo bytesResult = switch (member.member()) {
+                    case "size", "byte_at", "index_of" ->
+                            new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
+                    case "equals" ->
+                            new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    case "slice", "concat", "copy" ->
+                            new ValueInfo(Ast.TypeRef.simple("Bytes"), ValueKind.MOVE_ONLY, null);
+                    case "to_list" -> new ValueInfo(
+                            new Ast.TypeRef("List", List.of(Ast.TypeRef.simple("int")), false),
+                            ValueKind.MOVE_ONLY, null);
+                    case "to_utf8" -> new ValueInfo(
+                            new Ast.TypeRef("Option", List.of(Ast.TypeRef.simple("string")), false),
+                            ValueKind.COPY, null);
+                    default -> null;
+                };
+                if (bytesResult != null) {
+                    for (Ast.Expr argument : call.arguments()) checkExpr(argument, scope, false);
+                    return bytesResult;
+                }
+            }
+            // Typed Map lookups only READ their key: a move-only Bytes key is
+            // borrowed, never consumed. Map.set still moves key and value in.
+            if (concreteReceiver != null
+                    && concreteReceiver.name().equals("Map")
+                    && concreteReceiver.arguments().size() == 2
+                    && findClass("Map") == null
+                    && call.arguments().size() == 1
+                    && (member.member().equals("get_optional")
+                            || member.member().equals("delete"))) {
+                checkExpr(call.arguments().getFirst(), scope, false);
+                if (member.member().equals("delete")) {
+                    return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                }
+                Ast.TypeRef mapValue = concreteReceiver.arguments().get(1);
+                return new ValueInfo(
+                        new Ast.TypeRef("Option", List.of(mapValue), false),
+                        isCopyType(mapValue) ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                        null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
@@ -4739,7 +4799,7 @@ public final class OwnershipChecker {
             Ast.TypeRef key = concrete.arguments().get(0);
             Ast.TypeRef value = concrete.arguments().get(1);
             boolean validKey = !key.inferArguments() && key.arguments().isEmpty()
-                    && java.util.Set.of("string", "String", "Symbol").contains(key.name());
+                    && java.util.Set.of("string", "String", "Symbol", "Bytes").contains(key.name());
             boolean validValue = !value.inferArguments() && value.arguments().isEmpty()
                     && java.util.Set.of("int", "bool", "Bool", "string", "String", "Symbol")
                             .contains(value.name());
