@@ -52,7 +52,7 @@ public final class NativeTelemetryScopes {
 
     public record Snapshot(long started, long ended, long active,
                            long cumulativeNanos, long rejected,
-                           long observerCalls) { }
+                           long observerCalls, long dropped) { }
 
     private final AtomicBoolean enabled = new AtomicBoolean();
     private final AtomicLong started = new AtomicLong();
@@ -61,6 +61,7 @@ public final class NativeTelemetryScopes {
     private final AtomicLong cumulativeNanos = new AtomicLong();
     private final AtomicLong rejected = new AtomicLong();
     private final AtomicLong observerCalls = new AtomicLong();
+    private final AtomicLong dropped = new AtomicLong();
 
     /** Allocate once when a trusted runtime creates a logical continuation. */
     public Carrier createCarrierForTrustedRuntime() {
@@ -95,9 +96,15 @@ public final class NativeTelemetryScopes {
             return carrier.disabledToken;
         }
         synchronized (carrier) {
-            if (carrier.retired || carrier.stack.size() >= MAX_DEPTH) {
+            if (carrier.retired) {
                 rejected.incrementAndGet();
-                throw new IllegalStateException("telemetry continuation retired or full");
+                throw new IllegalStateException("telemetry continuation retired");
+            }
+            if (carrier.stack.size() >= MAX_DEPTH) {
+                // Probe budget is not application authority. Keep the guest
+                // result unchanged and close this nested scope as a no-op.
+                dropped.incrementAndGet();
+                return carrier.disabledToken;
             }
             SpanToken token = new SpanToken(carrier, System.nanoTime(), operation, false);
             carrier.stack.push(token);
@@ -165,8 +172,8 @@ public final class NativeTelemetryScopes {
             }
             if (token.disabled) return;
             if (token.observerCalls >= 256) {
-                rejected.incrementAndGet();
-                throw new IllegalStateException("native SpanScope observer budget exhausted");
+                dropped.incrementAndGet();
+                return;
             }
             token.observerCalls++;
             observerCalls.incrementAndGet();
@@ -195,7 +202,8 @@ public final class NativeTelemetryScopes {
 
     public Snapshot snapshotForTrustedHost() {
         return new Snapshot(started.get(), ended.get(), active.get(),
-                cumulativeNanos.get(), rejected.get(), observerCalls.get());
+                cumulativeNanos.get(), rejected.get(), observerCalls.get(),
+                dropped.get());
     }
 
     private void finish(SpanToken token) {
