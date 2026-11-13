@@ -108,4 +108,31 @@ final class NamespaceReceiverOwnershipTest {
                 error.getMessage());
     }
 
+
+
+    @Test
+    void localOrdinaryClassCannotClaimForeignActorEvenWithSameShortName() {
+        var sourceSet = Map.of(
+                "src/foo.atto", Parser.parse("use namespace foo; declare actor Worker1;"),
+                "src/bar.atto", Parser.parse("use namespace bar; "
+                        + "pub define class Worker1 as end "
+                        + "pub mtd (Worker1 self) big_ly(): void { return; }"));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet(PACKAGE, sourceSet));
+        assertTrue(error.getMessage().contains("has no nominal actor"), error.getMessage());
+        assertTrue(!error.getMessage().contains("EXTERNAL_RECEIVER_NAMESPACE_MISMATCH"),
+                error.getMessage());
+    }
+
+    @Test
+    void legacyNameFirstMethodStillCannotAttachAcrossNamespaces() {
+        var sourceSet = Map.of(
+                "src/foo.atto", Parser.parse("namespace foo; declare actor Worker1;"),
+                "src/bar.atto", Parser.parse("namespace bar; "
+                        + "define mtd big_ly(Worker1 self)(): void { return; }"));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> ActorReceiverBinder.bindSourceSet(PACKAGE, sourceSet));
+        assertTrue(error.getMessage().contains("EXTERNAL_RECEIVER_NAMESPACE_MISMATCH"),
+                error.getMessage());
+    }
 }
