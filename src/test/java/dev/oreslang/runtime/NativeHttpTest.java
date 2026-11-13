@@ -489,6 +489,99 @@ class NativeHttpTest {
                         + output.toString(StandardCharsets.UTF_8));
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(45)
+    void firstListenerCannotGracefullyStopActorStillSharedBySecondListener() throws Exception {
+        // Both listeners have used the SAME actual Atto worker generation
+        // before listener A starts shutdown. A must fail closed instead of
+        // sealing B's in-flight/future guest actor work. B remains usable.
+        var firstPort = new CompletableFuture<Integer>();
+        var secondPort = new CompletableFuture<Integer>();
+        var failedDrain = new CompletableFuture<Void>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] bytes, int off, int len) {
+                super.write(bytes, off, len);
+                String text = toString(StandardCharsets.UTF_8);
+                int newline = text.lastIndexOf('\n');
+                if (newline < 0) return;
+                String complete = text.substring(0, newline + 1);
+                var ports = complete.lines().filter(line -> line.matches("[0-9]+"))
+                        .map(Integer::parseInt).toList();
+                if (!ports.isEmpty() && !firstPort.isDone()) firstPort.complete(ports.get(0));
+                if (ports.size() >= 2 && !secondPort.isDone()) secondPort.complete(ports.get(1));
+                if (complete.contains("shared-shutdown-rejected\n")) failedDrain.complete(null);
+            }
+        };
+        String source = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    await request.respond(200, "text/plain", "ok");
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val first = http.listen("127.0.0.1", 0, 4, 1024, 5000);
+                  val second = http.listen("127.0.0.1", 0, 4, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(1);
+                  stdio.println(first.port);
+                  stdio.println(second.port);
+                  val firstRequest = await first.accept();
+                  val firstCompleted = firstRequest.completion;
+                  handler.dispatch(rt mut borrow firstRequest);
+                  await firstCompleted;
+                  val secondRequest = await second.accept();
+                  val secondCompleted = secondRequest.completion;
+                  handler.dispatch(rt mut borrow secondRequest);
+                  await secondCompleted;
+                  try {
+                    await first.shutdown(0);
+                    stdio.println("UNSAFE SHARED SHUTDOWN SUCCEEDED");
+                  } catch (err) {
+                    stdio.println("shared-shutdown-rejected");
+                  }
+                  val nextRequest = await second.accept();
+                  val nextCompleted = nextRequest.completion;
+                  handler.dispatch(rt mut borrow nextRequest);
+                  await nextCompleted;
+                  await second.shutdown(0);
+                  stdio.println("other-listener-still-served");
+                  return;
+                }
+                """;
+        try (Context context = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK)
+                .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of())
+                .out(output).build();
+             ExecutorService clients = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> client = clients.submit(() -> {
+                try {
+                    int a = firstPort.get(10, TimeUnit.SECONDS);
+                    int b = secondPort.get(10, TimeUnit.SECONDS);
+                    assertNotEquals(a, b);
+                    assertEquals(200, request(a, "GET", "/", "").statusCode());
+                    assertEquals(200, request(b, "GET", "/", "").statusCode());
+                    failedDrain.get(15, TimeUnit.SECONDS);
+                    assertEquals(200, request(b, "GET", "/", "").statusCode(),
+                            "B must remain usable after A's guarded shutdown");
+                } catch (Exception failure) {
+                    throw new CompletionException(failure);
+                }
+            });
+            try {
+                context.eval(Source.newBuilder(OresLanguage.ID, source,
+                        "native-http-shared-ownership-guard.atto").build());
+                client.get(30, TimeUnit.SECONDS);
+            } finally {
+                client.cancel(true);
+            }
+        }
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(failedDrain.isDone(), "A never rejected unsafe global actor stop: " + text);
+        assertFalse(text.contains("UNSAFE SHARED SHUTDOWN SUCCEEDED"), text);
+        assertTrue(text.contains("other-listener-still-served"), text);
+    }
+
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
         assertEquals(List.of(), NativeHttp.segments("/"));
         assertEquals(List.of("😀"), NativeHttp.segments("/😀"));
