@@ -93,6 +93,111 @@ final class ActorStreamPipeExecutionTest {
                 """));
     }
 
+
+    private static String threeActorNamedPipelines() {
+        return """
+                define enum Signal as
+                    Data: int = 1
+                    Result: int = 2
+                end
+                define pattern PipeMessages as
+                    Signal.Data
+                    Signal.Result
+                end
+                define actor Source as
+                    receive(ActorMail<PipeMessages> mail): void {
+                        match mail.value over
+                            on Signal.Data n -> {
+                                self.forward(Signal.Data(n));
+                            }
+                            on Signal.Result n -> {
+                                self.end();
+                            }
+                        end
+                        return;
+                    }
+                end
+                define actor Transform as
+                    receive(ActorMail<PipeMessages> mail): void {
+                        match mail.value over
+                            on Signal.Data n -> {
+                                self.forward(Signal.Data(n + 1));
+                            }
+                            on Signal.Result n -> {
+                                self.backward(Signal.Result(n));
+                                self.end();
+                            }
+                        end
+                        return;
+                    }
+                end
+                define actor Sink as
+                    receive(ActorMail<PipeMessages> mail): void {
+                        match mail.value over
+                            on Signal.Data n -> {
+                                stdio.stdout.write(n);
+                                self.backward(Signal.Result(n));
+                                self.end();
+                            }
+                            on Signal.Result n -> {
+                                self.end();
+                            }
+                        end
+                        return;
+                    }
+                end
+                pub async routine main(): void {
+                    val sourceOne = spawn Source();
+                    val transformOne = spawn Transform();
+                    val sinkOne = spawn Sink();
+                    val symbolic = sourceOne | transformOne | sinkOne;
+                    symbolic.send(Signal.Data(41));
+                    await symbolic.get_done();
+
+                    val sourceTwo = spawn Source();
+                    val transformTwo = spawn Transform();
+                    val sinkTwo = spawn Sink();
+                    val keyword = sourceTwo pipe transformTwo pipe sinkTwo;
+                    keyword.send(Signal.Data(42));
+                    await keyword.get_done();
+                    return;
+                }
+                """;
+    }
+
+    @Test void namedActorRefsComposeWithBothPipeSpellingsAndPhysicallyFinish() throws Exception {
+        assertEquals("4243", execute(threeActorNamedPipelines()));
+    }
+
+    @Test void mixedSymbolicAndKeywordPipeStagesAreOneActorGraph() throws Exception {
+        String source = threeActorNamedPipelines()
+                .replace("sourceOne | transformOne | sinkOne",
+                        "sourceOne | transformOne pipe sinkOne");
+        assertNotEquals(threeActorNamedPipelines(), source);
+        assertEquals("4243", execute(source));
+    }
+
+    @Test void namedSymbolicPipeRejectsScalarStageAtTypechecking() {
+        String invalid = threeActorNamedPipelines()
+                .replace("sourceOne | transformOne | sinkOne",
+                        "sourceOne | 123 | sinkOne");
+        assertNotEquals(threeActorNamedPipelines(), invalid);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+    }
+
+    @Test void integerVariableBitwiseOrKeepsItsOriginalMeaning() throws Exception {
+        assertEquals("77", execute("""
+                pub async routine main(): void {
+                    val lhs = 5;
+                    val rhs = 2;
+                    stdio.stdout.write(lhs | rhs);
+                    stdio.stdout.write(5 | 2);
+                    return;
+                }
+                """));
+    }
+
     @Test void staticResolutionDelimiterWorksForOrdinaryClassStaticFunctions() throws Exception {
         assertEquals("42", execute("""
                 define class Utility as

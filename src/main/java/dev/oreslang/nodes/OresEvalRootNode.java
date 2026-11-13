@@ -5722,13 +5722,13 @@ public final class OresEvalRootNode extends RootNode {
             pending.push(expr);
             while (!pending.isEmpty()) {
                 Ast.Expr next = pending.pop();
-                if (next instanceof Ast.BinaryExpr binary && binary.operator().equals("pipe")) {
+                if (next instanceof Ast.BinaryExpr binary
+                        && (binary.operator().equals("pipe") || binary.operator().equals("|"))) {
                     pending.push(binary.right());
                     pending.push(binary.left());
                 } else {
-                    if (stages.size() == 16) {
-                        throw new IllegalArgumentException("ActorStream pipe requires 2..16 stages");
-                    }
+                    // Bitwise integer OR has no actor-stage limit. ActorStream
+                    // enforces 2..16 after we know the first runtime operand.
                     stages.add(next);
                 }
             }
@@ -5946,12 +5946,39 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (expr instanceof Ast.BinaryExpr binary) {
-                if (binary.operator().equals("pipe")) {
+                if (binary.operator().equals("pipe") || binary.operator().equals("|")) {
                     List<Ast.Expr> stages = new ArrayList<>();
                     collectActorPipeStages(binary, stages);
-                    List<Object> values = new ArrayList<>(stages.size());
-                    for (Ast.Expr stage : stages) values.add(eval(stage, env));
-                    return createActorStream(values);
+                    // Evaluate every stage exactly once. In particular, a
+                    // named ActorRef | ActorRef chain must not bind an inner
+                    // two-actor route before the third stage is discovered.
+                    Object first = eval(stages.getFirst(), env);
+                    if (binary.operator().equals("pipe")
+                            || first instanceof ActorRuntime.ActorRef<?>) {
+                        if (stages.size() < 2 || stages.size() > 16) {
+                            throw new IllegalArgumentException(
+                                    "ActorStream pipe requires 2..16 stages");
+                        }
+                        List<Object> values = new ArrayList<>(stages.size());
+                        values.add(first);
+                        for (int i = 1; i < stages.size(); i++) {
+                            values.add(eval(stages.get(i), env));
+                        }
+                        return createActorStream(values);
+                    }
+                    // Integer bitwise | remains ordinary left-to-right
+                    // evaluation; no actor graph, stage cap, or duplicate
+                    // side-effect evaluation on this path.
+                    Object accumulator = first;
+                    for (int i = 1; i < stages.size(); i++) {
+                        Object right = eval(stages.get(i), env);
+                        if (accumulator instanceof Boolean lhs && right instanceof Boolean rhs) {
+                            accumulator = lhs || rhs;
+                        } else {
+                            accumulator = binary("|", accumulator, right);
+                        }
+                    }
+                    return accumulator;
                 }
                 if (binary.operator().equals("&&")) {
                     Object left = eval(binary.left(), env);

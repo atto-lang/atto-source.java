@@ -1725,7 +1725,8 @@ public final class TypeChecker {
         pending.push(expr);
         while (!pending.isEmpty()) {
             Ast.Expr next = pending.pop();
-            if (next instanceof Ast.BinaryExpr binary && binary.operator().equals("pipe")) {
+            if (next instanceof Ast.BinaryExpr binary
+                    && (binary.operator().equals("pipe") || binary.operator().equals("|"))) {
                 pending.push(binary.right());
                 pending.push(binary.left());
             } else {
@@ -1735,6 +1736,25 @@ public final class TypeChecker {
                 stages.add(next);
             }
         }
+    }
+
+    /**
+     * The symbolic bar also has an integer meaning. Resolve it from the
+     * leftmost stage's static type; syntax alone cannot distinguish a named
+     * ActorRef from an integer variable. Never construct a graph for unknown
+     * or integer operands, and leave the regular integer type rule intact.
+     */
+    private boolean startsWithActorRefPipe(
+            Ast.BinaryExpr expression, Env env, Set<String> generics, Type self) {
+        Ast.Expr first = expression;
+        while (first instanceof Ast.BinaryExpr binary
+                && (binary.operator().equals("pipe") || binary.operator().equals("|"))) {
+            first = binary.left();
+        }
+        Type candidate = deref(typeOf(first, env, generics, self));
+        return candidate instanceof Named named
+                && named.name().equals("ActorRef")
+                && named.arguments().size() == 1;
     }
 
     private Type checkActorStreamStages(
@@ -1980,7 +2000,9 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            if (binary.operator().equals("pipe")) {
+            if (binary.operator().equals("pipe")
+                    || (binary.operator().equals("|")
+                        && startsWithActorRefPipe(binary, env, generics, self))) {
                 List<Ast.Expr> stages = new ArrayList<>();
                 collectActorPipeStages(binary, stages);
                 return checkActorStreamStages(stages, env, generics, self);
