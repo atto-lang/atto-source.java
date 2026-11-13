@@ -39,24 +39,42 @@ public final class ActorCriticalStateMirV1 {
      * Data-only typed IR. Values and operations are validated against one
      * canonical manifest/source snapshot; no mutable state pointer is retained.
      */
-    public record Plan(
-            String packageIdentity, String namespace, String actor,
-            String stateSourceUnit, String ingressSourceUnit,
-            String field, long initialValue, String mailParameter,
-            long stopOnMailValue, List<Operation> operations,
-            String manifestSha256, Map<String, String> sourceSha256) {
-        public Plan {
+    public static final class Plan {
+        private final String packageIdentity, namespace, actor;
+        private final String stateSourceUnit, ingressSourceUnit, field;
+        private final String mailParameter, manifestSha256;
+        private final long initialValue, stopOnMailValue;
+        private final List<Operation> operations;
+        private final Map<String, String> sourceSha256;
+
+        // No caller/guest may mint a data object that could later be confused
+        // for compiler provenance. Only this verified lowerer constructs one.
+        private Plan(String packageIdentity, String namespace, String actor,
+                     String stateSourceUnit, String ingressSourceUnit,
+                     String field, long initialValue, String mailParameter,
+                     long stopOnMailValue, List<Operation> operations,
+                     String manifestSha256, Map<String, String> sourceSha256) {
             for (String identity : List.of(packageIdentity, namespace, actor,
                     stateSourceUnit, ingressSourceUnit, field, mailParameter, manifestSha256)) {
                 if (identity == null || identity.isBlank())
                     throw new IllegalArgumentException("critical MIR requires complete manifest provenance");
             }
-            operations = List.copyOf(operations);
-            sourceSha256 = Map.copyOf(sourceSha256);
-            if (operations.size() != 3 ||
-                    operations.get(0).opcode() != Opcode.CHECKED_ADD_MAIL_I64 ||
-                    operations.get(1).opcode() != Opcode.COPY_I64_TO_ACTOR_OUTPUT ||
-                    operations.get(2).opcode() != Opcode.STOP_ON_MAIL_I64)
+            this.packageIdentity = packageIdentity;
+            this.namespace = namespace;
+            this.actor = actor;
+            this.stateSourceUnit = stateSourceUnit;
+            this.ingressSourceUnit = ingressSourceUnit;
+            this.field = field;
+            this.initialValue = initialValue;
+            this.mailParameter = mailParameter;
+            this.stopOnMailValue = stopOnMailValue;
+            this.operations = List.copyOf(operations);
+            this.manifestSha256 = manifestSha256;
+            this.sourceSha256 = Map.copyOf(sourceSha256);
+            if (operations.size() != 3
+                    || operations.get(0).opcode() != Opcode.CHECKED_ADD_MAIL_I64
+                    || operations.get(1).opcode() != Opcode.COPY_I64_TO_ACTOR_OUTPUT
+                    || operations.get(2).opcode() != Opcode.STOP_ON_MAIL_I64)
                 throw new IllegalArgumentException("critical MIR instruction sequence is not validated");
             if (!sourceSha256.containsKey(stateSourceUnit)
                     || !sourceSha256.containsKey(ingressSourceUnit))
@@ -66,6 +84,19 @@ public final class ActorCriticalStateMirV1 {
                     || !operations.get(2).field().equals(field))
                 throw new IllegalArgumentException("critical MIR uses inconsistent state fields");
         }
+
+        public String packageIdentity() { return packageIdentity; }
+        public String namespace() { return namespace; }
+        public String actor() { return actor; }
+        public String stateSourceUnit() { return stateSourceUnit; }
+        public String ingressSourceUnit() { return ingressSourceUnit; }
+        public String field() { return field; }
+        public long initialValue() { return initialValue; }
+        public String mailParameter() { return mailParameter; }
+        public long stopOnMailValue() { return stopOnMailValue; }
+        public List<Operation> operations() { return operations; }
+        public String manifestSha256() { return manifestSha256; }
+        public Map<String, String> sourceSha256() { return sourceSha256; }
     }
 
     static Plan lower(String packageIdentity, Map<String, Ast.Program> units,
