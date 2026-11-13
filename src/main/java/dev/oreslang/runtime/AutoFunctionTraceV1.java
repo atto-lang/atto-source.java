@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.security.SecureRandom;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ArrayBlockingQueue;
 
 /**
  * Host-owned automatic trace sites for the existing source-task lowering.
@@ -36,8 +37,15 @@ public final class AutoFunctionTraceV1 {
 
     public record Counts(long completed, long suspended, long dropped) { }
 
+    /** One immutable terminal receipt; mutable Scope never leaves its task. */
+    public record Receipt(TraceContextV1 context, TraceContextV1 parent,
+                          ScopedTelemetryProbe.Completion completion) { }
+
+    private static final int MAX_RECEIPTS = 1024;
+
     private final TraceInstrumentationControlV1 policy;
     private final SecureRandom entropy;
+    private final ArrayBlockingQueue<Receipt> receipts;
     private final AtomicLong nextExecutionId = new AtomicLong();
     private final AtomicLong completed = new AtomicLong();
     private final AtomicLong suspended = new AtomicLong();
@@ -48,6 +56,7 @@ public final class AutoFunctionTraceV1 {
         this.policy = new TraceInstrumentationControlV1(buildMode);
         // No clock, random generator or span-guard allocation when disabled.
         this.entropy = active ? new SecureRandom() : null;
+        this.receipts = active ? new ArrayBlockingQueue<>(MAX_RECEIPTS) : null;
         if (active) policy.configure(TraceInstrumentationControlV1.CALL);
     }
 
@@ -166,11 +175,22 @@ public final class AutoFunctionTraceV1 {
                 ? ScopedTelemetryProbe.Outcome.CANCELLED
                 : failed ? ScopedTelemetryProbe.Outcome.ERROR
                          : ScopedTelemetryProbe.Outcome.OK;
-        if (scope.probe.finish(scope.executionId, 1, outcome) != null) {
-            completed.incrementAndGet();
-        } else {
+        ScopedTelemetryProbe.Completion completion =
+                scope.probe.finish(scope.executionId, 1, outcome);
+        if (completion == null) {
+            dropped.incrementAndGet();
+            return;
+        }
+        completed.incrementAndGet();
+        // Never block a carrier, call user code or perform network I/O.
+        if (!receipts.offer(new Receipt(scope.child, scope.parent, completion))) {
             dropped.incrementAndGet();
         }
+    }
+
+    /** Host-only drain point; an exporter must run off-carrier. */
+    public Receipt pollReceipt() {
+        return receipts == null ? null : receipts.poll();
     }
 
     public Counts counts() {
