@@ -1555,6 +1555,42 @@ public final class OwnershipChecker {
                     ValueKind.MOVE_ONLY,
                     null);
         }
+        if (expr instanceof Ast.ContextualEmptyMapExpr) {
+            throw error("unresolved ~map() cannot pass ownership admission");
+        }
+        if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
+            // Mirror the concrete-only TypeChecker admission. This also
+            // prevents callers supplying an unchecked AST from eliding
+            // resource ownership or inventing a default aggregate.
+            Ast.TypeRef witness = typed.aggregateType();
+            if (witness.isReadonlyRecordType() && witness.recordMembers().isEmpty()) {
+                return new ValueInfo(Ast.TypeRef.readonlyRecordType(Map.of()), ValueKind.MOVE_ONLY, null);
+            }
+            if (witness.isTupleType() && witness.arguments().isEmpty()) {
+                return new ValueInfo(Ast.TypeRef.tupleType(List.of()), ValueKind.COPY, null);
+            }
+            if (witness.name().equals("Map") && !witness.inferArguments()
+                    && witness.arguments().size() == 2) {
+                Ast.TypeRef key = witness.arguments().get(0);
+                Ast.TypeRef value = witness.arguments().get(1);
+                boolean primitiveKey = !key.inferArguments()
+                        && key.arguments().isEmpty()
+                        && (key.name().equals("string") || key.name().equals("String")
+                                || key.name().equals("Symbol"));
+                boolean primitiveValue = !value.inferArguments()
+                        && value.arguments().isEmpty()
+                        && java.util.Set.of(
+                                "int", "bool", "Bool", "string", "String", "Symbol")
+                                .contains(value.name());
+                if (!primitiveKey || !primitiveValue) {
+                    throw error("unproved typed empty Map key/value domain " + witness);
+                }
+                // The Map holds a mutable, identity-bearing storage domain:
+                // never treat even an empty instance as a copyable value.
+                return new ValueInfo(witness, ValueKind.MOVE_ONLY, null);
+            }
+            throw error("unproved typed empty aggregate constructor: " + witness);
+        }
         if (expr instanceof Ast.TupleExpr tuple) {
             boolean copy = true;
             List<Ast.TypeRef> slots = new ArrayList<>(tuple.elements().size());
