@@ -79,6 +79,13 @@ public final class OresContext implements AutoCloseable {
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
 
+    // Per-context compiler-owned spans; no guest-facing handle/host controller.
+    // Recording remains default-off until authorized Truffle control is added.
+    private final NativeTelemetryScopes nativeTelemetryScopes = new NativeTelemetryScopes();
+    public NativeTelemetryScopes nativeTelemetryScopesForTrustedRuntime() {
+        return nativeTelemetryScopes;
+    }
+
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final AtomicLong sourceLoopCooperates = new AtomicLong();
