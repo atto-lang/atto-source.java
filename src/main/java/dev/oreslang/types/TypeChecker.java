@@ -3131,6 +3131,10 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr observer
                     && observer.receiver() instanceof Ast.NameExpr receiver
                     && activeTelemetryAliases.contains(receiver.name())) {
+                if (env.lookup(receiver.name()) != null) {
+                    throw new IllegalArgumentException(
+                            "native SpanScope observer alias must not be shadowed by guest local");
+                }
                 int count = observer.member().equals("set_attribute") ? 2 : 1;
                 if (!Set.of("set_attribute", "add_event", "record_error", "set_status")
                         .contains(observer.member())
