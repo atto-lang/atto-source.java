@@ -637,11 +637,29 @@ public final class Parser {
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
+        boolean arrowReturn = check(ARROW);
         Ast.TypeRef returnType = parseReturnType(annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
-        List<Ast.Stmt> body = parseBlock();
+        List<Ast.Stmt> body = parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
+    }
+
+    /** Free/module functions may use '-> Type' then newline/end or '::' body/end. */
+    private List<Ast.Stmt> parseFreeCallableBody(boolean arrowReturn) {
+        if (check(LBRACE) || !arrowReturn) return parseBlock();
+        boolean explicit = match(DOUBLE_COLON);
+        if (!explicit && !isImplicitNewlineTerminator()) {
+            throw error(peek(), "end-delimited callable needs a newline or '::' after its return type");
+        }
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> body = parseUntil(END);
+            consume(END, "expected 'end' after callable body");
+            return body;
+        } finally {
+            localTypeScopes.pop();
+        }
     }
 
     private Ast.ClassDecl parseClass(
