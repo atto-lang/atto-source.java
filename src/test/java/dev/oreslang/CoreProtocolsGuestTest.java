@@ -148,8 +148,14 @@ final class CoreProtocolsGuestTest {
                     "core-protocols-java-execution", fixture);
             assertTrue(Files.isRegularFile(source),
                     "missing negative .atto guest fixture " + fixture);
-            assertThrows(IllegalArgumentException.class,
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
                     () -> LinkedProgramRunner.validate(source, Map.of()), fixture);
+            String trait = fixture.startsWith("hash-") ? "Hash" : "Clone";
+            String expected = "class 'Broken' does not implement interface '" + trait + "'";
+            assertTrue(failure.getMessage().contains(expected),
+                    () -> fixture + " must fail nominal conformance, not unrelated"
+                            + " parse/import/permission admission: " + failure.getMessage());
         }
     }
 
