@@ -834,6 +834,26 @@ public final class Parser {
         }
         Ast.TypeRef returns = match(FAT_ARROW, COLON)
                 ? parseTypeRef() : Ast.TypeRef.simple("void");
+        if (explicitlyExternal) {
+            if (!returns.name().equals("void") || returns.isBorrow()
+                    || !returns.arguments().isEmpty()) {
+                throw error(previous(), "runtime init/receive must return void");
+            }
+            if (name.equals("init") && !parameters.isEmpty()) {
+                throw error(previous(), "runtime init requires zero parameters");
+            }
+            if (name.equals("receive")) {
+                if (parameters.size() != 1) {
+                    throw error(previous(), "runtime receive requires one owned ActorMail<T>");
+                }
+                Ast.TypeRef mail = parameters.getFirst().type();
+                if (!mail.name().equals("ActorMail") || mail.isBorrow()
+                        || mail.arguments().size() != 1
+                        || mail.arguments().getFirst().isBorrow()) {
+                    throw error(previous(), "runtime receive requires one owned ActorMail<T>");
+                }
+            }
+        }
         if (!parseCheckedEffects().isEmpty()) {
             throw error(previous(), "external receiver effects require checked actor-effect lowering");
         }
