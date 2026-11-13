@@ -126,6 +126,34 @@ final class ActorCriticalStateGuestV1Test {
     }
 
     @Test
+    void executableCriticalMirUsesChangedAttoSchemaAndStopPredicate() throws Exception {
+        var build = physicalBuild();
+        Path state = root.resolve("src/counter/state.atto");
+        Path ingress = root.resolve("src/counter/receive.atto");
+        Files.writeString(state, Files.readString(state)
+                .replace("let int total : 0;", "let int count : 17;"));
+        Files.writeString(ingress, Files.readString(ingress)
+                .replace("s.total", "s.count")
+                .replace("if mail.value == 4; do", "if mail.value == 2; do"));
+        var manifestMir = build.lowerCriticalStateMirV1();
+        assertEquals("count", manifestMir.field());
+        assertEquals(17L, manifestMir.initialValue());
+        assertEquals(2L, manifestMir.stopOnMailValue());
+        try (var images = new SharedCodeImageStore();
+             var runtime = new ActorRuntime()) {
+            var compiled = build.compileCriticalStateActorGuestV1(images);
+            var worker = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, compiled, "Counter");
+            worker.getReady().get(10, TimeUnit.SECONDS);
+            worker.send(7L);
+            worker.send(2L);
+            assertEquals(List.of(24L, 26L), outputs(worker, 2),
+                    "actor output must follow the changed Atto source operands");
+            worker.getDone().get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void nonI64MailNeverCoercesOrPublishesASpuriousOutput() throws Exception {
         var build = physicalBuild();
         try (var images = new SharedCodeImageStore();
