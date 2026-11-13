@@ -4847,7 +4847,6 @@ public final class TypeChecker {
             // A synchronous lambda does not inherit suspension authority
             // from its enclosing async/suspends function.
             boolean previousMaySuspend = currentMaySuspend;
-            currentMaySuspend = false;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
             // A lambda checked within a constructor runs on invocation, not
@@ -4858,6 +4857,7 @@ public final class TypeChecker {
             Type declaredLambdaResult = lambda.declaredReturnType() == null
                     ? null : resolve(lambda.declaredReturnType(), generics, self);
             try {
+                currentMaySuspend = false;
                 if (lambda.expressionBody() != null) {
                     result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
                 } else if (declaredLambdaResult != null) {
