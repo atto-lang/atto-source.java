@@ -71,6 +71,46 @@ final class ActorCriticalStateSyntaxV2Test {
     }
 
     @Test
+    void detachedScalarReadIsDistinctAstAndCannotEmbedEffects() {
+        var method = method(NS + """
+                external mtd (Counter c) receive(ActorMail<int> mail): void {
+                  val int snapshot = self.handle_state(critical-read |view| -> view.total);
+                  self.send(snapshot);
+                  return;
+                }
+                """);
+        assertEquals(3, method.body().size());
+        var binding = assertInstanceOf(Ast.BindingStmt.class, method.body().getFirst());
+        assertEquals("snapshot", binding.name());
+        assertEquals("int", binding.declaredType().name());
+        var read = assertInstanceOf(
+                Ast.ActorStateSnapshotExpr.class, binding.initializer());
+        assertEquals("view", read.viewName());
+        assertEquals("total", read.fieldName());
+        assertInstanceOf(Ast.CallExpr.class,
+                assertInstanceOf(Ast.ExprStmt.class, method.body().get(1)).expression());
+
+        for (String invalid : new String[] {
+                "critical-write |s| -> s.total",
+                "critical-read |s| -> { self.send(s.total); }",
+                "critical-read |s| -> s.total = 2",
+                "critical-read |s| -> mail.value",
+                "critical-read |s| -> s.total + 1"
+        }) {
+            var exception = assertThrows(IllegalArgumentException.class,
+                    () -> method(NS + """
+                            external mtd (Counter c) receive(ActorMail<int> mail): void {
+                              val int snapshot = self.handle_state(%s);
+                              return;
+                            }
+                            """.formatted(invalid)), invalid);
+            assertTrue(exception.getMessage().contains("critical-read snapshot")
+                            || exception.getMessage().contains("value-producing handle_state"),
+                    exception.getMessage());
+        }
+    }
+
+    @Test
     void malformedOrNonadjacentCriticalModesCannotBeMinted() {
         for (var mode : new String[] {"critical-readwrite", "critical -write",
                 "critical-writee", "critical-w rite", "critical - read"}) {
