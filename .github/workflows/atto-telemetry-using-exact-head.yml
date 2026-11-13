@@ -9,6 +9,9 @@ on:
       - 'src/test/java/dev/oreslang/UsingTelemetrySpanScopeTest.java'
       - 'src/test/java/dev/oreslang/UsingRequestBorrowScopeParserTest.java'
       - 'src/main/java/dev/oreslang/runtime/NativeTelemetryScopes.java'
+      - 'src/main/java/dev/oreslang/runtime/OresContext.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
       - 'src/test/java/dev/oreslang/runtime/NativeTelemetryScopesTest.java'
       - '.github/workflows/atto-telemetry-using-exact-head.yml'
   workflow_dispatch:
@@ -81,7 +84,7 @@ jobs:
               )
               print(f'ATTO_USING_JAVA_VERIFIED_SUITE={suite} executed={count}')
               total += count
-          assert total >= 34, f'Expected 22 scope cases, borrow regression and 11 native lifecycle cases: {total}'
+          assert total >= 39, f'Expected 25 scoped guest tests, borrow regression and 13 native lifecycle cases: {total}'
           print(f'ATTO_USING_JAVA_GUEST_JUNIT_PASS={total}')
           PY
       - name: Preserve exact-head guest proof reports
