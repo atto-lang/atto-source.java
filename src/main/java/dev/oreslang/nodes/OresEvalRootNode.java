@@ -10,6 +10,7 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.NativeTelemetryScopes;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -155,6 +156,7 @@ public final class OresEvalRootNode extends RootNode {
             implements ActorRuntime.ActorCodeExecutor {
         private final Ast.Program program;
         private final OresContext context;
+        private final NativeTelemetryScopes nativeScopes;
         private final String codeUnitId;
         private final long taskAdmissionEpoch;
         private final AtomicLong nextTaskLaunchId = new AtomicLong();
@@ -245,6 +247,7 @@ public final class OresEvalRootNode extends RootNode {
                 long taskAdmissionEpoch) {
             this.program = program;
             this.context = context;
+            this.nativeScopes = context.nativeTelemetryScopesForTrustedRuntime();
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.taskAdmissionEpoch = taskAdmissionEpoch;
             indexImports();
@@ -2635,6 +2638,15 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (stmt instanceof Ast.BlockStmt block) {
+                    if (block.usingTelemetryScope()) {
+                        // Native telemetry still forbids suspension. Never
+                        // dispatch the historical synthetic factory/finalizer
+                        // through a resumable task path.
+                        continuation.accept(task, SourceFlow.throwing(
+                                new IllegalStateException(
+                                        "native SpanScope requires synchronous lowering")));
+                        return;
+                    }
                     runBlock(
                             task,
                             block.body(),
@@ -6263,6 +6275,57 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        /**
+         * Execute the parser-marked intrinsic, NOT the synthetic guest module
+         * factory or user-overridable close_scope() method. The token lives
+         * only in private Env metadata and is never a guest Slot.
+         */
+        private void executeNativeTelemetryScope(Ast.BlockStmt scope, Env parent) {
+            if (scope.body().size() != 2
+                    || !(scope.body().get(0) instanceof Ast.BindingStmt acquired)
+                    || !(scope.body().get(1) instanceof Ast.TryStmt protectedBody)
+                    || !(acquired.initializer() instanceof Ast.CallExpr create)
+                    || create.arguments().size() != 1
+                    || !(create.arguments().getFirst() instanceof Ast.LiteralExpr literal)
+                    || !(literal.value() instanceof String operation)
+                    || !(create.callee() instanceof Ast.MemberExpr factory)
+                    || !factory.member().equals("span")
+                    || !(factory.receiver() instanceof Ast.NameExpr namespace)
+                    || !namespace.name().equals("telemetry")
+                    || protectedBody.hasCatch()
+                    || protectedBody.finallyBody().size() != 1) {
+                throw new IllegalStateException("invalid compiler-owned telemetry scope AST");
+            }
+            NativeTelemetryScopes.validateOperationLiteral(operation);
+            boolean ownsCarrier = parent.telemetryCarrier == null;
+            NativeTelemetryScopes.Carrier carrier = ownsCarrier
+                    ? nativeScopes.createCarrierForTrustedRuntime()
+                    : parent.telemetryCarrier;
+            Env scopeEnv = new Env(parent);
+            scopeEnv.telemetryCarrier = carrier;
+            NativeTelemetryScopes.SpanToken token;
+            try {
+                token = nativeScopes.beginFromTrustedRuntime(carrier, operation);
+            } catch (RuntimeException | Error failure) {
+                if (ownsCarrier) nativeScopes.retireContinuationFromTrustedRuntime(carrier);
+                throw failure;
+            }
+            scopeEnv.telemetryAliases.put(acquired.name(), token);
+            try {
+                // A cleanup boundary is an unconditional tail-call barrier.
+                // Return, panic, and runtime failure cannot skip this finally.
+                executeBlock(protectedBody.body(), scopeEnv, true);
+            } finally {
+                try {
+                    nativeScopes.endFromTrustedRuntime(carrier, token);
+                } finally {
+                    if (ownsCarrier) {
+                        nativeScopes.retireContinuationFromTrustedRuntime(carrier);
+                    }
+                }
+            }
+        }
+
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
             executeBlock(statements, parent, false);
         }
@@ -6430,9 +6493,28 @@ public final class OresEvalRootNode extends RootNode {
                 emitter.emit(value);
                 return;
             }
-            if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
+            if (stmt instanceof Ast.ExprStmt expression) {
+                if (expression.expression() instanceof Ast.CallExpr call
+                        && call.callee() instanceof Ast.MemberExpr observer
+                        && observer.receiver() instanceof Ast.NameExpr name) {
+                    NativeTelemetryScopes.SpanToken token =
+                            env.lookupNativeTelemetryAlias(name.name());
+                    if (token != null) {
+                        nativeScopes.observeFromTrustedRuntime(
+                                env.telemetryCarrier, token, observer.member(),
+                                evaluateArguments(call.arguments(), env));
+                        return;
+                    }
+                }
+                eval(expression.expression(), env);
+                return;
+            }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
             if (stmt instanceof Ast.BlockStmt block) {
+                if (block.usingTelemetryScope()) {
+                    executeNativeTelemetryScope(block, env);
+                    return;
+                }
                 executeBlock(
                         block.body(),
                         env,
@@ -10775,6 +10857,10 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        // Trusted tracing identity never occupies a guest-visible Slot.
+        private NativeTelemetryScopes.Carrier telemetryCarrier;
+        private final Map<String, NativeTelemetryScopes.SpanToken> telemetryAliases =
+                new HashMap<>();
         // Logical structured scope follows the source continuation and captured
         // child Env across carrier migration; it is never a ThreadLocal token.
         private TaskScope structuredTaskScope;
@@ -10830,6 +10916,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             this.scopeEpoch = nextEpoch;
             this.parent = parent;
+            this.telemetryCarrier = parent == null ? null : parent.telemetryCarrier;
             this.descendantsNonLexical = descendantsNonLexical;
             this.accessClass = accessClass;
             this.lexicalContainerClass = lexicalContainerClass;
@@ -10860,6 +10947,11 @@ public final class OresEvalRootNode extends RootNode {
             return child;
         }
         private TaskScope structuredTaskScope() { return structuredTaskScope; }
+        private NativeTelemetryScopes.SpanToken lookupNativeTelemetryAlias(String alias) {
+            NativeTelemetryScopes.SpanToken token = telemetryAliases.get(alias);
+            return token != null ? token
+                    : parent == null ? null : parent.lookupNativeTelemetryAlias(alias);
+        }
         private void define(String name, Object value, Ast.BindingKind kind) {
             define(name, value, kind, null);
         }
