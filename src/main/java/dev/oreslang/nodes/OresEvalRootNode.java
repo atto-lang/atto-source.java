@@ -1961,6 +1961,17 @@ public final class OresEvalRootNode extends RootNode {
                         defer.expression(), seen);
             }
             if (stmt instanceof Ast.BlockStmt block) {
+                if (block.usingTelemetryScope()) {
+                    // Synthetic factory/close AST is never evaluated. Scan only
+                    // the checked user body; treating telemetry.span() as a
+                    // dynamic guest call would spuriously select SourceTask.
+                    if (block.body().size() != 2
+                            || !(block.body().get(1) instanceof Ast.TryStmt body)) {
+                        return true; // malformed compiler marker fails closed
+                    }
+                    return body.body().stream().anyMatch(
+                            nested -> statementContainsPotentialSuspension(nested, seen));
+                }
                 return block.body().stream().anyMatch(
                         nested -> statementContainsPotentialSuspension(nested, seen));
             }
