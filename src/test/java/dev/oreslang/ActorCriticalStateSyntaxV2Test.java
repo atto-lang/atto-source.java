@@ -127,7 +127,9 @@ final class ActorCriticalStateSyntaxV2Test {
     void physicalMultiFileStatefulActorIsManifestBoundButNotExecutable() throws Exception {
         var build = physicalBuild();
         var source = Files.readString(root.resolve("src/counter/receive.atto"));
-        assertTrue(method(source).runtimeOnly(),
+        var parsedReceiver = assertInstanceOf(Ast.ExternalActorMethodDecl.class,
+                Parser.parse(source).modules().getFirst().declarations().getFirst());
+        assertTrue(parsedReceiver.runtimeOnly(),
                 "manifest-bound receiver must be explicit private external mtd");
         var audit = build.auditDeclaredActors();
         assertEquals(1, audit.contractWitness().actors().size());
