@@ -5650,6 +5650,17 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof OresKeyedMap<?, ?> typedMap) {
+                // The source checker has admitted only typed String/Symbol keys
+                // and copyable scalar values. Dispatch through the canonical
+                // guest Map runtime; never expose a host Map or partial storage.
+                if (!(index instanceof String
+                        || index instanceof dev.oreslang.runtime.OresSymbol)) {
+                    throw new IllegalArgumentException(
+                            "typed Map index must be a String or Symbol");
+                }
+                return typedMap.getRequired(index);
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
@@ -7912,6 +7923,40 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
+            if (expr instanceof Ast.MapLiteralExpr mapLiteral) {
+                if (mapLiteral.mapType() == null) {
+                    throw new IllegalArgumentException(
+                            "unresolved Map<K,V> literal cannot execute");
+                }
+                // Delegate descriptor validation and allocation to the exact
+                // existing typed-empty Map runtime path; never allocate an
+                // untyped host dictionary for the published guest value.
+                Object allocated = eval(
+                        new Ast.TypedEmptyAggregateExpr(mapLiteral.mapType()), env);
+                if (!(allocated instanceof OresKeyedMap<?, ?> rawMap)) {
+                    throw new IllegalArgumentException(
+                            "Map literal did not produce canonical guest storage");
+                }
+                // Evaluate key/value expressions in source order exactly once.
+                // No partially built map escapes to a guest binding. The
+                // stage rejects duplicate logical String/Symbol keys before
+                // OresKeyedMap.putAll performs atomic domain/quota validation.
+                LinkedHashMap<Object, Object> entries = new LinkedHashMap<>();
+                for (Ast.MapLiteralEntry entry : mapLiteral.entries()) {
+                    Object key = eval(entry.key(), env);
+                    Object value = eval(entry.value(), env);
+                    if (entries.containsKey(key)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical key in Map literal");
+                    }
+                    entries.put(key, value);
+                }
+                @SuppressWarnings("unchecked")
+                OresKeyedMap<Object, Object> target =
+                        (OresKeyedMap<Object, Object>) rawMap;
+                target.putAll(entries);
+                return target;
+            }
             if (expr instanceof Ast.ContextualEmptyMapExpr) {
                 throw new IllegalArgumentException(
                         "unresolved ~map() cannot execute without typed Map<K,V> admission");
@@ -9990,6 +10035,30 @@ public final class OresEvalRootNode extends RootNode {
                                 "pattern binds '" + structural.binding() + "' more than once");
                     }
                     bindings.put(structural.binding(), value);
+                }
+                return true;
+            }
+            if (pattern instanceof Ast.RecordPattern recordPattern) {
+                // Never project host Map, class/actor fields or mutable runtime
+                // capabilities by shape. Only guest record and concrete struct
+                // representations admitted by static checker are observable.
+                for (Ast.RecordFieldPattern field : recordPattern.fields()) {
+                    Object fieldValue;
+                    if (value instanceof ReadonlyRecordValue record) {
+                        if (!record.containsKey(field.name())) return false;
+                        fieldValue = record.get(field.name());
+                    } else if (value instanceof MutableStructValue struct) {
+                        if (!recordPattern.structural()
+                                || !struct.containsKey(field.name())) return false;
+                        fieldValue = struct.get(field.name());
+                    } else {
+                        return false;
+                    }
+                    if (fieldValue == UNINITIALIZED_FIELD) {
+                        throw new IllegalStateException(
+                                "record pattern observed an uninitialized field");
+                    }
+                    if (!patternMatches(field.value(), fieldValue, bindings)) return false;
                 }
                 return true;
             }

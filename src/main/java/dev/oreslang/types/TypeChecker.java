@@ -4365,6 +4365,34 @@ public final class TypeChecker {
             String constantKey = constantStringKey(indexed.index(), env);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
                     ? env.lookup(ownerName.name()) : null;
+            // Indexed read of the compiler-owned scalar Map<K,V> is a checked
+            // key lookup, not integer array indexing or dynamic host reflection.
+            // Keep the narrow String/Symbol key and copyable scalar value gate
+            // used by Map literal construction. All broader Map operations and
+            // move-only value graphs remain explicitly unsupported.
+            if (receiver instanceof Named typedMap
+                    && typedMap.name().equals("Map")
+                    && typedMap.arguments().size() == 2
+                    && findClass("Map") == null) {
+                Type mapKey = typedMap.arguments().get(0);
+                Type mapValue = typedMap.arguments().get(1);
+                boolean stringKey = mapKey == Primitive.STRING;
+                boolean symbolKey = mapKey instanceof Named symbol
+                        && symbol.name().equals("$builtin$Symbol")
+                        && symbol.arguments().isEmpty();
+                boolean scalarValue = mapValue == Primitive.INT
+                        || mapValue == Primitive.BOOL
+                        || mapValue == Primitive.STRING
+                        || mapValue instanceof Named symbol
+                        && symbol.name().equals("$builtin$Symbol")
+                        && symbol.arguments().isEmpty();
+                if (!(stringKey || symbolKey) || !scalarValue) {
+                    throw new IllegalArgumentException(
+                            "Map indexed read requires a proven String/Symbol key and copyable scalar value");
+                }
+                requireAssignable(index, mapKey, "typed Map index key");
+                return mapValue;
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
                 Map<String, Type> indexableMembers = indexableRecordMembers(record);
@@ -4717,7 +4745,7 @@ public final class TypeChecker {
                 }
 
                 checkValueMatchCoverage(
-                        valueMatch.arms(), subject, generics, self);
+                        valueMatch.arms(), subject, generics, self, valueMatch.first());
                 return result;
             } finally {
                 // Only the selected arm executes at runtime. Type-checking all
@@ -4746,6 +4774,39 @@ public final class TypeChecker {
                 element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
             }
             return new ListType(element);
+        }
+        if (expr instanceof Ast.MapLiteralExpr mapLiteral) {
+            Ast.TypeRef witness = mapLiteral.mapType();
+            if (witness == null) {
+                throw new IllegalArgumentException(
+                        "nonempty Map literal requires a directly declared Map<K,V> "
+                                + "or explicit ~map<K,V>(...) type witness");
+            }
+            // Use the same narrow, compiler-owned typed-map proof as the
+            // already admitted empty constructor. This rejects aliases,
+            // nominal shadowing, unknown K/V and unsupported value graphs.
+            Type result = typeOf(new Ast.TypedEmptyAggregateExpr(witness),
+                    env, generics, self);
+            if (!(result instanceof Named named)
+                    || !named.name().equals("Map")
+                    || named.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        "nonempty map literal did not resolve to Map<K,V>");
+            }
+            Type expectedKey = named.arguments().get(0);
+            Type expectedValue = named.arguments().get(1);
+            for (Ast.MapLiteralEntry entry : mapLiteral.entries()) {
+                Type actualKey = typeOf(entry.key(), env, generics, self);
+                Type actualValue = typeOf(entry.value(), env, generics, self);
+                if (actualKey == Unknown.INSTANCE
+                        || actualValue == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "Map literal cannot admit unresolved key/value expression types");
+                }
+                requireAssignable(actualKey, expectedKey, "Map literal key");
+                requireAssignable(actualValue, expectedValue, "Map literal value");
+            }
+            return result;
         }
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
             throw new IllegalArgumentException(
@@ -6722,7 +6783,35 @@ public final class TypeChecker {
             List<Ast.MatchValueArm> arms,
             Type subject,
             Set<String> generics,
-            Type self) {
+            Type self,
+            boolean first) {
+        // Ordinary match is a proof-checked partition. A final, unguarded
+        // wildcard is the fallback and never counts as an overlapping explicit
+        // pattern. 'match first' explicitly chooses ordered priority and may
+        // overlap; both still require exhaustive coverage.
+        if (!first) {
+            int explicitEnd = arms.size();
+            Ast.MatchValueArm last = arms.getLast();
+            if (last.guard() == null && last.pattern() instanceof Ast.WildcardPattern) {
+                explicitEnd--;
+            }
+            for (int i = 0; i < explicitEnd; i++) {
+                Ast.MatchValueArm arm = arms.get(i);
+                for (int j = 0; j < i; j++) {
+                    Ast.MatchValueArm previous = arms.get(j);
+                    boolean patternDisjoint = patternsProvablyDisjoint(
+                            previous.pattern(), arm.pattern(), subject, generics, self);
+                    boolean guardDisjoint = previous.guard() != null && arm.guard() != null
+                            && guardsProvablyDisjoint(previous.guard(), arm.guard());
+                    if (!patternDisjoint && !guardDisjoint) {
+                        throw new IllegalArgumentException(
+                                "ordinary match requires provably disjoint explicit patterns "
+                                        + (j + 1) + " and " + (i + 1)
+                                        + "; use 'match first' for ordered overlap");
+                    }
+                }
+            }
+        }
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchValueArm arm = arms.get(i);
 
@@ -6823,6 +6912,40 @@ public final class TypeChecker {
                         targetShape.members(), true, AggregateKind.CONTRACT);
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.RecordPattern fields) {
+            if (!(subject instanceof Record record)
+                    || record.kind() == AggregateKind.CONTRACT
+                    || record.kind() == AggregateKind.STRUCT && !fields.structural()) {
+                throw new IllegalArgumentException(
+                        "record field pattern requires a checked readonly record or explicit "
+                                + "'structural' projection of a concrete struct; "
+                                + "nominal classes and actor state remain sealed");
+            }
+            for (Ast.RecordFieldPattern field : fields.fields()) {
+                Type fieldType = record.members().get(field.name());
+                if (fieldType == null) {
+                    throw new IllegalArgumentException(
+                            "record pattern field '" + field.name()
+                                    + "' is not statically visible");
+                }
+                // Copyable scalar-only field projection prevents a match from
+                // moving resources, manufacturing a loan, or reading sealed state.
+                boolean safeScalar = fieldType == Primitive.INT
+                        || fieldType == Primitive.BOOL
+                        || fieldType == Primitive.STRING
+                        || fieldType instanceof StringLiteral
+                        || fieldType instanceof Named symbol
+                        && symbol.name().equals("$builtin$Symbol")
+                        && symbol.arguments().isEmpty();
+                if (!safeScalar) {
+                    throw new IllegalArgumentException(
+                            "record pattern field '" + field.name()
+                                    + "' is not a proven copyable scalar");
+                }
+                checkPattern(field.value(), fieldType, bindings, generics, self);
             }
             return;
         }
@@ -7088,6 +7211,22 @@ public final class TypeChecker {
             Ast.Pattern left, Ast.Pattern right, Type subject, Set<String> generics, Type self) {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
                 || left instanceof Ast.BindingPattern || right instanceof Ast.BindingPattern) return false;
+        if (left instanceof Ast.RecordPattern a && right instanceof Ast.RecordPattern b
+                && subject instanceof Record record) {
+            // A single provably disjoint shared field is sufficient to prove
+            // these two record patterns cannot both match the same value.
+            for (Ast.RecordFieldPattern x : a.fields()) {
+                for (Ast.RecordFieldPattern y : b.fields()) {
+                    if (!x.name().equals(y.name())) continue;
+                    Type fieldType = record.members().get(x.name());
+                    if (fieldType != null && patternsProvablyDisjoint(
+                            x.value(), y.value(), fieldType, generics, self)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
         if (left instanceof Ast.LiteralPattern a && right instanceof Ast.LiteralPattern b) {
             // Do not certify 1 and 1.0 as disjoint: runtime equality
             // intentionally permits equal values across numeric types.

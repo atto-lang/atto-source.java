@@ -3406,7 +3406,10 @@ public final class Parser {
      */
     private Ast.Expr resolveDirectContextualEmptyMap(
             Ast.TypeRef declaredType, Ast.Expr initializer) {
-        if (!(initializer instanceof Ast.ContextualEmptyMapExpr)) return initializer;
+        if (!(initializer instanceof Ast.ContextualEmptyMapExpr)
+                && !(initializer instanceof Ast.MapLiteralExpr map && map.mapType() == null)) {
+            return initializer;
+        }
         if (declaredType == null || !declaredType.name().equals("Map")
                 || declaredType.inferArguments() || declaredType.arguments().size() != 2) {
             throw error(previous(),
@@ -3414,7 +3417,9 @@ public final class Parser {
         }
         // Never lose the exact key/value witness. TypeChecker and
         // OwnershipChecker still independently validate both domains.
-        return new Ast.TypedEmptyAggregateExpr(declaredType);
+        return initializer instanceof Ast.MapLiteralExpr map
+                ? new Ast.MapLiteralExpr(declaredType, map.entries())
+                : new Ast.TypedEmptyAggregateExpr(declaredType);
     }
 
     private Ast.BindingStmt parseBindingStatement() {
@@ -3929,16 +3934,19 @@ public final class Parser {
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
             boolean defaultArm = false;
             if (canonicalOver) {
-                if (match(DEFAULT)) {
-                    if (seenDefault) throw error(previous(), "duplicate default match arm");
-                    seenDefault = true;
-                    defaultArm = true;
-                } else {
+                defaultArm = match(DEFAULT);
+                if (!defaultArm) {
                     if (seenDefault) throw error(peek(), "default match arm must be last");
                     if (!matchContextualIdentifier("on")) {
                         if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
                         throw error(peek(), "every explicit match arm must start with 'on'");
                     }
+                    // Accept legacy fallback spelling as a final wildcard.
+                    defaultArm = match(DEFAULT);
+                }
+                if (defaultArm) {
+                    if (seenDefault) throw error(previous(), "duplicate default match arm");
+                    seenDefault = true;
                 }
             }
 
@@ -3994,6 +4002,7 @@ public final class Parser {
     private Ast.MatchExpr parseValueMatch() {
         // A single result type is an expression constraint, not the subject type.
         // Preserve the historical <ret=T> spelling while preferring <T>.
+        boolean canonicalFirst = matchContextualIdentifier("first");
         Ast.TypeRef declaredResult = null;
         if (match(LT)) {
             if (check(IDENT) && checkNext(EQUAL)) {
@@ -4007,10 +4016,10 @@ public final class Parser {
             consume(GT, "match result parameter requires exactly one type argument and closing '>'");
         }
 
-        // Historical value-match sources could spell `match<T> first value over`.
-        // MatchExpr is source-ordered already, so retain the marker only as a
-        // compatibility parse surface; it carries no separate runtime mode.
-        matchContextualIdentifier("first");
+        // Selected canonical order: match first<T> subject over ...
+        // Preserve historical match<T> first subject over ... as input.
+        // Unlike ordinary match, the first form authorizes ordered overlaps.
+        boolean legacyFirst = !canonicalFirst && matchContextualIdentifier("first");
 
         boolean previousSuppression = suppressRefinementOperators;
         suppressRefinementOperators = true;
@@ -4033,15 +4042,18 @@ public final class Parser {
 
         while (!check(EOF) && !(braced ? check(RBRACE) : check(END))) {
             boolean defaultArm = match(DEFAULT);
-            if (defaultArm) {
-                if (seenDefault) throw error(previous(), "duplicate default match arm");
-                seenDefault = true;
-            } else {
+            if (!defaultArm) {
                 if (seenDefault) throw error(peek(), "default match arm must be last");
                 if (!matchContextualIdentifier("on")) {
                     if (check(ELSE)) throw error(peek(), "match fallback is 'default ->', not else");
                     throw error(peek(), "every explicit match arm must start with 'on'");
                 }
+                // Historical 'on default' is an input-only alias of final 'default'.
+                defaultArm = match(DEFAULT);
+            }
+            if (defaultArm) {
+                if (seenDefault) throw error(previous(), "duplicate default match arm");
+                seenDefault = true;
             }
 
             Ast.Pattern pattern = defaultArm ? new Ast.WildcardPattern() : parsePattern();
@@ -4111,9 +4123,17 @@ public final class Parser {
             }
 
             Ast.Expr value = parseExpression();
-            // Canonical expression arms are deliberately explicit: a newline
-            // never substitutes for this semicolon.
-            consume(SEMICOLON, "value match expression arm must end with ';'");
+            // Arm delimiters are token-boundary based, never newline-sensitive.
+            // Retain ';' for compatibility, but the canonical over/on/default/end
+            // grammar also allows adjacent arms without redundant punctuation.
+            // Do not let arbitrary expressions substitute for an arm terminator.
+            if (!match(SEMICOLON)
+                    && !check(DEFAULT)
+                    && !check(END)
+                    && !(braced && check(RBRACE))
+                    && !(check(IDENT) && peek().lexeme().equals("on"))) {
+                throw error(peek(), "value match arm requires ';', 'on', 'default' or 'end' boundary");
+            }
             valueArms.add(new Ast.MatchValueArm(pattern, guard, value));
         }
 
@@ -4123,7 +4143,8 @@ public final class Parser {
         if (valueArms.isEmpty()) {
             throw error(previous(), "value match requires at least one 'on' arm");
         }
-        return new Ast.MatchExpr(subject, valueArms, declaredResult);
+        return new Ast.MatchExpr(subject, valueArms, declaredResult,
+                canonicalFirst || legacyFirst);
     }
 
     /**
@@ -4184,6 +4205,37 @@ public final class Parser {
         return false;
     }
 
+    /**
+     * Field patterns never allocate, inspect host dictionaries, or convert a
+     * nominal object into a record. Static type/ownership proof is mandatory
+     * before the existing pattern dispatcher evaluates any field.
+     */
+    private Ast.RecordPattern parseTildeRecordPattern(boolean structural) {
+        consume(LPAREN, "record field patterns require '~(field: Pattern, ...)'");
+        java.util.List<Ast.RecordFieldPattern> fields = new java.util.ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        if (check(RPAREN)) {
+            throw error(peek(), "empty record field pattern does not constrain a value");
+        }
+        do {
+            if (check(ELLIPSIS)) {
+                throw error(peek(), "record pattern spread requires separate ownership proof");
+            }
+            String name = consumeStaticObjectKeyName("expected static record pattern field");
+            if (!names.add(name)) {
+                throw error(previous(), "duplicate record field pattern '" + name + "'");
+            }
+            consume(COLON, "record patterns use ':', never computed map '=>'");
+            fields.add(new Ast.RecordFieldPattern(name, parsePattern()));
+            if (fields.size() > 64) {
+                throw error(previous(), "record field pattern exceeds 64 fields");
+            }
+            if (!match(COMMA)) break;
+        } while (!check(RPAREN));
+        consume(RPAREN, "expected ')' to close record field pattern");
+        return new Ast.RecordPattern(structural, fields);
+    }
+
     private Ast.Pattern parsePattern() {
         if (match(BANG)) {
             // A negative type pattern is a complement of the runtime-reifiable
@@ -4193,11 +4245,24 @@ public final class Parser {
             return new Ast.TypePattern(negative, binding);
         }
         if (match(STRUCTURAL) || matchContextualIdentifier("structural")) {
+            if (match(TILDE)) {
+                if (isContextualIdentifier("record") && checkNext(LPAREN)) {
+                    advance(); // explicit ~record field-pattern head
+                }
+                return parseTildeRecordPattern(true);
+            }
             Ast.TypeRef target = parseTypeRef();
             String binding = check(IDENT) && !peek().lexeme().equals("_")
                     ? advance().lexeme()
                     : null;
             return new Ast.StructuralPattern(target, binding);
+        }
+
+        if (match(TILDE)) {
+            if (isContextualIdentifier("record") && checkNext(LPAREN)) {
+                advance();
+            }
+            return parseTildeRecordPattern(false);
         }
 
         if (match(IS)) {
@@ -4239,7 +4304,9 @@ public final class Parser {
                     return new Ast.TypePattern(
                             target, consume(IDENT, "expected binding name after 'as'").lexeme());
                 }
-                if (check(IDENT) && !peek().lexeme().equals("_")) {
+                if (check(IDENT) && !peek().lexeme().equals("_")
+                        && !peek().lexeme().equals("when")) {
+                    // 'when' starts an arm guard, never a typed binding name.
                     String binding = advance().lexeme();
                     return new Ast.TypePattern(target, binding);
                 }
@@ -4649,10 +4716,10 @@ public final class Parser {
                     && adjacent(sigil, peek())) {
                 advance(); // contextual map head
                 if (match(LPAREN)) {
-                    consume(RPAREN, "nonempty tilde map literals require typed Map<K,V> "
-                            + "entry admission and transactional ownership proofs; "
-                            + "only explicit empty map construction is enabled");
-                    return parsePostfixSuffix(new Ast.ContextualEmptyMapExpr());
+                    if (match(RPAREN)) {
+                        return parsePostfixSuffix(new Ast.ContextualEmptyMapExpr());
+                    }
+                    return parsePostfixSuffix(parseTildeMapEntries(null));
                 }
                 consume(LT, "expected explicit <K,V> or () after ~map");
                 Ast.TypeRef keyType = parseTypeRef();
@@ -4660,10 +4727,12 @@ public final class Parser {
                 Ast.TypeRef valueType = parseTypeRef();
                 consume(GT, "~map<K,V>() requires exactly two type arguments");
                 consume(LPAREN, "expected '(' after ~map<K,V>");
-                consume(RPAREN, "nonempty ~map<K,V>(...) is pending transactional map "
-                        + "entry insertion and ownership proofs");
-                return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(
-                        new Ast.TypeRef("Map", List.of(keyType, valueType), false)));
+                Ast.TypeRef mapType = new Ast.TypeRef(
+                        "Map", List.of(keyType, valueType), false);
+                if (match(RPAREN)) {
+                    return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(mapType));
+                }
+                return parsePostfixSuffix(parseTildeMapEntries(mapType));
             }
             if (check(LPAREN)) {
                 if (checkNext(RPAREN)) {
@@ -4680,13 +4749,14 @@ public final class Parser {
                         return parsePostfixSuffix(parseTildeRecordLiteral(false));
                     }
                     if (separator == FAT_ARROW) {
-                        throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
+                        advance(); // consume '(' after the tilde literal
+                        return parsePostfixSuffix(parseTildeMapEntries(null));
                     }
                 }
                 if (tildeHasTopLevelMapSeparator()) {
-                    // Catch evaluated/computed key expressions, e.g. ~(f() => v),
-                    // rather than letting them fall through unary parsing.
-                    throw error(peek(), "tilde map literals require typed Map<K,V> guest admission and lowering; not yet enabled");
+                    // Computed evaluated keys require a static Map<K,V> witness.
+                    advance(); // consume '(' and parse checked typed entries
+                    return parsePostfixSuffix(parseTildeMapEntries(null));
                 }
             }
             return new Ast.UnaryExpr("~", parseUnary());
@@ -5220,6 +5290,32 @@ public final class Parser {
      * Java Map, dynamic object shape or unchecked runtime conversion.
      * Map literals have a separate typed guest runtime promotion gate.
      */
+    /**
+     * All entries are owned by one Map literal. The parser never inserts into
+     * storage; type/ownership preflight and atomic commit occur before a guest
+     * Map value becomes visible. Mixed record ':' syntax is not accepted.
+     * The '=>' token is consumed outside parseExpression's pipeline grammar.
+     */
+    private Ast.MapLiteralExpr parseTildeMapEntries(Ast.TypeRef mapType) {
+        List<Ast.MapLiteralEntry> entries = new ArrayList<>();
+        do {
+            if (check(ELLIPSIS)) {
+                throw error(peek(), "map spreads require explicit source-ownership "
+                        + "and transactional batch proofs");
+            }
+            Ast.Expr key = parseExpression();
+            consume(FAT_ARROW, "map literals require '=>' between key and value");
+            Ast.Expr value = parseExpression();
+            entries.add(new Ast.MapLiteralEntry(key, value));
+            if (entries.size() > 4096) {
+                throw error(peek(), "map literal exceeds 4096 entries");
+            }
+            if (!match(COMMA)) break;
+        } while (!check(RPAREN));
+        consume(RPAREN, "expected ')' to close map literal");
+        return new Ast.MapLiteralExpr(mapType, entries);
+    }
+
     private Ast.ObjectExpr parseTildeRecordLiteral(boolean explicit) {
         consume(LPAREN, "expected '(' after tilde record prefix");
         if (!explicit && check(RPAREN)) {
