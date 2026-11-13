@@ -8472,7 +8472,8 @@ public final class TypeChecker {
 
     private static boolean nativeCollectionCopyScalar(Type type) {
         return type == Primitive.INT || type == Primitive.BOOL
-                || type == Primitive.STRING;
+                || type == Primitive.STRING || type == Primitive.FLOAT
+                || type == Primitive.DECIMAL || type == Primitive.COMPLEX;
     }
 
     private Type builtinCollectionMember(Type receiver, String member) {
