@@ -97,7 +97,7 @@ public final class Parser {
                 throw error(token, "unsafe is reserved until checked unsafe effects and backend lowering exist");
             }
             if (token.type() == QUANTUM) {
-                throw error(token, "quantum execution domain requires explicit backend lowering; no implicit CPU fallback");
+                throw error(token, "execution domain 'quantum' requires explicit backend lowering; no implicit CPU fallback");
             }
             if (token.type() == CPU || token.type() == GPU) {
                 boolean canonicalTask =
@@ -111,7 +111,7 @@ public final class Parser {
                                 && tokens.get(i + 1).type() == LBRACE;
                 if (!canonicalTask && !legacyNbTask) {
                     throw error(token, "synchronous execution domain '" + token.lexeme()
-                            + " { ... }' is reserved but not production-lowered yet;"
+                            + "' { ... } is reserved but not production-lowered yet;"
                             + " use '" + token.lexeme() + " task { ... }' for asynchronous work;"
                             + " no implicit CPU fallback");
                 }
