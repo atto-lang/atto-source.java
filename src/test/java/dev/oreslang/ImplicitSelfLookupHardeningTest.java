@@ -127,6 +127,25 @@ final class ImplicitSelfLookupHardeningTest {
     }
 
     @Test
+    void implicitCallInClosureMustCaptureTheSameBorrowedSelfAsExplicitCall() {
+        for (String call : new String[] { "value()", "self.value()" }) {
+            String program = """
+                    define class Box as
+                      pub value(): int { return 7; }
+                      pub run(): int {
+                        val (() => int) callback = || -> %s;
+                        return callback();
+                      }
+                    end
+                    """.formatted(call);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(program)), call);
+            assertTrue(failure.getMessage().contains("closure cannot capture borrowed value 'self'"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
     void explicitMethodValueExtractionStaysDirectCallOnly() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
