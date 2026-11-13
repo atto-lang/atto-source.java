@@ -39,6 +39,7 @@ public final class NativeTelemetryScopes {
         private final String operation;
         private final boolean disabled;
         private boolean closed;
+        private int observerCalls;
 
         private SpanToken(Carrier carrier, long startNanos,
                           String operation, boolean disabled) {
@@ -50,7 +51,8 @@ public final class NativeTelemetryScopes {
     }
 
     public record Snapshot(long started, long ended, long active,
-                           long cumulativeNanos, long rejected) { }
+                           long cumulativeNanos, long rejected,
+                           long observerCalls) { }
 
     private final AtomicBoolean enabled = new AtomicBoolean();
     private final AtomicLong started = new AtomicLong();
@@ -58,6 +60,7 @@ public final class NativeTelemetryScopes {
     private final AtomicLong active = new AtomicLong();
     private final AtomicLong cumulativeNanos = new AtomicLong();
     private final AtomicLong rejected = new AtomicLong();
+    private final AtomicLong observerCalls = new AtomicLong();
 
     /** Allocate once when a trusted runtime creates a logical continuation. */
     public Carrier createCarrierForTrustedRuntime() {
@@ -132,6 +135,45 @@ public final class NativeTelemetryScopes {
     }
 
     /**
+     * Compiler-dispatched observer. Only string-bearing methods are admitted
+     * in this restricted phase; the bounded counter proves dispatch, while
+     * full attribute/event storage and OTLP export remain separate work.
+     * A guest cannot obtain the token or call this Java method directly.
+     */
+    public void observeFromTrustedRuntime(
+            Carrier carrier, SpanToken token, String method, java.util.List<?> values) {
+        Objects.requireNonNull(carrier, "continuation carrier");
+        Objects.requireNonNull(token, "scope token");
+        Objects.requireNonNull(values, "observer values");
+        final int expected = "set_attribute".equals(method) ? 2 : 1;
+        if (!java.util.Set.of("set_attribute", "add_event", "record_error", "set_status")
+                .contains(method) || values.size() != expected) {
+            rejected.incrementAndGet();
+            throw new IllegalArgumentException("invalid native SpanScope observer");
+        }
+        for (Object value : values) {
+            if (!(value instanceof String text) || text.length() > 1024) {
+                rejected.incrementAndGet();
+                throw new IllegalArgumentException("native SpanScope observer requires bounded strings");
+            }
+        }
+        synchronized (carrier) {
+            if (token.carrier != carrier || carrier.retired || token.closed
+                    || (!token.disabled && carrier.stack.peek() != token)) {
+                rejected.incrementAndGet();
+                throw new IllegalStateException("invalid native SpanScope observer owner");
+            }
+            if (token.disabled) return;
+            if (token.observerCalls >= 256) {
+                rejected.incrementAndGet();
+                throw new IllegalStateException("native SpanScope observer budget exhausted");
+            }
+            token.observerCalls++;
+            observerCalls.incrementAndGet();
+        }
+    }
+
+    /**
      * Task/actor cancellation hook: end all active scopes in strict LIFO
      * order and forbid reuse. Does not invoke application code.
      */
@@ -153,7 +195,7 @@ public final class NativeTelemetryScopes {
 
     public Snapshot snapshotForTrustedHost() {
         return new Snapshot(started.get(), ended.get(), active.get(),
-                cumulativeNanos.get(), rejected.get());
+                cumulativeNanos.get(), rejected.get(), observerCalls.get());
     }
 
     private void finish(SpanToken token) {
