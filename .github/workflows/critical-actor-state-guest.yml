@@ -63,7 +63,7 @@ jobs:
             ActorStateLoanTest:9 \
             ActorSingleStateSchemaTest:7 \
             ActorBareHandleStateCallTest:10 \
-            ActorSealedStateAtomicCommitTest:5; do
+            ActorSealedStateAtomicCommitTest:7; do
             class="${spec%%:*}"
             expected="${spec##*:}"
             report="target/surefire-reports/TEST-dev.oreslang.${class}.xml"
@@ -74,4 +74,4 @@ jobs:
             done
             echo "GUEST_SUITE_PASS ${class} tests=${expected}"
           done
-          echo 'GRAAL_JVM_CRITICAL_MODES_BARE_LOOKUP_ATOMIC_COMMIT_PASS tests=52'
+          echo 'GRAAL_JVM_CRITICAL_MODES_BARE_LOOKUP_ATOMIC_COMMIT_PASS tests=54'
