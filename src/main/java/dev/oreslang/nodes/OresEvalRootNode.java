@@ -4822,43 +4822,34 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ObjectExpr object,
                 Env env,
                 SourceValueCont continuation) {
-            ArrayList<Object> values = new ArrayList<>();
+            // The accumulator is private to this construction. Apply each
+            // item immediately after its expression resolves: keeping a live
+            // mutable struct reference for a later finalization step would
+            // observe subsequent mutations rather than spread-time values.
+            LinkedHashMap<String, Object> pending = new LinkedHashMap<>();
+            if (object.explicitStruct()) {
+                for (Ast.StructFieldSpec field : object.declaredFields()) {
+                    if (pending.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate explicit struct field " + field.name());
+                    }
+                }
+            }
             evalSuspendableObjectField(
-                    task,
-                    object,
-                    env,
-                    values,
-                    0,
-                    (t, built, failure) ->
-                            continuation.accept(
-                                    t,
-                                    built,
-                                    failure));
+                    task, object, env, pending, 0, continuation);
         }
 
         private void evalSuspendableObjectField(
                 SourceTask task,
                 Ast.ObjectExpr object,
                 Env env,
-                ArrayList<Object> values,
+                LinkedHashMap<String, Object> pending,
                 int index,
                 SourceValueCont continuation) {
             if (index >= object.fields().size()) {
-                LinkedHashMap<String, Object> result = new LinkedHashMap<>();
-                if (object.explicitStruct()) {
-                    for (Ast.StructFieldSpec field : object.declaredFields()) {
-                        if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct field " + field.name());
-                        }
-                    }
-                }
-                for (int i = 0; i < values.size(); i++) {
-                    putClosedAggregateField(object, object.fields().get(i), values.get(i), result);
-                }
                 Object built = object.structuralRecord()
-                        ? new ReadonlyRecordValue(result)
-                        : new MutableStructValue(result);
+                        ? new ReadonlyRecordValue(pending)
+                        : new MutableStructValue(pending);
                 continuation.accept(task, built, null);
                 return;
             }
@@ -4873,14 +4864,16 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        values.add(value);
+                        try {
+                            putClosedAggregateField(object, field, value, pending);
+                        } catch (RuntimeException | Error malformed) {
+                            // Partially assembled aggregates are never
+                            // published. Deliver the failure exactly once.
+                            continuation.accept(t, null, malformed);
+                            return;
+                        }
                         evalSuspendableObjectField(
-                                t,
-                                object,
-                                env,
-                                values,
-                                index + 1,
-                                continuation);
+                                t, object, env, pending, index + 1, continuation);
                     });
         }
 
