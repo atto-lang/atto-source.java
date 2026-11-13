@@ -2789,6 +2789,17 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        // Snapshot syntax is a dedicated AST expression, but it is NOT a
+        // general callable expression with Unknown type. Only the manifest-
+        // authenticated actor MIR may prove that an owned scalar is detached
+        // from a real critical-read loan. An ordinary function/lambda/method
+        // must never silently type-check this AST into guest execution.
+        if (expr instanceof Ast.ActorStateSnapshotExpr snapshot) {
+            throw new IllegalArgumentException(
+                    "ACTOR_CRITICAL_STATE_MIR_UNSUPPORTED: scalar snapshot "
+                    + snapshot.viewName() + "." + snapshot.fieldName()
+                    + " requires manifest-owned actor source, loan and effect verification");
+        }
         if (expr instanceof Ast.LocalAggregateConstructExpr construct) {
             throw new IllegalArgumentException(
                     "local aggregate constructor '" + construct.typeName()
