@@ -111,7 +111,7 @@ public final class Parser {
                                 && tokens.get(i + 1).type() == LBRACE;
                 if (!canonicalTask && !legacyNbTask) {
                     throw error(token, "synchronous execution domain '" + token.lexeme()
-                            + " { ... }' is reserved but not production-lowered yet;"
+                            + "' { ... } is reserved but not production-lowered yet;"
                             + " use '" + token.lexeme() + " task { ... }' for asynchronous work;"
                             + " no implicit CPU fallback");
                 }
