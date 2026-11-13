@@ -55,6 +55,8 @@ public final class OwnershipChecker {
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
+    /** Lexical compiler-owned observer aliases are never transferable owners. */
+    private final Set<String> activeTelemetryAliases = new HashSet<>();
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
     /**
@@ -413,6 +415,9 @@ public final class OwnershipChecker {
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
         if (stmt instanceof Ast.BindingStmt binding) {
+            if (activeTelemetryAliases.contains(binding.name())) {
+                throw error("native SpanScope alias must not be shadowed by guest binding");
+            }
             checkBinding(binding, scope);
             return;
         }
@@ -460,6 +465,23 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.BlockStmt block) {
+            if (block.usingTelemetryScope()) {
+                // Only source statements enter ownership checking. Synthetic
+                // begin/close instructions are compiler-owned, not guest
+                // calls, values, imports, or moveable scope aliases.
+                if (block.body().size() != 2
+                        || !(block.body().get(0) instanceof Ast.BindingStmt acquired)
+                        || !(block.body().get(1) instanceof Ast.TryStmt protectedBody)
+                        || !activeTelemetryAliases.add(acquired.name())) {
+                    throw error("malformed or shadowed native telemetry scope");
+                }
+                try {
+                    checkBlock(protectedBody.body(), scope, returnType);
+                } finally {
+                    activeTelemetryAliases.remove(acquired.name());
+                }
+                return;
+            }
             checkBlock(block.body(), scope, returnType);
             return;
         }
@@ -1601,6 +1623,20 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.MemberExpr observer
+                && observer.receiver() instanceof Ast.NameExpr alias
+                && activeTelemetryAliases.contains(alias.name())) {
+            int expected = observer.member().equals("set_attribute") ? 2 : 1;
+            if (!Set.of("set_attribute", "add_event", "record_error", "set_status")
+                    .contains(observer.member())
+                    || call.typeArgumentsPresent() || call.arguments().size() != expected) {
+                throw error("native SpanScope admits only typed observer operations");
+            }
+            for (Ast.Expr argument : call.arguments()) {
+                checkExpr(argument, scope, false);
+            }
+            return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+        }
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive
