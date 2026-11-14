@@ -161,6 +161,22 @@ final class NativeAttoCollectionMemberMethodTest {
     }
 
     @Test
+    void reduceAcceptsStringLiteralSeedWithoutLosingAccumulatorType() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  let mut Array<int> values = new Array<int>();
+                  values.add(3);
+                  values.add(4);
+                  val string joined = values.reduce("a",
+                      |string acc, int n| -> string { return acc + "x"; });
+                  stdio.println(joined);
+                  return;
+                }
+                """;
+        assertEquals("axx", run(source, "string-literal-seed.atto"));
+    }
+
+    @Test
     void polymorphicMethodExtractionAndExtraArgumentsFailClosed() throws Exception {
         mustReject("""
                 pub fnc main(): void {
