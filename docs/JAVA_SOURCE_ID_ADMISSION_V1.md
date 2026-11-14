@@ -128,3 +128,24 @@ that gate, a guest-owned name could be confused with the compiler-intrinsic
 Companion JUnit negative fixtures are committed but have **not** been executed
 under the full Maven/Java compiler in the currently available environment.
 No guest logging side effect or Truffle probe is claimed.
+
+
+### Exact production Java binder cold-path compilation (local host evidence)
+
+The exact Git blobs `5eb0724239b4027d76a4a6a82336f21f033c6ceb`
+(`SourceRoutineBindingV1.java`),
+`bdd3bec3f0e65344b4e0e3deee7cbc114255f998`
+(`SourceLogCallsiteBindingV1.java`) and
+`fc2c579220437d5ab0c409be266123eb550a939f`
+(`SourceIdentityV1.java`) were compiled under JDK21
+`javac --release 21 -Xlint:all -Werror` against a **minimal synthetic
+AST API fixture**, then executed using a positive two-site/one-routine
+case and eight fail-closed cases. Result:
+`JAVA_PRODUCTION_STATIC_SITE_BINDER_HOST_PASS:negatives=8`.
+
+This proves the committed production Java binder source compiles and its
+source-identity admission logic executes in a bounded host-level fixture.
+**The AST fixture is synthetic**, not the repository's actual Java
+`Parser.parse` AST or Maven/JUnit execution. No Truffle guest logging node
+or GraalVM AOT/JIT probe has been run. The exact project parser and
+`SourceLogCallsiteBindingV1Test` must still pass on an approved real runner.
