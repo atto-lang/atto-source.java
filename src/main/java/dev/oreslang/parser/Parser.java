@@ -33,9 +33,10 @@ public final class Parser {
     private final List<ExternalReceiverMethod> rootReceiverMethods = new ArrayList<>();
     private List<ExternalReceiverMethod> moduleReceiverMethods;
 
-    // Forward type signatures are compile-time-only and intentionally absent
-    // from executable ASTs. The v1 contract requires an exact same-scope
-    // definition; cross-file and unresolved linker stubs fail closed.
+    // Forward signatures (type, trait, interface, actor, isoactor) are
+    // compile-time-only and absent from executable ASTs. An actor forward
+    // does not create a mailbox, instance, capability, or executable type:
+    // its matching definition must be in the same declaration scope.
     private record ForwardType(Token.Type kind, String name, Ast.Visibility visibility,
                                List<String> generics) { }
     private final List<ForwardType> rootForwards = new ArrayList<>();
@@ -1846,8 +1847,8 @@ public final class Parser {
                 || after.shared || after.untrusted) {
             throw error(start, "forward declarations accept only private/pub visibility");
         }
-        if (!match(TYPE, TRAIT, INTERFACE)) {
-            throw error(peek(), "'declare' supports only type, trait or interface");
+        if (!match(TYPE, TRAIT, INTERFACE, ACTOR, ISOACTOR)) {
+            throw error(peek(), "'declare' supports only type, trait, interface, actor or isoactor");
         }
         Token.Type kind = previous().type();
         String name = consumeTypeDeclarationName("expected forward type name");
@@ -1901,9 +1902,24 @@ public final class Parser {
                 actual = iface.moduleContract() ? CONTRACT : interfaceKinds.getOrDefault(iface, INTERFACE);
                 generics = iface.genericParameters();
                 visibility = iface.visibility();
+            } else if (definition instanceof Ast.ClassDecl klass
+                    && klass.actorKind() != Ast.ActorKind.NONE) {
+                // Actor forwards represent the exact same-scope nominal
+                // actor, not a new runtime actor, an import, or an alias of
+                // an ordinary class. PRIVATE is isoactor; ordinary actors
+                // are SHARED. UNTRUSTED requires its own explicit contract
+                // rather than silently inheriting SHARED permissions.
+                actual = klass.actorKind() == Ast.ActorKind.PRIVATE ? ISOACTOR : ACTOR;
+                if (klass.actorKind() == Ast.ActorKind.UNTRUSTED) {
+                    throw new IllegalArgumentException("forward actor kind mismatch for '"
+                            + forward.name() + "' in " + scope
+                            + ": untrusted actor requires an explicit security-kind contract");
+                }
+                generics = klass.genericParameters();
+                visibility = klass.visibility();
             } else {
                 throw new IllegalArgumentException("forward type '" + forward.name()
-                        + "' resolved to a value declaration instead of a type/trait/interface in " + scope);
+                        + "' resolved to a value declaration instead of a type/trait/interface/actor in " + scope);
             }
             if (actual != forward.kind()) {
                 throw new IllegalArgumentException("forward declaration kind mismatch for '"
