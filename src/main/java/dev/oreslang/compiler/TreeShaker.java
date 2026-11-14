@@ -228,6 +228,7 @@ public final class TreeShaker {
             if (expression instanceof Ast.LambdaExpr) return true;
             if (expression instanceof Ast.TypeTestExpr test) return containsLambda(test.value());
             if (expression instanceof Ast.PatternTestExpr test) return containsLambda(test.value());
+            if (expression instanceof Ast.CaptureExpr capture) return containsLambda(capture.value());
             if (expression instanceof Ast.CastExpr cast) return containsLambda(cast.value());
             if (expression instanceof Ast.SpreadExpr spread) return containsLambda(spread.expression());
             if (expression instanceof Ast.BinaryExpr binary) {
@@ -346,6 +347,9 @@ public final class TreeShaker {
                 return new Ast.PatternTestExpr(
                         substitute(test.value(), substitutions, shadowed),
                         test.pattern());
+            }
+            if (expression instanceof Ast.CaptureExpr capture) {
+                return new Ast.CaptureExpr(substitute(capture.value(), substitutions, shadowed), capture.name());
             }
             if (expression instanceof Ast.CastExpr cast) {
                 return new Ast.CastExpr(
@@ -685,7 +689,8 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
-                        methods);
+                        methods,
+                        klass.actorConcurrency());
             }
             return declaration;
         }
@@ -773,10 +778,11 @@ public final class TreeShaker {
                 List<Ast.Stmt> elseBody = rewriteStatements(
                         conditional.elseBody(), module, new LinkedHashMap<>(locals));
                 for (Ast.IfBranch branch : conditional.branches()) {
-                    Ast.Expr condition = rewriteExpression(branch.condition(), module, locals);
-                    Object known = evaluate(condition, module, locals);
+                    Map<String, Object> conditionLocals = new LinkedHashMap<>(locals);
+                    Ast.Expr condition = rewriteExpression(branch.condition(), module, conditionLocals);
+                    Object known = evaluate(condition, module, conditionLocals);
                     List<Ast.Stmt> body = rewriteStatements(
-                            branch.body(), module, new LinkedHashMap<>(locals));
+                            branch.body(), module, new LinkedHashMap<>(conditionLocals));
                     if (known instanceof Boolean value) {
                         if (!value) continue;
                         if (branches.isEmpty()) {
@@ -939,6 +945,11 @@ public final class TreeShaker {
                 return new Ast.PatternTestExpr(
                         rewriteExpression(test.value(), module, locals),
                         test.pattern());
+            }
+            if (expression instanceof Ast.CaptureExpr capture) {
+                Ast.Expr value = rewriteExpression(capture.value(), module, locals);
+                locals.put(capture.name(), UNKNOWN);
+                return new Ast.CaptureExpr(value, capture.name());
             }
             if (expression instanceof Ast.CastExpr cast) {
                 return new Ast.CastExpr(
@@ -1326,8 +1337,9 @@ public final class TreeShaker {
                     scanExpression(module, loop.condition(), locals);
                 } else if (statement instanceof Ast.IfStmt conditional) {
                     for (Ast.IfBranch branch : conditional.branches()) {
-                        scanExpression(module, branch.condition(), locals);
-                        scanStatements(module, branch.body(), new LinkedHashSet<>(locals));
+                        Set<String> conditionLocals = new LinkedHashSet<>(locals);
+                        scanExpression(module, branch.condition(), conditionLocals);
+                        scanStatements(module, branch.body(), new LinkedHashSet<>(conditionLocals));
                     }
                     scanStatements(module, conditional.elseBody(), new LinkedHashSet<>(locals));
                 } else if (statement instanceof Ast.MatchStmt matched) {
@@ -1440,6 +1452,9 @@ public final class TreeShaker {
             } else if (expression instanceof Ast.PatternTestExpr test) {
                 scanExpression(module, test.value(), locals);
                 scanPatternTypes(test.pattern());
+            } else if (expression instanceof Ast.CaptureExpr capture) {
+                scanExpression(module, capture.value(), locals);
+                locals.add(capture.name());
             } else if (expression instanceof Ast.CastExpr cast) {
                 scanExpression(module, cast.value(), locals);
                 scanType(cast.targetType());

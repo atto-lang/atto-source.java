@@ -132,8 +132,8 @@ final class ActorReceiverContractSignatureTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> check("""
                 define contract CartApi as
                   actor Cart;
-                  mtd receive(Cart cart)(int amount): void;
-                  mtd receive(Cart cart)(String amount): void;
+                  mtd apply(Cart cart)(int amount): void;
+                  mtd apply(Cart cart)(String amount): void;
                 end
                 """));
         assertTrue(error.getMessage().contains("duplicate contract receiver method slot"));
@@ -186,7 +186,7 @@ final class ActorReceiverContractSignatureTest {
                   pub mtd tear_down(Cart cart)(): void;
                 end
                 """));
-        assertTrue(error.getMessage().contains("reserved actor lifecycle/control hook"));
+        assertTrue(error.getMessage().contains("actor-local lifecycle contract hook 'tear_down' must be private"));
     }
 
     @Test

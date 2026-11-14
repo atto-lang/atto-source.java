@@ -1009,20 +1009,29 @@ fi
 
 Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
 
-Inline value binding is supported with an explicit boolean predicate:
+Inline captures preserve their initializer value and use ordinary `let` ownership:
 
 ```ores
-if some_call() as let value when value > 0 {
+if is_ready(some_call() as let value) {
   consume(value);
-} fi
-while some_call() as let value when value > 0 {
+fi
+if (some_call() as let value) > 0 then
+  consume(value);
+fi
+while is_ready(some_call() as let value) {
   consume(value);
 }
+if let Some(value) = maybe_call() then
+  consume(value);
+fi
 ```
 
-Each reached initializer is evaluated once. The `if` binding is scoped to its
-predicate and remaining branch chain; a `while` binding is recreated on every
-test, including after `continue`. See [the full contract](VALUE_BOUNDARIES.md).
+Each reached initializer evaluates once. Captures are scoped to that condition
+and matching body, and loops recreate them for every test. The condition is
+bool; capturing does not add truthiness or duplicate ownership. A consuming
+predicate moves its argument; explicitly borrow when the body needs the owner.
+The older `expr as let value when predicate` head remains supported with its
+original remaining-branch-chain scope. See [the full contract](VALUE_BOUNDARIES.md).
 
 ## Exceptions and defer
 
@@ -2046,7 +2055,10 @@ Oreslang keeps four related operations separate:
 - `match` performs proof-checked pattern partitioning, while `switch` is
   constant/equality case dispatch.
 
-Every `if` closes with `fi`, even when its branch bodies use braces.
+Every `if` closes with `fi`. In braced conditionals, `{` replaces `then`,
+`} elif` / `} else` separate branches, and `fi` closes the final branch; there
+is no final `}` before `fi`. The historical `} fi` is accepted with a migration
+diagnostic.
 Executable match/switch arms use `->`; `=>` remains type-level syntax.
 
 Plain `match` is exclusive-by-default. The checker proves every pair of
