@@ -61,7 +61,7 @@ public final class Ast {
      * effects, and for virtual actors logical-identity incarnation fencing.
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
-            TypeAliasDecl, StateContainerDecl, VirtualActorDecl { }
+            TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -116,6 +116,24 @@ public final class Ast {
                                    List<ProtectedMethod> methods) implements Decl {
         public VirtualActorDecl {
             java.util.Objects.requireNonNull(name, "virtual actor name");
+            java.util.Objects.requireNonNull(visibility, "visibility");
+            stateFields = List.copyOf(stateFields);
+            methods = List.copyOf(methods);
+        }
+    }
+
+
+    /**
+     * A GPU actor is NOT a ClassDecl or a CPU ActorKind: GPU state and
+     * actor-mailbox effects require a separate typed MIR and physical device
+     * admission. Bodies remain source-token-provenance-bearing until checked
+     * lowering is implemented. Parsing does not authorize execution.
+     */
+    public record GpuActorDecl(String name, Visibility visibility,
+                               List<ProtectedStateField> stateFields,
+                               List<ProtectedMethod> methods) implements Decl {
+        public GpuActorDecl {
+            java.util.Objects.requireNonNull(name, "GPU actor name");
             java.util.Objects.requireNonNull(visibility, "visibility");
             stateFields = List.copyOf(stateFields);
             methods = List.copyOf(methods);

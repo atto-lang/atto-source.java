@@ -181,6 +181,17 @@ public final class TypeChecker {
                                     + "' is parsed with logical identity metadata but requires "
                                     + "fenced activation, scheduler and CONTROL MIR lowering");
                 }
+                if (declaration instanceof Ast.GpuActorDecl actor) {
+                    // Describe checked signature types for diagnostics, but do
+                    // not promote opaque bodies to executable device MIR.
+                    dev.oreslang.compiler.GpuActorSignatureHirV0.describe(actor);
+                    throw new IllegalArgumentException(
+                            "GPU_ACTOR_MIR_UNSUPPORTED: '" + actor.name()
+                                    + "' has a distinct sealed GPU actor AST but requires "
+                                    + "checked device-resident state ownership, GPU mailbox "
+                                    + "scheduling, supervision and physical kernel lowering; "
+                                    + "no implicit CPU fallback");
+                }
                 if (declaration instanceof Ast.ClassDecl klass) {
                     rejectUnloweredCheckedClassEffects(klass);
                 }
