@@ -5084,6 +5084,13 @@ public final class TypeChecker {
             if (args == null) {
                 throw new IllegalArgumentException("constructor " + constructor.constructor() + " is not valid for " + subject);
             }
+            // Reject an unproved payload alias *before* the generic arity
+            // diagnostic so compiler negatives validate the ownership gate.
+            if (constructor.wholeAlias() != null
+                    && (nominalEnum == null || !args.isEmpty())) {
+                throw new IllegalArgumentException(
+                        "whole-variant alias with payload is reserved until case-borrow lowering");
+            }
             if (args.size() != constructor.arguments().size()) {
                 throw new IllegalArgumentException("constructor pattern " + constructor.constructor()
                         + " expects " + args.size() + " argument(s), got " + constructor.arguments().size());
@@ -5092,14 +5099,6 @@ public final class TypeChecker {
                 checkPattern(constructor.arguments().get(i), args.get(i), bindings, generics, self);
             }
             if (constructor.wholeAlias() != null) {
-                // The first actual alias lowering slice is a closed nullary
-                // enum case, whose representation is immutable and Copy.
-                // Do not erase payload ownership by treating it as a sum
-                // value alias until case-refined borrowing is fully checked.
-                if (nominalEnum == null || !args.isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "whole-variant alias with payload is reserved until case-borrow lowering");
-                }
                 bindings.define(constructor.wholeAlias(),
                         overlayReadonlyCapabilities(subject, subject),
                         Ast.BindingKind.VAL);
