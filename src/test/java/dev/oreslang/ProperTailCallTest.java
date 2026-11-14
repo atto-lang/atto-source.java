@@ -140,7 +140,7 @@ final class ProperTailCallTest {
                 }
 
                 fnc remainder_by_zero(): int {
-                  return 1 % 0;
+                  return Integer.rem(1, 0);
                 }
 
                 fnc with_catch(): int {
