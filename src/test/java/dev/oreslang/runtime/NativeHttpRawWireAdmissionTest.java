@@ -163,11 +163,27 @@ final class NativeHttpRawWireAdmissionTest {
                     + "Connection: close\r\n\r\n"
                     + "Z\r\nfoo\r\n0\r\n\r\n").startsWith("HTTP/1.1 400"),
                     "malformed chunk-size must be a client error");
+            for (String host : new String[] {
+                    "example.test:abc", ":8080", "localhost:65536", "[gggg]",
+                    "localhost:", "::1", "example.test%20attacker", "localhost/other",
+                    "[2001:::db8]", "[::ffff:999.1.1.1]",
+                    "999.1.1.1", "127.1", "127.0.1", "2130706433",
+                    "127.000.0.1", "192.0.2.256", "1.2.3.4.5", "127.1:80"
+            }) {
+                assertTrue(request(address, get("Host: " + host + "\r\n"))
+                                .startsWith("HTTP/1.1 400"),
+                        "invalid Host must fail on actual socket before guest: " + host);
+            }
+            for (String host : new String[] {"localhost:8443", "example.test:65535"}) {
+                assertTrue(request(address, get("Host: " + host + "\r\n"))
+                                .startsWith("HTTP/1.1 200"),
+                        "valid Host port rejected by socket admission: " + host);
+            }
             assertTrue(request(address, get("Host: localhost\r\n")).startsWith("HTTP/1.1 200"),
                     "the listener must survive all prior malformed requests");
-            assertEquals(6, admitted.get(),
-                    "two good GETs, two valid chunked, oversized chunked and malformed chunk may pass headers");
-            assertEquals(4, successfulBodies.get(),
+            assertEquals(8, admitted.get(),
+                    "four good GETs, two valid chunked, oversized chunked and malformed chunk may pass headers");
+            assertEquals(6, successfulBodies.get(),
                     "oversized and malformed chunked requests must not complete body processing");
         } finally {
             server.stop(0);

@@ -102,38 +102,120 @@ public final class NativeHttp implements AutoCloseable {
         }
     }
 
+    /**
+     * A Host value is a single authority, not merely an ASCII string.
+     * Do not resolve DNS names or silently accept malformed ports, multiple
+     * colons, zones or request-target delimiters before guest dispatch.
+     */
     private static boolean validHostValue(String host) {
         if (host == null || host.isEmpty() || host.length() > 255) return false;
         for (int i = 0; i < host.length(); i++) {
             char c = host.charAt(i);
             if (c <= 0x20 || c >= 0x7f || c == '/' || c == '\\'
-                    || c == '?' || c == '#' || c == '@' || c == ',') return false;
+                    || c == '?' || c == '#' || c == '@' || c == ','
+                    || c == '%') return false;
         }
-        // Host is an authority, not an arbitrary ASCII token. A bare
-        // colon must introduce a decimal port; IPv6 literals need brackets.
-        int portColon;
+        String port = null;
         if (host.charAt(0) == '[') {
-            int end = host.indexOf(']');
-            if (end < 0 || (end + 1 < host.length() && host.charAt(end + 1) != ':')) return false;
-            portColon = end + 1 < host.length() ? end + 1 : -1;
-        } else {
-            portColon = host.indexOf(':');
-        }
-        if (portColon >= 0) {
-            String port = host.substring(portColon + 1);
-            if (port.isEmpty() || port.length() > 5) return false;
-            for (int i = 0; i < port.length(); i++) {
-                if (port.charAt(i) < '0' || port.charAt(i) > '9') return false;
+            int close = host.indexOf(']');
+            if (close < 2 || host.indexOf('[', 1) >= 0
+                    || host.indexOf(']', close + 1) >= 0
+                    || !validIpv6Literal(host.substring(1, close))) return false;
+            if (close + 1 < host.length()) {
+                if (host.charAt(close + 1) != ':') return false;
+                port = host.substring(close + 2);
             }
-            if (Integer.parseInt(port) > 65535) return false;
+        } else {
+            if (host.indexOf('[') >= 0 || host.indexOf(']') >= 0) return false;
+            int colon = host.indexOf(':');
+            String name = host;
+            if (colon >= 0) {
+                if (host.indexOf(':', colon + 1) >= 0) return false;
+                name = host.substring(0, colon);
+                port = host.substring(colon + 1);
+            }
+            if (name.isEmpty() || name.startsWith(".") || name.contains("..")) return false;
+            // Conservative ASCII reg-name policy. Avoid ambiguity between
+            // downstream URI, proxy and JDK host parsers.
+            for (int i = 0; i < name.length(); i++) {
+                char c = name.charAt(i);
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                        || (c >= '0' && c <= '9') || c == '.' || c == '-'
+                        || c == '_' || c == '~')) return false;
+            }
+            // Numeric-only reg-names are ambiguous: some host resolvers
+            // interpret short, integer or octal IPv4 forms differently.
+            // Only a canonical four-octet decimal IPv4 literal is admitted.
+            boolean numericAddress = true;
+            for (int i = 0; i < name.length(); i++) {
+                char c = name.charAt(i);
+                if (c != '.' && (c < '0' || c > '9')) {
+                    numericAddress = false;
+                    break;
+                }
+            }
+            if (numericAddress && !validIpv4Tail(name)) return false;
         }
-        try {
-            java.net.URI uri = new java.net.URI("http://" + host + "/");
-            return uri.getHost() != null && uri.getRawUserInfo() == null
-                    && host.equals(uri.getRawAuthority());
-        } catch (java.net.URISyntaxException invalid) {
+        if (port == null) return true;
+        if (port.isEmpty() || port.length() > 5) return false;
+        int number = 0;
+        for (int i = 0; i < port.length(); i++) {
+            char c = port.charAt(i);
+            if (c < '0' || c > '9') return false;
+            number = number * 10 + (c - '0');
+        }
+        return number <= 65535;
+    }
+
+    /** Validate an IPv6 address literal without DNS, I/O or zone identifiers. */
+    private static boolean validIpv6Literal(String value) {
+        if (value.isEmpty() || value.length() > 45 || !value.contains(":")
+                || value.contains(":::")) return false;
+        int compression = value.indexOf("::");
+        if (compression >= 0 && value.indexOf("::", compression + 2) >= 0) return false;
+        if (compression < 0 && (value.startsWith(":") || value.endsWith(":")))
             return false;
+        String left = compression < 0 ? value : value.substring(0, compression);
+        String right = compression < 0 ? "" : value.substring(compression + 2);
+        if (compression >= 0 && (left.endsWith(":") || right.startsWith(":")))
+            return false;
+        String segments = compression < 0 ? value :
+                left.isEmpty() ? right : right.isEmpty() ? left : left + ":" + right;
+        String[] groups = segments.isEmpty() ? new String[0] : segments.split(":", -1);
+        int count = 0;
+        for (int i = 0; i < groups.length; i++) {
+            String group = groups[i];
+            if (group.indexOf('.') >= 0) {
+                if (i != groups.length - 1 || !validIpv4Tail(group)) return false;
+                count += 2;
+            } else {
+                if (group.isEmpty() || group.length() > 4) return false;
+                for (int j = 0; j < group.length(); j++) {
+                    char c = group.charAt(j);
+                    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+                            || (c >= 'A' && c <= 'F'))) return false;
+                }
+                count++;
+            }
         }
+        return compression < 0 ? count == 8 : count < 8;
+    }
+
+    private static boolean validIpv4Tail(String value) {
+        String[] parts = value.split("\\.", -1);
+        if (parts.length != 4) return false;
+        for (String part : parts) {
+            if (part.isEmpty() || part.length() > 3
+                    || (part.length() > 1 && part.charAt(0) == '0')) return false;
+            int octet = 0;
+            for (int i = 0; i < part.length(); i++) {
+                char c = part.charAt(i);
+                if (c < '0' || c > '9') return false;
+                octet = octet * 10 + c - '0';
+            }
+            if (octet > 255) return false;
+        }
+        return true;
     }
 
     /** Dedicated transport-owned quota marker: never classify by message text. */
@@ -147,6 +229,13 @@ public final class NativeHttp implements AutoCloseable {
     static int operationFailureStatus(Throwable failure, boolean requestBodyRead) {
         if (requestBodyRead && failure instanceof RequestBodyTooLargeException) return 413;
         if (requestBodyRead && failure instanceof IOException) return 400;
+        // Strict UTF-8 decoding in bodyText() wraps CharacterCodingException.
+        // This is malformed client payload, not an internal server error.
+        // Both the request-body boundary and the decoder's typed cause must
+        // match, so unrelated handler failures cannot masquerade as HTTP 400.
+        if (requestBodyRead && failure instanceof IllegalArgumentException
+                && "invalid UTF-8".equals(failure.getMessage())
+                && failure.getCause() instanceof CharacterCodingException) return 400;
         return 500;
     }
 
