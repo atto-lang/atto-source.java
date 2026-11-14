@@ -148,6 +148,10 @@ final class ExplicitReceiverMtdV1Test {
                 """
                 define class Point as end
                 mtd (self: Point) on_start(): void { return; }
+                """,
+                """
+                define class Point as end
+                mtd (self: Point) init(): void { return; }
                 """
         }) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
