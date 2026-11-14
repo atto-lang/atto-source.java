@@ -1,11 +1,13 @@
 define enum WorkerMsg {
-    Run { job_id: int },
+    Run { job_id: int, payload: Bytes },
     Stop
 }
-
-fnc bad(WorkerMsg msg): int {
+fnc bad(WorkerMsg msg): WorkerMsg {
     return match msg over {
-        on Run as r { return 1; }
-        on Stop { return 0; }
+        on Run as r {
+            // Borrowed whole-case view cannot become an owned enum result.
+            return r;
+        }
+        on Stop { return WorkerMsg.Stop(); }
     };
 }
