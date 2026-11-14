@@ -21,6 +21,8 @@ final class ActorSourceLifecycleGate {
      * retain their original failure identity and not be swallowed by STOP.
      */
     static final class InitializationStopped extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
         private InitializationStopped() {
             super("source actor initialization commit rejected by STOP");
         }
