@@ -151,6 +151,25 @@ public final class OresEvalRootNode extends RootNode {
         return arguments.length == 1 && command.equals(arguments[0]);
     }
 
+    /**
+     * VM-owned sequence storage remembers the source collection constructor.
+     * Array/List/Vector currently share an ArrayList representation, but the
+     * native .atto method dispatcher must not silently turn Vector or List
+     * calls into the Array implementation. This tag carries no guest authority.
+     */
+    private static final class NativeAttoSequence extends ArrayList<Object> {
+        private final String kind;
+
+        private NativeAttoSequence(String kind) {
+            if (!Set.of("Array", "Vector", "List").contains(kind)) {
+                throw new IllegalArgumentException("unsupported Atto sequence kind " + kind);
+            }
+            this.kind = kind;
+        }
+
+        private String kind() { return kind; }
+    }
+
     private static final class Evaluator
             implements ActorRuntime.ActorCodeExecutor {
         private final Ast.Program program;
@@ -5880,7 +5899,7 @@ public final class OresEvalRootNode extends RootNode {
                             created.type().name()
                                     + "<T> constructor takes no positional arguments");
                 }
-                return new ArrayList<>();
+                return new NativeAttoSequence(created.type().name());
             }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
@@ -7930,7 +7949,7 @@ public final class OresEvalRootNode extends RootNode {
                                 created.type().name()
                                         + "<T> constructor takes no positional arguments");
                     }
-                    return new ArrayList<>();
+                    return new NativeAttoSequence(created.type().name());
                 }
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(
@@ -8176,8 +8195,13 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "collection." + operation + " requires an Atto callback");
             }
+            // All three sequence families share storage, not semantics.
+            // Untagged legacy list literals retain the Array convention.
+            String kind = receiver instanceof NativeAttoSequence typed
+                    ? typed.kind().toLowerCase(java.util.Locale.ROOT)
+                    : "array";
             Ast.FunctionDecl nativeFunction =
-                    NativeAttoCollectionModule.function(operation + "_array");
+                    NativeAttoCollectionModule.function(operation + "_" + kind);
             ArrayList<Object> inputs = new ArrayList<>(1 + count);
             inputs.add(receiver);
             inputs.addAll(arguments);
@@ -8206,7 +8230,9 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.ModuleDecl module : parsed.modules()) {
                     for (Ast.Decl declaration : module.declarations()) {
                         if (declaration instanceof Ast.FunctionDecl fn
-                                && fn.name().endsWith("_array")) {
+                                && (fn.name().endsWith("_array")
+                                    || fn.name().endsWith("_vector")
+                                    || fn.name().endsWith("_list"))) {
                             if (result.putIfAbsent(fn.name(), fn) != null) {
                                 throw new IllegalStateException(
                                         "duplicate native Atto collection function: " + fn.name());
@@ -8214,8 +8240,10 @@ public final class OresEvalRootNode extends RootNode {
                         }
                     }
                 }
-                if (!result.keySet().containsAll(
-                        Set.of("map_array", "filter_array", "reduce_array"))) {
+                if (!result.keySet().containsAll(Set.of(
+                        "map_array", "filter_array", "reduce_array",
+                        "map_vector", "filter_vector", "reduce_vector",
+                        "map_list", "filter_list", "reduce_list"))) {
                     throw new IllegalStateException(
                             "trusted Atto collections module is missing required functions");
                 }
