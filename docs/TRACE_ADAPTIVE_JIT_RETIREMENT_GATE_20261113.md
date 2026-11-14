@@ -13,9 +13,9 @@ Status: host control-plane implementation candidate on top of tracing PR #3035. 
 
 ## Evidence and no-GC boundary
 
-`TraceJitRetirementSmoke` exercises these invariants in a standalone JDK run, including 64 publication-vs-policy-change races. It measures host thread allocation over 20,000 pin/close operations after 10,000 warm-up iterations, **only when** the JDK ThreadMXBean supports measurement. Unavailable counters print `UNAVAILABLE`, never zero. There is no asserted universal allocation threshold and no forced garbage collection.
+`TraceJitRetirementSmoke` exercises these invariants in a standalone JDK run, including 64 publication-vs-policy-change races and 32 competing-carrier double-close races. It measures host thread allocation over 20,000 pin/close operations after 10,000 warm-up iterations, **only when** the JDK ThreadMXBean supports measurement. Unavailable counters print `UNAVAILABLE`, never zero. There is no asserted universal allocation threshold and no forced garbage collection.
 
-The dispatcher still allocates a Java `Invocation` and a `java.util.concurrent.atomic.AtomicBoolean` per logical pin, so this is **not** a zero-GC hot path. The next memory milestone must map invocation lifetime into an owner-checked, preallocated actor continuation/frame and prove cancellation and exception drop paths before replacing this safe host substrate.
+The dispatcher still allocates one Java `Invocation` per logical pin; a static `VarHandle` now replaces the additional per-pin `AtomicBoolean` wrapper without weakening thread-safe idempotent release. This is **not** a zero-GC hot path. The next memory milestone must map invocation lifetime into an owner-checked, preallocated actor continuation/frame and prove cancellation and exception drop paths before replacing this safe host substrate.
 
 A separate per-actor code-image ledger is in PR #3067. This patch does not wire every invocation into that ledger, and its internal generation count is not an independent physical-unload authorization. Proven physical retirement still requires actor, continuation, FFI, callback, and IO quiescence.
 
