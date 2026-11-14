@@ -245,7 +245,11 @@ public final class TypeChecker {
         checker.strictAttoEquality = strictAttoEquality;
         checker.validateImports(program);
         checker.collect(program);
-        checker.validate(program);
+        // Roll back identity-bound call plans if a later declaration fails.
+        try (CheckedCallPlan.ValidationScope callScope = CheckedCallPlan.beginValidation()) {
+            checker.validate(program);
+            callScope.commit();
+        }
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -404,7 +408,11 @@ public final class TypeChecker {
         if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
-        checker.validate(program);
+        // Roll back identity-bound call plans if a later declaration fails.
+        try (CheckedCallPlan.ValidationScope callScope = CheckedCallPlan.beginValidation()) {
+            checker.validate(program);
+            callScope.commit();
+        }
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -3343,6 +3351,7 @@ public final class TypeChecker {
                         checkStrictNumericCallArguments(target, call.arguments(), env);
                     }
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
+                    publishCheckedPositionalCallShape(call, target);
                     return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
             }
@@ -3387,6 +3396,7 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
+                    publishCheckedPositionalCallShape(call, target);
                     return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
             }
@@ -10461,6 +10471,32 @@ public final class TypeChecker {
             }
         }
         return List.copyOf(expanded);
+    }
+
+    /**
+     * Publish only already type-checked, ordinary positional fixed function
+     * calls. Spread, named and omitted forms require an explicit evaluated-item
+     * order/ABI plan and stay outside executable lowering.
+     *
+     * This shape is not by itself an ownership or Native Image proof.
+     */
+    private void publishCheckedPositionalCallShape(
+            Ast.CallExpr call, Ast.FunctionDecl target) {
+        if (call.arguments().size() != target.parameters().size()
+                || call.arguments().stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+            return;
+        }
+        List<CheckedCallPlan.InputSlot> inputs = new ArrayList<>();
+        for (int i = 0; i < call.arguments().size(); i++) {
+            inputs.add(CheckedCallPlan.InputSlot.positional(i));
+        }
+        CheckedCallPlan plan = CheckedCallPlan.shapeForDeclaredParameters(
+                target.parameters(), inputs);
+        if (!plan.isTriviallyPositional()) {
+            throw new IllegalStateException(
+                    "legacy positional invocation cannot publish a reordered or omitted call plan");
+        }
+        CheckedCallPlan.record(call, plan);
     }
 
     private int fixedCallArity(

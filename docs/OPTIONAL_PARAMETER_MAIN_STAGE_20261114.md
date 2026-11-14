@@ -32,3 +32,14 @@ Identity-bound call plans can be invalidated on recheck; the AST metadata
 transfer policy recognizes them while refusing unsafe rewrites. An 8,192-case
 JUnit exhaustive matrix is authored. This is **not** compiler call lowering,
 real named invocation or passing CI evidence.
+
+## Initial TypeChecker integration
+
+The existing Java TypeChecker now attaches the checked shape plan to direct,
+fully supplied positional calls to statically resolved top-level and qualified
+module functions, **only after the call has passed type checking**. It does
+not authorize spread, named, dynamic, method, partial or defaulted calls.
+The TypeChecker's ordinary and linked entrypoints use a validation scope to
+revoke plans attached during a subsequently failing declaration check.
+Tests verify successful type-check publication and failed-pass rollback.
+This step does not change executable argument evaluation or arity.

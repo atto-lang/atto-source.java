@@ -102,6 +102,42 @@ final class CheckedOptionalNamedBinderMainTest {
     }
 
     @Test
+    void typeCheckingPublishesVerifiedPositionalFunctionShapes() {
+        Ast.Program parsed = Parser.parse("""
+                fnc add(int x, int y): int { return x + y; }
+                pub fnc main(): int { return add(40, 2); }
+                """);
+        Ast.FunctionDecl main = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(1);
+        Ast.ReturnStmt returned = (Ast.ReturnStmt) main.body().getFirst();
+        Ast.CallExpr call = (Ast.CallExpr) returned.value();
+
+        assertNull(CheckedCallPlan.lookup(call));
+        dev.oreslang.types.TypeChecker.checkTypes(parsed);
+        CheckedCallPlan verified = CheckedCallPlan.require(call);
+        assertTrue(verified.isTriviallyPositional());
+        assertEquals(List.of(0, 1), verified.abiToSource());
+    }
+
+    @Test
+    void failingTypeCheckRevokesCallPlansCreatedEarlierInPass() {
+        Ast.Program parsed = Parser.parse("""
+                fnc add(int x, int y): int { return x + y; }
+                pub fnc main(): int { return add(40, 2) + "invalid"; }
+                """);
+        Ast.FunctionDecl main = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().get(1);
+        Ast.ReturnStmt returned = (Ast.ReturnStmt) main.body().getFirst();
+        Ast.BinaryExpr binary = (Ast.BinaryExpr) returned.value();
+        Ast.CallExpr call = (Ast.CallExpr) binary.left();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(parsed));
+        assertNull(CheckedCallPlan.lookup(call),
+                "failed checker pass must revoke plan for already visited call");
+    }
+
+    @Test
     void ASTTransferRequiresExactCalleeAndArgumentIdentity() {
         Ast.NameExpr f = new Ast.NameExpr("fnc");
         Ast.LiteralExpr n = new Ast.LiteralExpr(1L);
