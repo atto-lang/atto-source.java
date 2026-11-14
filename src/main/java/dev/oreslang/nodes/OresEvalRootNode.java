@@ -8399,6 +8399,8 @@ public final class OresEvalRootNode extends RootNode {
                         return decoded == null ? new OptionValue(false, null) : new OptionValue(true, decoded);
                     };
                     default -> throw new IllegalArgumentException("unknown Bytes member " + name);
+                };
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
