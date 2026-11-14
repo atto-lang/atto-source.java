@@ -5260,6 +5260,33 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (call.hasNamedArguments()) {
+                final Ast.FunctionDecl target;
+                try {
+                    target = checkedNamedScalarTarget(call, env);
+                } catch (RuntimeException | Error unverified) {
+                    continuation.accept(task, null, unverified);
+                    return;
+                }
+                evalSuspendableArguments(task, call.arguments(), env,
+                        (t, lexical, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                Invocation invocation = functionInvocation(
+                                        target, orderedNamedScalarValues(call, lexical));
+                                completeSourceInvocation(
+                                        t, invocation,
+                                        invocationDeclaresAsync(invocation),
+                                        env, continuation);
+                            } catch (RuntimeException | Error invalid) {
+                                continuation.accept(t, null, invalid);
+                            }
+                        });
+                return;
+            }
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr) {
                 // Preserve left-to-right value-first evaluation even when the
@@ -7299,7 +7326,96 @@ public final class OresEvalRootNode extends RootNode {
             return new ArrayList<>(tuple);
         }
 
+        /**
+         * The scalar named-call ABI must match the exact TypeChecker plan,
+         * including source label positions and the unshadowed function owner.
+         * No invalid label may cause a source value to be evaluated.
+         */
+        private Ast.FunctionDecl checkedNamedScalarTarget(
+                Ast.CallExpr call,
+                Env env) {
+            if (call.origin() != Ast.CallOrigin.DIRECT
+                    || call.typeArgumentsPresent()
+                    || !(call.callee() instanceof Ast.NameExpr name)
+                    || env.lookup(name.name()) != Env.MISSING) {
+                throw new IllegalStateException(
+                        "NAMED_CALL_UNCHECKED: named call is not a direct scalar function");
+            }
+            Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
+            if (target == null
+                    || !target.genericParameters().isEmpty()
+                    || target.actorKind() != Ast.ActorKind.NONE
+                    || target.async() || target.suspends() || target.generator()
+                    || target.trapped()
+                    || !target.returnType().name().equals("int")
+                    || target.parameters().size() != call.arguments().size()) {
+                throw new IllegalStateException(
+                        "NAMED_CALL_UNCHECKED: scalar named-call target has changed");
+            }
+            requireExplicitClassCallableImport(env, name.name());
+            for (Ast.Param formal : target.parameters()) {
+                if (!formal.type().name().equals("int")
+                        || !formal.type().arguments().isEmpty()
+                        || formal.type().inferArguments()
+                        || formal.mutable() || formal.structural()
+                        || formal.omittable() || formal.defaultValue() != null) {
+                    throw new IllegalStateException(
+                            "NAMED_CALL_UNCHECKED: scalar named-call ABI contract changed");
+                }
+            }
+            if (call.arguments().stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+                throw new IllegalStateException(
+                        "NAMED_CALL_UNCHECKED: named-call spread not admitted");
+            }
+            java.util.List<dev.oreslang.types.CheckedCallPlan.InputSlot> inputs =
+                    new java.util.ArrayList<>(call.arguments().size());
+            for (int i = 0; i < call.argumentLabels().size(); i++) {
+                String label = call.argumentLabels().get(i);
+                inputs.add(label.isEmpty()
+                        ? dev.oreslang.types.CheckedCallPlan.InputSlot.positional(i)
+                        : dev.oreslang.types.CheckedCallPlan.InputSlot.named(label, i));
+            }
+            dev.oreslang.types.CheckedCallPlan reconstructed =
+                    dev.oreslang.types.CheckedCallPlan.shapeForDeclaredParameters(
+                            target.parameters(), inputs);
+            dev.oreslang.types.CheckedCallPlan checked =
+                    dev.oreslang.types.CheckedCallPlan.require(call);
+            if (!checked.equals(reconstructed) || checked.omittedCount() != 0) {
+                throw new IllegalStateException(
+                        "NAMED_CALL_UNCHECKED: runtime ABI slots differ from type-checked source");
+            }
+            return target;
+        }
+
+        private List<Object> orderedNamedScalarValues(
+                Ast.CallExpr call,
+                List<Object> lexical) {
+            dev.oreslang.types.CheckedCallPlan checked =
+                    dev.oreslang.types.CheckedCallPlan.require(call);
+            if (checked.suppliedCount() != lexical.size()
+                    || checked.omittedCount() != 0) {
+                throw new IllegalStateException(
+                        "NAMED_CALL_UNCHECKED: lexical argument count changed");
+            }
+            List<Object> ordered = new ArrayList<>(checked.abiToSource().size());
+            for (int sourceIndex : checked.abiToSource()) {
+                if (sourceIndex < 0 || sourceIndex >= lexical.size()) {
+                    throw new IllegalStateException(
+                            "NAMED_CALL_UNCHECKED: no value for required ABI slot");
+                }
+                ordered.add(lexical.get(sourceIndex));
+            }
+            return java.util.Collections.unmodifiableList(ordered);
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (call.hasNamedArguments()) {
+                Ast.FunctionDecl target = checkedNamedScalarTarget(call, env);
+                // Evaluate all supplied source expressions left-to-right exactly
+                // once; only permute the resulting values, never expressions.
+                List<Object> lexical = evaluateArguments(call.arguments(), env);
+                return functionInvocation(target, orderedNamedScalarValues(call, lexical));
+            }
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr) {
                 // A pipeline is value-first. Constructing a closure can read
