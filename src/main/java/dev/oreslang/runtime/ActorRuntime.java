@@ -9566,7 +9566,22 @@ public final class ActorRuntime implements AutoCloseable {
                                     "source actor executor returned null state");
                             // The source image is executable shared code;
                             // state ownership is minted only on this actor turn.
-                            sourceLifecycleGate.commitInit(created);
+                            // STOP can win while initializeActor() runs. That
+                            // expected late-commit refusal is a cancellation
+                            // of source startup, not a new guest exception.
+                            // Invalid owner/type or genuine init failure must
+                            // still fail the actor even when STOP races it.
+                            try {
+                                sourceLifecycleGate.commitInit(created);
+                            } catch (IllegalStateException rejected) {
+                                if (stopped.get()
+                                        && sourceLifecycleGate.phase()
+                                                == ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL) {
+                                    throw new ActorCancellationSignal(
+                                            "source actor initialization stopped before state commit");
+                                }
+                                throw rejected;
+                            }
                         } catch (Exception | Error startupFailure) {
                             sourceLifecycleGate.failInit();
                             throw startupFailure;
