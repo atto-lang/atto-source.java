@@ -170,3 +170,33 @@ cases, and 1,000 malformed state-accessor failures. These are gate
 tests using minimal external `ActorRuntime` stubs; they do **not**
 constitute compiled `.atto` actor execution, full Maven JUnit, or
 five-backend parity.
+
+## Host-owner callback isolation and byte-exact gate execution (2026-11-14)
+
+Audit found `ActorOwnedGuestState.ownerActorId()` invoked under the
+source-lifecycle monitor during initialization, receive admission and
+teardown, and invoked under `ActorCell.lifecycleLock` during production
+receive admission. Because an executor supplies this accessor, a blocked or
+reentrant implementation could stall a trusted STOP seal.
+
+- `commitInit` snapshots owner outside the monitor, with a phase check both
+  before and after that callback. STOP winning during the callback produces
+  only the typed `InitializationStopped` result.
+- `enterReceiveOwners` accepts only actor/mailbox identity snapshots and
+  atomically validates READY/ownership and mints its receive lease under the
+  gate monitor. The production dispatcher snapshots outside lifecycleLock,
+  then performs its final stopped check and gate admission together under
+  lifecycleLock. No arbitrary owner accessor runs under those locks.
+- `beginTeardown` likewise captures ownership before taking its monitor.
+- A redundant second owner callback before receipt admission was removed.
+  STOP remains a control-plane operation, not a guest exception.
+
+The current exact GitHub gate blob is
+`a4f9f3d45254bde716af3d3089bcebd5dc10aa42`. In an isolated local
+JDK 21 project, this **byte-exact Git blob was verified by
+`git hash-object`**, compiled with
+`javac --release 21 -Xlint:all -Werror`, and passed 1,000 two-carrier
+STOP/admission races plus 500 deliberately blocked owner-accessor cases
+(250 initialization, 250 receive). No compiler/JUnit stub can substitute
+for the new full-runtime `ActorSourceTearDownTest` regression or a real
+compiled `.atto` guest. Those remain **NOT_EXECUTED**.
