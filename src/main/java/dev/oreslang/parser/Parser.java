@@ -1789,6 +1789,17 @@ public final class Parser {
                                     + "place methods inside the actor or use declaration-only actor methods");
                 }
                 String name = external.method().name();
+                // The mailbox entry point owns one exclusive actor turn.
+                // An explicit immutable receiver must not be silently
+                // upgraded to a mutable one by ActorRuntime/OwnershipChecker.
+                if (name.equals("receive")
+                        && (external.method().explicitReceiverType() == null
+                            || !external.method().explicitReceiverType().isBorrow()
+                            || !external.method().explicitReceiverType().mutableBorrow())) {
+                    throw error(external.origin(),
+                            "external actor receive requires '(Actor mut self)' "
+                                    + "for an exclusive mailbox-turn receiver");
+                }
                 if (name.equals("handle_state") || name.equals("send")
                         || name.equals("end") || name.equals("endWithCleanup")
                         || name.equals("on_panic") || name.equals("on_throw")
