@@ -22,17 +22,17 @@ final class OreslangGrammarDriftTest {
             final_actor_field_decl actor_method_decl class_decl class_member constructor_decl field_decl
             type_first_class_field_decl method_decl
             method_name callable_name method_head explicit_receiver static_function_decl contract_decl
-            interface_decl interface_body interface_member type_decl annotation annotation_args
+            interface_decl trait_decl forward_type_decl interface_body interface_member type_decl annotation annotation_args
             annotation_arg return_spec type_return_spec generic_params param_list param
             binding_decl binding_kind named_inferred_binding named_inferred_literal destructure_stmt sequence_pattern
             object_pattern sequence_destructure_item sequence_rest_item object_destructure_item object_rest_item block
             statement return_stmt defer_stmt block_stmt break_stmt continue_stmt
-            loop_stmt while_stmt if_stmt conditional_branch deprecated_if_do condition_head condition condition_and
-            match_stmt match_arm pattern switch_stmt switch_case switch_default
-            try_stmt select_stmt select_wait_mode select_policy select_arm select_arm_keyword
+            loop_stmt while_stmt if_stmt braced_if_tail deprecated_if_close conditional_branch deprecated_if_do condition_head condition condition_and
+            match_stmt canonical_match_arm match_arm pattern refutable_pattern switch_stmt switch_case switch_default
+            try_stmt select_stmt select_static_body select_arm_sequence select_wait_mode select_policy select_arm select_read_arm select_read_tail select_write_arm select_legacy_read_arm select_arm_keyword
             select_default for_stmt c_for_head for_init for_update for_of_head
             for_of_binding for_of_pattern for_of_destructure_item for_of_rest_item loop_body expression
-            assignment conditional logic_or equality comparison additive
+            assignment pipeline pipeline_stage conditional logic_or equality comparison additive
             multiplicative unary channel_expr channel_wait_mode postfix call_suffix
             call_argument_list call_argument member_suffix member_name index_suffix argument_list
             primary lambda pipe_lambda lambda_param typed_legacy_lambda lambda_body
@@ -40,7 +40,7 @@ final class OreslangGrammarDriftTest {
             struct_value_field static_struct_key literal type_ref type_atom borrow_type
             tuple_type record_type record_type_field alias_marker callable_generic_type named_type
             type_arg_or_named named_type_param meta_value sequence_type_shape sequence_type_item function_type
-            grouped_type function_type_params function_type_param type_args qualified_name stmt_terminator
+            function_type_signature grouped_type function_type_params function_type_param type_args qualified_name stmt_terminator
             member_terminator
             """;
 
