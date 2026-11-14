@@ -2275,10 +2275,9 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "lambda requires exactly one expression body or block body");
             }
-            if (declaredReturnType != null && blockBody == null) {
-                throw new IllegalArgumentException(
-                        "explicit lambda return types require a braced block body");
-            }
+            // Explicit returns also apply to typed inline expression lambdas
+            // (-> Type => expr). The type checker, not the AST constructor,
+            // enforces the expression's declared result type.
         }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
                           boolean nonLexical) {
