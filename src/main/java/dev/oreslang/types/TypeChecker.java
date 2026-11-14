@@ -5147,7 +5147,11 @@ public final class TypeChecker {
                 }
             }
             if (constructor.wholeAlias() != null) {
-                if (nominalEnum == null || (args.size() == 1 && safeCaseFields == null)) {
+                if (nominalEnum == null || (args.size() == 1 && safeCaseFields == null)
+                        || !nominalEnum.variants().stream().allMatch(variant ->
+                                variant.payload() == null || variant.payload().recordMembers()
+                                        .values().stream().allMatch(field ->
+                                            copySafeEnumField(resolve(field, generics, self))))) {
                     throw new IllegalArgumentException(
                             "whole-variant alias with non-Copy payload requires case-borrow lowering");
                 }
