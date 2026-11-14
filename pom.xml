@@ -70,10 +70,19 @@
       <resource>
         <directory>stdlib</directory>
         <targetPath>dev/oreslang/std</targetPath>
-        <includes><include>**/*.ores</include></includes>
+        <includes>
+          <include>**/*.atto</include>
+          <include>**/*.ores</include>
+        </includes>
       </resource>
     </resources>
     <plugins>
+      <!-- Avoid newer default plugin metadata resolution varying by runner/mirror. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>3.3.1</version>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>

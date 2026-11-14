@@ -1,0 +1,82 @@
+name: Actor GC capability exact-head
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/actor-gc-capability.yml'
+      - 'pom.xml'
+      - 'src/main/java/dev/oreslang/runtime/CapabilityChecker.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorProcessGcCapabilityTest.java'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actor-gc-junit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact PR-head checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Verify actor GC permission boundaries
+        run: mvn -B -ntp -Dtest=ActorProcessGcCapabilityTest -DfailIfNoTests=true test
+      - name: Publish source-free test result
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import xml.etree.ElementTree as ET
+
+          observed = subprocess.run(
+              ["git", "rev-parse", "HEAD"], capture_output=True,
+              text=True, check=False).stdout.strip()
+          path = Path("target/surefire-reports/TEST-dev.oreslang.runtime.ActorProcessGcCapabilityTest.xml")
+          counts = {"tests": 0, "errors": 0, "failures": 0, "skipped": 0}
+          if path.is_file():
+              result = ET.parse(path).getroot()
+              for key in counts:
+                  counts[key] = int(result.get(key, "0"))
+          verified = (observed == os.environ["EXPECTED_SHA"]
+                      and path.is_file()
+                      and counts["tests"] >= 4
+                      and not any(counts[key] for key in ("errors", "failures", "skipped")))
+          report = {
+              "expected_head": os.environ["EXPECTED_SHA"],
+              "exact_head": observed == os.environ["EXPECTED_SHA"],
+              "junit_report_present": path.is_file(),
+              "host_actor_gc_guard": verified,
+              "native_isolate_tested": False,
+              **counts,
+          }
+          out = Path("target/ci-evidence/actor-gc.json")
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text(json.dumps(report, sort_keys=True) + chr(10), encoding="utf-8")
+          if not verified:
+              raise SystemExit("actor GC authority check not certified")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: actor-gc-guard-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/ci-evidence/actor-gc.json
+          retention-days: 7
+          if-no-files-found: error
