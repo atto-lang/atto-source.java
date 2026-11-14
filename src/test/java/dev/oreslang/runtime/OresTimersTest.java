@@ -6,6 +6,8 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -47,6 +49,246 @@ final class OresTimersTest {
             assertEquals(7, timers.timeoutNanos(0, OresFuture.completed(7))
                     .get(5, TimeUnit.SECONDS));
             assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void timeoutObservesCompletedSourceWithoutArmingTimer() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            int before = OresTimers.availableGlobalTimerSlots();
+            OresFuture<Integer> result = timers.timeoutNanos(0, OresFuture.completed(42));
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(0, timers.activeTimerCount());
+            assertEquals(before, OresTimers.availableGlobalTimerSlots());
+        }
+    }
+
+    @Test
+    void timeoutOnlyCancelsObserverAndNeverSharedProducer() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> observer = timers.timeoutNanos(
+                    TimeUnit.HOURS.toNanos(1), producer);
+            assertEquals(1, producer.pendingRuntimeWaiterCount());
+            assertTrue(observer.cancel(false));
+            assertThrows(CancellationException.class,
+                    () -> observer.get(5, TimeUnit.SECONDS));
+            assertFalse(producer.isDone(), "observer cancellation killed its producer");
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0, timers.activeTimerCount());
+            producer.completeFromRuntime(42);
+            assertEquals(42, producer.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void timeoutFailureDetachesProducerWithoutCancellingIt() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            int permits = OresTimers.availableGlobalTimerSlots();
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> observer = timers.timeoutNanos(0, producer);
+            CountDownLatch fullyDrained = new CountDownLatch(1);
+            observer.whenNotificationsDrainedRuntime(fullyDrained::countDown);
+            ExecutionException timedOut = assertThrows(ExecutionException.class,
+                    () -> observer.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(TimeoutException.class, timedOut.getCause());
+            assertTrue(fullyDrained.await(5, TimeUnit.SECONDS));
+            assertFalse(producer.isDone(), "timeout must not cancel a shared producer");
+            assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                    "expired observer retained the producer's callback");
+            assertEquals(0, timers.activeTimerCount());
+            assertEquals(permits, OresTimers.availableGlobalTimerSlots());
+            producer.completeFromRuntime(7);
+            assertEquals(7, producer.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void observedProducerFailurePreservesOriginalCause() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> bounded = timers.timeoutNanos(
+                    TimeUnit.HOURS.toNanos(1), producer);
+            IllegalStateException original = new IllegalStateException("producer failed");
+            producer.failFromRuntime(original);
+            ExecutionException observed = assertThrows(ExecutionException.class,
+                    () -> bounded.get(5, TimeUnit.SECONDS));
+            assertSame(original, observed.getCause());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void concurrentTimeoutAndProducerSettlementClaimsExactlyOneWinner()
+            throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            int before = OresTimers.availableGlobalTimerSlots();
+            for (int i = 0; i < 100; i++) {
+                OresFuture<Integer> producer = new OresFuture<>();
+                OresFuture<Integer> bounded = timers.timeoutNanos(0, producer);
+                CountDownLatch drained = new CountDownLatch(1);
+                bounded.whenNotificationsDrainedRuntime(drained::countDown);
+                Thread completer = Thread.ofPlatform().start(
+                        () -> producer.completeFromRuntime(42));
+                try {
+                    assertEquals(42, bounded.get(5, TimeUnit.SECONDS));
+                } catch (ExecutionException failure) {
+                    assertInstanceOf(TimeoutException.class, failure.getCause());
+                }
+                completer.join();
+                assertTrue(drained.await(5, TimeUnit.SECONDS));
+                assertEquals(0, producer.pendingRuntimeWaiterCount());
+            }
+            assertEquals(0, timers.activeTimerCount());
+            assertEquals(before, OresTimers.availableGlobalTimerSlots());
+        }
+    }
+
+    @Test
+    void successfulObservedFutureRevokesDeadlineAndPreservesValue() throws Exception {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> bounded = timers.timeoutNanos(
+                    TimeUnit.HOURS.toNanos(1), producer);
+            producer.completeFromRuntime(12);
+            assertEquals(12, bounded.get(5, TimeUnit.SECONDS));
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void timeoutAwaitResumesOnSchedulerWithoutSecondTask() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger turns = new AtomicInteger();
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                if (turns.getAndIncrement() == 0) {
+                    return OresScheduler.await(timers.timeoutNanos(
+                            TimeUnit.HOURS.toNanos(1), producer));
+                }
+                assertSame(scheduler, OresScheduler.current());
+                assertNull(resume.failure());
+                assertEquals(23, resume.value());
+                return OresScheduler.done(23);
+            });
+            producer.completeFromRuntime(23);
+            assertEquals(23, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, turns.get());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void ownerCloseCancelsTimeoutObserverButNotSharedProducer() throws Exception {
+        OresTimers timers = new OresTimers();
+        OresFuture<Integer> producer = new OresFuture<>();
+        OresFuture<Integer> observer = timers.timeoutNanos(
+                TimeUnit.HOURS.toNanos(1), producer);
+        timers.close();
+        assertThrows(CancellationException.class,
+                () -> observer.get(5, TimeUnit.SECONDS));
+        assertFalse(producer.isDone());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertEquals(0, timers.activeTimerCount());
+    }
+
+    @Test
+    void invalidTimeoutNeverRegistersAnObserver() {
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            assertThrows(IllegalArgumentException.class,
+                    () -> timers.timeoutNanos(-1, producer));
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0, timers.activeTimerCount());
+        }
+    }
+
+    @Test
+    void inlineIntervalObserverSeesPublishedTickBeforeReentrantNext() throws Exception {
+        try (OresTimers timers = new OresTimers();
+             OresTimers.Interval interval = timers.intervalNanos(
+                     TimeUnit.MILLISECONDS.toNanos(60))) {
+            CountDownLatch observed = new CountDownLatch(1);
+            AtomicReference<OresFuture<Long>> second = new AtomicReference<>();
+            AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+            OresFuture<Long> first = interval.next();
+            first.whenCompleteRuntime((value, failure) -> {
+                try {
+                    assertNull(failure);
+                    assertEquals(1L, value.longValue());
+                    // Must be published BEFORE the Future invokes observers,
+                    // including a callback that synchronously requests tick 2.
+                    assertEquals(value.longValue(), interval.delivered());
+                    second.set(interval.next());
+                } catch (Throwable error) {
+                    callbackFailure.set(error);
+                } finally {
+                    observed.countDown();
+                }
+            });
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(), "inline callback saw stale interval state");
+            assertEquals(1L, first.get(5, TimeUnit.SECONDS).longValue());
+            assertNotNull(second.get(), "reentrant next never armed");
+            assertEquals(2L, second.get().get(5, TimeUnit.SECONDS).longValue());
+            assertEquals(2L, interval.delivered());
+        }
+    }
+
+    @Test
+    void intervalCapabilityChargesAndReleasesGlobalSlotsExactlyOnce() {
+        int before = OresTimers.availableGlobalIntervalSlots();
+        try (OresTimers first = new OresTimers();
+             OresTimers second = new OresTimers()) {
+            OresTimers.Interval cancelled = first.intervalNanos(1);
+            OresTimers.Interval closedWithOwner = second.intervalNanos(1);
+            assertEquals(before - 2, OresTimers.availableGlobalIntervalSlots());
+            assertTrue(cancelled.cancel());
+            assertFalse(cancelled.cancel());
+            assertEquals(before - 1, OresTimers.availableGlobalIntervalSlots());
+            second.close();
+            assertFalse(closedWithOwner.cancel());
+            assertEquals(before, OresTimers.availableGlobalIntervalSlots());
+        }
+        assertEquals(before, OresTimers.availableGlobalIntervalSlots());
+    }
+
+    @Test
+    void globalIntervalBudgetCannotBeBypassedByCreatingMoreOwners() {
+        int before = OresTimers.availableGlobalIntervalSlots();
+        try (OresTimers a = new OresTimers();
+             OresTimers b = new OresTimers();
+             OresTimers c = new OresTimers();
+             OresTimers d = new OresTimers();
+             OresTimers overflow = new OresTimers()) {
+            OresTimers[] owners = {a, b, c, d};
+            for (int i = 0; i < before; i++) {
+                owners[i / 4096].intervalNanos(1);
+            }
+            assertEquals(0, OresTimers.availableGlobalIntervalSlots());
+            assertThrows(RejectedExecutionException.class,
+                    () -> overflow.intervalNanos(1));
+            a.close();
+            assertTrue(OresTimers.availableGlobalIntervalSlots() > 0);
+            assertNotNull(overflow.intervalNanos(1));
+        }
+        assertEquals(before, OresTimers.availableGlobalIntervalSlots());
+    }
+
+    @Test
+    void intervalCancellationRacingCloseNeverDoubleReleasesGlobalSlot()
+            throws Exception {
+        int before = OresTimers.availableGlobalIntervalSlots();
+        for (int i = 0; i < 100; i++) {
+            OresTimers owner = new OresTimers();
+            OresTimers.Interval interval = owner.intervalNanos(1);
+            Thread canceller = Thread.ofPlatform().start(interval::cancel);
+            owner.close();
+            canceller.join();
+            assertEquals(before, OresTimers.availableGlobalIntervalSlots());
         }
     }
 

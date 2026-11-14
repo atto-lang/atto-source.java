@@ -10,6 +10,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -29,6 +30,7 @@ public final class OresTimers implements AutoCloseable {
     // Per-context limits alone are insufficient when an untrusted application
     // creates thousands of timer owners against the shared host clock.
     static final int MAX_GLOBAL_ACTIVE_TIMERS = 16384;
+    static final int MAX_GLOBAL_LIVE_INTERVALS = 16384;
     // Callback timers are queued as scheduler tasks only; actor mailbox
     // admission remains a separate, unimplemented source-level integration.
     private static final ThreadLocal<Boolean> IN_CLOCK_THREAD =
@@ -37,6 +39,10 @@ public final class OresTimers implements AutoCloseable {
             new Semaphore(MAX_GLOBAL_ACTIVE_TIMERS);
     private static final Semaphore GLOBAL_CALLBACK_SLOTS =
             new Semaphore(MAX_GLOBAL_ACTIVE_TIMERS);
+    // An idle interval owns no scheduled tick, but still retains context
+    // capability/state. Many timer owners must not bypass that memory budget.
+    private static final Semaphore GLOBAL_INTERVAL_SLOTS =
+            new Semaphore(MAX_GLOBAL_LIVE_INTERVALS);
 
     static int availableGlobalCallbackSlots() {
         return GLOBAL_CALLBACK_SLOTS.availablePermits();
@@ -44,6 +50,10 @@ public final class OresTimers implements AutoCloseable {
 
     static int availableGlobalTimerSlots() {
         return GLOBAL_SLOTS.availablePermits();
+    }
+
+    static int availableGlobalIntervalSlots() {
+        return GLOBAL_INTERVAL_SLOTS.availablePermits();
     }
     private static final ScheduledThreadPoolExecutor CLOCK = createClock();
 
@@ -182,6 +192,51 @@ public final class OresTimers implements AutoCloseable {
     }
 
     /**
+     * Observe a Future with a monotonic deadline, WITHOUT taking ownership of
+     * its producer. No new source Task or carrier is required: the clock only
+     * settles a separate observer Future, and await re-enters its own scheduler.
+     *
+     * <p>Canceling this observer or reaching its deadline detaches the observer
+     * and revokes its timer, but never cancels the input Future. An owned Task
+     * requires separate cancellation authority and physical retirement fencing.
+     * This host primitive is not yet a guest time.timeout builtin.</p>
+
+        final AtomicReference<OresFuture<Void>> clock = new AtomicReference<>();
+        final AtomicReference<OresFuture.RuntimeWaiterRegistration<T>> observation =
+        final OresFuture<T> bounded = new OresFuture<>(() -> {
+            OresFuture<Void> timer = clock.getAndSet(null);
+
+        // Both success and terminal failure must release the timer and detach
+        // the observer; cancellation additionally runs the same revoker.
+        bounded.whenCompleteRuntime((value, failure) -> {
+            OresFuture.RuntimeWaiterRegistration<T> subscription =
+                    observation.getAndSet(null);
+            OresFuture<Void> timer = clock.getAndSet(null);
+
+        // Subscribe first: an already-settled producer wins even for delay=0.
+                    if (source.isCancelled()) bounded.cancel(false);
+                    else if (failure != null) bounded.failFromRuntime(
+                            OresFuture.unwrap(failure));
+                    else bounded.completeFromRuntime(value);
+        observation.set(subscription);
+        if (bounded.isDone()) {
+            observation.compareAndSet(subscription, null);
+            return bounded;
+
+            observation.compareAndSet(subscription, null);
+            if (bounded.isDone()) return bounded;
+        clock.set(timer);
+        if (bounded.isDone()) timer.cancel(false);
+
+        // Timer thread is never permitted to run guest code. Completion only
+        // races the observer's terminal state; producer state is untouched.
+        timer.whenCompleteRuntime((ignored, failure) -> {
+            if (failure == null) bounded.failFromRuntime(
+                    new TimeoutException("timer deadline exceeded"));
+            else if (timer.isCancelled()) bounded.cancel(false);
+            else bounded.failFromRuntime(OresFuture.unwrap(failure));
+        return bounded;
+
      * Host-runtime one-shot callback substrate. This is NOT a guest-language
      * time.set_timer builtin and cannot bypass an actor's mailbox/CONTROL lane.
      * The passed scheduler must be the actual owner of the callback's lifetime.
@@ -346,9 +401,17 @@ public final class OresTimers implements AutoCloseable {
             if (intervals.size() >= MAX_INTERVALS_PER_OWNER) {
                 throw new RejectedExecutionException("interval owner admission is full");
             }
-            Interval interval = new Interval(periodNanos);
-            intervals.add(interval);
-            return interval;
+            if (!GLOBAL_INTERVAL_SLOTS.tryAcquire()) {
+                throw new RejectedExecutionException("global interval admission is full");
+            }
+            try {
+                Interval interval = new Interval(periodNanos);
+                intervals.add(interval);
+                return interval;
+            } catch (RuntimeException | Error failure) {
+                GLOBAL_INTERVAL_SLOTS.release();
+                throw failure;
+            }
         }
     }
 
@@ -403,8 +466,16 @@ public final class OresTimers implements AutoCloseable {
                         if (nextIndex <= 0) {
                             result.failFromRuntime(new ArithmeticException(
                                     "interval tick counter overflow"));
-                        } else if (result.completeFromRuntime(nextIndex)) {
+                        } else {
+                            // A Future may invoke runtime observers inline during
+                            // settlement. Publish the monotonic sequence before
+                            // those observers can re-enter next()/delivered().
+                            // An external cancellation can beat the terminal CAS,
+                            // in which case roll back before releasing this lock.
                             delivered = nextIndex;
+                            if (!result.completeFromRuntime(nextIndex)) {
+                                delivered = nextIndex - 1;
+                            }
                         }
                     }
                 }
@@ -426,6 +497,9 @@ public final class OresTimers implements AutoCloseable {
             synchronized (admission) {
                 intervals.remove(this);
             }
+            // The interval capability, not only its current tick, is charged.
+            // The synchronized cancellation winner returns the slot once.
+            GLOBAL_INTERVAL_SLOTS.release();
             return true;
         }
 

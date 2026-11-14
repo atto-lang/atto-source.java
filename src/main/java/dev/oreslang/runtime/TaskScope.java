@@ -30,6 +30,13 @@ public final class TaskScope implements AutoCloseable {
     // structured concurrency can surface an unawaited child failure without
     // changing getDone() from a pure quiescence witness.
     private TaskHandle.TaskOutcome<?> firstNonSuccess;
+    /** Fail-fast: the first failed child cancels its siblings (Kotlin/Loom). */
+    private volatile boolean cancelSiblingsOnFailure;
+
+    /** Source task scopes are fail-fast unless declared {@code supervise}. */
+    public void cancelSiblingsOnFailure(boolean enabled) {
+        cancelSiblingsOnFailure = enabled;
+    }
 
     TaskScope(OresScheduler scheduler) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
@@ -117,7 +124,12 @@ public final class TaskScope implements AutoCloseable {
                 throw new IllegalStateException("TaskScope child accounting underflow");
             }
             releaseErrors.addAll(failedReleases);
-            if (firstNonSuccess == null) {
+            // A failure outranks an earlier cancellation: a deliberately
+            // cancelled child must never hide a sibling's real failure.
+            if (firstNonSuccess == null
+                    || (firstNonSuccess instanceof TaskHandle.Cancelled<?>
+                            && (observationFailure != null
+                                    || outcome instanceof TaskHandle.Failed<?>))) {
                 if (observationFailure != null) {
                     firstNonSuccess =
                             new TaskHandle.Failed<>(observationFailure);
@@ -128,6 +140,11 @@ public final class TaskScope implements AutoCloseable {
             }
             active--;
             publish = sealed && active == 0;
+        }
+        // Outside the lock: cancellation hooks may re-enter scope bookkeeping.
+        if (cancelSiblingsOnFailure
+                && (observationFailure != null || outcome instanceof TaskHandle.Failed<?>)) {
+            cancel("sibling task failed");
         }
         // Never deliver arbitrary Future subscribers under the admission lock.
         if (publish) publishCompletion();
