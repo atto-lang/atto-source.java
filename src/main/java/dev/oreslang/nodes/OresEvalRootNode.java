@@ -12280,6 +12280,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             Objects.requireNonNull(object, "object");
         }
+
+        @Override public boolean serialReceive() {
+            return object.klass.actorConcurrency().serialReceive();
+        }
     }
 
     private static final class OresObject implements OresMutex.SharedState {
