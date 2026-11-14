@@ -8955,21 +8955,37 @@ public final class ActorRuntime implements AutoCloseable {
                 state = codeActorState;
             }
             try {
-                if (state != null && codeExecutor != null) {
-                    @SuppressWarnings("unchecked")
-                    ActorContext<Object> sourceContext =
-                            (ActorContext<Object>) (ActorContext<?>) context;
-                    // Teardown is a terminal once-only actor-owned turn,
-                    // never a callable guest method or a new mailbox receive.
-                    sourceLifecycleGate.beginTeardown(ref.id(), codeActorType, state);
-                    try {
-                        codeExecutor.tearDownActor(codeActorType, state, sourceContext);
-                    } finally {
-                        // Physical actor memory remains pinned even when STOP,
-                        // cancellation or a guest exception races teardown.
-                        sourceLifecycleGate.finishTeardown(ref.id(), codeActorType);
-                    }
+                if (state == null || codeExecutor == null) {
+                    // A reserved lifecycle lane with no owner state is an
+                    // invariant failure, not a successful omitted teardown.
+                    // Leaving the source gate STOPPING_GRACEFUL would strand
+                    // physical finalization indefinitely.
+                    throw new IllegalStateException(
+                            "graceful source teardown reserved without initialized state");
                 }
+                @SuppressWarnings("unchecked")
+                ActorContext<Object> sourceContext =
+                        (ActorContext<Object>) (ActorContext<?>) context;
+                // Teardown is a terminal once-only actor-owned turn,
+                // never a callable guest method or a new mailbox receive.
+                sourceLifecycleGate.beginTeardown(ref.id(), codeActorType, state);
+                try {
+                    codeExecutor.tearDownActor(codeActorType, state, sourceContext);
+                } finally {
+                    // Physical actor memory remains pinned even when STOP,
+                    // cancellation or a guest exception races teardown.
+                    sourceLifecycleGate.finishTeardown(ref.id(), codeActorType);
+                }
+            } catch (Exception | Error teardownFailure) {
+                // beginTeardown() itself can throw (foreign state, blocked
+                // accessor, or an invariant failure) BEFORE claiming the
+                // single-flight lane. That leaves the gate STOPPING_GRACEFUL
+                // with no eligible hook left to run. Explicitly revoke the
+                // unconsumed graceful permit, while preserving the original
+                // failure for actor DONE/supervisor diagnostics. If the hook
+                // already began, its TEARING_DOWN receipt remains immutable.
+                sourceLifecycleGate.sealStop(false);
+                throw teardownFailure;
             } finally {
                 synchronized (lifecycleLock) {
                     gracefulTeardownActive = false;
