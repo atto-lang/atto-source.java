@@ -19,7 +19,10 @@ admission closes the newly acquired image pin in a finally clause. A STOP
 cannot fake the release of a RUNNING callback's pin, and the queued callback
 cancel path detaches both the guest closure and the code-resource handle.
 Terminal code-resource releases occur **outside** the actor ledger monitor;
-they never invoke callbacks under the image-loader monitor.
+they never invoke callbacks under the image-loader monitor. If guest callback
+execution throws and terminal resource release also throws, the guest exception
+remains primary and the cleanup failure is attached as a suppressed cause.
+Neither failure is silently converted into successful reclamation.
 
 Host JUnit `ActorCodeImageContinuationV1Test` exercises:
 - actual code retention through overlapping STAGED/SERVING/DRAINING quotas;
@@ -27,7 +30,9 @@ Host JUnit `ActorCodeImageContinuationV1Test` exercises:
 - a concurrently running callback whose foreign close cannot retire its image;
 - a SOURCE_TASK lexical cleanup callback admitted after ordinary STOP;
 - quota failure, stale/foreign ticket, callback exception and idempotent close;
-- 64 STOP-vs-run-vs-close interleavings with exactly one terminal image release.
+- 64 STOP-vs-run-vs-close interleavings with exactly one terminal image release;
+- separate terminal-resource JUnit cases for thrown checked drop failures,
+  retained guest-exception causality and rejected admission ownership.
 
 The exact-head GraalVM 25 workflow compiles the four real production
 host primitives under `javac --release 21 -Xlint:all -Werror`, then runs the
