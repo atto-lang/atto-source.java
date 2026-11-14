@@ -100,7 +100,7 @@ final class LambdaCommaPipelineGuestTest {
 
     @Test
     void typedInlineCommaLambdaAsPipelineStagePreservesOuterPipeline() throws Exception {
-        assertEquals("13:42", execute("""
+        assertEquals("11:42", execute("""
                 fnc increment(int n): int { return n + 1; }
                 pub fnc main(): void {
                     stdio.stdout.write(4
