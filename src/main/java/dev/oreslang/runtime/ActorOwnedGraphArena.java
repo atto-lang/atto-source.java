@@ -55,7 +55,7 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         static {
             try {
                 RELEASED = MethodHandles.lookup()
-                        .findVarHandle(Lease.class, "released", boolean.class);
+                        .findVarHandle(ActorOwnedGraphArena.Lease.class, "released", boolean.class);
             } catch (ReflectiveOperationException failure) {
                 throw new ExceptionInInitializerError(failure);
             }
