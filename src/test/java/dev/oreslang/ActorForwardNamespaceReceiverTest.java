@@ -154,7 +154,7 @@ final class ActorForwardNamespaceReceiverTest {
                 define actor Foo1 as end
                 define actor Foo2 as end
                 mtd (mut self: Foo1) steal_state(): int { return 42; }
-                """, "ordinary nongeneric class");
+                """, "sealed state");
         reject("""
                 declare actor Foo1;
                 define actor Foo1 as
