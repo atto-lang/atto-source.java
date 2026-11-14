@@ -101,3 +101,19 @@ executed through that ring. Maven/JUnit and guest Truffle node instrumentation
 remain pending a functional, authorized runner. No site metadata is promoted
 to runtime authority merely because the parser can produce an AST.
 
+
+
+### Exact-function identity admission hardening
+
+The log-site binder now requires the separate `SourceRoutineBindingV1.bind`
+table for the **same AST object identities**: matching a routine ID only
+against the site manifest is not enough. A foreign or structurally equivalent
+`FunctionDecl` object, forged site-to-routine correspondence, surplus
+verified routine entry, unsupported dynamic nested return expression, or
+missing function proof is rejected before any immutable site table is
+returned. Corresponding JUnit regressions were committed.
+
+These new Java AST binder changes are **unexecuted**: the local host
+`StaticSiteProbeV1` smoke test does not exercise the actual parser,
+typechecker or newly changed binder. Require JDK21 Maven/JUnit and the
+full guest logging fixture before promoting this PR.
