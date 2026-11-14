@@ -5619,7 +5619,7 @@ public final class TypeChecker {
             Type contextual = contextualCallableMemberType(member, fn, env, generics, self);
             if (contextual != null) return contextual;
         }
-        if (expr instanceof Ast.ListExpr list) {
+        if (expr instanceof Ast.ListExpr list && !list.explicitArrayConstructor()) {
             if (expected instanceof Tuple tupleExpected) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
                         tupleExpected.kind());
@@ -10319,6 +10319,17 @@ public final class TypeChecker {
 
         boolean fixed = ref.name().equals("Tuple") || ref.name().equals("FixedArray") || ref.name().equals("FixedList");
 
+        // Only reaches here for a *builtin* Tuple, after resolve() has
+        // already given a lexically declared class Tuple<T...> priority.
+        // Treat the additive Tuple<T1,T2,...> spelling as the existing
+        // positional Tuple[T1,T2,...] shape. Do not generalize this rule
+        // to Vector<T1,T2> or FixedArray<T,N>, whose shape rules differ.
+        if (ref.name().equals("Tuple") && dimensions.isEmpty()
+                && !ref.inferArguments() && !positional.isEmpty()) {
+            dimensions = List.of(Ast.TypeRef.sequenceShape(positional));
+            positional = List.of();
+        }
+
         if (dimensions.isEmpty()) {
             if (fixed) {
                 throw new IllegalArgumentException(ref.name()
@@ -10679,6 +10690,19 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "private linked type alias '" + ref.name()
                             + "' is not imported; use the public class field contract");
+        }
+
+        // The square-bracket sequence-shape syntax is an intrinsic type,
+        // even when a user alias/class has the same simple name. Resolve it
+        // before nominal aliases so Tuple[int,string], ~tuple<int,string>,
+        // Vector[...(int,string)], etc. cannot be rebound to a user-defined
+        // alias with different ownership, shape, or storage semantics.
+        // Plain Tuple<T...> (without a shape) still follows the preexisting
+        // nominal/generic lookup path and is handled in the collection switch.
+        if (Set.of("Array", "List", "Vector", "Slice",
+                "Tuple", "FixedArray", "FixedList").contains(ref.name())
+                && !sequenceShapeDimensions(ref).isEmpty()) {
+            return resolveCollectionType(ref, generics, self, allowNullMarker);
         }
 
         Ast.TypeAliasDecl alias = resolvingLinkedFieldAliases.get(ref.name());

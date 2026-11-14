@@ -2121,8 +2121,14 @@ public final class Ast {
         }
     }
 
-    public record ListExpr(List<Expr> elements) implements Expr {
+    /**
+     * Array-shaped expression. A bare legacy [...] literal may be interpreted
+     * contextually as a finite tuple. The explicit ~array(...) constructor
+     * must remain an array even when the expected return type is Tuple[...].
+     */
+    public record ListExpr(List<Expr> elements, boolean explicitArrayConstructor) implements Expr {
         public ListExpr { elements = List.copyOf(elements); }
+        public ListExpr(List<Expr> elements) { this(elements, false); }
     }
 
     public record TupleExpr(List<Expr> elements) implements Expr {
