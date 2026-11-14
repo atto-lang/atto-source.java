@@ -530,6 +530,35 @@ final class ActorSourceLifecycleGateTest {
     }
 
     @Test
+    void failedTeardownOwnerCheckCanRevokeUnusedGracefulPermit() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        gate.sealStop(true);
+
+        ActorRuntime.ActorOwnedGuestState broken = () -> {
+            throw new IllegalStateException("teardown owner lookup failed");
+        };
+        IllegalStateException failedAdmission = assertThrows(
+                IllegalStateException.class,
+                () -> gate.beginTeardown(owner, TYPE, broken));
+        assertEquals("teardown owner lookup failed",
+                failedAdmission.getMessage());
+        assertFalse(gate.teardownActive());
+        assertFalse(gate.readyForRetirement(),
+                "failed hook admission must not silently skip a graceful hook");
+
+        // ActorRuntime's error path records the original exception in DONE,
+        // then revokes the never-claimed hook, permitting physical cleanup.
+        gate.sealStop(false);
+        assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
+        assertTrue(gate.readyForRetirement(),
+                "revoked unused teardown must release terminal lifecycle pin");
+        gate.close();
+    }
+
+    @Test
     void blankActorTypeCannotCreateGate() {
         var owner = ActorRuntime.ActorId.create();
         assertThrows(IllegalArgumentException.class,
