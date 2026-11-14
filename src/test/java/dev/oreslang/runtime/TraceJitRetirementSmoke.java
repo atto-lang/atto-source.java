@@ -79,7 +79,8 @@ public final class TraceJitRetirementSmoke {
                 new AdaptiveTraceCodeV1.Candidate<>(
                         identity(), TraceInstrumentationControlV1.CALL, "stale")));
         router.abort(ticket);
-        check("plain".equals(router.pin().executable()), "stale candidate not published");
+        var original = router.pin();
+        check("plain".equals(original.executable()), "stale candidate not published");
         // The fresh policy epoch permits a separately authorized compilation.
         var fresh = router.prepare(TraceInstrumentationControlV1.CALL, 12);
         router.publish(fresh, new AdaptiveTraceCodeV1.Candidate<>(
@@ -89,9 +90,10 @@ public final class TraceJitRetirementSmoke {
         invocation.close();
         router.retire();
         check(router.retainedGenerations() == 1,
-                "previously unclosed plain-code pin must continue charging");
-        // This scenario intentionally created an outstanding plain pin above.
-        // The caller must close that pin; do not conflate shutdown with cleanup.
+                "old pinned code continues charging after STOP");
+        original.close();
+        check(router.retainedGenerations() == 0,
+                "closing final old pin releases all retired generations");
     }
 
     private static void policyAndRetireRace() throws InterruptedException {
