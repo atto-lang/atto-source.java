@@ -3887,9 +3887,8 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseConditionalBraceBody();
-            // The braced imperative form is self-delimiting; retain optional
-            // legacy fi only for source compatibility.
-            match(FI);
+            // Braced imperative if is self-delimiting. Do not consume fi:
+            // a following fi may close an enclosing keyword-form if.
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 
@@ -3926,14 +3925,10 @@ public final class Parser {
 
     private List<Ast.Stmt> parseConditionalBraceBody() {
         consume(LBRACE, "expected '{' before conditional branch");
-        List<Ast.Stmt> body = parseUntil(RBRACE, FI);
-        if (match(RBRACE) && check(FI)) {
-            Token redundant = previous();
-            warnings.add(new SyntaxWarning(redundant.line(), redundant.column(),
-                    "redundant '}' before 'fi'; fi closes the final conditional branch"));
-        }
-        // The caller consumes the branch separator or the final fi. Retain
-        // the historical '} fi' spelling with a migration diagnostic.
+        List<Ast.Stmt> body = parseUntil(RBRACE);
+        consume(RBRACE, "expected '}' to close a braced if branch");
+        // Braces and fi are distinct delimiters. A fi immediately after a
+        // braced child may belong to an enclosing keyword-form conditional.
         return body;
     }
 
@@ -4709,6 +4704,11 @@ public final class Parser {
             consume(THEN, "value-producing if requires 'then'");
             conditions.add(head.predicate());
             values.add(parseTernaryArm(true));
+            // Lowering builds nested conditional expressions: bound the number
+            // of arms before typechecking/evaluating the nested AST.
+            if (conditions.size() >= 128 && check(ELSEIF)) {
+                throw error(peek(), "value-producing if exceeds 128 conditional arms");
+            }
         } while (match(ELSEIF));
         consume(ELSE, "value-producing if requires 'else' to produce a value");
         Ast.Expr value = parseTernaryArm(false);
