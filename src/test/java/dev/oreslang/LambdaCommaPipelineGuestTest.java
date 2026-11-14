@@ -195,6 +195,76 @@ final class LambdaCommaPipelineGuestTest {
     }
 
     @Test
+    void independentInlineLambdaLocalScopesDoNotLeak() throws Exception {
+        assertEquals("16", execute("""
+                pub fnc main(): void {
+                    val first = || -> val int x = 5, x + 3;
+                    val second = || -> val int x = 10, x - 2;
+                    stdio.stdout.write(first() + second());
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void typedCommaLambdasRejectMissingReturnAndWrongVoidResult() {
+        for (String invalid : new String[] {
+                "|| -> int :: int x = 5 end",
+                "|| -> int :: end",
+                "|| -> void :: 5 end",
+                "|| -> bool :: int x = 5, x + 3 end",
+                "|| => void -> 5",
+                "|| => int -> stdio.println(5)"
+        }) {
+            String guest = "fnc main(): void { val callback = " + invalid
+                    + "; return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(guest)), invalid);
+        }
+    }
+
+    @Test
+    void inlineCommaLocalsCannotMutateReadonlyOrReferenceFutureBinding() {
+        for (String invalid : new String[] {
+                "|| -> val int x = 5, x = 7",
+                "|| => int -> val int x = y, val int y = 5, x",
+                "|| -> val int x = 5, val int x = 6, x"
+        }) {
+            String guest = "fnc main(): void { val callback = " + invalid
+                    + "; return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(guest)), invalid);
+        }
+    }
+
+    @Test
+    void nonLexicalLambdaCannotCaptureOuterLocalViaTypedInlineResult() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc main(): int {
+                            val int secret = 41;
+                            val callback = nlex || => int -> secret + 1;
+                            return callback();
+                        }
+                        """)));
+    }
+
+    @Test
+    void typedCommaLambdaReturnCanPipelineThroughNamedCallable() throws Exception {
+        assertEquals("42", execute("""
+                fnc add_one(int n): int { return n + 1; }
+                pub fnc main(): void {
+                    val callback = || -> int ::
+                        int x = 20,
+                        x |> add_one |> |n| => int -> n * 2
+                    end;
+                    stdio.stdout.write(callback());
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void nestedArgumentCommasRemainArgumentsAndMalformedCommaBodiesFail() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc sum(int a, int b): int { return a + b; }
