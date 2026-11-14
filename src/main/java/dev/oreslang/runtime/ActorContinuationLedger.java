@@ -47,7 +47,7 @@ final class ActorContinuationLedger {
      * all release the same exact-image lease after physical callback exit.
      */
     synchronized Admission admit(Lane lane, Runnable callback,
-            HotCodeGenerationRetentionV1.CodeLease codeLease) {
+            AutoCloseable codeLease) {
         Objects.requireNonNull(lane, "lane");
         Objects.requireNonNull(callback, "callback");
         if (allSealed || (lane == Lane.ORDINARY && ordinarySealed)) {
@@ -61,6 +61,18 @@ final class ActorContinuationLedger {
         lastSequence = sequence;
         live.put(receipt, Boolean.TRUE);
         return receipt;
+    }
+
+    /** External host-resource release happens after dropping this ledger monitor. */
+    private static void releaseTerminal(AutoCloseable resource) {
+        if (resource == null) return;
+        try {
+            resource.close();
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalStateException("owned continuation resource release failed", failure);
+        }
     }
 
     /** STOP revokes only ordinary callbacks. Pre-admitted lexical cleanup survives. */
@@ -102,11 +114,11 @@ final class ActorContinuationLedger {
         private Runnable callback;
         // Exact physical code image pinned before publication. Never release
         // while RUNNING even if a foreign cancellation closes this receipt.
-        private HotCodeGenerationRetentionV1.CodeLease codeLease;
+        private AutoCloseable codeLease;
         private State state = State.QUEUED;
 
         private Admission(Lane lane, long admittedGeneration, long sequence,
-                Runnable callback, HotCodeGenerationRetentionV1.CodeLease codeLease) {
+                Runnable callback, AutoCloseable codeLease) {
             this.lane = lane;
             this.admittedGeneration = admittedGeneration;
             this.sequence = sequence;
@@ -121,7 +133,7 @@ final class ActorContinuationLedger {
         @Override
         public void run() {
             final Runnable admittedCallback;
-            final HotCodeGenerationRetentionV1.CodeLease discardedCodeLease;
+            final AutoCloseable discardedCodeLease;
             synchronized (ActorContinuationLedger.this) {
                 if (state != State.QUEUED) {
                     throw new IllegalStateException("actor continuation receipt replay: " + sequence);
@@ -146,13 +158,13 @@ final class ActorContinuationLedger {
             // Never acquire the code-loader monitor while holding the actor
             // ledger monitor. A STOP-vs-cleanup race must not deadlock.
             if (admittedCallback == null) {
-                if (discardedCodeLease != null) discardedCodeLease.close();
+                if (discardedCodeLease != null) releaseTerminal(discardedCodeLease);
                 return;
             }
             try {
                 admittedCallback.run();
             } finally {
-                final HotCodeGenerationRetentionV1.CodeLease completedCodeLease;
+                final AutoCloseable completedCodeLease;
                 synchronized (ActorContinuationLedger.this) {
                     state = State.RETIRED;
                     live.remove(this);
@@ -160,13 +172,13 @@ final class ActorContinuationLedger {
                     codeLease = null;
                 }
                 // This is a physical callback exit, including thrown errors.
-                if (completedCodeLease != null) completedCodeLease.close();
+                if (completedCodeLease != null) releaseTerminal(completedCodeLease);
             }
         }
 
         @Override
         public void close() {
-            final HotCodeGenerationRetentionV1.CodeLease discardedCodeLease;
+            final AutoCloseable discardedCodeLease;
             synchronized (ActorContinuationLedger.this) {
                 if (state == State.QUEUED) {
                     callback = null;
@@ -180,7 +192,7 @@ final class ActorContinuationLedger {
                     discardedCodeLease = null;
                 }
             }
-            if (discardedCodeLease != null) discardedCodeLease.close();
+            if (discardedCodeLease != null) releaseTerminal(discardedCodeLease);
         }
     }
 }
