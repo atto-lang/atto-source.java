@@ -849,11 +849,35 @@ public final class TypeChecker {
             }
             Set<String> selectors = new LinkedHashSet<>();
             for (Ast.InterfaceMember member : iface.members()) {
+                if (member instanceof Ast.InterfaceFieldDecl field) {
+                    // Sealed actor storage is never an ordinary trait/ClassShape
+                    // field. Only a later manifest-authenticated attached state
+                    // witness can discharge this obligation.
+                    if ((field.bindingKind() != Ast.BindingKind.LET
+                                    && field.bindingKind() != Ast.BindingKind.VAL)
+                            || field.type().isBorrow() || field.type().inferArguments()
+                            || !field.type().arguments().isEmpty()
+                            || !(field.type().name().equals("int")
+                                    || field.type().name().equals("bool"))
+                            || (field.bindingKind() == Ast.BindingKind.LET
+                                    && field.mutableReferent())) {
+                        throw new IllegalArgumentException(
+                                "ACTOR_STATE_REQUIREMENT_UNSAFE_TYPE: "
+                                        + iface.name() + "." + field.name());
+                    }
+                    if (!selectors.add("state:" + field.name())) {
+                        throw new IllegalArgumentException(
+                                "ACTOR_STATE_REQUIREMENT_DUPLICATE: "
+                                        + iface.name() + "." + field.name());
+                    }
+                    continue;
+                }
                 if (!(member instanceof Ast.InterfaceFunctionDecl fn)
                         || fn.structural() || !fn.genericParameters().isEmpty()
                         || !fn.effects().isEmpty()) {
                     throw new IllegalArgumentException(
-                            "actor contract requires only plain mtd signatures: " + iface.name());
+                            "actor contract accepts only mtd and explicit let/val state requirements: "
+                                    + iface.name());
                 }
                 if (Set.of("init", "receive", "send", "tear_down", "handle_state",
                         "on_panic", "on_throw", "on_throws", "on_raise", "on_recover",
@@ -2002,6 +2026,14 @@ public final class TypeChecker {
                             "actor contract requires non-generic nominal actor: " + iface.name());
                 }
                 for (Ast.InterfaceMember item : iface.members()) {
+                    if (item instanceof Ast.InterfaceFieldDecl) {
+                        // Inline actor ordinary class fields are NOT sealed,
+                        // actor-owned state schema witnesses. Do not discharge
+                        // a storage requirement by structural field coincidence.
+                        throw new IllegalArgumentException(
+                                "ACTOR_STATE_REQUIREMENT_REQUIRES_SEALED_ATTACHMENT: "
+                                        + klass.name() + " implements " + iface.name());
+                    }
                     if (!(item instanceof Ast.InterfaceFunctionDecl required)) {
                         throw new IllegalArgumentException(
                                 "actor contract has unsupported requirement: " + iface.name());
