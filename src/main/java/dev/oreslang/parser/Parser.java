@@ -5797,8 +5797,7 @@ public final class Parser {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
-        consume(ARROW, "expected '->' after lambda parameters");
-        return parseLambdaBody(params, nonLexical);
+        return parseLambdaHeader(params, nonLexical, false);
     }
 
     private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
@@ -5828,7 +5827,28 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
-        consume(ARROW, "lambdas use the slim arrow '->'");
+        return parseLambdaHeader(params, nonLexical, inlinePipelineStage);
+    }
+
+    /**
+     * The inline typed lambda uses FAT_ARROW only in its result-type header:
+     *     |x| => int -> x + 1
+     *     |x| (=> int) -> x + 1   // explicit annotation alias
+     * Existing braced/:: typed blocks retain their admitted '-> Type' syntax.
+     * Never accept the reversed '|x| -> int => expr'.
+     */
+    private Ast.LambdaExpr parseLambdaHeader(List<Ast.Param> params,
+            boolean nonLexical, boolean inlinePipelineStage) {
+        boolean parenthesized = check(LPAREN) && checkNext(FAT_ARROW);
+        if (match(FAT_ARROW) || (parenthesized && match(LPAREN) && match(FAT_ARROW))) {
+            Ast.TypeRef returnType = parseTypeRef();
+            if (parenthesized) {
+                consume(RPAREN, "expected ')' after parenthesized lambda return annotation");
+            }
+            consume(ARROW, "typed inline lambda requires '->' after its '=> Type' annotation");
+            return parseInlineCommaLambda(params, nonLexical, inlinePipelineStage, returnType);
+        }
+        consume(ARROW, "lambda requires '->' for the body or '=> Type ->' for a typed inline expression");
         return parseLambdaBody(params, nonLexical, inlinePipelineStage);
     }
 
@@ -5839,7 +5859,8 @@ public final class Parser {
     private Ast.LambdaExpr parseLambdaBody(
             List<Ast.Param> params, boolean nonLexical, boolean inlinePipelineStage) {
         // Three distinct bodies: { statements }, :: comma-items end, and
-        // inline => expression. No whitespace-only return-type delimiter.
+        // inline expression. Explicit inline types occur before '->' in
+        // the header: => Type -> expression. No whitespace-only separator.
         if (check(LBRACE)) {
             return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
         }
@@ -5864,8 +5885,9 @@ public final class Parser {
                 return new Ast.LambdaExpr(params, null,
                         parseCommaCallableBody(resultType, "lambda"), nonLexical, resultType);
             }
-            if (match(FAT_ARROW)) {
-                return parseInlineCommaLambda(params, nonLexical, inlinePipelineStage, resultType);
+            if (check(FAT_ARROW)) {
+                throw error(peek(),
+                    "reversed typed inline lambda is invalid; use '=> Type -> expression'");
             }
         }
         // Bare 'int' or 'void' is never an implicitly typed lambda. A
@@ -5877,7 +5899,7 @@ public final class Parser {
                 && (check(SEMICOLON) || check(COMMA) || check(RPAREN)
                     || check(RBRACE) || check(EOF))) {
             throw error(peek(),
-                    "explicit lambda result type requires { ... }, :: ... end, or => expression");
+                    "explicit lambda result type requires { ... } or :: ... end; inline use => Type -> expression");
         }
         current = start;
         return parseInlineCommaLambda(params, nonLexical, inlinePipelineStage, null);
