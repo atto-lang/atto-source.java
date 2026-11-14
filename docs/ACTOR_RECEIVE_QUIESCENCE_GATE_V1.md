@@ -101,3 +101,37 @@ Actions jobs show failure with no executed steps. Respect
 to another organization without explicit approved destination, protected-main
 and reviewer gates. Missing CI, full GraalVM guest execution or verified
 native resource reclamation remains **NOT_EXECUTED**.
+
+
+## STOP racing source initializer: additional runtime correction
+
+The source actor initializer may be physically executing when a host STOP
+seals the `ActorSourceLifecycleGate`. The gate correctly rejects a late
+`commitInit`, but the surrounding `ActorRuntime` previously classified
+the `IllegalStateException` as an unhandled guest failure. This poisoned
+normal actor DONE despite STOP being the legitimate winner.
+
+The actual startup path now maps **only** a late commit rejected while the
+runtime is stopped **and** the source gate is `STOPPING_TERMINAL` to
+`ActorCancellationSignal`. Foreign owned-state, malformed init results and
+unrelated startup exceptions still remain terminal failures. The existing
+outer actor catch treats this control-plane cancellation as normal STOP
+unwind. No guest hook is run on an actor stopped before READY.
+
+`ActorSourceTearDownTest` includes a deterministic blocked-initializer
+handoff: the test uses a separate host STOP thread because
+`ActorRef.stop()` waits for physical finalization, then releases init,
+joins STOP, verifies `ready` rejected, `done` succeeded and `tear_down`
+never ran. These full-runtime JUnit changes are **AUTHORED_NOT_EXECUTED**;
+the source-actor READY-publication observer race remains separate and must
+be reconciled with the existing Java READY-observer fixes.
+
+### Local test command
+
+```sh
+mvn -Dtest=ActorSourceTearDownTest,ActorSourceLifecycleGateTest,ActorReceiveQuiescenceGateTest test
+```
+
+Running this command requires the actual source checkout, its JDK/GraalVM
+dependencies and a functioning local/approved CI runner. Host-only
+receiver-gate tests alone are not proof of compiled `.atto` concurrency.
