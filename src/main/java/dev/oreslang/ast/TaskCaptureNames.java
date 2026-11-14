@@ -207,6 +207,14 @@ public final class TaskCaptureNames {
             visitExpr(s.condition(), locals, names);
             visitExpr(s.whenTrue(), locals, names);
             visitExpr(s.whenFalse(), locals, names);
+        } else if (expr instanceof Ast.RangeExpr s) {
+            visitExpr(s.start(), locals, names);
+            visitExpr(s.end(), locals, names);
+        } else if (expr instanceof Ast.BlockValueExpr s) {
+            // Like MatchValueArm prefixes: the value shares the prefix's lexical scope.
+            Set<String> blockLocals = new HashSet<>(locals);
+            visitStatementsInScope(s.prefixStatements(), blockLocals, names);
+            visitExpr(s.value(), blockLocals, names);
         } else if (expr instanceof Ast.MatchExpr s) {
             visitExpr(s.subject(), locals, names);
             for (Ast.MatchValueArm arm : s.arms()) {

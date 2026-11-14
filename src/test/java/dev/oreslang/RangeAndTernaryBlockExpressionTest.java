@@ -238,9 +238,9 @@ final class RangeAndTernaryBlockExpressionTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(wrap("""
                         val value: int = true ? (|int n| -> {
-                          if n eq 3 {
+                          if n eq 3 then
                             return 42;
-                          }
+                          fi
                           return 0;
                         })(3) : { return 0; };
                         """))));

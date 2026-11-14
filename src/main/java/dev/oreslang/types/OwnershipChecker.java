@@ -1729,6 +1729,27 @@ public final class OwnershipChecker {
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
+        if (expr instanceof Ast.RangeExpr range) {
+            // Signed integer bounds are evaluated once, left to right; the range is a value.
+            checkExpr(range.start(), scope, false);
+            checkExpr(range.end(), scope, false);
+            // Signed integer ranges iterate int values (copy), so loop bindings are Copy.
+            return new ValueInfo(new Ast.TypeRef("Range", List.of(Ast.TypeRef.simple("int")), false),
+                    ValueKind.COPY, null);
+        }
+        if (expr instanceof Ast.BlockValueExpr block) {
+            // Ternary value block (TypeChecker admits it only as an immediate arm, with
+            // a void return context and no loop). Its prefix runs in its own lexical
+            // scope; branch-aware state joins are done by the enclosing ConditionalExpr.
+            Scope blockScope = new Scope(scope);
+            for (Ast.Stmt stmt : block.prefixStatements())
+                checkStatement(stmt, blockScope, Ast.TypeRef.inferred());
+            ValueInfo value = checkExpr(block.value(), blockScope, consuming);
+            blockScope.close();
+            if (value.kind == ValueKind.IMM_BORROW || value.kind == ValueKind.MUT_BORROW)
+                throw error("borrowed values cannot escape a ternary value block without proven loan lifetimes");
+            return value;
+        }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
@@ -3605,6 +3626,14 @@ public final class OwnershipChecker {
             scanExpr(e.condition(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.whenTrue(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.whenFalse(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.RangeExpr e) {
+            scanExpr(e.start(), locals, outer, recursiveBinding, captures, false);
+            scanExpr(e.end(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.BlockValueExpr e) {
+            // The block value sees bindings declared by its prefix: scan them as one scope.
+            List<Ast.Stmt> scoped = new ArrayList<>(e.prefixStatements());
+            scoped.add(new Ast.ExprStmt(e.value()));
+            scanStatements(scoped, locals, outer, recursiveBinding, captures);
         } else if (expr instanceof Ast.RuntimeCallExpr e) {
             for (Ast.Expr arg : e.arguments()) {
                 scanExpr(arg, locals, outer, recursiveBinding, captures, false);
@@ -5227,6 +5256,8 @@ public final class OwnershipChecker {
     private Ast.TypeRef iterableElementType(Ast.TypeRef iterableType, boolean asyncIteration) {
         if (iterableType == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = iterableType.isBorrow() ? iterableType.borrowedTarget() : iterableType;
+        if (!asyncIteration && concrete.name().equals("Range") && concrete.arguments().size() == 1)
+            return concrete.arguments().getFirst();
         if (asyncIteration && (concrete.name().equals("AsyncGenerator") || concrete.name().equals("AsyncIterator"))
                 && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
