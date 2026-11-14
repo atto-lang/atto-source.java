@@ -180,6 +180,12 @@ public final class ActorContractWitness {
                                         "ACTOR_STATE_REQUIREMENT_UNSAFE_TYPE: "
                                                 + iface.name() + "." + requiredField.name());
                             }
+                            if (fulfilled.keySet().stream().anyMatch(
+                                    selector -> selector.startsWith(requiredField.name() + "/"))) {
+                                throw new IllegalArgumentException(
+                                        "ACTOR_STATE_METHOD_COLLISION: " + actorName + "."
+                                                + requiredField.name());
+                            }
                             String previous = fulfilledState.putIfAbsent(
                                     requiredField.name(), iface.name());
                             if (previous != null) {
