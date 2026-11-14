@@ -355,6 +355,26 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) {
+                        // Also deny raw parsed-AST callers that bypass normal
+                        // TypeChecker admission: no silent empty actor object.
+                        if (!klass.sealedStateFields().isEmpty())
+                            throw new IllegalStateException(
+                                    "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: "
+                                    + "sealed actor state cannot run as ordinary fields");
+                        // Raw AST evaluation is not required to pass TypeChecker.
+                        // A forged user method must never shadow the future
+                        // compiler-owned state loan intrinsic in this path.
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && klass.methods().stream().anyMatch(
+                                        m -> m.name().equals("handle_state"))) {
+                            throw new IllegalStateException(
+                                    "ACTOR_STATE_INTRINSIC_FORGED: actor '"
+                                            + klass.name() + "' defines handle_state");
+                        }
+                        if (klass.methods().stream().anyMatch(Ast.MethodDecl::critical)) {
+                            throw new IllegalStateException(
+                                    "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED: raw AST critical method");
+                        }
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                         classModules.put(klass, module.name());
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);
