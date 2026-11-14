@@ -334,6 +334,31 @@ final class ActorForwardNamespaceReceiverTest {
     }
 
     @Test
+    void readonlyActorReceiverCannotSendOrEndMailbox() {
+        for (String call : new String[]{"self.end();", "self.send(42);"}) {
+            Ast.Program program = Parser.parse("""
+                    declare actor Foo1;
+                    mtd (Foo1 self) illegal(): void {
+                      %s
+                      return;
+                    }
+                    """.formatted(call));
+            var rejected = assertThrows(IllegalArgumentException.class,
+                    () -> OwnershipChecker.check(program));
+            assertTrue(rejected.getMessage().contains("requires exclusive mutable actor self"),
+                    rejected.getMessage());
+        }
+        var permitted = Parser.parse("""
+                declare actor Foo1;
+                mtd (Foo1 mut self) finish(): void {
+                  self.end();
+                  return;
+                }
+                """);
+        assertDoesNotThrow(() -> OwnershipChecker.check(permitted));
+    }
+
+    @Test
     void explicitMailboxHandlerCannotSilentlyUpgradeReadonlyReceiver() {
         reject("""
                 declare actor Foo1;
