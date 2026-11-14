@@ -164,8 +164,9 @@ final class StatelessDeclaredActorExecutionTest {
     void omittedInitExecutesRealStatelessGuestReceiveOnActorLane() throws Exception {
         // The same guest as the explicit-init test, but the compiler must
         // synthesize the no-op startup hook before the runtime READY barrier.
-        String source = source().replace(
-                "define external mtd (Worker w) init(): void { return; }\\n", "");
+        // Physical source blob exactly matches conformance lifecycle-v2.
+        String source = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "contracts", "actor-lifecycle-v2", "stateless-no-init.atto"));
         assertFalse(source.contains("init(): void"));
         Ast.Program checked = OresCompiler.parseAndTypeCheckStatelessDeclaredActors(source);
         String codeUnit = "stateless-declared-actor-no-init.atto";
