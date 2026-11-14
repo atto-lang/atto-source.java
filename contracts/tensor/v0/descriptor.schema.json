@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:oreslang:tensor:descriptor:v0",
+  "title": "Oreslang Tensor Descriptor v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["dtype", "shape", "strides", "offset", "storageScalars", "ownership", "device"],
+  "properties": {
+    "dtype": {"enum": ["f32", "f64", "i32", "i64", "bool"]},
+    "shape": {"type":"array","maxItems":16,"items":{"type":"integer","minimum":0,"maximum":2147483647}},
+    "strides": {"type":"array","maxItems":16,"items":{"type":"integer","minimum":-9007199254740991,"maximum":9007199254740991}},
+    "offset": {"type":"integer","minimum":0,"maximum":9007199254740991},
+    "storageScalars": {"type":"integer","minimum":0,"maximum":9007199254740991},
+    "ownership": {"enum":["owned","borrowed_read","borrowed_mut","frozen_shared","moved"]},
+    "device": {"enum":["cpu","gpu"]}
+  }
+}

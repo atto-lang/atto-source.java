@@ -64,7 +64,7 @@ final class MainlineClassFieldEffectGateTest {
         // partial-construction resource cleanup for these expressions.
         for (String declaration : java.util.List.of(
                 "final float second: 1 / 0;",
-                "final int second: 1 % 0;",
+                "final int second: Integer.rem(1, 0);",
                 "final int second: 42 as int;")) {
             String source = """
                     define class Unsafe as

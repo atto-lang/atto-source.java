@@ -114,3 +114,27 @@ package manager or third-party dependencies are required for the preflight.
 The output retains the `oreslang.cgl.compat.v1` JSON schema and exit code 2 for
 admission failure. A successful Linux/ELF preflight is *not* realtime or vendor
 CGL certification. Tests must execute with nonzero steps at the exact PR tree.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
