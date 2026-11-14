@@ -213,6 +213,54 @@ final class ActorForwardNamespaceReceiverTest {
     }
 
     @Test
+    void declaredActorsKeepDeclarationOrderAndDispatchSlotsWhenMethodsAreInterleaved() {
+        Ast.Program program = Parser.parse("""
+                use namespace workers;
+                mtd (Foo2 self) foo(int x): int { return x + 2; }
+                declare actor Foo1;
+                mtd (Foo2 self) foo(): int { return 42; }
+                declare actor Foo2;
+                mtd (Foo1 self) foo(): int { return 41; }
+                mtd (Foo1 self) foo(int x): int { return x + 1; }
+                """);
+        var declarations = program.modules().getFirst().declarations();
+        assertEquals(2, declarations.size());
+        var foo1 = assertInstanceOf(Ast.ClassDecl.class, declarations.get(0));
+        var foo2 = assertInstanceOf(Ast.ClassDecl.class, declarations.get(1));
+        assertEquals("Foo1", foo1.name(), "nominal ordering follows declare, not first mtd");
+        assertEquals("Foo2", foo2.name());
+        assertEquals(2, foo1.methods().size());
+        assertEquals(2, foo2.methods().size());
+        assertEquals(java.util.Set.of(0, 1),
+                foo1.methods().stream().map(Ast.MethodDecl::arity)
+                        .collect(java.util.stream.Collectors.toSet()));
+        assertEquals(java.util.Set.of(0, 1),
+                foo2.methods().stream().map(Ast.MethodDecl::arity)
+                        .collect(java.util.stream.Collectors.toSet()));
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void deferredSelectCannotUpgradeReadonlyActorSelf() {
+        Ast.Program program = Parser.parse("""
+                declare actor Worker;
+                mtd (Worker self) illegal(): void {
+                  val Channel<int> gate = Channel.new<int>(0);
+                  nb select over
+                    when readch gate: int value -> {
+                      self.end();
+                    }
+                  end
+                  return;
+                }
+                """);
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(program));
+        assertTrue(rejected.getMessage().contains("exclusive mutable actor self"),
+                rejected.getMessage());
+    }
+
+    @Test
     void declarationOnlyActorsBindTypeFirstMethodsWithSameName() {
         Ast.Program program = Parser.parse("""
                 use namespace workers;
