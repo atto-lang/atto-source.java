@@ -483,4 +483,77 @@ final class InvertedColumnStoreTest {
         }
     }
 
+
+    @Test
+    void guardedDenseAccessUsesSameLockForIdentityEpochBoundsAndFieldLoans() {
+        var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
+                                            InvertedColumnStore.Kind.BOOL);
+        try (store;
+             var other = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
+                                                  InvertedColumnStore.Kind.BOOL)) {
+            var first = store.push(42, true);
+            var initial = store.captureLayoutGuard();
+            assertEquals(42, store.readIndexGuarded(initial, 0, 0));
+            store.writeIndexGuarded(initial, 0, 0, 43);
+            assertEquals(43, store.get(first, 0));
+
+            other.push(7, false);
+            var foreign = other.captureLayoutGuard();
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(foreign, 0, 0));
+            assertThrows(IllegalStateException.class,
+                    () -> store.writeIndexGuarded(foreign, 0, 0, 999));
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(null, 0, 0));
+
+            try (var read = store.borrowRead(0)) {
+                assertEquals(43, store.readIndexGuarded(initial, 0, 0));
+                assertThrows(IllegalStateException.class,
+                        () -> store.writeIndexGuarded(initial, 0, 0, 999));
+            }
+            try (var write = store.borrowWrite(1)) {
+                assertThrows(IllegalStateException.class,
+                        () -> store.readIndexGuarded(initial, 0, 1));
+                assertThrows(IllegalStateException.class,
+                        () -> store.writeIndexGuarded(initial, 0, 1, false));
+            }
+            assertEquals(43, store.get(first, 0));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> store.readIndexGuarded(initial, -1, 0));
+            assertThrows(IndexOutOfBoundsException.class,
+                    () -> store.writeIndexGuarded(initial, 1, 0, 1));
+
+            store.reserve(8);
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(initial, 0, 0));
+            assertThrows(IllegalStateException.class,
+                    () -> store.writeIndexGuarded(initial, 0, 0, 888));
+            var afterReserve = store.captureLayoutGuard();
+            assertTrue(afterReserve.epoch() > initial.epoch());
+            store.reserve(8); // Java host no-op reserve preserves physical layout
+            store.set(first, 0, 44); // ordinary value write does not move columns
+            assertEquals(44, store.readIndexGuarded(afterReserve, 0, 0));
+
+            // Failure must not alter row values; the guard fails closed even
+            // if an allocator changes capacity before a later failure.
+            assertThrows(ArithmeticException.class,
+                    () -> store.reserve(Integer.MAX_VALUE));
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(afterReserve, 0, 0));
+            assertEquals(44, store.get(first, 0));
+
+            var beforePush = store.captureLayoutGuard();
+            var second = store.push(99, false);
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(beforePush, 0, 0));
+            var beforeErase = store.captureLayoutGuard();
+            store.eraseSwap(first);
+            assertThrows(IllegalStateException.class,
+                    () -> store.readIndexGuarded(beforeErase, 0, 0));
+            assertEquals(99, store.readIndexGuarded(store.captureLayoutGuard(), 0, 0));
+            assertEquals(99, store.get(second, 0));
+            assertThrows(IllegalArgumentException.class, () -> store.get(first, 0));
+        }
+        assertThrows(IllegalStateException.class, store::captureLayoutGuard);
+    }
 }
