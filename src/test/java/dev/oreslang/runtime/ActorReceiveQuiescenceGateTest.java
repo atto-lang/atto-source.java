@@ -76,6 +76,11 @@ final class ActorReceiveQuiescenceGateTest {
             assertThrows(IllegalStateException.class,
                     () -> gate.beginTeardown(id, TYPE, state),
                     "teardown must be once-only");
+            assertTrue(gate.teardownActive());
+            assertThrows(IllegalStateException.class, gate::close,
+                    "running tear_down must pin actor storage");
+            gate.finishTeardown(id, TYPE);
+            assertFalse(gate.teardownActive());
             gate.close();
             assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
         } finally {
@@ -153,6 +158,8 @@ final class ActorReceiveQuiescenceGateTest {
         assertThrows(IllegalStateException.class, () -> gate.enterReceive(
                 id, TYPE, state, mail(id)));
         gate.beginTeardown(id, TYPE, state);
+        assertThrows(IllegalStateException.class, gate::close);
+        gate.finishTeardown(id, TYPE);
         gate.close();
     }
 }
