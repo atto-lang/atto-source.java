@@ -22,7 +22,7 @@ class SymbolCopyIntegrityTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> ActorRuntime.freeze(List.of(adversarial)));
-        assertTrue(failure.getMessage().contains("duplicate logical key"));
+        assertTrue(failure.getMessage().contains("duplicate logical Map key"));
     }
 
     @Test void frozenSetRejectsLogicalSymbolCollision() {
@@ -33,7 +33,7 @@ class SymbolCopyIntegrityTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> ActorRuntime.freeze(adversarial));
-        assertTrue(failure.getMessage().contains("duplicate logical element"));
+        assertTrue(failure.getMessage().contains("duplicate logical Set element"));
     }
 
     @Test void privateMailboxDetachmentRejectsLogicalSymbolCollision()
@@ -46,7 +46,7 @@ class SymbolCopyIntegrityTest {
         InvocationTargetException failure = assertThrows(InvocationTargetException.class,
                 () -> copier.invoke(null, List.of(adversarial)));
         assertInstanceOf(IllegalArgumentException.class, failure.getCause());
-        assertTrue(failure.getCause().getMessage().contains("duplicate logical key"));
+        assertTrue(failure.getCause().getMessage().contains("duplicate logical Map key"));
     }
 
     @Test void mapStillPreservesStringAndSymbolNamespaces() {

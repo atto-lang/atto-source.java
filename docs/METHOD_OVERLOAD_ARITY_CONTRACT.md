@@ -31,6 +31,59 @@ search for another overload. No implicit conversion ranking, structural
 member-by-member matching, return-type scoring, or runtime reflection
 may choose a callable slot.
 
+## Inline receiver marker and explicit `self` call arguments
+
+For ordinary class and actor instance methods, all three definitions below
+have the same **caller-visible arity** and overload identity:
+
+```ores
+foo(int x): void {}
+foo(self, int x): void {}
+foo(self Foo)(int x): void {} // legacy typed receiver form
+```
+
+They MUST NOT coexist in one owner: each defines `foo/1`.
+Likewise `foo()` and `foo(self)` both define `foo/0`. A leading
+`mut self` carries exclusive receiver borrowing, but does not add an
+argument or distinguish an overload. Only the **first declaration parameter**
+may be an inline standalone `self` / `mut self` marker. Trailing commas,
+duplicate markers, non-leading markers and receiver markers on static methods
+are errors. Methods with a normal `self`-typed *named parameter* are
+different: `foo(self other, int x)` defines `foo/2`.
+
+In a method **call**, the receiver is exclusively the left operand of the
+dot. Every value expression in parentheses counts as a separate explicit
+argument, even the expression spelled `self`:
+
+```ores
+define class Foo as
+  foo(int x): int { return x; }           // foo/1
+  foo(self other, int x): int { return x; } // foo/2
+  example(): int {
+    self.foo(5);        // foo/1
+    self.foo(self, 5);  // foo/2, first value argument has type self
+    return 0;
+  }
+end
+```
+
+If only `foo/1` is present, `self.foo(self, 5)` is **missing foo/2**.
+If `foo/2` exists but its first parameter rejects the receiver-polymorphic
+`self` value, report a first-argument **type/ownership** error and NEVER
+fall back to `foo/1`. The `self` expression may not bypass move, loan,
+actor isolation, mailbox or Sendable restrictions.
+
+**Normalization boundary:** the parser erases a declaration's inline
+receiver marker from `MethodDecl.parameters` before overload admission.
+It does **not** erase expressions from `CallExpr.arguments`. The method
+selector, type checker, ownership checker, interpreter, virtual dispatch,
+AOT linkage and actor mailbox lowering all use the same resolved expanded
+value-argument vector. Statically known tuple-spread expansion affects
+call-site arity; the receiver never does. Default arguments or variadic
+expansion (if later supported) must reject overlapping source-call arities.
+The proposed nominal-enum overload extension remains separately gated and
+must never use receiver spelling as a discriminator.
+
 ## Abstract signature shorthand
 
 Inside an abstract class, a method signature ending in `;` may omit
@@ -94,3 +147,41 @@ proves the same contract; see the LLVM parity issue.
 Future default parameters or variadic callables must not introduce a
 second method matching a source-call arity. A future desugaring into
 explicit arity slots must check collision before code generation.
+
+## Class and actor method spelling
+
+The following instance methods all use the identical AST, receiver model and
+`(owner, INSTANCE, name, value-arity)` overload selector:
+
+```ores
+define class One as
+  foo(): void {}
+end
+
+define class Two as
+  foo() -> void ::
+  end
+end
+
+define class Three as
+  mtd foo(): void {}
+end
+
+define class Four as
+  mtd foo() -> void ::
+  end
+end
+```
+
+The `mtd` and older `method` prefixes are **optional, contextual markers**,
+not globally reserved tokens. Inside a class or actor they are interchangeable
+with bare method declarations and do not affect binding or overloading. The
+separate type-alias extension spelling `define mtd ... on Alias` retains its
+existing meaning outside class-member position. A member called `mtd()` stays
+legal without a marker. Static class functions still use `static fnc`, never
+`static mtd`.
+
+End-delimited method bodies require an explicit `-> ReturnType ::` header and
+consume exactly their own `end`; the enclosing class/actor consumes a separate
+`end`. Colon-return braced bodies remain valid. Neither `mtd` nor `::` changes
+explicit/implicit `self` or its exclusion from source-call arity.

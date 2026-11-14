@@ -11,6 +11,12 @@ import java.util.Objects;
  * Physical isolation of an actor's direct bytes is not proof of a GC-free
  * guest object heap. Native Image Java isolate heaps also use GC.</p>
  *
+ * <p>Compressed object references are orthogonal to this contract. HotSpot
+ * compressed oops and Graal Native Image compressed references reduce storage
+ * width but remain traced Java references. Likewise, Oreslang 32-bit DOD/ECS
+ * indices remove object references from selected tables without proving that
+ * every guest allocation has left the traced heap.</p>
+ *
  * <p>A future native or foreign-memory backend may opt in only after its
  * compiler/runtime can supply every required proof. This class records that
  * admission contract; it does not implement allocation lowering or drops.</p>
@@ -75,6 +81,29 @@ public final class ActorHeapAdmission {
         // backend can activate strict mode through this public API.
         throw new IllegalStateException("strict no-guest-tracing remains unavailable:"
                 + " native backend requires an unforgeable compiler/runtime lowering witness");
+    }
+
+    /**
+     * Tenant admission is separate from actor memory ownership. The ordinary
+     * OresVM root process does NOT construct a dedicated GraalVM Polyglot
+     * Engine/isolate or an exec'd OS sandbox for each tenant. Never silently
+     * treat actor arenas, Contexts or Native Image build mode as such a proof.
+     *
+     * <p>The trusted mode is explicitly not a hostile-code sandbox. Physical
+     * security modes remain unavailable through this entry until an owned
+     * isolate/process supervisor can bind the tenant incarnation and teardown.
+     */
+    public static void requireSupportedTenantIsolationMode(String requestedMode) {
+        Objects.requireNonNull(requestedMode, "requestedMode");
+        switch (requestedMode.toLowerCase(Locale.ROOT).trim()) {
+            case "trusted-inprocess" -> { return; }
+            case "vm-isolate", "dedicated-graalvm-isolate", "sandboxed-process", "wasmtime" ->
+                    throw new IllegalStateException("OresVM Java tenant security isolation mode "
+                            + requestedMode + " is not implemented by the root actor host; "
+                            + "a Context or actor arena is not a separate protected tenant heap");
+            default -> throw new IllegalArgumentException(
+                    "unknown ores.runtime.tenant.isolation: " + requestedMode);
+        }
     }
 
     /**
