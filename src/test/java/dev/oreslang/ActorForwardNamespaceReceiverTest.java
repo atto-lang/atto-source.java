@@ -516,6 +516,21 @@ final class ActorForwardNamespaceReceiverTest {
     }
 
     @Test
+    void externalReceiveRemainsRuntimeOnlyNotCallableAsOrdinaryMethod() {
+        var program = Parser.parse("""
+                declare actor Worker;
+                mtd (Worker mut self) receive(ActorMail<String> mail): void {
+                  self.receive(mail);
+                  return;
+                }
+                """);
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(program));
+        assertTrue(rejected.getMessage().contains("reserved actor lifecycle hook"),
+                rejected.getMessage());
+    }
+
+    @Test
     void explicitMailboxHandlerCannotSilentlyUpgradeReadonlyReceiver() {
         reject("""
                 declare actor Foo1;
