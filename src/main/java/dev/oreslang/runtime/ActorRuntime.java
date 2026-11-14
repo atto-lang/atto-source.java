@@ -2354,6 +2354,38 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Start a cancellable source `task { }` with the current actor as its
+     * physical scheduler and lifetime owner. This is the actor equivalent of
+     * OresScheduler.startTracked: no guest Task is submitted to the VM root
+     * (supervisor CONTROL) executor, nor to a freshly allocated task pool.
+     *
+     * Captures must already have passed compiler COPY/MOVE/Send admission.
+     * Untrusted actors fail closed here until their quota-aware tracked Task
+     * handle integration is available; startActorTask remains their existing
+     * budgeted source async-call entry.
+     */
+    public <T> TaskHandle<T> startTrackedActorTask(OresScheduler.Task<T> task) {
+        Objects.requireNonNull(task, "task");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || !currentThreadOwnsActorExecutionLease()
+                || CURRENT_ACTOR_EXECUTION.get() == null
+                || CURRENT_ACTOR_EXECUTION.get().runtime() != this
+                || !CURRENT_ACTOR_EXECUTION.get().actorId().equals(cell.ref.id())) {
+            throw new SecurityException(
+                    "tracked actor Task requires the authenticated actor carrier turn");
+        }
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "untrusted tracked actor Tasks require actor-cohort quota admission");
+        }
+        TaskHandle<T> handle = cell.sourceScheduler().startTracked(task);
+        // Task result completion is not physical retirement; the scheduler's
+        // STOP/quiescence barrier retains actor resources through the last turn.
+        ownCurrentActorFuture(handle.result());
+        return handle;
+    }
+
+    /**
      * Start one stackless source continuation in the current actor's logical
      * scheduler. The scheduler's executor is mailbox-backed, so every resume
      * is serialized with ordinary actor messages and uses no second concurrency
