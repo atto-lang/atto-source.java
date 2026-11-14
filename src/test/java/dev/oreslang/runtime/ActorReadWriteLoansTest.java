@@ -78,6 +78,7 @@ final class ActorReadWriteLoansTest {
                 } finally {
                     ticket.close();
                 }
+                return null; // Callable permits InterruptedException from await()
             });
             var b = pool.submit(() -> {
                 var ticket = gate.tryRead(new Object());
@@ -88,6 +89,7 @@ final class ActorReadWriteLoansTest {
                 } finally {
                     ticket.close();
                 }
+                return null; // Callable permits InterruptedException from await()
             });
             assertTrue(bothStarted.await(5, TimeUnit.SECONDS));
             assertEquals(2, gate.readerCount());
