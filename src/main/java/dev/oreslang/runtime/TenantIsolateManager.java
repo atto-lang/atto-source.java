@@ -106,6 +106,16 @@ public final class TenantIsolateManager implements AutoCloseable {
         this.maxOutputBytes = maxOutputBytes;
     }
 
+    /**
+     * Canonical TenantVM naming for the existing trusted Context host.
+     * This is NOT a verified hostile-tenant VM or a physical Native Image
+     * isolate. Protected/adversarial policies still fail closed.
+     */
+    public TenantHandle open_trusted_tenant_vm(
+            String tenantId, IsolatePolicy requestedPolicy) {
+        return open_trusted_tenant(tenantId, requestedPolicy);
+    }
+
     /** Register a TRUSTED tenant; never infer tenant identity from guest input. */
     public synchronized TenantHandle open_trusted_tenant(
             String tenantId, IsolatePolicy requestedPolicy) {
