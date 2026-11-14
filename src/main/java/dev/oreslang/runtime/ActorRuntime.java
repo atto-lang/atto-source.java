@@ -9863,7 +9863,15 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 // STOP is single-shot. Reentrant supervisor/host requests must
                 // not re-close a channel or reset the cleanup admission fence.
-                if (!stopped.compareAndSet(false, true)) return;
+                if (!stopped.compareAndSet(false, true)) {
+                    // A later fatal failure may supersede a previously
+                    // requested graceful STOP. Never retain an unused
+                    // cooperative teardown permit after revocation.
+                    if (sourceLifecycleGate != null && gracefulTeardownRevoked) {
+                        sourceLifecycleGate.sealStop(false);
+                    }
+                    return;
+                }
                 sealing = true;
                 // Runtime-only source ingress is revoked at the same STOP
                 // linearization point as mailbox admission, not at eventual
