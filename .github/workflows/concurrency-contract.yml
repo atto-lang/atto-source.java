@@ -29,7 +29,11 @@ jobs:
           echo "Oreslang Java source tree: $(git rev-parse 'HEAD^{tree}')"
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Verify exact source head
+        shell: bash
+        env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
           test "$(git rev-parse --verify HEAD)" = "$EXPECTED_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
