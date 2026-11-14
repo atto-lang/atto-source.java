@@ -4512,13 +4512,27 @@ public final class Parser {
                 return parseTildeRecordPattern(true);
             }
             Ast.TypeRef target = parseTypeRef();
-            String binding = check(IDENT) && !peek().lexeme().equals("_")
-                    ? advance().lexeme()
-                    : null;
+            // Explicit 'as' is the canonical pattern binder. Preserve the
+            // historical positional binder for existing structural TypeName code.
+            String binding = match(AS)
+                    ? consume(IDENT, "expected structural match binding name after 'as'").lexeme()
+                    : check(IDENT) && !peek().lexeme().equals("_")
+                            ? advance().lexeme()
+                            : null;
             return new Ast.StructuralPattern(target, binding);
         }
 
         if (match(TILDE)) {
+            // '~ {field: Type, ...} as name' is the short spelling of
+            // 'structural {field: Type, ...} as name'. Do not reinterpret the
+            // established '~(field: Pattern)' or '~record(...)' pattern forms.
+            if (check(LBRACE)) {
+                Ast.TypeRef shape = parseTypeRef();
+                String binding = match(AS)
+                        ? consume(IDENT, "expected structural match binding name after 'as'").lexeme()
+                        : null;
+                return new Ast.StructuralPattern(shape, binding);
+            }
             if (isContextualIdentifier("record") && checkNext(LPAREN)) {
                 advance();
             }
