@@ -5836,46 +5836,87 @@ public final class Parser {
 
     private Ast.LambdaExpr parseLambdaBody(
             List<Ast.Param> params, boolean nonLexical, boolean inlinePipelineStage) {
-        // Immediate '{' denotes an inferred block. Preserve expression-bodied
-        // lambdas, while recognizing an explicitly typed *braced* block:
-        //   || -> void { cleanup(); }
-        //   |x: int| -> int { return x + 1; }
+        // Three distinct bodies: { statements }, :: comma-items end, and
+        // inline => expression. No whitespace-only return-type delimiter.
         if (check(LBRACE)) {
             return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
         }
-        // Speculate only on the return type plus a following block opener.
-        // A failed type probe cannot consume an expression-bodied lambda.
+        // A declaration at the start of an inferred inline lambda cannot be
+        // mistaken for a value expression. Its comma-separated body ends at
+        // the final expression; the caller still owns the following ';'/')'.
+        if (startsInlineLambdaBinding()) {
+            return parseInlineCommaLambda(params, nonLexical, inlinePipelineStage, null);
+        }
         int start = current;
         Ast.TypeRef resultType = null;
         try {
             resultType = parseTypeRef();
         } catch (IllegalArgumentException ignored) {
-            // Not a type header: parse the existing expression-body grammar.
+            // No declared type; restore the token cursor before parsing expr.
         }
-        if (resultType != null && check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, resultType);
+        if (resultType != null) {
+            if (check(LBRACE)) {
+                return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, resultType);
+            }
+            if (match(DOUBLE_COLON)) {
+                return new Ast.LambdaExpr(params, null,
+                        parseCommaCallableBody(resultType, "lambda"), nonLexical, resultType);
+            }
+            if (match(FAT_ARROW)) {
+                return parseInlineCommaLambda(params, nonLexical, inlinePipelineStage, resultType);
+            }
         }
-        // Scalar type names are contextual IDENTs, so '|| -> int;' would
-        // otherwise be accepted as an expression-bodied lambda returning an
-        // identifier named 'int'. Refuse an unambiguous bare scalar type
-        // followed by an expression terminator: typed lambdas need '{...}'.
-        // Do not reject '|| -> int + 1' or any other legitimate expression.
+        // Bare 'int' or 'void' is never an implicitly typed lambda. A
+        // valid expression like 'int + 1' remains an expression, however.
         if (resultType != null
                 && resultType.arguments().isEmpty()
                 && !resultType.inferArguments()
-                && isBareScalarReturnType(resultType.name())
+                && (isBareScalarReturnType(resultType.name()) || resultType.name().equals("void"))
                 && (check(SEMICOLON) || check(COMMA) || check(RPAREN)
                     || check(RBRACE) || check(EOF))) {
-            throw error(peek(), "explicit lambda result type requires a braced body");
+            throw error(peek(),
+                    "explicit lambda result type requires { ... }, :: ... end, or => expression");
         }
         current = start;
-        // The lambda's body is an ordinary value expression. However when it
-        // appears unparenthesized immediately after |>, a following top-level
-        // |> belongs to the enclosing pipeline. Group (x |> inner) explicitly
-        // to request a nested pipeline inside the lambda.
-        return new Ast.LambdaExpr(
-                params, inlinePipelineStage ? parseConditional() : parseExpression(),
-                null, nonLexical);
+        return parseInlineCommaLambda(params, nonLexical, inlinePipelineStage, null);
+    }
+
+    /** An inline comma sequence is unambiguous only when it starts with a
+     *  local binding. An unparenthesized 'a, b' inside a call remains two
+     *  arguments, not a silently merged lambda body.
+     */
+    private boolean startsInlineLambdaBinding() {
+        return isBindingKind(peek().type())
+                || looksLikePrimitiveTypeFirstImmutableBinding();
+    }
+
+    private Ast.LambdaExpr parseInlineCommaLambda(List<Ast.Param> params,
+            boolean nonLexical, boolean inlinePipelineStage, Ast.TypeRef resultType) {
+        if (!startsInlineLambdaBinding()) {
+            // For an inline pipeline stage, its trailing '|>' belongs to the
+            // *outer* pipeline. Parentheses explicitly request a nested pipe.
+            Ast.Expr value = inlinePipelineStage ? parseConditional() : parseExpression();
+            return new Ast.LambdaExpr(params, value, null, nonLexical, resultType);
+        }
+        boolean previousCommaBody = commaCallableBody;
+        commaCallableBody = true;
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> items = new ArrayList<>();
+            do {
+                items.add(parseStatement());
+                consume(COMMA, "inline lambda binding requires a comma before the final expression");
+                if (check(COMMA) || check(SEMICOLON) || check(RPAREN) || check(EOF)) {
+                    throw error(peek(), "inline lambda comma requires a following item");
+                }
+            } while (startsInlineLambdaBinding());
+            Ast.Expr tail = inlinePipelineStage ? parseConditional() : parseExpression();
+            items.add(new Ast.ReturnStmt(tail));
+            return new Ast.LambdaExpr(params, null, items, nonLexical, resultType);
+        } finally {
+            localTypeScopes.pop();
+            commaCallableBody = previousCommaBody;
+        }
     }
 
     private static boolean isBareScalarReturnType(String name) {
