@@ -106,4 +106,19 @@ final class NamedEnumCaseFieldsGuestTest {
         assertTrue(failure.getMessage().contains("unknown narrowed enum field"),
                 failure.getMessage());
     }
+
+    @Test
+    void shorthandWholeCopyPayloadCaseAliasRunsAsGuest() throws Exception {
+        String program = fixture("accept-short-copy-case-alias");
+        OwnershipChecker.check(TypeChecker.check(Parser.parse(program)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source guest = Source.newBuilder(OresLanguage.ID, program, "short-copy-case.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("99", output.toString(StandardCharsets.UTF_8)
+                .trim().replace("\r", ""));
+    }
 }
