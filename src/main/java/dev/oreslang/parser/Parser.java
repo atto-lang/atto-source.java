@@ -2711,6 +2711,9 @@ public final class Parser {
 
     private List<Ast.Stmt> parseBlock() {
         consume(LBRACE, "expected '{'");
+        // Comma-body delimiters are never valid inside nested brace blocks.
+        boolean previousCommaBody = commaCallableBody;
+        commaCallableBody = false;
         localTypeScopes.push(new java.util.HashSet<>());
         try {
             List<Ast.Stmt> body = new ArrayList<>();
@@ -2719,6 +2722,7 @@ public final class Parser {
             return body;
         } finally {
             localTypeScopes.pop();
+            commaCallableBody = previousCommaBody;
         }
     }
 
@@ -4717,12 +4721,20 @@ public final class Parser {
     }
 
     private List<Ast.Stmt> parseUntil(Token.Type... terminators) {
-        List<Ast.Stmt> body = new ArrayList<>();
-        outer: while (!check(EOF)) {
-            for (Token.Type terminator : terminators) if (check(terminator)) break outer;
-            body.add(parseStatement());
+        // Used for nested keyword blocks and legacy end-delimited bodies;
+        // an enclosing :: sequence must not reinterpret an inner comma.
+        boolean previousCommaBody = commaCallableBody;
+        commaCallableBody = false;
+        try {
+            List<Ast.Stmt> body = new ArrayList<>();
+            outer: while (!check(EOF)) {
+                for (Token.Type terminator : terminators) if (check(terminator)) break outer;
+                body.add(parseStatement());
+            }
+            return body;
+        } finally {
+            commaCallableBody = previousCommaBody;
         }
-        return body;
     }
 
     public Ast.Expr parseExpression() { return parseAssignment(); }
