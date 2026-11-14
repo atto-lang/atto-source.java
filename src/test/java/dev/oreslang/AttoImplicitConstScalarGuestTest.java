@@ -70,7 +70,7 @@ final class AttoImplicitConstScalarGuestTest {
     @Test void exactSharedSourcesHaveIdenticalCompilerBehavior() throws Exception {
         // All eight blobs are independently checked against LLVM and .NET.
         for (String name : new String[] {
-                "literal-equivalence", "const-arithmetic", "bool-local", "runtime-val-let"
+                "literal-equivalence", "const-arithmetic", "bool-local", "runtime-val-let", "const-reference"
         }) {
             Path fixture = Path.of("contracts/implicit-const-scalar-v1/" + name + ".atto");
             assertTrue(Files.isRegularFile(fixture), name);
