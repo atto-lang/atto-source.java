@@ -103,3 +103,93 @@ jobs:
           "$RUNNER_TEMP/cgl-preflight" --binary target/ores-aot
       - name: Execute native launcher with real Oreslang source
         run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
+name: CGL GraalVM Linux pilot (not RT certification)
+on:
+  pull_request:
+    paths:
+      - 'scripts/cgl_preflight.rs'
+      - 'pom.xml'
+      - 'src/main/java/**'
+      - 'stdlib/**'
+      - 'examples/together.ores'
+      - 'docs/CGL_DEPLOYMENT.md'
+      - '.github/workflows/cgl-compat.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  graal-cgl-jvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Pull request defaults to a synthetic merge SHA; validate the actual PR head instead.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind test execution to exact immutable source commit
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_HEAD_SHA"
+          echo "CGL_EXACT_HEAD_SHA=$actual"
+          echo "CGL_EXACT_TREE_SHA=$(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Rust CGL negative matrix and Linux capabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition=2021 -D warnings --test scripts/cgl_preflight.rs -o "$RUNNER_TEMP/cgl-preflight-tests"
+          "$RUNNER_TEMP/cgl-preflight-tests" --test-threads=1
+          rustc --edition=2021 -D warnings -O scripts/cgl_preflight.rs -o "$RUNNER_TEMP/cgl-preflight"
+          "$RUNNER_TEMP/cgl-preflight"
+      - name: Run Maven tests, build launcher, and execute actual guest source
+        run: |
+          set -euo pipefail
+          # A successful -DskipTests package is not a JVM regression pass.
+          mvn -B -ntp verify
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
+  graal-cgl-native-launcher:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Pull request defaults to a synthetic merge SHA; validate the actual PR head instead.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind test execution to exact immutable source commit
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_HEAD_SHA"
+          echo "CGL_EXACT_HEAD_SHA=$actual"
+          echo "CGL_EXACT_TREE_SHA=$(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Validate Rust CGL gate, package Native Image and inspect ELF64
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --edition=2021 -D warnings --test scripts/cgl_preflight.rs -o "$RUNNER_TEMP/cgl-preflight-tests"
+          "$RUNNER_TEMP/cgl-preflight-tests" --test-threads=1
+          rustc --edition=2021 -D warnings -O scripts/cgl_preflight.rs -o "$RUNNER_TEMP/cgl-preflight"
+          mvn -B -ntp -Pnative-aot -DskipTests package
+          "$RUNNER_TEMP/cgl-preflight" --binary target/ores-aot
+      - name: Execute native launcher with real Oreslang source
+        run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
