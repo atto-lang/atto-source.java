@@ -166,7 +166,120 @@ final class DeclaredActorContractWitnessTest {
     @Test
     void interfaceFieldsCannotBeMadePublicByMethodWitness() {
         reject(DECL, NS + "define pub contract ActorXYZ for actor as int x; end",
-                METHOD, "actor contracts accept only mtd signatures");
+                METHOD, "must start with 'let' or 'val'");
+    }
+
+
+    @Test
+    void explicitLetStateRequirementUsesAttachedSealedStorageNotPublicTraitField() {
+        var source = units(DECL,
+                NS + "define pub contract ActorXYZ for actor as "
+                        + "let int x; mtd bar(int value): int; end",
+                METHOD);
+        source.put("src/foo/state.atto", Parser.parse(STATE));
+        var proof = ActorContractWitness.linkSourceSet("demo@1.0.0", source)
+                .actors().get(new ActorContractWitness.ActorKey(
+                        "demo@1.0.0", "foo", "Foo"));
+        assertEquals("src/foo/state.atto", proof.stateUnit());
+        assertEquals(1, proof.methods().size()); // state is not callable
+    }
+
+    @Test
+    void explicitValBoolStateRequirementHasExactBindingAndInitializedValue() {
+        var source = units(DECL,
+                NS + "define pub contract ActorXYZ for actor as "
+                        + "val bool ready; mtd bar(int x): int; end",
+                METHOD);
+        source.put("src/foo/state.atto", Parser.parse(
+                NS + "define state on actor Foo as { val bool ready : true; }"));
+        assertNotNull(ActorContractWitness.linkSourceSet("demo@1.0.0", source)
+                .actors().get(new ActorContractWitness.ActorKey(
+                        "demo@1.0.0", "foo", "Foo")));
+    }
+
+    @Test
+    void missingRequiredStateSchemaFailsClosedBeforeCodegen() {
+        var source = units(DECL,
+                NS + "define pub contract ActorXYZ for actor as "
+                        + "let int x; mtd bar(int x): int; end",
+                METHOD);
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ActorContractWitness.linkSourceSet("demo@1.0.0", source));
+        assertTrue(failure.getMessage().contains("ACTOR_STATE_REQUIREMENT_MISSING"),
+                failure.getMessage());
+    }
+
+    @Test
+    void missingRequiredFieldInExistingStateFailsClosed() {
+        var source = units(DECL,
+                NS + "define pub contract ActorXYZ for actor as "
+                        + "let int missing; mtd bar(int x): int; end",
+                METHOD);
+        source.put("src/foo/state.atto", Parser.parse(STATE));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ActorContractWitness.linkSourceSet("demo@1.0.0", source));
+        assertTrue(failure.getMessage().contains("ACTOR_STATE_REQUIREMENT_MISSING"),
+                failure.getMessage());
+    }
+
+    @Test
+    void requiredStateTypeMismatchDoesNotCoerceOrAutoconstruct() {
+        var source = units(DECL,
+                NS + "define pub contract ActorXYZ for actor as "
+                        + "let bool x; mtd bar(int x): int; end",
+                METHOD);
+        source.put("src/foo/state.atto", Parser.parse(STATE));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ActorContractWitness.linkSourceSet("demo@1.0.0", source));
+        assertTrue(failure.getMessage().contains("ACTOR_STATE_REQUIREMENT_MISMATCH"),
+                failure.getMessage());
+    }
+
+    @Test
+    void valRequirementCannotBeDischargedByLetState() {
+        var source = units(DECL,
+                NS + "define pub contract ActorXYZ for actor as "
+                        + "val int x; mtd bar(int x): int; end",
+                METHOD);
+        source.put("src/foo/state.atto", Parser.parse(STATE));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ActorContractWitness.linkSourceSet("demo@1.0.0", source));
+        assertTrue(failure.getMessage().contains("ACTOR_STATE_REQUIREMENT_MISMATCH"),
+                failure.getMessage());
+    }
+
+    @Test
+    void contractFieldCannotClaimGenericOrBorrowedState() {
+        var source = units(DECL,
+                NS + "define pub contract ActorXYZ for actor as "
+                        + "let Map<int, int> x; mtd bar(int x): int; end",
+                METHOD);
+        source.put("src/foo/state.atto", Parser.parse(STATE));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ActorContractWitness.linkSourceSet("demo@1.0.0", source));
+        assertTrue(failure.getMessage().contains("ACTOR_STATE_REQUIREMENT_UNSAFE_TYPE"),
+                failure.getMessage());
+    }
+
+    @Test
+    void duplicateStateRequirementsAcrossContractsAreNotLastWins() {
+        var source = new LinkedHashMap<String, Ast.Program>();
+        source.put("src/foo/actor.atto", Parser.parse(NS
+                + "declare pub actor Foo implements A, B;"));
+        source.put("src/foo/contracts.atto", Parser.parse(NS
+                + "define pub contract A for actor as let int x; end "
+                + "define pub contract B for actor as let int x; end"));
+        source.put("src/foo/state.atto", Parser.parse(STATE));
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> ActorContractWitness.linkSourceSet("demo@1.0.0", source));
+        assertTrue(failure.getMessage().contains("ACTOR_STATE_REQUIREMENT_AMBIGUOUS"),
+                failure.getMessage());
+    }
+
+    @Test
+    void bareFieldRequirementIsNotImplicitPublicSealedState() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(NS
+                + "define pub contract ActorXYZ for actor as int x; end"));
     }
 
     @Test
