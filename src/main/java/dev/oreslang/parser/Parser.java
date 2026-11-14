@@ -4653,9 +4653,24 @@ public final class Parser {
     private Ast.Expr parseBitwiseOr() {
         Ast.Expr expr = parseBitwiseXor();
         while (!isChannelCallbackDelimiter() && matchSingleOperator(PIPE)) {
-            expr = new Ast.BinaryExpr("|", expr, parseBitwiseXor());
+            Token operator = previous();
+            Ast.Expr right = parseBitwiseXor();
+            // Distinct from legacy integer/conditional bitwise OR and from
+            // functional |>; until v3 actor graph lowering is executable,
+            // symbolic spawn-to-spawn pipes must fail at the compiler
+            // boundary, not become an untyped scalar BinaryExpr.
+            if (isActorSpawnExpression(expr) || isActorSpawnExpression(right)) {
+                throw error(operator, "actor pipeline '|' requires typed emit, "
+                        + "owned actor graph and bounded mailbox lowering; not yet enabled");
+            }
+            expr = new Ast.BinaryExpr("|", expr, right);
         }
         return expr;
+    }
+
+    private static boolean isActorSpawnExpression(Ast.Expr value) {
+        return value instanceof Ast.RuntimeCallExpr call
+                && call.operation().equals("spawn");
     }
 
     private Ast.Expr parseBitwiseXor() {
