@@ -5091,6 +5091,19 @@ public final class TypeChecker {
             for (int i = 0; i < args.size(); i++) {
                 checkPattern(constructor.arguments().get(i), args.get(i), bindings, generics, self);
             }
+            if (constructor.wholeAlias() != null) {
+                // The first actual alias lowering slice is a closed nullary
+                // enum case, whose representation is immutable and Copy.
+                // Do not erase payload ownership by treating it as a sum
+                // value alias until case-refined borrowing is fully checked.
+                if (nominalEnum == null || !args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "whole-variant alias with payload is reserved until case-borrow lowering");
+                }
+                bindings.define(constructor.wholeAlias(),
+                        overlayReadonlyCapabilities(subject, subject),
+                        Ast.BindingKind.VAL);
+            }
             return;
         }
         throw new IllegalArgumentException("unsupported pattern " + pattern);
