@@ -71,4 +71,39 @@ final class NamedEnumCaseFieldsGuestTest {
         assertThrows(IllegalArgumentException.class,
                 () -> OwnershipChecker.check(TypeChecker.check(Parser.parse(source))));
     }
+
+    @Test
+    void duplicatedNamedCaseArmIsRejectedAsUnreachable() {
+        String source = """
+                define enum WorkerMsg { Run { job_id: int }, Stop }
+                fnc bad(WorkerMsg msg): int {
+                    return match msg over {
+                        on Run { job_id } { return job_id; }
+                        on Run { job_id } as r { return r.job_id; }
+                        on Stop { return 0; }
+                    };
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("unreachable match arm"),
+                failure.getMessage());
+    }
+
+    @Test
+    void unknownFieldOnNarrowedWholeCaseAliasIsRejected() {
+        String source = """
+                define enum WorkerMsg { Run { job_id: int }, Stop }
+                fnc bad(WorkerMsg msg): int {
+                    return match msg over {
+                        on Run { job_id } as r { return r.nonexistent; }
+                        on Stop { return 0; }
+                    };
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("unknown narrowed enum field"),
+                failure.getMessage());
+    }
 }
