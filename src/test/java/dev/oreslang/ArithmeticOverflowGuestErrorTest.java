@@ -213,6 +213,61 @@ final class ArithmeticOverflowGuestErrorTest {
     }
 
     @Test
+    void safeCheckedCallWithRuntimeLocalsSkipsGuestCatch() {
+        // The normal edge must remain distinct from checked overflow,
+        // including across a guest function boundary with local operands.
+        String guest = """
+                pub fnc checked(int lhs, int rhs): int {
+                  return lhs + rhs;
+                }
+                pub fnc main(): int {
+                  val int lhs = 40;
+                  val int rhs = 2;
+                  try {
+                    return checked(lhs, rhs);
+                  } catch (err) {
+                    return 1;
+                  } finally {
+                  }
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(OresLanguage.ID, guest).asLong());
+        }
+    }
+
+    @Test
+    void nominalCatchCanContinueWithCheckedArithmeticAfterOverflow() {
+        // The caught error must not leave a sticky pending effect that
+        // contaminates subsequent checked Math calls in another guest fnc.
+        String guest = """
+                pub fnc checked_add(int lhs, int rhs): int {
+                  return lhs + rhs;
+                }
+                pub fnc safe_tail(int value): int {
+                  return Math.abs(value) + 2;
+                }
+                pub fnc main(): int {
+                  try {
+                    return checked_add(9223372036854775807, 1);
+                  } catch (err) {
+                    if err is type ArithmeticOverflowError {
+                      return safe_tail(-40);
+                    } else {
+                      return 1;
+                    } fi
+                  } finally {
+                  }
+                }
+                """;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42L, context.eval(OresLanguage.ID, guest).asLong());
+        }
+    }
+
+    @Test
     void uncaughtOverflowReportsGuestErrorIdentity() {
         String guest = "pub fnc main():int{return Math.neg(-9223372036854775808);}";
         try (Context context = Context.newBuilder(OresLanguage.ID)
