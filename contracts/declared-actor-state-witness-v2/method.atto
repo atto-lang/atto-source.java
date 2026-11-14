@@ -1,0 +1,2 @@
+namespace foo;
+pub mtd (Foo f) bar(int delta): int { return delta; }
