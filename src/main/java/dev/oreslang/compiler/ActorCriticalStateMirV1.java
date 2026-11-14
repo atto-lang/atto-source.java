@@ -41,7 +41,7 @@ public final class ActorCriticalStateMirV1 {
      */
     public static final class Plan {
         private final String packageIdentity, namespace, actor;
-        private final String stateSourceUnit, ingressSourceUnit, field;
+        private final String stateSourceUnit, ingressSourceUnit, mainSourceUnit, field;
         private final String mailParameter, manifestSha256;
         private final long initialValue, stopOnMailValue;
         private final List<Operation> operations;
@@ -51,11 +51,11 @@ public final class ActorCriticalStateMirV1 {
         // for compiler provenance. Only this verified lowerer constructs one.
         private Plan(String packageIdentity, String namespace, String actor,
                      String stateSourceUnit, String ingressSourceUnit,
-                     String field, long initialValue, String mailParameter,
+                     String mainSourceUnit, String field, long initialValue, String mailParameter,
                      long stopOnMailValue, List<Operation> operations,
                      String manifestSha256, Map<String, String> sourceSha256) {
             for (String identity : List.of(packageIdentity, namespace, actor,
-                    stateSourceUnit, ingressSourceUnit, field, mailParameter, manifestSha256)) {
+                    stateSourceUnit, ingressSourceUnit, mainSourceUnit, field, mailParameter, manifestSha256)) {
                 if (identity == null || identity.isBlank())
                     throw new IllegalArgumentException("critical MIR requires complete manifest provenance");
             }
@@ -64,6 +64,7 @@ public final class ActorCriticalStateMirV1 {
             this.actor = actor;
             this.stateSourceUnit = stateSourceUnit;
             this.ingressSourceUnit = ingressSourceUnit;
+            this.mainSourceUnit = mainSourceUnit;
             this.field = field;
             this.initialValue = initialValue;
             this.mailParameter = mailParameter;
@@ -77,7 +78,8 @@ public final class ActorCriticalStateMirV1 {
                     || operations.get(2).opcode() != Opcode.STOP_ON_MAIL_I64)
                 throw new IllegalArgumentException("critical MIR instruction sequence is not validated");
             if (!sourceSha256.containsKey(stateSourceUnit)
-                    || !sourceSha256.containsKey(ingressSourceUnit))
+                    || !sourceSha256.containsKey(ingressSourceUnit)
+                    || !sourceSha256.containsKey(mainSourceUnit))
                 throw new IllegalArgumentException("critical MIR source digest is missing");
             if (!operations.get(0).field().equals(field)
                     || !operations.get(1).field().equals(field)
@@ -90,6 +92,7 @@ public final class ActorCriticalStateMirV1 {
         public String actor() { return actor; }
         public String stateSourceUnit() { return stateSourceUnit; }
         public String ingressSourceUnit() { return ingressSourceUnit; }
+        public String mainSourceUnit() { return mainSourceUnit; }
         public String field() { return field; }
         public long initialValue() { return initialValue; }
         public String mailParameter() { return mailParameter; }
@@ -111,6 +114,11 @@ public final class ActorCriticalStateMirV1 {
         var actorProof = witness.actors().get(actorKey);
         if (!packageIdentity.equals(actorKey.packageIdentity()) || actorProof.stateUnit() == null)
             throw deny("one attached state source is required");
+        // A source-authenticated receive must not be accompanied by hidden
+        // executable declarations, duplicate main routines, foreign modules,
+        // or a main whose signature cannot be lowered into the root task.
+        var main = ActorDeclaredMainLinkV1.verify(
+                packageIdentity, units, audit, actorKey);
         Ast.Program stateUnit = units.get(actorProof.stateUnit());
         if (stateUnit == null || !actorKey.namespace().equals(stateUnit.namespace()))
             throw deny("state source namespace or provenance mismatch");
@@ -225,7 +233,7 @@ public final class ActorCriticalStateMirV1 {
             throw deny("critical MIR requires checked mail increment and detached scalar output");
 
         return new Plan(packageIdentity, actorKey.namespace(), actorKey.actor(),
-                actorProof.stateUnit(), ingress.methodUnit(), field.name(),
+                actorProof.stateUnit(), ingress.methodUnit(), main.sourceUnit(), field.name(),
                 (Long) initial.value(), mail, stopValue,
                 List.of(new Operation(Opcode.CHECKED_ADD_MAIL_I64, field.name(), ingress.methodUnit()),
                         new Operation(Opcode.COPY_I64_TO_ACTOR_OUTPUT, field.name(), ingress.methodUnit()),
