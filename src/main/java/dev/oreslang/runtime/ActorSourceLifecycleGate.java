@@ -24,6 +24,9 @@ final class ActorSourceLifecycleGate {
     // Suspended source tasks have a separate physical-quiescence fence in
     // ActorRuntime; this count must never be used as a substitute for it.
     private int activeReceives;
+    // A lifecycle callback is itself an actor-owned memory user. STOP/cancel
+    // cannot make an already-entered teardown physically safe to reclaim.
+    private boolean teardownActive;
 
     ActorSourceLifecycleGate(ActorRuntime.ActorId owner, String actorType) {
         this.owner = Objects.requireNonNull(owner, "source actor owner");
@@ -148,9 +151,24 @@ final class ActorSourceLifecycleGate {
                     "source actor teardown does not own active incarnation state");
         }
         phase = Phase.TEARING_DOWN;
+        teardownActive = true;
+    }
+
+    synchronized void finishTeardown(ActorRuntime.ActorId caller, String type) {
+        requireOwner(caller, type);
+        require(Phase.TEARING_DOWN, "finish source actor teardown");
+        if (!teardownActive) {
+            throw new IllegalStateException("source actor teardown already completed");
+        }
+        teardownActive = false;
+        notifyAll();
     }
 
     synchronized void close() {
+        if (teardownActive) {
+            throw new IllegalStateException(
+                    "source actor physical retirement while tear_down is executing");
+        }
         if (activeReceives != 0) {
             throw new IllegalStateException(
                     "source actor physical retirement with active receive invocations");
