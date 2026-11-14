@@ -100,7 +100,7 @@ final class ActorSourceLifecycleGateTest {
         gate.beginInit(owner, TYPE);
         gate.failInit();
         assertEquals(ActorSourceLifecycleGate.Phase.FAILED, gate.phase());
-        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
+        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
         assertThrows(IllegalStateException.class, () -> gate.beginInit(owner, TYPE));
     }
 
@@ -274,7 +274,7 @@ final class ActorSourceLifecycleGateTest {
                 "graceful STOP must run the approved teardown before closing the gate");
         assertThrows(IllegalStateException.class,
                 () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
-        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
+        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
         gate.beginTeardown(owner, TYPE, state(owner));
         assertThrows(IllegalStateException.class,
                 () -> gate.beginTeardown(owner, TYPE, state(owner)));
