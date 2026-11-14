@@ -22,12 +22,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Print immutable compiler and fixture identities
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact PR head and print immutable fixture identities
         shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          git rev-parse HEAD
-          git status --porcelain
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          printf 'ATTO_COMPILER_SHA=%s\\n' "$EXPECTED_SHA"
           git hash-object src/test/resources/atto/mtd-receiver-v1/declared-actors-type-first.atto
           git hash-object src/test/resources/atto/mtd-receiver-v1/multi-actor-namespace.atto
       - name: Set up GraalVM JDK 25
