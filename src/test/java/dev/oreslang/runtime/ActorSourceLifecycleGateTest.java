@@ -183,6 +183,11 @@ final class ActorSourceLifecycleGateTest {
                 () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
         assertThrows(IllegalStateException.class,
                 () -> gate.beginTeardown(owner, TYPE, state(owner)));
+        assertThrows(IllegalStateException.class, gate::close,
+                "active tear_down must pin physical retirement");
+        gate.finishTeardown(owner, TYPE);
+        assertThrows(IllegalStateException.class,
+                () -> gate.finishTeardown(owner, TYPE));
         gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
     }
@@ -255,6 +260,11 @@ final class ActorSourceLifecycleGateTest {
         gate.beginTeardown(owner, TYPE, state(owner));
         assertThrows(IllegalStateException.class,
                 () -> gate.beginTeardown(owner, TYPE, state(owner)));
+        assertThrows(IllegalStateException.class, gate::close,
+                "active tear_down must pin physical retirement");
+        gate.finishTeardown(owner, TYPE);
+        assertThrows(IllegalStateException.class,
+                () -> gate.finishTeardown(owner, TYPE));
         gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
     }
