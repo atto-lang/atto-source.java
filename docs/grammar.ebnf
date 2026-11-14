@@ -250,6 +250,9 @@ if_stmt         = "if" condition_head
                     { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement } }
                     [ "else" { statement } ] "fi"
                   ) ;
+(* In a non-void callable's tail position, a then/fi arm's final
+   expression yields its return value. A comma sequences preceding
+   declarations/expressions in that arm. Braced if remains imperative. *)
 braced_if_tail  = block
                   { conditional_branch condition_head block }
                   [ "else" block ] ;

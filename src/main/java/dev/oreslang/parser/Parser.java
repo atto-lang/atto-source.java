@@ -697,7 +697,7 @@ public final class Parser {
                     ? Ast.TypeRef.simple("void")
                     : parseTypeRef();
             Ast.EffectSpec effects = parseCheckedEffects();
-            List<Ast.Stmt> body = parseBlock();
+            List<Ast.Stmt> body = lowerCallableTail(parseBlock(), returnType, modifiers.generator);
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
                     generics, params, returnType, annotations, body, specs, effects);
         }
@@ -709,7 +709,9 @@ public final class Parser {
         boolean arrowReturn = check(ARROW);
         Ast.TypeRef returnType = parseReturnType(annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
-        List<Ast.Stmt> body = parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
+        List<Ast.Stmt> body = lowerCallableTail(
+                parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE),
+                returnType, modifiers.generator);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
     }
@@ -1713,7 +1715,7 @@ public final class Parser {
             body = new ArrayList<>();
             while (!check(END) && !check(EOF)) body.add(parseStatement());
             consume(END, "expected 'end' to close method '" + name + "'");
-        } else body = parseBlock();
+        } else body = lowerCallableTail(parseBlock(), returnType, false);
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body, effects);
     }
@@ -2671,6 +2673,8 @@ public final class Parser {
 
     private List<Ast.Stmt> parseBlock() {
         consume(LBRACE, "expected '{'");
+        int inheritedCommaArmDepth = ifCommaArmDepth;
+        ifCommaArmDepth = 0; // commas belong to keyword arms, never braces
         localTypeScopes.push(new java.util.HashSet<>());
         try {
             List<Ast.Stmt> body = new ArrayList<>();
@@ -2679,6 +2683,67 @@ public final class Parser {
             return body;
         } finally {
             localTypeScopes.pop();
+            ifCommaArmDepth = inheritedCommaArmDepth;
+        }
+    }
+
+    // A callable's final keyword-delimited if may yield a value. Braced if
+    // remains imperative, even when its branches have final expressions.
+    private final java.util.Set<Ast.IfStmt> keywordIfStatements =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    private List<Ast.Stmt> lowerCallableTail(
+            List<Ast.Stmt> statements, Ast.TypeRef returnType, boolean generator) {
+        if (generator || returnType == null || "void".equals(returnType.name())) return statements;
+        return lowerTailStatements(statements);
+    }
+
+    private List<Ast.Stmt> lowerTailStatements(List<Ast.Stmt> statements) {
+        if (statements.isEmpty()) return statements;
+        List<Ast.Stmt> result = new ArrayList<>(statements);
+        int last = result.size() - 1;
+        result.set(last, lowerTailStatement(result.get(last)));
+        return List.copyOf(result);
+    }
+
+    private Ast.Stmt lowerTailStatement(Ast.Stmt statement) {
+        if (statement instanceof Ast.ExprStmt expression)
+            return new Ast.ReturnStmt(expression.expression());
+        if (statement instanceof Ast.BlockStmt block)
+            return new Ast.BlockStmt(lowerTailStatements(block.body()));
+        if (statement instanceof Ast.IfStmt conditional &&
+                keywordIfStatements.contains(conditional)) {
+            List<Ast.IfBranch> branches = new ArrayList<>();
+            for (Ast.IfBranch branch : conditional.branches())
+                branches.add(new Ast.IfBranch(branch.condition(), lowerTailStatements(branch.body())));
+            return new Ast.IfStmt(branches, lowerTailStatements(conditional.elseBody()));
+        }
+        if (statement instanceof Ast.TryStmt attempt)
+            return new Ast.TryStmt(lowerTailStatements(attempt.body()),
+                    attempt.errorName(), lowerTailStatements(attempt.catchBody()),
+                    attempt.finallyBody());
+        return statement;
+    }
+
+    // The comma form sequences statements inside a then/fi arm only; commas
+    // are never a tuple operator or an implicit terminator inside braces.
+    private int ifCommaArmDepth = 0;
+
+    private List<Ast.Stmt> parseKeywordIfArm(Token.Type... terminators) {
+        int inheritedDepth = ifCommaArmDepth++;
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> body = new ArrayList<>();
+            outer: while (!check(EOF)) {
+                for (Token.Type terminator : terminators)
+                    if (check(terminator)) break outer;
+                body.add(parseStatement());
+                match(COMMA);
+            }
+            return body;
+        } finally {
+            localTypeScopes.pop();
+            ifCommaArmDepth = inheritedDepth;
         }
     }
 
@@ -2875,7 +2940,8 @@ public final class Parser {
                     inherited,
                     inheritedMutableReferent);
         }
-        if (isBindingKind(peek().type())) return parseBindingStatement();
+        if (isBindingKind(peek().type()) && !(check(VAL) && checkNext(PLUS)))
+            return parseBindingStatement();
         if (looksLikePrimitiveTypeFirstImmutableBinding()) {
             return parsePrimitiveTypeFirstImmutableBinding();
         }
@@ -3680,7 +3746,9 @@ public final class Parser {
             name = advance().lexeme();
         } else {
             type = parseTypeRef();
-            name = consume(IDENT, "expected binding name").lexeme();
+            // 'val' is contextual after an explicit declaration type.
+            name = (check(VAL) ? advance()
+                    : consume(IDENT, "expected binding name")).lexeme();
         }
         if (!annotations.isEmpty()) {
             if (type == null) {
@@ -3968,7 +4036,7 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseBlock();
-            return lowerConditionBindings(branches, bindings, elseBody);
+            return lowerConditionBindings(branches, bindings, elseBody, false);
         }
 
         // Canonical keyword-delimited form:
@@ -3983,7 +4051,7 @@ public final class Parser {
         // - 'else if ... then' is accepted as a single-fi branch alias.
         match(SEMICOLON);
         consumeConditionalThen("if");
-        List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
+        List<Ast.Stmt> body = parseKeywordIfArm(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
         while (matchConditionalBranch()) {
@@ -3992,14 +4060,14 @@ public final class Parser {
             condition = head.predicate();
             match(SEMICOLON);
             consumeConditionalThen("elif");
-            body = parseUntil(ELSEIF, ELSE, FI);
+            body = parseKeywordIfArm(ELSEIF, ELSE, FI);
             branches.add(new Ast.IfBranch(condition, body));
         }
 
         List<Ast.Stmt> elseBody = List.of();
-        if (match(ELSE)) elseBody = parseUntil(FI);
+        if (match(ELSE)) elseBody = parseKeywordIfArm(FI);
         consume(FI, "expected 'fi' to close if");
-        return lowerConditionBindings(branches, bindings, elseBody);
+        return lowerConditionBindings(branches, bindings, elseBody, true);
     }
 
     private void consumeConditionalThen(String branch) {
@@ -4104,15 +4172,20 @@ public final class Parser {
     }
 
     private Ast.Stmt lowerConditionBindings(List<Ast.IfBranch> branches,
-            List<Ast.BindingStmt> bindings, List<Ast.Stmt> elseBody) {
+            List<Ast.BindingStmt> bindings, List<Ast.Stmt> elseBody,
+            boolean keywordDelimited) {
         if (bindings.stream().allMatch(java.util.Objects::isNull)) {
-            return new Ast.IfStmt(branches, elseBody);
+            Ast.IfStmt result = new Ast.IfStmt(branches, elseBody);
+            if (keywordDelimited) keywordIfStatements.add(result);
+            return result;
         }
         // A later initializer is evaluated only if every preceding test failed.
         List<Ast.Stmt> fallback = elseBody;
         Ast.Stmt result = null;
         for (int i = branches.size() - 1; i >= 0; i--) {
-            result = new Ast.IfStmt(List.of(branches.get(i)), fallback);
+            Ast.IfStmt conditional = new Ast.IfStmt(List.of(branches.get(i)), fallback);
+            if (keywordDelimited) keywordIfStatements.add(conditional);
+            result = conditional;
             if (bindings.get(i) != null) {
                 result = new Ast.BlockStmt(List.of(bindings.get(i), result));
             }
@@ -5500,7 +5573,7 @@ public final class Parser {
             consume(RPAREN, "expected ')' after explicit tuple");
             return new Ast.TupleExpr(items);
         }
-        if (match(IDENT, SHARED, UNTRUSTED)) {
+        if (match(IDENT, SHARED, UNTRUSTED, VAL)) {
             return new Ast.NameExpr(previous().lexeme());
         }
         if (match(SPAWN)) {
@@ -6085,7 +6158,8 @@ public final class Parser {
     }
 
     private void consumeStatementTerminator(String message) {
-        if (match(SEMICOLON) || isSafeStatementBoundary() || isImplicitNewlineTerminator()) return;
+        if (match(SEMICOLON) || (ifCommaArmDepth > 0 && check(COMMA))
+                || isSafeStatementBoundary() || isImplicitNewlineTerminator()) return;
         throw error(peek(), message);
     }
 
