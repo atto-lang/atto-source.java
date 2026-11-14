@@ -10496,6 +10496,9 @@ public final class TypeChecker {
             throw new IllegalStateException(
                     "legacy positional invocation cannot publish a reordered or omitted call plan");
         }
+        // Registers this exact AST identity with the active validation scope.
+        // If any later callable fails, close() revokes every visited plan.
+        CheckedCallPlan.beginRecheck(call);
         CheckedCallPlan.record(call, plan);
     }
 
