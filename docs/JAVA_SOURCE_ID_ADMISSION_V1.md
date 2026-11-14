@@ -55,3 +55,24 @@ prototype as a guest-callable Java-interop API. The current parser does not
 implement the proposed `log.info(...)` source annotation/automatic site-ID
 lowering; no complete guest instrumentation is claimed.
 
+
+## Java frontend exact routine binding (candidate, not instrumented execution)
+
+`dev.oreslang.compiler.SourceRoutineBindingV1` now accepts previously checked
+routine-ID entries and validates them against the actual Java compiler's
+`Ast.Program` / module declarations. It returns an immutable
+`IdentityHashMap`-backed mapping from each parsed `Ast.FunctionDecl` to its
+static source ID; comparing AST objects by identity prevents accidentally
+collapsing structurally identical independent declarations. It denies stale
+selectors, duplicate source IDs, unsupported actor/generator/async/generic
+coverage and missing routines.
+
+`SourceRoutineBindingV1Test` invokes the real Java `Parser.parse` on a
+minimal `.atto`-style function body, tests exact frontend binding, and rejects
+wrong-kind, stale and duplicate entries. **Execution remains pending Maven CI.**
+This binding is not yet called by the production parser-to-evaluator pipeline
+and cannot claim `log.info` events, Truffle tags, recompiled guest machine code,
+stable post-optimization debug info or an authenticated deployed artifact.
+Linking that immutable mapping to actual guest log-expression AST nodes and
+the bounded recorder is the next independently tested Java compiler gate.
+
