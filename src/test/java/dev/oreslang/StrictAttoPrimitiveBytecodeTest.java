@@ -34,7 +34,8 @@ final class StrictAttoPrimitiveBytecodeTest {
                     source(operators[i]), "check", 2,
                     new RealtimePrimitiveCompiler.Budget(100, 8), output);
 
-            assertEquals(output.resolve("RtPrimitiveModule.class"), artifact.classFile());
+            // Compare canonical paths: the compiler resolves symlinks (macOS /var -> /private/var).
+            assertEquals(output.resolve("RtPrimitiveModule.class").toRealPath(), artifact.classFile().toRealPath());
             byte[] bytes = Files.readAllBytes(artifact.classFile());
             assertTrue(bytes.length > 8);
             assertEquals((byte) 0xca, bytes[0]);
