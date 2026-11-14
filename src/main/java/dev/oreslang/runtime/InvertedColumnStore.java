@@ -71,6 +71,24 @@ public final class InvertedColumnStore implements AutoCloseable {
         public long generation() { return generation; }
     }
 
+    /**
+     * A store-issued physical-layout guard. Unlike a row Handle this has no
+     * per-row identity, and cannot authorize raw pointers or unguarded loans.
+     */
+    public static final class LayoutGuard {
+        private final Object authority;
+        private final long owner;
+        private final long epoch;
+
+        private LayoutGuard(Object authority, long owner, long epoch) {
+            this.authority = authority;
+            this.owner = owner;
+            this.epoch = epoch;
+        }
+
+        public long epoch() { return epoch; }
+    }
+
     private static final AtomicLong NEXT_OWNER = new AtomicLong(1);
     private static long nextOwner() {
         while (true) {
@@ -102,6 +120,9 @@ public final class InvertedColumnStore implements AutoCloseable {
     private final int[] readers;
     private final boolean[] writers;
     private boolean closed;
+    // Physical stability epoch; unlike row generation it changes on every
+    // structural mutation. Do not wrap and accidentally revive stale guards.
+    private long layoutEpoch = 1;
     // Synchronized is reentrant: block nested access while compiler plans
     // are evaluating a detached row snapshot prior to atomic commit.
     private boolean transforming;
@@ -149,6 +170,21 @@ public final class InvertedColumnStore implements AutoCloseable {
         }
     }
 
+    private void invalidateLayout() {
+        if (layoutEpoch == Long.MAX_VALUE) {
+            throw new IllegalStateException("inverted layout epoch exhausted");
+        }
+        layoutEpoch++;
+    }
+
+    private void requireLayoutGuard(LayoutGuard guard) {
+        open();
+        if (guard == null || guard.authority != capability || guard.owner != owner
+                || guard.epoch != layoutEpoch) {
+            throw new IllegalStateException("stale or foreign inverted layout guard");
+        }
+    }
+
     private int column(int index) {
         if (index < 0 || index >= kinds.length) {
             throw new IndexOutOfBoundsException("invalid inverted column index");
@@ -187,6 +223,36 @@ public final class InvertedColumnStore implements AutoCloseable {
         return new Handle(capability, owner, slot, generations[slot]);
     }
 
+    /** Captures physical layout validity, not the data values or code epoch. */
+    public synchronized LayoutGuard captureLayoutGuard() {
+        open();
+        return new LayoutGuard(capability, owner, layoutEpoch);
+    }
+
+    /** The guard, bounds, loan status and read are checked under one lock. */
+    public synchronized Object readIndexGuarded(LayoutGuard guard, int row, int field) {
+        requireLayoutGuard(guard);
+        if (row < 0 || row >= length) {
+            throw new IndexOutOfBoundsException("inverted guarded row out of bounds");
+        }
+        int i = column(field);
+        if (writers[i]) throw new IllegalStateException("mutably borrowed column");
+        return load(i, row);
+    }
+
+    /** Guard failure happens before any guest-observable column write. */
+    public synchronized void writeIndexGuarded(
+            LayoutGuard guard, int row, int field, Object value) {
+        requireLayoutGuard(guard);
+        if (row < 0 || row >= length) {
+            throw new IndexOutOfBoundsException("inverted guarded row out of bounds");
+        }
+        int i = column(field);
+        validateValue(specs[i], value);
+        if (readers[i] != 0 || writers[i]) throw new IllegalStateException("borrowed column");
+        store(i, row, value);
+    }
+
     public synchronized int capacity() {
         open();
         return capacity;
@@ -200,6 +266,10 @@ public final class InvertedColumnStore implements AutoCloseable {
         unborrowed();
         if (required < 0) throw new IllegalArgumentException("negative capacity");
         if (required <= capacity) return;
+        // Failures during allocation may not publish new columns, but a
+        // conservative pre-effect invalidation also covers future allocators
+        // with partially changed internal capacities.
+        invalidateLayout();
         byte[][] newColumns = new byte[kinds.length][];
         ByteBuffer[] newBuffers = new ByteBuffer[kinds.length];
         for (int i = 0; i < kinds.length; i++) {
@@ -303,6 +373,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         }
         for (int i = 0; i < kinds.length; i++) validateValue(specs[i], values[i]);
         if (length == Integer.MAX_VALUE) throw new IllegalStateException("row capacity exhausted");
+        invalidateLayout();
         // A retired generation-MAX slot is not reusable. Slot metadata can
         // therefore fill up even when live row count is below row capacity.
         if (length == capacity || (freeCount == 0 && slotCount == capacity)) {
@@ -324,6 +395,7 @@ public final class InvertedColumnStore implements AutoCloseable {
     public synchronized void eraseSwap(Handle handle) {
         int row = resolve(handle);
         unborrowed();
+        invalidateLayout();
         int last = length - 1;
         if (row != last) {
             for (int i = 0; i < kinds.length; i++) {
