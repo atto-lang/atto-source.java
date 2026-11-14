@@ -2551,19 +2551,34 @@ public final class OwnershipChecker {
         }
         if (pattern instanceof Ast.ConstructorPattern constructor) {
             List<Ast.TypeRef> argTypes = constructorPatternTypes(constructor.constructor(), subjectType);
-            for (int i = 0; i < constructor.arguments().size(); i++) {
-                Ast.TypeRef argType = i < argTypes.size() ? argTypes.get(i) : Ast.TypeRef.inferred();
-                definePatternAliases(constructor.arguments().get(i), argType, source, destination);
+            if (constructor.namedFields() != null) {
+                if (argTypes.size() != 1 || !argTypes.getFirst().isRecordType()) {
+                    throw error("named enum fields require a declared record payload");
+                }
+                Map<String, Ast.TypeRef> fields = argTypes.getFirst().recordMembers();
+                if (!fields.values().stream().allMatch(this::isCopyType)) {
+                    throw error("named enum fields require Copy-safe payload; Bytes borrow lowering is pending");
+                }
+                for (String field : constructor.namedFields()) {
+                    Ast.TypeRef fieldType = fields.get(field);
+                    if (fieldType == null) {
+                        throw error("unknown named enum payload field '" + field + "'");
+                    }
+                    // A Copy-safe field is an independent immutable scalar,
+                    // not an ownership transfer from the message payload.
+                    defineRefinementAlias(field, fieldType, null, destination);
+                }
+            } else {
+                for (int i = 0; i < constructor.arguments().size(); i++) {
+                    Ast.TypeRef argType = i < argTypes.size() ? argTypes.get(i) : Ast.TypeRef.inferred();
+                    definePatternAliases(constructor.arguments().get(i), argType, source, destination);
+                }
             }
             if (constructor.wholeAlias() != null) {
-                // Fail closed before any move/capture analysis unless this
-                // is a proven nullary, immutable nominal enum case. A payload
-                // alias requires its own case-view/borrow lowering.
                 Ast.EnumDecl declarationEnum = subjectType == null
                         ? null : enumDeclaration(subjectType.name());
-                if (declarationEnum == null || !argTypes.isEmpty()
-                        || !constructor.arguments().isEmpty()) {
-                    throw error("whole-variant alias requires a nullary nominal enum case");
+                if (declarationEnum == null || !constructor.arguments().isEmpty()) {
+                    throw error("whole-variant alias requires a nominal enum case");
                 }
                 String caseName = constructor.constructor();
                 int sep = caseName.lastIndexOf('.');
@@ -2574,8 +2589,12 @@ public final class OwnershipChecker {
                     caseName = caseName.substring(sep + 1);
                 }
                 Ast.EnumVariant member = enumVariant(declarationEnum, caseName);
-                if (member.payload() != null) {
-                    throw error("whole-variant alias of payload case requires checked borrow lowering");
+                if (!isCopyType(subjectType)
+                        || (member.payload() != null && (argTypes.size() != 1
+                                || !argTypes.getFirst().isRecordType()
+                                || !argTypes.getFirst().recordMembers().values().stream()
+                                    .allMatch(this::isCopyType)))) {
+                    throw error("whole-variant alias of non-Copy payload requires checked borrow lowering");
                 }
                 defineRefinementAlias(constructor.wholeAlias(), subjectType, source, destination);
             }
@@ -2724,6 +2743,7 @@ public final class OwnershipChecker {
             for (Ast.Pattern nested : tuple.elements()) collectPatternBindingNames(nested, names);
         } else if (pattern instanceof Ast.ConstructorPattern constructor) {
             for (Ast.Pattern nested : constructor.arguments()) collectPatternBindingNames(nested, names);
+            if (constructor.namedFields() != null) names.addAll(constructor.namedFields());
             if (constructor.wholeAlias() != null) names.add(constructor.wholeAlias());
         }
     }
@@ -3522,15 +3542,16 @@ public final class OwnershipChecker {
                     && isCopyType(type.arguments().get(0))
                     && isCopyType(type.arguments().get(1));
             default -> {
-                // Closed, entirely nullary nominal enums carry only immutable
-                // case identity. Returning a matched case alias copies its
-                // static value; payload-bearing enums remain move-only until
-                // their owned/borrowed projection semantics are proven.
+                // Only an entirely immutable, closed nominal enum with
+                // Copy-safe fields on *every* case can be copied through a
+                // whole-case alias. Actor-owned Bytes/Arc/pointers remain
+                // move-only until a separate borrow-lifetime proof exists.
                 Ast.EnumDecl declarationEnum = type.arguments().isEmpty()
                         ? enumDeclaration(type.name()) : null;
                 yield declarationEnum != null
-                        && declarationEnum.variants().stream()
-                            .allMatch(variant -> variant.payload() == null);
+                        && declarationEnum.variants().stream().allMatch(variant ->
+                            variant.payload() == null || variant.payload().recordMembers()
+                                    .values().stream().allMatch(this::isCopyType));
             }
         };
     }
