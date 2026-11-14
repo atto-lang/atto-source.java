@@ -1,0 +1,18 @@
+// Canonical typed receiver method, local class, and mutable loan.
+define class Point as
+  pub let int x = 40;
+end
+
+mtd (mut self: Point) move_by(int dx): void {
+  self.x = self.x + dx;
+}
+
+mtd (self: Point) read_x(): int {
+  return self.x;
+}
+
+pub fnc main(): int {
+  let mut Point point = new Point();
+  point.move_by(2);
+  return point.read_x();
+}
