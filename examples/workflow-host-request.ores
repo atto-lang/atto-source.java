@@ -1,0 +1,17 @@
+// Source-level smoke for the workflow storage intrinsic.
+//
+// The host must provision a trusted workflow service and grant
+// WORKFLOW_STORAGE explicitly. This program intentionally does not mint
+// capabilities, claim effects or assume a real provider receipt.
+// It is NOT a recorded native guest execution result.
+pub routine main(): int {
+  val request = [
+    "probe-1", "INSPECT", "tenant-a", "run-1",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    1, 0, 0, "", "", "", "", "", "", "opaque-test-capability"
+  ];
+  val pending = rt workflow_request(request);
+  // The runtime returns Future<List<scalar>>. No host object/JNI handle.
+  // The asynchronous result belongs to the owning scheduler.
+  return 0;
+}
