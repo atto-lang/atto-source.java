@@ -100,6 +100,19 @@ final class AttoImplicitConstScalarGuestTest {
         }
     }
 
+    @Test void exponentialConstantStringExpansionCannotExhaustCompilerMemory() {
+        var source = new StringBuilder("pub fnc main(): int { string s0 = \"x\"; ");
+        for (int i = 1; i <= 21; i++) {
+            source.append("string s").append(i).append(" = s")
+                    .append(i - 1).append(" + s").append(i - 1).append("; ");
+        }
+        source.append("return 42; }");
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source.toString())));
+        assertTrue(error.getMessage().contains("E_CONST_EVAL_BUDGET"),
+                "exponential expansion must stop at a deterministic budget: " + error.getMessage());
+    }
+
     @Test void realAttoSourceRunsThroughLinkedJavaGuest() throws Exception {
         Path entry = temp.resolve("implicit-const.atto");
         Files.writeString(entry, """
