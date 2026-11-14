@@ -9279,6 +9279,15 @@ public final class OresEvalRootNode extends RootNode {
                         typedRef.send(args.getFirst());
                         return null;
                     };
+                    case "try_send" -> (Invokable) args -> {
+                        requireOne(args, "ActorRef.try_send");
+                        return typedRef.trySend(args.getFirst());
+                    };
+                    case "send_async" -> (Invokable) args -> {
+                        requireOne(args, "ActorRef.send_async");
+                        return context.actors().ownCurrentActorFuture(
+                                typedRef.sendAsync(args.getFirst()));
+                    };
                     case "stop" -> (Invokable) args -> {
                         requireZero(args, "ActorRef.stop");
                         actorRef.stop();

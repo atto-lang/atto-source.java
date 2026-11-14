@@ -1390,6 +1390,40 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
+            // Built-in ActorMail<T>/ActorOutput<T> fields are VM-owned immutable
+            // projections, not arbitrary mutable guest-class fields. The type
+            // checker already recognizes their exact nominal protocol shapes.
+            // Mirror that recognition here so Copy scalar payloads and fixed
+            // metadata are not misclassified as unknown move-only aliases.
+            // Never extend this path to a user class/type alias that shadows
+            // the runtime envelope, or to a non-Copy payload projection.
+            if (member.receiver() instanceof Ast.NameExpr envelopeName
+                    && isBuiltinActorEnvelopeValue(scope.lookup(envelopeName.name()))) {
+                if (concreteReceiver == null || concreteReceiver.arguments().size() != 1) {
+                    throw error("invalid built-in actor envelope ownership type");
+                }
+                Ast.TypeRef actorId = Ast.TypeRef.simple("ActorId");
+                Ast.TypeRef fieldType = switch (member.member()) {
+                    case "value" -> concreteReceiver.arguments().getFirst();
+                    case "sequence" -> Ast.TypeRef.simple("int");
+                    case "recipient", "actor_id" -> actorId;
+                    case "sender" -> new Ast.TypeRef("Option", List.of(actorId), false);
+                    default -> null;
+                };
+                boolean valid = concreteReceiver.name().equals("ActorMail")
+                        ? Set.of("value", "sequence", "recipient", "sender")
+                                .contains(member.member())
+                        : Set.of("value", "sequence", "actor_id")
+                                .contains(member.member());
+                if (!valid || fieldType == null) {
+                    throw error("unknown built-in actor envelope field '" + member.member() + "'");
+                }
+                return new ValueInfo(
+                        fieldType,
+                        member.member().equals("value")
+                                ? kindOfType(fieldType) : ValueKind.COPY,
+                        null);
+            }
             // A collection's element count is a copyable scalar read, never a
             // projection into the collection: `val int n = list.size` must
             // not be treated as a mutable alias of `list`.
