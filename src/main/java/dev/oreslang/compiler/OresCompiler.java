@@ -152,6 +152,18 @@ public final class OresCompiler {
      * are still reported; tree shaking is an optimization, not conditional
      * compilation that hides invalid source.
      */
+    // FULL_GUEST_AOT_TODO (platform-conformance #321): This source-graph
+    // optimization returns AST/tree-shake metadata, not guest-specific
+    // executable methods. Preserve this path for hybrid/interpreter use.
+    // A strict AOT path must lower a finite resolved graph (imports, generic
+    // specializations, class/actor dispatch, macro output, init/drop and
+    // suspension/exception continuations) to executable guest code before
+    // native-image, and fail closed on unknown targets with no fallback.
+    // ZERO_TRACING_GC_TODO: Native Image of the Truffle evaluator, even with
+    // Epsilon and zero observed collections, does not show zero managed
+    // allocations or deterministic reclamation of guest graph objects.
+    // Every actor-owned native arena needs checked 32-bit region offsets,
+    // generation fences and unwind/restart/cancel/FFI pin quiescence proofs.
     public static TreeShaker.Result compileForBuild(String source, BuildOptions options) {
         return TreeShaker.shake(parseAndTypeCheck(source), options);
     }
