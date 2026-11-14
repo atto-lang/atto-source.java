@@ -1350,6 +1350,22 @@ public final class Parser {
                 memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
             }
 
+            // A module contract may require the presence of a public nominal
+            // actor type. This is a type requirement, not a callable or a
+            // second actor declaration. It must not confer state authority.
+            if (moduleContract && match(ACTOR)) {
+                validateNoModifiers(memberModifiers, "module contract actor requirements");
+                if (!memberAnnotations.isEmpty()) {
+                    throw error(previous(), "contract actor requirements do not accept annotations");
+                }
+                String actorName = consumeTypeDeclarationName("expected actor type name in module contract");
+                consumeMemberTerminator(terminator, "contract actor requirement should end with ';'");
+                members.add(new Ast.InterfaceActorDecl(actorName));
+                continue;
+            }
+            if (!moduleContract && check(ACTOR)) {
+                throw error(peek(), "actor requirements belong only in module contracts");
+            }
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
             }

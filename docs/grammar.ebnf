@@ -118,7 +118,14 @@ static_function_decl
                   "(" [ param_list ] ")" return_spec block ;
 
 contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
-                  [ "extends" type_ref { "," type_ref } ] interface_body ;
+                  [ "extends" type_ref { "," type_ref } ] module_contract_body ;
+module_contract_body = "{" { module_contract_member } "}"
+                     | { module_contract_member } "end" ;
+module_contract_member = interface_member
+                       | "actor" IDENT member_terminator ;
+(* Stage 1: 'actor IDENT;' requires a public nominal actor declaration in
+   the conforming module. External 'mtd(Actor receiver)' implementations and
+   per-actor method requirements are NOT yet part of this grammar. *)
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]

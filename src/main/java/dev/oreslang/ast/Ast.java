@@ -555,7 +555,16 @@ public final class Ast {
         public int arity() { return parameters.size(); }
     }
 
-    public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl { }
+    public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl, InterfaceActorDecl { }
+
+    /** A nominal actor type that a conforming module must publicly declare. */
+    public record InterfaceActorDecl(String name) implements InterfaceMember {
+        public InterfaceActorDecl {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("contract actor requirement needs a name");
+            }
+        }
+    }
 
     public record InterfaceFunctionDecl(
             String name,

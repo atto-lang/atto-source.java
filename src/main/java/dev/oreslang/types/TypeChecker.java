@@ -642,6 +642,29 @@ public final class TypeChecker {
         }
 
         for (Ast.InterfaceMember member : contract.members()) {
+            if (member instanceof Ast.InterfaceActorDecl actorRequirement) {
+                Ast.ClassDecl matching = null;
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.ClassDecl klass
+                            && klass.name().equals(actorRequirement.name())) {
+                        matching = klass;
+                        break;
+                    }
+                }
+                if (matching == null || matching.actorKind() == Ast.ActorKind.NONE
+                        || matching.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "module '" + module.name() + "' is missing required public actor '"
+                                    + contract.name() + "." + actorRequirement.name() + "'");
+                }
+                if (!matching.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "module '" + module.name() + "' generic actor '" + matching.name()
+                                    + "' cannot satisfy non-generic contract actor requirement '"
+                                    + contract.name() + "." + actorRequirement.name() + "'");
+                }
+                continue;
+            }
             if (!(member instanceof Ast.InterfaceFieldDecl required)) continue;
             Ast.FieldDecl actual = actualFields.get(required.name());
             if (actual == null) {
@@ -737,6 +760,21 @@ public final class TypeChecker {
         collectInterfaceFieldNames(iface, interfaceFieldNames, new LinkedHashSet<>());
         Set<String> interfaceMethodNames = new LinkedHashSet<>();
         collectInterfaceMethodNames(iface, interfaceMethodNames, new LinkedHashSet<>());
+        // Actors occupy the module's nominal type and runtime value namespaces.
+        // A contract cannot require both actor A and fnc/field A, even when
+        // one of those obligations came from an inherited module contract.
+        if (iface.moduleContract()) {
+            Set<String> actorNames = new LinkedHashSet<>();
+            collectModuleContractActorNames(iface, actorNames, new LinkedHashSet<>());
+            for (String actorName : actorNames) {
+                if (interfaceFieldNames.contains(actorName)
+                        || interfaceMethodNames.contains(actorName)) {
+                    throw new IllegalArgumentException(
+                            "module contract actor requirement '" + iface.name() + "." + actorName
+                                    + "' conflicts with a required field or callable");
+                }
+            }
+        }
         for (String name : interfaceFieldNames) {
             if (interfaceMethodNames.contains(name)) {
                 throw new IllegalArgumentException(
@@ -766,6 +804,19 @@ public final class TypeChecker {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
+            } else if (member instanceof Ast.InterfaceActorDecl actor) {
+                if (!iface.moduleContract()) {
+                    throw new IllegalArgumentException("nominal interfaces cannot require actor declarations");
+                }
+                if (generics.contains(actor.name())) {
+                    throw new IllegalArgumentException(
+                            "module contract actor requirement '" + iface.name() + "." + actor.name()
+                                    + "' cannot reuse a generic type-parameter name");
+                }
+                if (!memberKeys.add("actor:" + actor.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate contract actor requirement '" + iface.name() + "." + actor.name() + "'");
+                }
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
@@ -9264,6 +9315,24 @@ public final class TypeChecker {
             if (parent != null) collectInstanceMethodNames(parent, names, seen);
         }
         seen.remove(klass);
+    }
+
+    /** Collect nominal actor requirements from this contract and its parents. */
+    private void collectModuleContractActorNames(
+            Ast.InterfaceDecl iface,
+            Set<String> names,
+            Set<Ast.InterfaceDecl> seen) {
+        if (!seen.add(iface)) return;
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (member instanceof Ast.InterfaceActorDecl actor) names.add(actor.name());
+        }
+        for (Ast.TypeRef parentRef : iface.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent != null && parent.moduleContract()) {
+                collectModuleContractActorNames(parent, names, seen);
+            }
+        }
+        seen.remove(iface);
     }
 
     private void collectInterfaceFieldNames(
