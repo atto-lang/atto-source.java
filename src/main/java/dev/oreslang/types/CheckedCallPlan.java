@@ -289,6 +289,7 @@ public record CheckedCallPlan(
         if (source instanceof Ast.CallExpr from
                 && target instanceof Ast.CallExpr to) {
             if (from.origin() != to.origin()
+                    || !from.argumentLabels().equals(to.argumentLabels())
                     || from.callee() != to.callee()
                     || from.typeArgumentsPresent() != to.typeArgumentsPresent()
                     || from.typeArguments().size() != to.typeArguments().size()) {

@@ -5318,14 +5318,16 @@ public final class Parser {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
                 rejectUnsupportedActorFactory(expr);
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                ParsedCallArguments args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
-                expr = new Ast.CallExpr(expr, typeArguments, args);
+                expr = new Ast.CallExpr(expr, typeArguments, true,
+                        args.arguments(), args.labels());
             } else if (match(LPAREN)) {
                 rejectUnsupportedActorFactory(expr);
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                ParsedCallArguments args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
-                expr = new Ast.CallExpr(expr, args);
+                expr = new Ast.CallExpr(expr, List.of(), false,
+                        args.arguments(), args.labels());
             } else if (match(DOT, DOUBLE_COLON)) {
                 // Two explicit qualified-member spellings, one binding and
                 // evaluation path; no dynamic symbol lookup or macro rewrite.
@@ -5926,15 +5928,39 @@ public final class Parser {
         return false;
     }
 
-    private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
-        if (check(terminator)) return List.of();
+    private record ParsedCallArguments(List<Ast.Expr> arguments, List<String> labels) {}
+
+    /**
+     * Keep values in lexical source order. Named syntax labels are metadata,
+     * not extra expressions; the checked binder later selects ABI slots.
+     */
+    private ParsedCallArguments parseCallArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return new ParsedCallArguments(List.of(), List.of());
         List<Ast.Expr> args = new ArrayList<>();
+        List<String> labels = new ArrayList<>();
+        java.util.Set<String> named = new java.util.HashSet<>();
+        boolean namedStarted = false;
         do {
-            boolean spread = match(ELLIPSIS);
-            Ast.Expr argument = parseExpression();
-            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+            if (check(IDENT) && checkNext(COLON)) {
+                namedStarted = true;
+                String label = advance().lexeme();
+                consume(COLON, "expected ':' after call argument name");
+                if (!named.add(label)) {
+                    throw error(previous(), "duplicate named argument '" + label + "'");
+                }
+                labels.add(label);
+                args.add(parseExpression());
+            } else {
+                if (namedStarted) {
+                    throw error(peek(), "positional/spread argument cannot follow named argument");
+                }
+                boolean spread = match(ELLIPSIS);
+                Ast.Expr arg = parseExpression();
+                labels.add("");
+                args.add(spread ? new Ast.SpreadExpr(arg) : arg);
+            }
         } while (match(COMMA));
-        return args;
+        return new ParsedCallArguments(List.copyOf(args), List.copyOf(labels));
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {

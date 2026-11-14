@@ -205,6 +205,7 @@ public final class TreeShaker {
                 List<Ast.Expr> arguments) {
             Ast.FunctionDecl function = target.function();
             if (call.typeArgumentsPresent()
+                    || call.hasNamedArguments()
                     || !function.genericParameters().isEmpty()
                     || function.actorKind() != Ast.ActorKind.NONE
                     || function.async()
@@ -401,7 +402,7 @@ public final class TreeShaker {
                         substitute(call.callee(), substitutions, shadowed),
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
-                        arguments);
+                        arguments, call.origin(), call.argumentLabels());
                 Ast.copyCheckedMetadata(call, substituted);
                 return substituted;
             }
@@ -1013,7 +1014,7 @@ public final class TreeShaker {
                         callee,
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
-                        arguments);
+                        arguments, call.origin(), call.argumentLabels());
                 Ast.copyCheckedMetadata(call, rewritten);
 
                 InlineTarget target = resolveInlineTarget(callee, module, locals);

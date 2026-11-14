@@ -1453,12 +1453,35 @@ public final class Ast {
             List<TypeRef> typeArguments,
             boolean typeArgumentsPresent,
             List<Expr> arguments,
-            CallOrigin origin) implements Expr {
+            CallOrigin origin,
+            List<String> argumentLabels) implements Expr {
         public CallExpr {
             java.util.Objects.requireNonNull(callee, "call callee");
             typeArguments = List.copyOf(typeArguments);
             arguments = List.copyOf(arguments);
+            argumentLabels = List.copyOf(argumentLabels);
             java.util.Objects.requireNonNull(origin, "call origin");
+            if (argumentLabels.size() != arguments.size()) {
+                throw new IllegalArgumentException("call argument labels must match lexical argument count");
+            }
+            java.util.Set<String> uniqueLabels = new java.util.HashSet<>();
+            boolean seenLabel = false;
+            for (String label : argumentLabels) {
+                if (label == null) {
+                    throw new IllegalArgumentException("call argument label cannot be null; use empty positional marker");
+                }
+                if (!label.isEmpty()) {
+                    if (!uniqueLabels.add(label)) {
+                        throw new IllegalArgumentException("duplicate named call argument '" + label + "'");
+                    }
+                    seenLabel = true;
+                } else if (seenLabel) {
+                    throw new IllegalArgumentException("positional argument cannot follow named call argument");
+                }
+            }
+            if (seenLabel && origin != CallOrigin.DIRECT) {
+                throw new IllegalArgumentException("named arguments need direct-call origin");
+            }
             if (origin == CallOrigin.VALUE_PIPE_ARGUMENT && arguments.isEmpty()) {
                 throw new IllegalArgumentException("value pipeline requires an upstream argument");
             }
@@ -1473,11 +1496,27 @@ public final class Ast {
                         boolean typeArgumentsPresent, List<Expr> arguments) {
             this(callee, typeArguments, typeArgumentsPresent, arguments, CallOrigin.DIRECT);
         }
+        public CallExpr(Expr callee, List<TypeRef> typeArguments,
+                        boolean typeArgumentsPresent, List<Expr> arguments,
+                        CallOrigin origin) {
+            this(callee, typeArguments, typeArgumentsPresent, arguments,
+                    origin, java.util.Collections.nCopies(arguments.size(), ""));
+        }
+        public CallExpr(Expr callee, List<TypeRef> typeArguments,
+                        boolean typeArgumentsPresent, List<Expr> arguments,
+                        List<String> argumentLabels) {
+            this(callee, typeArguments, typeArgumentsPresent, arguments,
+                    CallOrigin.DIRECT, argumentLabels);
+        }
         public CallExpr(Expr callee, List<Expr> arguments) {
             this(callee, List.of(), false, arguments);
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+        /** At least one raw lexical call argument carries a source label. */
+        public boolean hasNamedArguments() {
+            return argumentLabels.stream().anyMatch(label -> !label.isEmpty());
         }
 
         /**
@@ -1488,7 +1527,7 @@ public final class Ast {
         public CallExpr rewrite(Expr newCallee, List<TypeRef> newTypeArguments,
                                 boolean newTypeArgumentsPresent, List<Expr> newArguments) {
             return new CallExpr(newCallee, newTypeArguments,
-                    newTypeArgumentsPresent, newArguments, origin);
+                    newTypeArgumentsPresent, newArguments, origin, argumentLabels);
         }
     }
 
@@ -1763,9 +1802,10 @@ public final class Ast {
         java.util.Objects.requireNonNull(source, "source expression");
         java.util.Objects.requireNonNull(target, "target expression");
         if (source instanceof CallExpr sourceCall && target instanceof CallExpr targetCall
-                && sourceCall.origin() != targetCall.origin()) {
+                && (sourceCall.origin() != targetCall.origin()
+                    || !sourceCall.argumentLabels().equals(targetCall.argumentLabels()))) {
             throw new IllegalArgumentException(
-                    "call rewrites must preserve syntax origin; use CallExpr.rewrite");
+                    "call rewrites must preserve origin and lexical argument labels; use CallExpr.rewrite");
         }
         for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
             transfer.copy(source, target);
