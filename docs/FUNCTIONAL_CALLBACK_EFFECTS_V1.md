@@ -1,7 +1,8 @@
 # Functional callback effects v1 — compiler foundation
 
-**Status:** a Java compiler-library building block. Source-language parsing, call-site
-integration, guest execution and cross-backend parity are **NOT EXECUTED** by this patch.
+**Status:** Java effect graph and a narrow **real source-checked callback analysis**
+slice. Java/Graal guest execution and five-backend native parity remain **NOT EXECUTED**
+by the repository's available CI jobs; authored JUnit tests are not passing evidence.
 
 ## Why
 
@@ -77,3 +78,49 @@ mvn -B -ntp verify
 **These commands are verification requirements, not a statement that they
 have passed on this branch.** Java is used solely for compiler graph analysis;
 any user-visible functional library belongs in native `.atto` source.
+
+## Checked .atto source integration (v1 follow-up)
+
+`OresCompiler.analyzeFunctionalCallbacksV1(source)` runs the real production
+parser, type checker, **and ownership checker**, then inspects a deliberately
+small subset of inline `Option` / `Result` higher-order calls. Only direct
+Option/Result parameter receivers, with no detected same-name top-level
+rebinding, qualify for the v1 report. Unsupported control-flow/expressions
+mark `Report.complete=false`. That flag means scanner coverage for the
+narrow surface, **not a proof of whole-program purity**.
+
+- Inline callbacks using literal, parameter, scalar binary/unary or
+  conditional expressions are analyzed conservatively. Checked operators
+  may contribute `THROW`; combinators contribute `ALLOC`.
+- Unknown or named callees, captures, dynamic dispatch, imported values,
+  or unsupported expressions contribute `UNKNOWN_CALL`; they are *not*
+  automatically marked pure. This is intentional until overload-resolved
+  symbol/effect metadata flows from TypeChecker into HIR/MIR.
+- The host-side effect graph uses **one specialization per call site**.
+  `eligibleForPure` means the inferred row fits observational purity's
+  allowance, not that a source `pure` annotation has been accepted or
+  that the compiler has emitted a certified AOT artifact.
+- The analysis cannot authorize a callback or bypass a failed type/ownership
+  check. `analyzeChecked` is package-private; consumers enter through the
+  checked `OresCompiler` API. No runtime capabilities are granted.
+
+New exact-source fixtures under
+`tests/fixtures/functional-callback-effects-v1/` include a pure inline
+callback (expected guest stdout `42`), a named-helper callback (typechecked,
+but `UNKNOWN_CALL` until transitive resolution), and a wrong-output-type
+semantic rejection. `FunctionalCallbackEffectAnalysisV1Test` includes
+an actual Graal `Context.eval` JUnit test; it must execute before any
+guest-support claim.
+
+### Current limitations / next compiler work
+
+1. Move from conservative inline expression inspection to overload-specific
+   callable identities, imported method effects and checked closure captures.
+2. Feed resolved effect rows into formal source `pure` admission and
+   typed HIR/MIR; the source checker does **not** currently reject an impure
+   callback merely because its report is not `eligibleForPure`.
+3. Walk all control-flow variants and actor/method bodies, preserving ownership
+   and critical-state boundaries. Current `complete=false` is a hard stop
+   for any claim that the scanner covered the whole program.
+4. Run these exact `.atto` bytes on Java, LLVM, .NET Native AOT, Wasm and
+   Forge; pin each backend source/compiler head and required test steps.
