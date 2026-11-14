@@ -62,3 +62,31 @@ class methods, interfaces, declarations using `|...|`, and lambdas.
 Call-site named arguments, checked defaults and executable omissions are
 **not enabled by this parser change**; their guards remain active. The JUnit
 cases are authored but not an executed compiler/guest receipt.
+
+## First named-value executable profile: required `int` only
+
+The Java source compiler now preserves each direct call's argument label
+alongside the corresponding **lexical** argument expression. The TypeChecker
+accepts a deliberately narrow initial profile: statically resolved,
+non-generic, non-suspending, non-trapped, non-actor, full-arity free functions
+whose formals and return type are all plain `int`. A checked immutable
+`CheckedCallPlan` maps each lexical source value to its ABI slot.
+The OwnershipChecker independently reconstructs this plan and verifies each
+source value exactly once in lexical order. The JVM evaluator (including its
+suspendable calling path) validates the proof **before any source effects**,
+then evaluates each supplied value exactly once in source order, finally
+reordering evaluated objects—not AST expressions—to the formal ABI slots.
+Invalid/unknown labels, duplicated targets, positional-after-named,
+unchecked call identities, syntactic spread, generic calls and non-scalar
+payload types remain rejected.
+
+An actual Graal polyglot JVM guest JUnit test is authored for
+`encode(y: mark(2), x: mark(4))` and expects stdout `24:42`, proving
+source-effects-first ordering when executed. Other tests cover mixed arguments,
+source-to-ABI provenance, ownership-only bypass, and metadata laundering.
+
+**Important:** this stage does NOT enable optional formals, default
+materialization, typed None, named methods, constructors, imports, dynamic
+callables, or broad generic named calls. `calculate(x:20,y:22)` with an
+optional `z?` still fails closed. The JUnit execution tests have not yet
+run on a working JDK25/Graal runner, so no verified guest result is claimed.
