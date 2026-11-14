@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import org.graalvm.polyglot.Context;
@@ -314,6 +315,22 @@ final class ActorForwardNamespaceReceiverTest {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(program),
                 "a read-only receiver cannot acquire an exclusive actor loan");
+    }
+
+    @Test
+    void readonlyActorSelfCannotEscapeItsMailboxTurn() {
+        for (String receiver : new String[]{"Foo1 self", "Foo1 mut self"}) {
+            Ast.Program program = Parser.parse("""
+                    declare actor Foo1;
+                    mtd (%s) leak(): Foo1 {
+                      return self;
+                    }
+                    """.formatted(receiver));
+            var rejected = assertThrows(IllegalArgumentException.class,
+                    () -> OwnershipChecker.check(program));
+            assertTrue(rejected.getMessage().contains("non-escapable mailbox capability"),
+                    rejected.getMessage());
+        }
     }
 
     @Test
