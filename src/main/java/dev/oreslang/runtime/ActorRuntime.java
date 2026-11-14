@@ -9681,24 +9681,29 @@ public final class ActorRuntime implements AutoCloseable {
                                     // Defense in depth: actor-owned state and
                                     // recipient must belong to this live actor
                                     // incarnation before entering guest code.
+                                    // The ActorOwnedGuestState accessor is
+                                    // host/executor-defined code. Snapshot it
+                                    // OUTSIDE lifecycleLock: STOP must never
+                                    // wait for it while trying to seal the
+                                    // actor's mailbox and receive gate.
+                                    ActorId observedStateOwner =
+                                            codeActorState.ownerActorId();
+                                    ActorId observedRecipient = sourceMail.recipient();
                                     ActorSourceLifecycleGate.ReceiveLease receiveLease;
                                     synchronized (lifecycleLock) {
                                         // The earlier STOP check only covered
                                         // dequeue, not source callback admission.
-                                        // Seal and receive-lease minting must
-                                        // linearize under the SAME runtime lock;
-                                        // otherwise STOP can win between the
-                                        // first check and enterReceive(), turning
-                                        // normal shutdown into a guest failure.
+                                        // Only captured immutable identities
+                                        // enter this STOP-linearized section.
                                         if (stopped.get() || finalized || forceKillFenced) {
                                             // The envelope still closes in its
                                             // outer try-with-resources. No
                                             // callback or new lease was admitted.
                                             continue;
                                         }
-                                        receiveLease = sourceLifecycleGate.enterReceive(
+                                        receiveLease = sourceLifecycleGate.enterReceiveOwners(
                                                 ref.id(), codeActorType,
-                                                codeActorState, sourceMail);
+                                                observedStateOwner, observedRecipient);
                                     }
                                     try {
                                         codeExecutor.receiveActor(
