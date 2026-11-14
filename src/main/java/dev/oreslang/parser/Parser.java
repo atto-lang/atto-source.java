@@ -1091,26 +1091,49 @@ public final class Parser {
 
     private Ast.EnumDecl parseEnum(Ast.Visibility visibility) {
         String name = consume(IDENT, "expected enum name").lexeme();
-        consume(AS, "enum declaration requires 'as'");
+        // AttoLang's canonical nominal definition uses named, brace-delimited
+        // payload cases with deterministic local discriminants. Explicit tag
+        // source remains supported for legacy ABI fixtures, but implicit
+        // declaration-order tags MUST NOT be used as a stable network wire ABI.
+        boolean canonical = match(LBRACE);
+        if (!canonical) consume(AS, "enum declaration requires '{' or legacy 'as'");
         List<Ast.EnumVariant> variants = new ArrayList<>();
         java.util.Set<String> names = new java.util.HashSet<>();
         java.util.Set<Long> tags = new java.util.HashSet<>();
-        while (!check(END) && !check(EOF)) {
+        while (!(canonical ? check(RBRACE) : check(END)) && !check(EOF)) {
             Token variant = consume(IDENT, "expected enum variant name");
             if (!names.add(variant.lexeme())) throw error(variant,
                     "duplicate enum variant name '" + variant.lexeme() + "'");
-            Ast.TypeRef payload = check(STRUCT) ? parseTypeRef() : null;
+            Ast.TypeRef payload = canonical
+                    ? (check(LBRACE) ? parseTypeRef() : null)
+                    : (check(STRUCT) ? parseTypeRef() : null);
             if (payload != null && !payload.isRecordType()) {
-                throw error(variant, "enum variant payload must be a closed struct type");
+                throw error(variant, "enum variant payload must be a closed record type");
             }
-            Token tagToken = consume(INT, "enum variant requires an explicit numeric tag");
-            long tag = parseSignedI64(tagToken);
-            if (tag <= 0) throw error(tagToken, "enum variant tag must be positive");
-            if (!tags.add(tag)) throw error(tagToken, "duplicate enum variant tag " + tag);
-            consumeStatementTerminator("enum variant must end with ';'");
+            long tag;
+            if (canonical) {
+                // Source-facing implicit discriminants are for local, sealed
+                // nominal storage only. Remote codecs require a separately
+                // declared/versioned stable wire schema.
+                tag = variants.size() + 1L;
+                if (match(EQUAL)) {
+                    throw error(previous(),
+                            "canonical enums do not declare wire tags; use a versioned wire schema");
+                }
+                if (!match(COMMA) && !check(RBRACE)) {
+                    throw error(peek(), "expected ',' between enum variants");
+                }
+            } else {
+                Token tagToken = consume(INT, "enum variant requires an explicit numeric tag");
+                tag = parseSignedI64(tagToken);
+                if (tag <= 0) throw error(tagToken, "enum variant tag must be positive");
+                consumeStatementTerminator("enum variant must end with ';'");
+            }
+            if (!tags.add(tag)) throw error(variant, "duplicate enum variant tag " + tag);
             variants.add(new Ast.EnumVariant(variant.lexeme(), payload, tag));
         }
-        consume(END, "expected 'end' to close enum");
+        consume(canonical ? RBRACE : END,
+                canonical ? "expected '}' after enum variants" : "expected 'end' to close enum");
         return new Ast.EnumDecl(name, visibility, variants);
     }
 
