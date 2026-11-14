@@ -1788,7 +1788,69 @@ public final class OwnershipChecker {
         return slots;
     }
 
+    /**
+     * Independent ownership gate for the current scalar-only named-call
+     * profile. A valid TypeChecker plan is mandatory; no argument move or
+     * borrowing can be inferred by merely reordering unchecked expressions.
+     * Process the source values exactly once in their lexical order.
+     */
+    private ValueInfo checkOwnedNamedScalarCall(Ast.CallExpr call, Scope scope) {
+        if (call.origin() != Ast.CallOrigin.DIRECT
+                || call.typeArgumentsPresent()
+                || !(call.callee() instanceof Ast.NameExpr name)
+                || scope.lookup(name.name()) != null) {
+            throw error("NAMED_CALL_ABI_UNSUPPORTED: named call requires unshadowed scalar function");
+        }
+        Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
+        if (target == null || !target.genericParameters().isEmpty()
+                || target.actorKind() != Ast.ActorKind.NONE
+                || target.async() || target.suspends() || target.generator()
+                || target.trapped() || !target.returnType().name().equals("int")) {
+            throw error("NAMED_CALL_ABI_UNSUPPORTED: named call requires static int-returning function");
+        }
+        for (Ast.Param param : target.parameters()) {
+            if (!param.type().name().equals("int")
+                    || !param.type().arguments().isEmpty()
+                    || param.type().inferArguments()
+                    || param.mutable() || param.structural()
+                    || param.omittable() || param.defaultValue() != null) {
+                throw error("NAMED_CALL_ABI_UNSUPPORTED: named scalar formals cannot borrow, move or default");
+            }
+        }
+        if (call.arguments().stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+            throw error("NAMED_CALL_ABI_UNSUPPORTED: named scalar spread not admitted");
+        }
+        CheckedCallPlan.trackValidationSite(call);
+        CheckedCallPlan validated = CheckedCallPlan.lookup(call);
+        if (validated == null) {
+            throw error("NAMED_CALL_UNCHECKED: type/ABI plan was never published");
+        }
+        List<CheckedCallPlan.InputSlot> raw = new ArrayList<>();
+        for (int i = 0; i < call.argumentLabels().size(); i++) {
+            String label = call.argumentLabels().get(i);
+            raw.add(label.isEmpty()
+                    ? CheckedCallPlan.InputSlot.positional(i)
+                    : CheckedCallPlan.InputSlot.named(label, i));
+        }
+        CheckedCallPlan recomputed = CheckedCallPlan.shapeForDeclaredParameters(
+                target.parameters(), raw);
+        if (!validated.equals(recomputed) || recomputed.omittedCount() != 0) {
+            throw error("NAMED_CALL_UNCHECKED: ownership and type plans disagree");
+        }
+        for (Ast.Expr argument : call.arguments()) {
+            ValueInfo value = checkExpr(argument, scope, true);
+            if (value.kind != ValueKind.COPY || isBorrowValue(value)
+                    || containsMutexGuardType(value.type)) {
+                throw error("NAMED_CALL_ABI_UNSUPPORTED: scalar source argument cannot move or borrow");
+            }
+        }
+        return new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
+    }
+
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.hasNamedArguments()) {
+            return checkOwnedNamedScalarCall(call, scope);
+        }
         if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                 && call.callee() instanceof Ast.LambdaExpr lambda) {
             int arity = lambda.parameters().size();

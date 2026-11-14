@@ -3245,6 +3245,12 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            // The restricted initial executable named-call profile is direct,
+            // required int->int functions. Other callable families fail closed
+            // rather than silently ignoring source labels or changing effects.
+            if (call.hasNamedArguments()) {
+                return checkNamedScalarFunctionCall(call, env, generics, self);
+            }
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr inlineLambda) {
                 if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
@@ -10471,6 +10477,88 @@ public final class TypeChecker {
             }
         }
         return List.copyOf(expanded);
+    }
+
+    /**
+     * First executable stage for named arguments: statically resolved,
+     * fully supplied, required primitive int formals on a sync free function.
+     * The source arguments are never reordered in the AST: the immutable
+     * checked plan maps evaluated lexical values to ABI slots.
+     *
+     * Defaulted, generic, named method, async, borrow, spread and dynamic
+     * calls need separate owner/effect/ABI evidence and stay rejected.
+     */
+    private Type checkNamedScalarFunctionCall(
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.origin() != Ast.CallOrigin.DIRECT
+                || call.typeArgumentsPresent()
+                || !(call.callee() instanceof Ast.NameExpr name)
+                || env.lookup(name.name()) != null) {
+            throw new IllegalArgumentException(
+                    "NAMED_CALL_ABI_UNSUPPORTED: only direct statically resolved scalar functions admit named value arguments");
+        }
+        Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
+        if (target == null) {
+            throw new IllegalArgumentException(
+                    "NAMED_CALL_UNRESOLVED: no unique full-arity function '" + name.name() + "'");
+        }
+        rejectImplicitClassCallable(name.name());
+        if (!target.genericParameters().isEmpty()
+                || target.actorKind() != Ast.ActorKind.NONE
+                || target.async() || target.suspends() || target.generator()
+                || target.trapped()
+                || !target.returnType().name().equals("int")
+                || !target.returnType().arguments().isEmpty()
+                || target.parameters().size() != call.arguments().size()) {
+            throw new IllegalArgumentException(
+                    "NAMED_CALL_ABI_UNSUPPORTED: only synchronous non-generic int-returning free functions are admitted");
+        }
+        for (Ast.Param parameter : target.parameters()) {
+            if (!parameter.type().name().equals("int")
+                    || !parameter.type().arguments().isEmpty()
+                    || parameter.type().inferArguments()
+                    || parameter.mutable() || parameter.structural()
+                    || parameter.omittable() || parameter.defaultValue() != null) {
+                throw new IllegalArgumentException(
+                        "NAMED_CALL_ABI_UNSUPPORTED: named scalar calls require mandatory int formals");
+            }
+        }
+        if (call.arguments().stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+            throw new IllegalArgumentException(
+                    "NAMED_CALL_ABI_UNSUPPORTED: scalar named-call spread is not admitted");
+        }
+        List<CheckedCallPlan.InputSlot> inputs = new ArrayList<>();
+        for (int i = 0; i < call.argumentLabels().size(); i++) {
+            String named = call.argumentLabels().get(i);
+            inputs.add(named.isEmpty()
+                    ? CheckedCallPlan.InputSlot.positional(i)
+                    : CheckedCallPlan.InputSlot.named(named, i));
+        }
+        CheckedCallPlan plan = CheckedCallPlan.shapeForDeclaredParameters(
+                target.parameters(), inputs);
+        if (plan.omittedCount() != 0) {
+            throw new IllegalArgumentException(
+                    "NAMED_CALL_ABI_UNSUPPORTED: omitted slots need checked default materialization");
+        }
+        List<Ast.Expr> formalArguments = new ArrayList<>(plan.abiToSource().size());
+        for (int lexicalIndex : plan.abiToSource()) {
+            formalArguments.add(call.arguments().get(lexicalIndex));
+        }
+        Type result = checkGenericCallable(
+                target.genericParameters(), target.parameters(), target.returnType(),
+                formalArguments, env, generics, self, null,
+                Map.of(), "named scalar function " + name.name());
+        if (strictAttoEquality) {
+            checkStrictNumericCallArguments(target, formalArguments, env);
+        }
+        // Keep original call order. This type proof is scoped and identity-bound,
+        // and the runtime must reconstruct the plan before executing any values.
+        CheckedCallPlan.beginRecheck(call);
+        CheckedCallPlan.record(call, plan);
+        return result;
     }
 
     /**
