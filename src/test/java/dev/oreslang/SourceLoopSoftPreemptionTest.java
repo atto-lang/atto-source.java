@@ -45,7 +45,7 @@ final class SourceLoopSoftPreemptionTest {
                   if true; do
                     loop do
                       i = i + 1;
-                      if i % 3 == 0; do
+                      if Integer.rem(i, 3) == 0; do
                         continue;
                       fi
                       count = count + 1;
@@ -141,14 +141,14 @@ final class SourceLoopSoftPreemptionTest {
                 end
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   for (let i = 0; i < 2000; i = i + 1) do
-                    guard.value = guard.value + 1;
+                    lock_guard.value = lock_guard.value + 1;
                   done
-                  stdio.stdout.write(guard.value);
+                  stdio.stdout.write(lock_guard.value);
                   stdio.stdout.write("|");
                   stdio.stdout.write(process.descriptor.source_loop_cooperates);
-                  guard.release();
+                  lock_guard.release();
                   return;
                 }
                 """));
@@ -171,9 +171,9 @@ final class SourceLoopSoftPreemptionTest {
                             pub async routine main(): void {
                               val mutex = Mutex.new(new Counter());
                               val Channel<int> pipe = Channel.new<int>(0);
-                              val guard = mutex.lock();
+                              val lock_guard = mutex.lock();
                             """ + operation + """
-                              guard.release();
+                              lock_guard.release();
                               return;
                             }
                             """), operation);
@@ -199,9 +199,9 @@ final class SourceLoopSoftPreemptionTest {
                   await idle.get_ready();
                   val pending = idle.get_done();
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   await pending;
-                  guard.release();
+                  lock_guard.release();
                   return;
                 }
                 """));
@@ -230,9 +230,9 @@ final class SourceLoopSoftPreemptionTest {
                   idle.send("stop");
                   await idle.get_done();
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   await idle.get_done();
-                  guard.release();
+                  lock_guard.release();
                   stdio.stdout.write("unreachable");
                   return;
                 }
@@ -252,9 +252,9 @@ final class SourceLoopSoftPreemptionTest {
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
                   val Channel<int> pipe = Channel.new<int>(1);
-                  val guard = mutex.lock();
-                  guard.value = 7;
-                  guard.release();
+                  val lock_guard = mutex.lock();
+                  lock_guard.value = 7;
+                  lock_guard.release();
                   writech pipe, 7;
                   stdio.stdout.write(readch pipe);
                   return;
@@ -271,9 +271,9 @@ final class SourceLoopSoftPreemptionTest {
                         end
                         generator fnc bad(): int {
                           val mutex = Mutex.new(new Counter());
-                          val guard = mutex.lock();
+                          val lock_guard = mutex.lock();
                           rt cooperate;
-                          guard.release();
+                          lock_guard.release();
                           yield 7;
                           return;
                         }
@@ -293,9 +293,9 @@ final class SourceLoopSoftPreemptionTest {
                 end
                 generator fnc values(): int {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
-                  guard.value = 7;
-                  guard.release();
+                  val lock_guard = mutex.lock();
+                  lock_guard.value = 7;
+                  lock_guard.release();
                   rt cooperate;
                   yield 7;
                   return;
@@ -317,9 +317,9 @@ final class SourceLoopSoftPreemptionTest {
                 end
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   rt cooperate;
-                  guard.release();
+                  lock_guard.release();
                   return;
                 }
                 """));
@@ -336,9 +336,9 @@ final class SourceLoopSoftPreemptionTest {
                 end
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
-                  guard.value = guard.value + 1;
-                  guard.release();
+                  val lock_guard = mutex.lock();
+                  lock_guard.value = lock_guard.value + 1;
+                  lock_guard.release();
                   rt cooperate;
                   stdio.stdout.write("released-then-cooperated");
                   return;
@@ -355,16 +355,16 @@ final class SourceLoopSoftPreemptionTest {
                 end
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   let i = 0;
                   while (i < 1024) do
-                    guard.value = guard.value + 1;
+                    lock_guard.value = lock_guard.value + 1;
                     i = i + 1;
                   done
-                  stdio.stdout.write(guard.value);
+                  stdio.stdout.write(lock_guard.value);
                   stdio.stdout.write("|");
                   stdio.stdout.write(process.descriptor.source_loop_cooperates);
-                  guard.release();
+                  lock_guard.release();
 
                   // The dispatch has already exhausted its budget. A newly
                   // safe backedge must cooperate immediately, rather than
