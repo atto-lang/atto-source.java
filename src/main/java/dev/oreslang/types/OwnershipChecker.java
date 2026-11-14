@@ -1412,6 +1412,7 @@ public final class OwnershipChecker {
                     && java.util.Set.of("List", "Array", "Vector", "Map")
                             .contains(concreteReceiver.name())) {
                 return new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
+            }
             if (concreteReceiver != null && concreteReceiver.isClosedAggregateType()) {
                 Ast.TypeRef valueType = concreteReceiver.aggregateMembers().get(member.member());
                 if (valueType == null) {
