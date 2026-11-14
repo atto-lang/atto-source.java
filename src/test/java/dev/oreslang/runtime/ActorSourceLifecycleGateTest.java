@@ -100,7 +100,7 @@ final class ActorSourceLifecycleGateTest {
         gate.beginInit(owner, TYPE);
         gate.failInit();
         assertEquals(ActorSourceLifecycleGate.Phase.FAILED, gate.phase());
-        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
         assertThrows(IllegalStateException.class, () -> gate.beginInit(owner, TYPE));
     }
 
@@ -153,7 +153,7 @@ final class ActorSourceLifecycleGateTest {
         gate.close();
         gate.failInit();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
-        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
     }
 
     @Test
@@ -225,7 +225,7 @@ final class ActorSourceLifecycleGateTest {
         gate.beginInit(owner, TYPE);
         gate.sealStop(false);
         assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
-        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
         gate.failInit();
         assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
         assertThrows(IllegalStateException.class,
@@ -242,7 +242,7 @@ final class ActorSourceLifecycleGateTest {
         gate.sealStop(true); // graceful cannot initialize a never-started actor
         assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
         assertThrows(IllegalStateException.class, () -> gate.beginInit(owner, TYPE));
-        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
         gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
     }
@@ -256,7 +256,7 @@ final class ActorSourceLifecycleGateTest {
         gate.sealStop(true);
         assertThrows(IllegalStateException.class,
                 () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
-        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
         gate.beginTeardown(owner, TYPE, state(owner));
         assertThrows(IllegalStateException.class,
                 () -> gate.beginTeardown(owner, TYPE, state(owner)));
@@ -329,6 +329,37 @@ final class ActorSourceLifecycleGateTest {
         assertFalse(worker.isAlive(), "initializer must terminate");
         assertNull(workerFailure.get(), () -> "unexpected worker failure: " + workerFailure.get());
         assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
+    }
+
+
+    @Test
+    void unexpectedGuestStateAccessorFailureIsNotAStopReceipt() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        ActorRuntime.ActorOwnedGuestState malformed = () -> {
+            throw new IllegalStateException("broken state owner accessor");
+        };
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class, () -> gate.commitInit(malformed));
+        assertEquals("broken state owner accessor", failure.getMessage());
+        assertFalse(failure instanceof ActorSourceLifecycleGate.InitializationStopped,
+                "an arbitrary guest failure must never masquerade as STOP");
+        gate.failInit();
+        assertEquals(ActorSourceLifecycleGate.Phase.FAILED, gate.phase());
+    }
+
+    @Test
+    void normalGracefulStopAfterReadyIsNotAStoppedInitializer() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        gate.sealStop(true);
+        IllegalStateException duplicateCommit = assertThrows(
+                IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        assertFalse(duplicateCommit instanceof ActorSourceLifecycleGate.InitializationStopped,
+                "duplicate READY commit is not an init-stop control signal");
     }
 
     @Test
