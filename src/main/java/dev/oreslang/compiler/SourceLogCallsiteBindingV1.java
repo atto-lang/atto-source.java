@@ -77,11 +77,13 @@ public final class SourceLogCallsiteBindingV1 {
             }
         }
         var bindings = new IdentityHashMap<Ast.CallExpr, SourceIdentityV1.Site>();
+        int exactCallableCount = 0;
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.FunctionDecl fn)) {
                     throw new IllegalArgumentException("Java literal log v1 supports scalar functions only");
                 }
+                exactCallableCount++;
                 if (fn.async() || fn.suspends() || fn.generator()
                         || fn.actorKind() != Ast.ActorKind.NONE
                         || !fn.genericParameters().isEmpty()) {
@@ -103,6 +105,11 @@ public final class SourceLogCallsiteBindingV1 {
                 }
                 visit(fn.body(), module.name(), fn, checkedId, bySelector, bindings);
             }
+        }
+        // Reject spurious/foreign routine records, even if the source has
+        // valid entries for all its own functions.
+        if (checkedRoutines.size() != exactCallableCount) {
+            throw new IllegalArgumentException("foreign or stale verified routine AST entry");
         }
         if (!bySelector.isEmpty() || bindings.size() != entries.size()) {
             throw new IllegalArgumentException("stale or unbound source log-site descriptor");
