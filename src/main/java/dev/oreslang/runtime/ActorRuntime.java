@@ -9667,11 +9667,12 @@ public final class ActorRuntime implements AutoCloseable {
                             activeMail = mail;
                             try {
                                 if (codeExecutor != null) {
-                                    if (codeActorState == null
-                                            || !codeActorState.ownerActorId().equals(ref.id())) {
-                                        throw new SecurityException(
-                                                "source actor state lost actor ownership before mailbox dispatch");
-                                    }
+                                    // The STOP-linearized gate below checks
+                                    // this actor's state owner against mailbox
+                                    // recipient exactly once. Calling the
+                                    // executor-defined accessor twice creates
+                                    // a TOCTOU window and may run arbitrary
+                                    // host callbacks unnecessarily.
                                     @SuppressWarnings("unchecked")
                                     ActorInboxMail<Object> sourceMail =
                                             (ActorInboxMail<Object>) (ActorInboxMail<?>) mail;
@@ -9687,7 +9688,8 @@ public final class ActorRuntime implements AutoCloseable {
                                     // wait for it while trying to seal the
                                     // actor's mailbox and receive gate.
                                     ActorId observedStateOwner =
-                                            codeActorState.ownerActorId();
+                                            codeActorState == null
+                                                    ? null : codeActorState.ownerActorId();
                                     ActorId observedRecipient = sourceMail.recipient();
                                     ActorSourceLifecycleGate.ReceiveLease receiveLease;
                                     synchronized (lifecycleLock) {
