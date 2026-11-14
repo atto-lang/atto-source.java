@@ -33,6 +33,7 @@ import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
 import dev.oreslang.runtime.Utf8StringAbi;
+import dev.oreslang.types.NumericValueEquality;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -10878,7 +10879,15 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
-            if (left == right) return true;
+            // Keep the normal identity fast-path for class and scalar values,
+            // but recursively compare sums and generator steps even when the
+            // two references are identical. Some(NaN) and Ok(NaN) must not
+            // become equal merely because the outer wrapper is reused.
+            if (left == right) {
+                if (left instanceof Number n) return NumericValueEquality.equals(n, n);
+                if (!(left instanceof OptionValue || left instanceof ResultValue
+                        || left instanceof GeneratorRuntime.Step<?>)) return true;
+            }
             if (left == null || right == null) return false;
 
             if (left instanceof dev.oreslang.runtime.OresSymbol
@@ -10971,29 +10980,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean numericValueEquals(Number left, Number right) {
-            if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal
-                    || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger) {
-                try {
-                    return new java.math.BigDecimal(left.toString())
-                            .compareTo(new java.math.BigDecimal(right.toString())) == 0;
-                } catch (NumberFormatException ignored) {
-                    return left.doubleValue() == right.doubleValue();
-                }
-            }
-            boolean integralLeft = isIntegral(left);
-            boolean integralRight = isIntegral(right);
-            if (integralLeft && integralRight) return left.longValue() == right.longValue();
-            if (integralLeft != integralRight) {
-                // Converting a long above 2^53 to double silently merges
-                // distinct numeric values. Compare exact finite decimal
-                // representations instead, matching static subsumption.
-                Number integer = integralLeft ? left : right;
-                Number floating = integralLeft ? right : left;
-                if (!Double.isFinite(floating.doubleValue())) return false;
-                return java.math.BigDecimal.valueOf(integer.longValue())
-                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
-            }
-            return left.doubleValue() == right.doubleValue();
+            // The static ADT subsumption checker uses this same exact rule.
+            return NumericValueEquality.equals(left, right);
         }
 
         private boolean isScalarEqualityCarrier(Object value) {
