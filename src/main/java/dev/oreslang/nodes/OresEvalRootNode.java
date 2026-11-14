@@ -18,6 +18,7 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OutboundHttpRequest;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.AtomicI64Cell;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -7730,6 +7731,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("Atomic")) return AtomicFactory.INSTANCE;
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("Bytes")) return BytesFactory.INSTANCE;
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
@@ -9112,6 +9114,10 @@ public final class OresEvalRootNode extends RootNode {
                             "unknown SelectResult member " + name);
                 };
             }
+            if (receiver instanceof AtomicFactory factory) {
+                if (!name.equals("new")) throw new IllegalArgumentException("unknown Atomic factory member " + name);
+                return (Invokable) factory::create;
+            }
             if (receiver instanceof MutexFactory factory) {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
@@ -9293,6 +9299,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
+            if (receiver instanceof AtomicI64Cell cell) return atomicMember(cell, name);
+            if (receiver instanceof AtomicI64Cell.CompareExchange result) {
+                return switch (name) {
+                    case "exchanged" -> result.exchanged();
+                    case "observed" -> result.observed();
+                    default -> throw new IllegalArgumentException("unknown AtomicCompareExchange member " + name);
+                };
+            }
             if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
             if (receiver instanceof OresMutex.Guard<?> guard) {
                 return switch (name) {
@@ -9728,6 +9742,59 @@ public final class OresEvalRootNode extends RootNode {
                             ? new OptionValue(true, result.value()) : new OptionValue(false, null);
                 };
                 default -> throw new IllegalArgumentException("unknown Result member " + name);
+            };
+        }
+
+        private static long atomicArgument(List<Object> args, int index, String operation) {
+            Object value = args.get(index);
+            if (!(value instanceof Long number)) {
+                throw new IllegalArgumentException(operation + " expects signed int arguments");
+            }
+            return number;
+        }
+
+        private Object atomicMember(AtomicI64Cell cell, String name) {
+            return switch (name) {
+                case "load" -> (Invokable) args -> {
+                    requireZero(args, "Atomic.load");
+                    return cell.load();
+                };
+                case "store" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.store");
+                    cell.store(atomicArgument(args, 0, "Atomic.store"));
+                    return null;
+                };
+                case "swap" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.swap");
+                    return cell.swap(atomicArgument(args, 0, "Atomic.swap"));
+                };
+                case "fetch_add" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.fetch_add");
+                    return cell.fetch_add(atomicArgument(args, 0, "Atomic.fetch_add"));
+                };
+                case "fetch_sub" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.fetch_sub");
+                    return cell.fetch_sub(atomicArgument(args, 0, "Atomic.fetch_sub"));
+                };
+                case "fetch_and" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.fetch_and");
+                    return cell.fetch_and(atomicArgument(args, 0, "Atomic.fetch_and"));
+                };
+                case "fetch_or" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.fetch_or");
+                    return cell.fetch_or(atomicArgument(args, 0, "Atomic.fetch_or"));
+                };
+                case "fetch_xor" -> (Invokable) args -> {
+                    requireOne(args, "Atomic.fetch_xor");
+                    return cell.fetch_xor(atomicArgument(args, 0, "Atomic.fetch_xor"));
+                };
+                case "compare_exchange" -> (Invokable) args -> {
+                    requireTwo(args, "Atomic.compare_exchange");
+                    return cell.compare_exchange(
+                            atomicArgument(args, 0, "Atomic.compare_exchange"),
+                            atomicArgument(args, 1, "Atomic.compare_exchange"));
+                };
+                default -> throw new IllegalArgumentException("unknown Atomic member " + name);
             };
         }
 
@@ -12262,6 +12329,19 @@ public final class OresEvalRootNode extends RootNode {
             return value == null ? List.of() : List.of(value);
         }
     }
+    /** Guest factory is intentionally limited to the compiler-checked i64 stage. */
+    private enum AtomicFactory {
+        INSTANCE;
+
+        private Object create(List<Object> args) {
+            requireOne(args, "Atomic.new");
+            if (!(args.getFirst() instanceof Long value)) {
+                throw new IllegalArgumentException("Atomic.new currently requires signed int");
+            }
+            return new AtomicI64Cell(value);
+        }
+    }
+
     private enum FutureFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 
