@@ -136,6 +136,74 @@ final class SupervisorControlSnapshotCoordinatorTest {
     }
 
     @Test
+    void failedDispatchAfterQueueCannotRunALateControlTurn() throws Exception {
+        var lateTurn = new AtomicReference<Runnable>();
+        ActorRuntime.ControlDispatcher dispatcher = turn -> {
+            lateTurn.set(turn);
+            throw new IllegalStateException("dispatcher failed after enqueue");
+        };
+        try (var runtime = runtime(dispatcher);
+             var service = new SupervisorControlSnapshotCoordinator(runtime);
+             ExecutorService worker = Executors.newSingleThreadExecutor()) {
+            Object session = new Object();
+            var g = grant(service, runtime, session);
+            var failed = read(service, g, session);
+            assertCode(failed, "CONTROL_UNAVAILABLE");
+            assertEquals(0, service.activeControlRequests());
+            assertNotNull(lateTurn.get());
+            // An old queued command is no longer authorized to start after
+            // its dispatch-failure path won the physical start/abandon gate.
+            worker.submit(lateTurn.get()).get(5, TimeUnit.SECONDS);
+            assertEquals(0, service.activeControlRequests());
+        }
+    }
+
+    @Test
+    void dispatchFailureWhileControlIsRunningRetainsPhysicalSlotUntilExit() throws Exception {
+        var turn = new AtomicReference<Runnable>();
+        var completion = new AtomicReference<OresFuture.Callback<Void>>();
+        var captureEntered = new CountDownLatch(1);
+        var finishCapture = new CountDownLatch(1);
+        ActorRuntime.ControlDispatcher dispatcher = task ->
+                OresFuture.<Void>fromCallback(done -> {
+                    turn.set(task);
+                    completion.set(done);
+                });
+        try (var runtime = runtime(dispatcher);
+             var observer = new SupervisorRegistryObservation(
+                     runtime, System::nanoTime, () -> {
+                         captureEntered.countDown();
+                         try {
+                             if (!finishCapture.await(5, TimeUnit.SECONDS))
+                                 throw new IllegalStateException("test capture timed out");
+                         } catch (InterruptedException interrupted) {
+                             Thread.currentThread().interrupt();
+                             throw new IllegalStateException("test interrupted", interrupted);
+                         }
+                         return java.time.Instant.now();
+                     });
+             var service = new SupervisorControlSnapshotCoordinator(runtime, observer);
+             ExecutorService worker = Executors.newSingleThreadExecutor()) {
+            Object session = new Object();
+            var g = grant(service, runtime, session);
+            var pending = read(service, g, session);
+            var job = worker.submit(turn.get());
+            try {
+                assertTrue(captureEntered.await(2, TimeUnit.SECONDS),
+                        "physical CONTROL turn never entered observation");
+                completion.get().reject(new IllegalStateException("dispatcher completion failed"));
+                assertCode(pending, "CONTROL_DISPATCH_FAILED");
+                assertEquals(1, service.activeControlRequests(),
+                        "dispatch failure freed an actively executing CONTROL slot");
+            } finally {
+                finishCapture.countDown();
+            }
+            job.get(5, TimeUnit.SECONDS);
+            assertEquals(0, service.activeControlRequests());
+        }
+    }
+
+    @Test
     void queuedDeadlineRetainsCapacityUntilPhysicalTurnFinishes() throws Exception {
         var queue = new QueuedControl();
         try (var runtime = runtime(queue.dispatcher());
