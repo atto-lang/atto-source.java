@@ -8745,6 +8745,9 @@ public final class TypeChecker {
                 .reduce(Types::unionOf).orElse(Unknown.INSTANCE);
     }
 
+    /** Compiler memory-safety budget: avoid exponential scalar-string folding. */
+    private static final int MAX_CONST_STRING_CHARS = 1_048_576;
+
     /** Only closed primitive locals enter the first const parity slice. */
     private boolean isScalarConstLocal(Ast.BindingStmt binding) {
         Ast.TypeRef type = binding.declaredType();
@@ -8761,6 +8764,11 @@ public final class TypeChecker {
         if (depth > 64) throw new IllegalArgumentException(
                 "E_CONST_EVAL_BUDGET: scalar constant expression exceeds nesting limit");
         if (expression instanceof Ast.LiteralExpr literal) {
+            if (literal.value() instanceof String string
+                    && string.length() > MAX_CONST_STRING_CHARS) {
+                throw new IllegalArgumentException(
+                        "E_CONST_EVAL_BUDGET: compile-time string exceeds size limit");
+            }
             return literal.value() instanceof Long || literal.value() instanceof Boolean
                     || literal.value() instanceof String ? literal.value() : null;
         }
@@ -8811,7 +8819,13 @@ public final class TypeChecker {
             }
             if (left instanceof String a && right instanceof String b) {
                 return switch (operator) {
-                    case "+" -> a + b;
+                    case "+" -> {
+                        if (a.length() > MAX_CONST_STRING_CHARS - b.length()) {
+                            throw new IllegalArgumentException(
+                                    "E_CONST_EVAL_BUDGET: compile-time string concatenation exceeds size limit");
+                        }
+                        yield a + b;
+                    }
                     case "eq", "==" -> a.equals(b);
                     case "neq", "!=" -> !a.equals(b);
                     default -> null;
