@@ -46,6 +46,12 @@ public final class OwnershipChecker {
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    // Nominal actor identity must not depend on unqualified name lookup.
+    // Two modules may each declare an actor named Worker, and an ambiguous
+    // string-based findClass("Worker") cannot determine whether a self
+    // capability may escape. Track the exact PARAM binding by identity.
+    private final Set<VarState> actorSelfBindings =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
     /** Exact immutable Program identity checked by this ownership pass. */
@@ -356,6 +362,9 @@ public final class OwnershipChecker {
                                         receiverKind,
                                         Origin.PARAM));
                     }
+                }
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    actorSelfBindings.add(scope.lookup("self"));
                 }
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
@@ -4502,13 +4511,12 @@ public final class OwnershipChecker {
         VarState current = state;
         Set<VarState> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         while (current != null && seen.add(current)) {
-            if ("self".equals(current.debugName)
+            if (actorSelfBindings.contains(current)
+                    && "self".equals(current.debugName)
                     && (current.kind == ValueKind.MUT_BORROW
                             || current.kind == ValueKind.IMM_BORROW)
                     && current.origin == Origin.PARAM) {
-                Ast.TypeRef type = current.type.isBorrow() ? current.type.borrowedTarget() : current.type;
-                Ast.ClassDecl klass = findClass(type.name());
-                return klass != null && klass.actorKind() != Ast.ActorKind.NONE;
+                return true;
             }
             current = current.aliasSource != null ? current.aliasSource : current.borrowSource;
         }
@@ -4976,6 +4984,7 @@ public final class OwnershipChecker {
                         source.kind,
                         Origin.PARAM);
                 continuation.define(capture.name, self);
+                actorSelfBindings.add(self);
                 continue;
             }
 
