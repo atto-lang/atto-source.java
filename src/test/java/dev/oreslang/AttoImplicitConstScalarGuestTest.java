@@ -83,7 +83,7 @@ final class AttoImplicitConstScalarGuestTest {
         }
         for (String name : new String[] {
                 "implicit-nonconst", "explicit-nonconst",
-                "const-mut-scalar", "const-overflow"
+                "const-mut-scalar", "const-overflow", "implicit-rebind", "explicit-rebind"
         }) {
             Path fixture = Path.of("contracts/implicit-const-scalar-v1/" + name + ".atto");
             assertTrue(Files.isRegularFile(fixture), name);
@@ -93,6 +93,7 @@ final class AttoImplicitConstScalarGuestTest {
                 case "implicit-nonconst", "explicit-nonconst" -> "E_NON_CONST_INITIALIZER";
                 case "const-mut-scalar" -> "E_CONST_MUT_UNSUPPORTED";
                 case "const-overflow" -> "E_CONST_OVERFLOW";
+                case "implicit-rebind", "explicit-rebind" -> "E_IMMUTABLE_REBIND";
                 default -> throw new AssertionError("unrecognized fixture");
             };
             assertTrue(error.getMessage().contains(expected),
