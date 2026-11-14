@@ -77,7 +77,9 @@ final class StrictAttoPrimitiveBytecodeTest {
                     Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                     "-Xint", // disable HotSpot JIT: generated guest bytecode is self-contained
                     "-cp", output.toString(), "Run")
-                    .redirectErrorStream(true).start();
+                    // Guest output is stdout; JVM diagnostics (e.g. GraalVM's "JVMCI Compiler
+                    // disabled due to -Xint") stay visible on the test log without polluting it.
+                    .redirectError(ProcessBuilder.Redirect.INHERIT).start();
             boolean finished = process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
             if (!finished) {
                 process.destroyForcibly();
