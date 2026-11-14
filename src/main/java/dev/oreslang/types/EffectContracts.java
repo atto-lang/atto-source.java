@@ -152,11 +152,17 @@ public final class EffectContracts {
                 throw new IllegalArgumentException("unknown effect callable: " + symbol);
             }
             Objects.requireNonNull(callbacks, "callbacks");
+            // Resolve once: caller-owned mutable maps cannot alter the target
+            // between validation and graph construction (effect laundering).
+            Map<String, String> fixed = Map.copyOf(callbacks);
             Set<String> slots = new java.util.HashSet<>();
             for (Call call : root.calls()) {
                 if (call.callbackParameter()) slots.add(call.target());
             }
-            for (Map.Entry<String, String> entry : callbacks.entrySet()) {
+            if (fixed.size() > slots.size()) {
+                throw new IllegalArgumentException("too many callback bindings");
+            }
+            for (Map.Entry<String, String> entry : fixed.entrySet()) {
                 if (!slots.contains(entry.getKey())) {
                     throw new IllegalArgumentException("undeclared callback slot: " + entry.getKey());
                 }
@@ -172,8 +178,8 @@ public final class EffectContracts {
                 }
                 List<Call> bound = new ArrayList<>(def.calls().size());
                 for (Call call : def.calls()) {
-                    if (call.callbackParameter() && callbacks.containsKey(call.target())) {
-                        bound.add(Call.direct(callbacks.get(call.target())));
+                    if (call.callbackParameter() && fixed.containsKey(call.target())) {
+                        bound.add(Call.direct(fixed.get(call.target())));
                     } else {
                         bound.add(call);
                     }
