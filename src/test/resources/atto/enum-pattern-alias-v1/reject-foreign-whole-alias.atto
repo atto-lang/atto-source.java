@@ -1,0 +1,9 @@
+define enum WorkerMsg { Run, Stop }
+define enum OtherMsg { Run, Stop }
+
+fnc bad(WorkerMsg msg): int {
+    return match msg over {
+        on OtherMsg.Run as r { return 1; }
+        on Stop { return 0; }
+    };
+}
