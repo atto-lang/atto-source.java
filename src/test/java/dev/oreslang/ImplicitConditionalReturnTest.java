@@ -91,6 +91,15 @@ final class ImplicitConditionalReturnTest {
     }
 
     @Test
+    void bracedImperativeIfDoesNotGainImplicitReturn() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): int {
+                  if true { 42; } else { 1; }
+                }
+                """)));
+    }
+
+    @Test
     void missingElseDoesNotProveTotalReturn() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 pub fnc main(): int {

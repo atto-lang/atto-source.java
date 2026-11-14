@@ -2167,13 +2167,18 @@ public final class Parser {
 
     // Preserve statement behavior outside a non-void callable's final
     // expression; tail values are lowered to the existing ReturnStmt.
-    private static List<Ast.Stmt> lowerCallableTail(
+    // The parser retains keyword-vs-brace identity until callable-tail lowering.
+    // Braced conditionals are imperative and never become implicit returns.
+    private final java.util.Set<Ast.IfStmt> keywordIfStatements =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    private List<Ast.Stmt> lowerCallableTail(
             List<Ast.Stmt> statements, Ast.TypeRef returnType, boolean generator) {
         if (generator || returnType == null || "void".equals(returnType.name())) return statements;
         return lowerTailStatements(statements);
     }
 
-    private static List<Ast.Stmt> lowerTailStatements(List<Ast.Stmt> statements) {
+    private List<Ast.Stmt> lowerTailStatements(List<Ast.Stmt> statements) {
         if (statements.isEmpty()) return statements;
         List<Ast.Stmt> result = new ArrayList<>(statements);
         int last = result.size() - 1;
@@ -2181,12 +2186,13 @@ public final class Parser {
         return List.copyOf(result);
     }
 
-    private static Ast.Stmt lowerTailStatement(Ast.Stmt statement) {
+    private Ast.Stmt lowerTailStatement(Ast.Stmt statement) {
         if (statement instanceof Ast.ExprStmt expression)
             return new Ast.ReturnStmt(expression.expression());
         if (statement instanceof Ast.BlockStmt block)
             return new Ast.BlockStmt(lowerTailStatements(block.body()));
-        if (statement instanceof Ast.IfStmt conditional) {
+        if (statement instanceof Ast.IfStmt conditional &&
+                keywordIfStatements.contains(conditional)) {
             List<Ast.IfBranch> branches = new ArrayList<>();
             for (Ast.IfBranch branch : conditional.branches())
                 branches.add(new Ast.IfBranch(branch.condition(), lowerTailStatements(branch.body())));
@@ -3239,7 +3245,7 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseBlock();
-            return lowerConditionBindings(branches, bindings, elseBody);
+            return lowerConditionBindings(branches, bindings, elseBody, false);
         }
 
         // Canonical keyword-delimited form:
@@ -3270,7 +3276,7 @@ public final class Parser {
         List<Ast.Stmt> elseBody = List.of();
         if (match(ELSE)) elseBody = parseKeywordIfArm(FI);
         consume(FI, "expected 'fi' to close if");
-        return lowerConditionBindings(branches, bindings, elseBody);
+        return lowerConditionBindings(branches, bindings, elseBody, true);
     }
 
     private void consumeConditionalThen(String branch) {
@@ -3360,15 +3366,20 @@ public final class Parser {
     }
 
     private Ast.Stmt lowerConditionBindings(List<Ast.IfBranch> branches,
-            List<Ast.BindingStmt> bindings, List<Ast.Stmt> elseBody) {
+            List<Ast.BindingStmt> bindings, List<Ast.Stmt> elseBody,
+            boolean keywordDelimited) {
         if (bindings.stream().allMatch(java.util.Objects::isNull)) {
-            return new Ast.IfStmt(branches, elseBody);
+            Ast.IfStmt conditional = new Ast.IfStmt(branches, elseBody);
+            if (keywordDelimited) keywordIfStatements.add(conditional);
+            return conditional;
         }
         // A later initializer is evaluated only if every preceding test failed.
         List<Ast.Stmt> fallback = elseBody;
         Ast.Stmt result = null;
         for (int i = branches.size() - 1; i >= 0; i--) {
-            result = new Ast.IfStmt(List.of(branches.get(i)), fallback);
+            Ast.IfStmt conditional = new Ast.IfStmt(List.of(branches.get(i)), fallback);
+            if (keywordDelimited) keywordIfStatements.add(conditional);
+            result = conditional;
             if (bindings.get(i) != null) {
                 result = new Ast.BlockStmt(List.of(bindings.get(i), result));
             }
