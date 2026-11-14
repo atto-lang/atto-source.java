@@ -7869,6 +7869,12 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof ResultValue result) {
                 return containsAtomicCell(result.value(), seen, budget);
             }
+            if (value instanceof ActorRuntime.Shared<?> shared) {
+                return containsAtomicCell(shared.value(), seen, budget);
+            }
+            if (value instanceof OresKeyedMap<?, ?> keyed) {
+                return containsAtomicCell(keyed.shallowSnapshot(), seen, budget);
+            }
             if (value instanceof OresObject object) {
                 for (Object field : object.fields.values())
                     if (containsAtomicCell(field, seen, budget)) return true;
