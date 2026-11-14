@@ -212,6 +212,116 @@ final class ActorForwardNamespaceReceiverTest {
     }
 
     @Test
+    void declarationOnlyActorsBindTypeFirstMethodsWithSameName() {
+        Ast.Program program = Parser.parse("""
+                use namespace workers;
+                declare actor Foo1;
+                declare actor Foo2;
+
+                mtd (Foo1 self) foo(): void { return; }
+                mtd (Foo2 self) foo(): void { return; }
+                """);
+        assertEquals("workers", program.namespace());
+        var declarations = program.modules().getFirst().declarations();
+        assertEquals(2, declarations.size(),
+                "forward declarations plus methods create two runtime nominal actor types");
+        var foo1 = assertInstanceOf(Ast.ClassDecl.class, declarations.get(0));
+        var foo2 = assertInstanceOf(Ast.ClassDecl.class, declarations.get(1));
+        assertEquals("Foo1", foo1.name());
+        assertEquals("Foo2", foo2.name());
+        assertEquals(Ast.ActorKind.SHARED, foo1.actorKind());
+        assertEquals(Ast.ActorKind.SHARED, foo2.actorKind());
+        assertEquals("foo", foo1.methods().getFirst().name());
+        assertEquals("foo", foo2.methods().getFirst().name());
+        assertEquals("Foo1", foo1.methods().getFirst().explicitReceiverType().name());
+        assertEquals("Foo2", foo2.methods().getFirst().explicitReceiverType().name());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void twoModulesMayDeclareSameActorNameWithDistinctExternalFoo() {
+        Ast.Program program = Parser.parse("""
+                use namespace workers;
+                define module first as
+                  declare actor Foo;
+                  mtd (Foo self) foo(): int { return 1; }
+                end
+                define module second as
+                  declare actor Foo;
+                  mtd (Foo self) foo(): int { return 2; }
+                end
+                """);
+        assertEquals(2, program.modules().size());
+        for (var module : program.modules()) {
+            assertEquals(1, module.declarations().size());
+            assertEquals("foo", ((Ast.ClassDecl) module.declarations()
+                    .getFirst()).methods().getFirst().name());
+        }
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(program));
+    }
+
+    @Test
+    void declarationOnlyActorCannotSpoofRuntimeStateAuthority() {
+        for (var method : new String[]{
+                "mtd (Foo self) handle_state(): void { return; }",
+                "mtd (Foo self) send(): void { return; }",
+                "mtd (Foo self) on_panic(): void { return; }",
+                "mtd (Foo self) tear_down(): void { return; }"
+        }) {
+            reject("declare actor Foo; " + method,
+                    "reserved for compiler-owned lifecycle/state authority");
+        }
+        reject("""
+                declare actor Foo;
+                define actor Foo as
+                  let int secret;
+                end
+                mtd (Foo self) foo(): int { return self.secret; }
+                """, "sealed state");
+        reject("declare actor Foo; mtd (Unrelated self) foo(): void { return; }",
+                "must be declared");
+        reject("""
+                declare actor Foo;
+                mtd (Foo self) foo(): void { return; }
+                mtd (Foo self) foo(): void { return; }
+                """, "duplicate receiver method");
+    }
+
+    @Test
+    void typeFirstClassReceiverCoexistsWithLegacySelfFirstSyntax() {
+        Ast.Program program = Parser.parse("""
+                define class Point as
+                  pub let int x = 42;
+                end
+                mtd (Point self) answer(): int { return self.x; }
+                mtd (self: Point) other(): int { return self.x; }
+                """);
+        var point = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertEquals(2, point.methods().size());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void declarationOnlyActorsExecuteSharedNamedMethods() throws Exception {
+        String source;
+        try (var stream = getClass().getResourceAsStream(
+                "/atto/mtd-receiver-v1/declared-actors-type-first.atto")) {
+            assertNotNull(stream);
+            source = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        var program = Parser.parse(source);
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+        var guest = Source.newBuilder(OresLanguage.ID, source, "declared-actors-type-first.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        var output = new ByteArrayOutputStream();
+        try (var context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("41|42", output.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void actualTwoActorGuestRunsWithIndependentMethodSets() throws Exception {
         String source;
         try (var stream = getClass().getResourceAsStream(
