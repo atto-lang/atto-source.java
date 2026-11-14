@@ -96,7 +96,10 @@ final class ActorReadWriteLoansTest {
             a.get(5, TimeUnit.SECONDS);
             b.get(5, TimeUnit.SECONDS);
             assertEquals(0, gate.activeCount());
-            assertNotNull(gate.tryWrite(new Object()));
+            var afterReaders = gate.tryWrite(new Object());
+            assertNotNull(afterReaders);
+            afterReaders.close();
+            assertEquals(0, gate.activeCount());
         }
     }
 }
