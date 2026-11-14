@@ -1,0 +1,14 @@
+define enum WorkerMsg {
+    Run { job_id: int, payload: Bytes },
+    Stop
+}
+
+fnc safe_read(WorkerMsg msg): int {
+    do match msg over
+        on Run { job_id, payload } as r -> {
+            val view = r.payload;
+            return r.job_id + job_id;
+        }
+        on Stop -> { return 0; }
+    end
+}
