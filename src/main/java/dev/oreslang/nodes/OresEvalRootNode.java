@@ -8076,7 +8076,11 @@ public final class OresEvalRootNode extends RootNode {
                 String name = constructor.constructor();
                 if (value instanceof EnumValue variant) {
                     String expected = variant.enumName() + "." + variant.variantName();
-                    if (!name.equals(expected) || !validNominalEnum(variant)) return false;
+                    // Unqualified enum cases are checked against the nominal
+                    // scrutinee by TypeChecker. Runtime dispatch accepts that
+                    // relative spelling only for an authenticated EnumValue.
+                    if (!(name.equals(expected) || name.equals(variant.variantName()))
+                            || !validNominalEnum(variant)) return false;
                     if (variant.payload() == null) return constructor.arguments().isEmpty();
                     return constructor.arguments().size() == 1
                             && patternMatches(constructor.arguments().getFirst(), variant.payload(), bindings);
