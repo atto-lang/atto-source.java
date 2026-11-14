@@ -378,6 +378,54 @@ final class ActorSourceLifecycleGateTest {
                 "duplicate READY commit is not an init-stop control signal");
     }
 
+
+    @Test
+    void readyForRetirementRequiresStopInitQuiescenceAndFinishedTeardown() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        assertFalse(gate.readyForRetirement(), "NEW is not stopped");
+        gate.beginInit(owner, TYPE);
+        assertFalse(gate.readyForRetirement(), "initializer is still running");
+        gate.commitInit(state(owner));
+        assertFalse(gate.readyForRetirement(), "READY is still live");
+        gate.sealStop(true);
+        assertFalse(gate.readyForRetirement(),
+                "a graceful STOP must not skip tear_down");
+        gate.beginTeardown(owner, TYPE, state(owner));
+        assertFalse(gate.readyForRetirement(),
+                "a running tear_down is an actor-memory user");
+        gate.finishTeardown(owner, TYPE);
+        assertTrue(gate.readyForRetirement());
+        gate.close();
+    }
+
+    @Test
+    void stopWinningBeforeBeginInitMintsOnlyTypedCancellation() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.sealStop(false);
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class,
+                () -> gate.beginInit(owner, TYPE));
+        assertFalse(gate.initializationActive(),
+                "failed admission may not pin an initializer that never ran");
+        assertTrue(gate.readyForRetirement());
+        gate.close();
+    }
+
+    @Test
+    void failedInitializationWithoutStopStillPinsLiveLifecycle() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.failInit();
+        assertFalse(gate.readyForRetirement(),
+                "failed initialization is not a substitute for STOP");
+        assertThrows(IllegalStateException.class, gate::close);
+        gate.sealStop(false);
+        assertTrue(gate.readyForRetirement());
+        gate.close();
+    }
+
     @Test
     void blankActorTypeCannotCreateGate() {
         var owner = ActorRuntime.ActorId.create();
