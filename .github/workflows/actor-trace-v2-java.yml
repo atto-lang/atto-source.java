@@ -1,0 +1,41 @@
+name: JVM actual actor host trace v2 (not compiled Atto guest)
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/runtime/ActorTraceContractIntegrationTest.java'
+      - 'contracts/actor-trace-v2.json'
+      - 'scripts/check_actor_trace_v2.py'
+      - '.github/workflows/actor-trace-v2-java.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  jvm-host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact commit
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git rev-parse 'HEAD^{tree}'
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Execute real JVM actor JUnit ingress and retirement probe
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=ActorTraceContractIntegrationTest test
+          test -s target/actor-trace-graal-v2.json
+          python3 scripts/check_actor_trace_v2.py target/actor-trace-graal-v2.json
+          python3 -c "import json; t=json.load(open('target/actor-trace-graal-v2.json')); assert len(t['events'])==75; assert t['producer']['subject']=='runtime_host'"
+          echo 'JVM_ACTOR_HOST_TRACE_V2=PASS'
+          echo 'COMPILED_ATTO_GUEST=NOT_EXECUTED'
