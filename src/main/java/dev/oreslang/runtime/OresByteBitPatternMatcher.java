@@ -34,22 +34,30 @@ public final class OresByteBitPatternMatcher {
         if (prefix > sourceUnits || (pattern.tail() == null && prefix != sourceUnits))
             return null;
 
-        // Deliberately lazy: exact literal-only and ignored-tail patterns
-        // allocate no match or capture object in the Java guest evaluator.
-        LinkedHashMap<String, Object> matches = null;
+        // Check the entire literal decision plan before allocating *any*
+        // scalar capture record. A failed arm after an early binding must not
+        // create throwaway heap objects under heavy actor mailbox traffic.
         for (int i = 0; i < prefix; i++) {
             Ast.SequenceElement element = pattern.elements().get(i);
+            if (element.literal() == null) continue;
             int scalar = pattern.unit() == Ast.SequenceUnit.BYTE
                     ? owner.byteAt(i)
                     : ((owner.byteAt(i >>> 3) >>> (7 - (i & 7))) & 1);
-            if (element.literal() != null && element.literal() != scalar)
-                return null;
-            String name = element.binding();
-            if (name != null && !name.equals("_")) {
-                if (matches == null) matches = new LinkedHashMap<>();
-                matches.put(name, pattern.unit() == Ast.SequenceUnit.BYTE
-                        ? (Object) (long) scalar : (Object) (scalar != 0));
-            }
+            if (element.literal() != scalar) return null;
+        }
+
+        // No source binders: exact and ignored-tail patterns succeed with
+        // the same shared singleton map, without any capture allocation.
+        LinkedHashMap<String, Object> matches = null;
+        for (int i = 0; i < prefix; i++) {
+            String name = pattern.elements().get(i).binding();
+            if (name == null || name.equals("_")) continue;
+            if (matches == null) matches = new LinkedHashMap<>();
+            int scalar = pattern.unit() == Ast.SequenceUnit.BYTE
+                    ? owner.byteAt(i)
+                    : ((owner.byteAt(i >>> 3) >>> (7 - (i & 7))) & 1);
+            matches.put(name, pattern.unit() == Ast.SequenceUnit.BYTE
+                    ? (Object) (long) scalar : (Object) (scalar != 0));
         }
         return matches == null ? Map.of() : matches;
     }
