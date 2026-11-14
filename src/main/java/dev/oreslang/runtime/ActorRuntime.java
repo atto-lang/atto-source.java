@@ -9062,8 +9062,7 @@ public final class ActorRuntime implements AutoCloseable {
                     // independently protects future concurrent lowering;
                     // source-scheduler pins remain a separate required gate.
                     || (sourceLifecycleGate != null
-                            && (sourceLifecycleGate.activeReceives() != 0
-                                    || sourceLifecycleGate.teardownActive()))
+                            && !sourceLifecycleGate.readyForRetirement())
                     || scheduled.get()
                     || carrierActive
                     || activeAsyncSendAdmissions != 0
