@@ -161,8 +161,12 @@ final class ActorContinuationLedger {
                 if (discardedCodeLease != null) releaseTerminal(discardedCodeLease);
                 return;
             }
+            Throwable callbackFailure = null;
             try {
                 admittedCallback.run();
+            } catch (RuntimeException | Error failure) {
+                callbackFailure = failure;
+                throw failure;
             } finally {
                 final AutoCloseable completedCodeLease;
                 synchronized (ActorContinuationLedger.this) {
@@ -171,8 +175,16 @@ final class ActorContinuationLedger {
                     completedCodeLease = codeLease;
                     codeLease = null;
                 }
-                // This is a physical callback exit, including thrown errors.
-                if (completedCodeLease != null) releaseTerminal(completedCodeLease);
+                // Preserve the exact guest callback failure as primary; a
+                // failed owned-resource drop must remain visible as suppressed
+                // evidence instead of replacing that failure on unwind.
+                try {
+                    releaseTerminal(completedCodeLease);
+                } catch (RuntimeException | Error releaseFailure) {
+                    if (callbackFailure == null) throw releaseFailure;
+                    if (callbackFailure != releaseFailure)
+                        callbackFailure.addSuppressed(releaseFailure);
+                }
             }
         }
 
