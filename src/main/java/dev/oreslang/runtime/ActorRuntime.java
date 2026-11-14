@@ -566,6 +566,130 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     /** Stable *runtime-local* WAL actor slot, never a persistent database identity. */
     private final AtomicLong nextStorageActorOrdinal = new AtomicLong(1);
+    // Observation is host-only, runtime-local and metadata-only. Object identity
+    // grants cannot be forged by supplying an ActorRef or a serialized ID.
+    private long observationGeneration = 1;
+    private final Object observationLock = new Object();
+    private final LinkedHashMap<ActorId, ActorObservation> observationRetired = new LinkedHashMap<>();
+    public record ActorObservation(String id, String supervisorId, String spawnedBy,
+            String kind, String status, long generation, String observedAt,
+            int mailboxDepth, int inFlightRequests) { }
+    public record SupervisorObservation(String id, String parentId, String status,
+            long generation, String observedAt) { }
+    public record RuntimeObservation(long generation, boolean partial,
+            List<SupervisorObservation> supervisors, List<ActorObservation> actors) { }
+    public final class ObservationGrant {
+        private final ActorSupervisor root;
+        private final long generation;
+        private final long deadline;
+        private volatile boolean revoked;
+        private ObservationGrant(ActorSupervisor root, long ttlMillis) {
+            this.root = root;
+            this.generation = observationGeneration;
+            this.deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ttlMillis);
+        }
+        public void revoke() { revoked = true; }
+    }
+    public ObservationGrant grantObservation(ActorSupervisor root, long ttlMillis) {
+        requireSupervisorContext("grant runtime observation");
+        requireCallerRuntimeAffinity("grant runtime observation");
+        if (root == null || closed.get() || supervisors.get(root.id) != root || ttlMillis < 1 || ttlMillis > 60000)
+            throw new SecurityException("observation denied");
+        synchronized (observationLock) { return new ObservationGrant(root, ttlMillis); }
+    }
+    public void advanceObservationGeneration() {
+        requireSupervisorContext("advance observation incarnation");
+        synchronized (observationLock) { observationGeneration = Math.addExact(observationGeneration, 1); observationRetired.clear(); }
+    }
+    private boolean withinObservationScope(ActorSupervisor node, ActorSupervisor root) {
+        for (ActorSupervisor cursor = node; cursor != null; cursor = cursor.parent)
+            if (cursor == root) return true;
+        return false;
+    }
+    private ActorSupervisor observationSupervisor(ActorCell<?> cell) {
+        ActorGroupId groupId = cell.managedByGroup.get();
+        ActorGroup group = groupId == null ? null : actorGroups.get(groupId);
+        return group == null ? rootSupervisor : group.supervisor;
+    }
+    private ActorObservation observeCell(ActorCell<?> cell, boolean retired) {
+        ActorSupervisor owner = observationSupervisor(cell);
+        synchronized (cell.lifecycleLock) {
+            synchronized (cell.mailboxAccountingLock) {
+                return new ActorObservation(cell.ref.id().toString(), owner.id.toString(),
+                    cell.parent == null ? null : cell.parent.ref.id().toString(),
+                    cell.managedByGroup.get() == null ? "unmanaged-supervision-unknown" : cell.kind.name(),
+                    retired ? "terminated" : cell.stopped.get() ? "stopping" :
+                        cell.behavior == null && cell.codeActorState == null ? "starting" : "running",
+                    cell.ref.generation(), java.time.Instant.now().toString(), cell.queuedUserMessages,
+                    cell.activeMail == null ? 0 : 1);
+            }
+        }
+    }
+    public RuntimeObservation observe(ObservationGrant grant, int maxNodes) {
+        requireSupervisorContext("observe runtime");
+        if (grant == null || maxNodes < 1 || maxNodes > 10000)
+            throw new SecurityException("observation denied");
+        synchronized (observationLock) {
+            // Non-static inner capabilities still need an explicit runtime-owner check.
+            if (grant.revoked || grant.generation != observationGeneration ||
+                supervisors.get(grant.root.id) != grant.root || closed.get() ||
+                System.nanoTime() - grant.deadline >= 0) throw new SecurityException("observation denied");
+        }
+        List<SupervisorObservation> ss = new ArrayList<>();
+        List<ActorObservation> aa = new ArrayList<>();
+        boolean partial = false;
+        for (ActorSupervisor supervisor : supervisors.values().stream().sorted(
+                java.util.Comparator.comparingInt(x -> { int d = 0; for (ActorSupervisor n = x; n.parent != null; n = n.parent) d++; return d; })).toList()) {
+            if (!withinObservationScope(supervisor, grant.root)) continue;
+            if (ss.size() + aa.size() >= maxNodes) { partial = true; continue; }
+            ss.add(new SupervisorObservation(supervisor.id.toString(), supervisor == grant.root ? null :
+                supervisor.parent.id.toString(), "observed", grant.generation, java.time.Instant.now().toString()));
+        }
+        // Weakly consistent registry: local records are atomic, the whole report is not.
+        for (ActorCell<?> cell : List.copyOf(actors.values())) {
+            ActorObservation record = observeCell(cell, false);
+            ActorSupervisor owner = supervisors.values().stream()
+                .filter(x -> x.id.toString().equals(record.supervisorId)).findFirst().orElse(null);
+            if (owner == null || !withinObservationScope(owner, grant.root)) continue;
+            if (ss.stream().noneMatch(x -> x.id.equals(record.supervisorId)) || ss.size() + aa.size() >= maxNodes) {
+                partial = true; continue;
+            }
+            aa.add(record);
+        }
+        synchronized (observationLock) {
+            for (ActorObservation a : observationRetired.values()) {
+                ActorSupervisor owner = supervisors.values().stream()
+                    .filter(x -> x.id.toString().equals(a.supervisorId)).findFirst().orElse(null);
+                if (owner == null || ss.stream().noneMatch(x -> x.id.equals(owner.id.toString())) || !withinObservationScope(owner, grant.root) ||
+                    aa.stream().anyMatch(x -> x.id.equals(a.id))) continue;
+                if (ss.size() + aa.size() >= maxNodes) { partial = true; continue; }
+                aa.add(a);
+            }
+            if (grant.revoked || grant.generation != observationGeneration || closed.get() ||
+                    System.nanoTime() - grant.deadline >= 0) throw new SecurityException("observation denied");
+        }
+        // Ancestry is not authority. A parent outside this observation must not
+        // leak through an otherwise correctly scoped child record.
+        Set<String> visible = new java.util.HashSet<>();
+        aa.forEach(a -> visible.add(a.id));
+        List<ActorObservation> scoped = new ArrayList<>();
+        for (ActorObservation a : aa) {
+            if (a.spawnedBy != null && !visible.contains(a.spawnedBy)) {
+                partial = true;
+                a = new ActorObservation(a.id, a.supervisorId, null, a.kind, a.status,
+                    a.generation, a.observedAt, a.mailboxDepth, a.inFlightRequests);
+            }
+            scoped.add(a);
+        }
+        // Recheck after projection too. Concurrent revocation/epoch advance
+        // linearizes against this final disclosure fence.
+        synchronized (observationLock) {
+            if (grant.revoked || grant.generation != observationGeneration || closed.get() ||
+                    System.nanoTime() - grant.deadline >= 0) throw new SecurityException("observation denied");
+        }
+        return new RuntimeObservation(grant.generation, partial, List.copyOf(ss), List.copyOf(scoped));
+    }
+
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
@@ -6022,6 +6146,12 @@ public final class ActorRuntime implements AutoCloseable {
                     deregistrationFailure.addSuppressed(failure);
                 }
             }
+        }
+        ActorObservation retiredObservation = observeCell(cell, true);
+        synchronized (observationLock) {
+            observationRetired.put(cell.ref.id(), retiredObservation);
+            while (observationRetired.size() > 512)
+                observationRetired.remove(observationRetired.keySet().iterator().next());
         }
         if (actors.remove(cell.ref.id(), cell)) {
             int remaining = actorCount.decrementAndGet();
