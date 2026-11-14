@@ -8962,7 +8962,13 @@ public final class ActorRuntime implements AutoCloseable {
                     // Teardown is a terminal once-only actor-owned turn,
                     // never a callable guest method or a new mailbox receive.
                     sourceLifecycleGate.beginTeardown(ref.id(), codeActorType, state);
-                    codeExecutor.tearDownActor(codeActorType, state, sourceContext);
+                    try {
+                        codeExecutor.tearDownActor(codeActorType, state, sourceContext);
+                    } finally {
+                        // Physical actor memory remains pinned even when STOP,
+                        // cancellation or a guest exception races teardown.
+                        sourceLifecycleGate.finishTeardown(ref.id(), codeActorType);
+                    }
                 }
             } finally {
                 synchronized (lifecycleLock) {
@@ -9056,7 +9062,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // independently protects future concurrent lowering;
                     // source-scheduler pins remain a separate required gate.
                     || (sourceLifecycleGate != null
-                            && sourceLifecycleGate.activeReceives() != 0)
+                            && (sourceLifecycleGate.activeReceives() != 0
+                                    || sourceLifecycleGate.teardownActive()))
                     || scheduled.get()
                     || carrierActive
                     || activeAsyncSendAdmissions != 0
