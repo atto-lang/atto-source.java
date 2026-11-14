@@ -78,42 +78,56 @@ public final class FunctionalCallbackEffectAnalysisV1 {
             this.sites = sites;
         }
 
+        private int visited;
+
         void statement(Ast.Stmt statement) {
+            statement(statement, 0);
+        }
+
+        private void statement(Ast.Stmt statement, int depth) {
+            if (depth > 64 || ++visited > 8192) {
+                complete = false;
+                return;
+            }
             if (statement instanceof Ast.ReturnStmt ret) {
-                if (ret.value() != null) expression(ret.value());
+                if (ret.value() != null) expression(ret.value(), depth + 1);
             } else if (statement instanceof Ast.BindingStmt binding) {
-                if (binding.initializer() != null) expression(binding.initializer());
+                if (binding.initializer() != null) expression(binding.initializer(), depth + 1);
             } else if (statement instanceof Ast.ExprStmt value) {
-                expression(value.expression());
+                expression(value.expression(), depth + 1);
             } else if (statement instanceof Ast.BlockStmt block) {
-                for (Ast.Stmt next : block.body()) statement(next);
+                for (Ast.Stmt next : block.body()) statement(next, depth + 1);
             } else {
                 complete = false;
             }
         }
 
-        void expression(Ast.Expr expression) {
+        private void expression(Ast.Expr expression, int depth) {
+            if (depth > 64 || ++visited > 8192) {
+                complete = false;
+                return;
+            }
             if (expression instanceof Ast.CallExpr call) {
                 inspectCombinator(call);
-                expression(call.callee());
+                expression(call.callee(), depth + 1);
                 for (Ast.Expr arg : call.arguments()) {
                     // A lambda body is not invoked merely by being constructed.
-                    if (!(arg instanceof Ast.LambdaExpr)) expression(arg);
+                    if (!(arg instanceof Ast.LambdaExpr)) expression(arg, depth + 1);
                 }
             } else if (expression instanceof Ast.MemberExpr member) {
-                expression(member.receiver());
+                expression(member.receiver(), depth + 1);
             } else if (expression instanceof Ast.BinaryExpr binary) {
-                expression(binary.left());
-                expression(binary.right());
+                expression(binary.left(), depth + 1);
+                expression(binary.right(), depth + 1);
             } else if (expression instanceof Ast.UnaryExpr unary) {
-                expression(unary.operand());
+                expression(unary.operand(), depth + 1);
             } else if (expression instanceof Ast.ConditionalExpr cond) {
-                expression(cond.condition());
-                expression(cond.whenTrue());
-                expression(cond.whenFalse());
+                expression(cond.condition(), depth + 1);
+                expression(cond.whenTrue(), depth + 1);
+                expression(cond.whenFalse(), depth + 1);
             } else if (expression instanceof Ast.AssignExpr assign) {
-                expression(assign.target());
-                expression(assign.value());
+                expression(assign.target(), depth + 1);
+                expression(assign.value(), depth + 1);
             } else if (expression instanceof Ast.LiteralExpr
                     || expression instanceof Ast.NameExpr
                     || expression instanceof Ast.LambdaExpr) {
@@ -157,6 +171,10 @@ public final class FunctionalCallbackEffectAnalysisV1 {
             // compiler's fail-closed higher-order effect graph.
             Set<Effect> inferred = graph.inferInvocation(
                     "sum::combinator", Map.of("callback", "sum::inline_callback"));
+            if (sites.size() >= 1024) {
+                complete = false;
+                return;
+            }
             sites.add(new Site(module, function.name(), member.member(),
                     inferred, EffectContracts.pureAllowance().containsAll(inferred)));
         }
@@ -164,11 +182,16 @@ public final class FunctionalCallbackEffectAnalysisV1 {
 
     /** Nested blocks cannot shadow a recognized formal sum receiver. */
     private static boolean shadows(List<Ast.Stmt> statements, String name) {
+        return shadows(statements, name, 0);
+    }
+
+    private static boolean shadows(List<Ast.Stmt> statements, String name, int depth) {
+        if (depth > 64) return true; // unknown, never a purity proof
         for (Ast.Stmt statement : statements) {
             if (statement instanceof Ast.BindingStmt binding
                     && binding.name().equals(name)) return true;
             if (statement instanceof Ast.BlockStmt block
-                    && shadows(block.body(), name)) return true;
+                    && shadows(block.body(), name, depth + 1)) return true;
         }
         return false;
     }
