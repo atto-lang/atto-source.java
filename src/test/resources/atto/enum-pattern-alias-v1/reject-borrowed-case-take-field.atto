@@ -1,0 +1,14 @@
+define enum WorkerMsg {
+    Run { job_id: int, payload: Bytes },
+    Stop
+}
+
+fnc bad_take(WorkerMsg msg): int {
+    do match msg over
+        on Run { job_id, payload } as r -> {
+            val consumed = rt take r.payload;
+            return job_id;
+        }
+        on Stop -> { return 0; }
+    end
+}
