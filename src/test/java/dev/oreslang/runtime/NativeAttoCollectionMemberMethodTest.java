@@ -161,6 +161,28 @@ final class NativeAttoCollectionMemberMethodTest {
     }
 
     @Test
+    void nestedReadersDoNotParkAndSuccessfulCallbackRetiresTheLoan() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  let mut Array<int> items = new Array<int>();
+                  items.add(1);
+                  items.add(2);
+                  val Array<int> mapped = items.map(|int n| -> int {
+                    val int read_sum = items.reduce(0,
+                        |int total, int x| -> int { return total + x; });
+                    return n + read_sum;
+                  });
+                  items.set(0, 10);
+                  stdio.println(mapped.get(0));
+                  stdio.println(mapped.get(1));
+                  stdio.println(items.get(0));
+                  return;
+                }
+                """;
+        assertEquals("4\\n5\\n10", run(source, "nested-read-loan.atto"));
+    }
+
+    @Test
     void reduceAcceptsStringLiteralSeedWithoutLosingAccumulatorType() throws Exception {
         String source = """
                 pub fnc main(): void {
