@@ -1,0 +1,75 @@
+name: Trace JIT generation-retirement host contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/trace-jit-retire-exact-head.yml'
+      - 'src/main/java/dev/oreslang/runtime/AdaptiveTraceCodeV1.java'
+      - 'src/main/java/dev/oreslang/runtime/TraceInstrumentationControlV1.java'
+      - 'src/test/java/dev/oreslang/runtime/TraceJitRetirementSmoke.java'
+      - 'src/test/java/dev/oreslang/runtime/TraceJitRetirementTest.java'
+      - 'src/test/java/dev/oreslang/runtime/TraceInstrumentationSmoke.java'
+      - 'src/test/java/dev/oreslang/runtime/TraceInstrumentationControlV1Test.java'
+      - 'pom.xml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  adaptive-generation-host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout immutable PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact head and Git tree identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
+          git hash-object src/main/java/dev/oreslang/runtime/AdaptiveTraceCodeV1.java
+          git hash-object src/main/java/dev/oreslang/runtime/TraceInstrumentationControlV1.java
+          git hash-object src/test/java/dev/oreslang/runtime/TraceJitRetirementSmoke.java
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Standalone exact-production-class Java host smoke
+        run: |
+          set -euo pipefail
+          mkdir -p target/trace-jit-host
+          javac --release 21 -Xlint:all -Werror -d target/trace-jit-host \
+            src/main/java/dev/oreslang/runtime/TraceInstrumentationControlV1.java \
+            src/main/java/dev/oreslang/runtime/AdaptiveTraceCodeV1.java \
+            src/test/java/dev/oreslang/runtime/TraceInstrumentationSmoke.java \
+            src/test/java/dev/oreslang/runtime/TraceJitRetirementSmoke.java
+          java -cp target/trace-jit-host dev.oreslang.runtime.TraceInstrumentationSmoke
+          java -cp target/trace-jit-host dev.oreslang.runtime.TraceJitRetirementSmoke
+      - name: Run real Maven JUnit on exact full tree (host only)
+        run: |
+          mvn -B -ntp -Dtest=TraceInstrumentationControlV1Test,TraceJitRetirementTest \
+            -DfailIfNoTests=true test
+      - name: Verify JUnit actually executed (no skipped tests)
+        run: |
+          set -euo pipefail
+          for name in TraceInstrumentationControlV1Test TraceJitRetirementTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.runtime.${name}.xml"
+            test -s "$report"
+            grep -Eq 'tests="[1-9][0-9]*"' "$report"
+            grep -q 'errors="0"' "$report"
+            grep -q 'failures="0"' "$report"
+            grep -q 'skipped="0"' "$report"
+          done
+          echo 'JAVA_HOST_TRACE_CONTRACT_ONLY: no trusted code generation, compiled guest or no-GC claim'
+          git rev-parse HEAD
+          git rev-parse 'HEAD^{tree}'
