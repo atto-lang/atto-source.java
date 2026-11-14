@@ -123,13 +123,15 @@ final class CheckedOptionalNamedBinderMainTest {
     void failingTypeCheckRevokesCallPlansCreatedEarlierInPass() {
         Ast.Program parsed = Parser.parse("""
                 fnc add(int x, int y): int { return x + y; }
-                pub fnc main(): int { return add(40, 2) + "invalid"; }
+                pub fnc main(): int {
+                    val int total = add(40, 2);
+                    return true;
+                }
                 """);
         Ast.FunctionDecl main = (Ast.FunctionDecl)
                 parsed.modules().getFirst().declarations().get(1);
-        Ast.ReturnStmt returned = (Ast.ReturnStmt) main.body().getFirst();
-        Ast.BinaryExpr binary = (Ast.BinaryExpr) returned.value();
-        Ast.CallExpr call = (Ast.CallExpr) binary.left();
+        Ast.BindingStmt bound = (Ast.BindingStmt) main.body().getFirst();
+        Ast.CallExpr call = (Ast.CallExpr) bound.initializer();
 
         assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.TypeChecker.checkTypes(parsed));
