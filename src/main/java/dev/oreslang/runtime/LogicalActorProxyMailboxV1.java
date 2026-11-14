@@ -266,36 +266,36 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
             }
 
             ArrayList<Envelope> fresh = new ArrayList<>(count);
+            ArrayDeque<Envelope> prepared;
+            List<Envelope> receipt;
             try {
-                // ArrayDeque.addLast may allocate. Build an entirely private
-                // copy of the queued prefix and fresh suffix before swapping;
-                // no receiver, STOP or freeze can observe partial admission.
-                ArrayDeque<Envelope> prepared = new ArrayDeque<>(queued);
+                // Build queue and immutable receipt entirely off to the side.
+                // No publication counter or live queue changes until every
+                // allocation and borrowed-buffer snapshot has succeeded.
+                prepared = new ArrayDeque<>(queued);
                 for (byte[] payload : payloads) {
                     Envelope envelope = new Envelope(nextMessageSequence + fresh.size(), payload);
                     fresh.add(envelope);
                     prepared.addLast(envelope);
                 }
-                // Even building the immutable result is fallible; complete
-                // it before any publication so no post-commit allocation
-                // can trigger rollback or scrub already-owned queued DATA.
-                List<Envelope> result = List.copyOf(fresh);
-                queued = prepared;
-                nextMessageSequence += count;
-                retainedMessages += count;
-                retainedBytes += total;
-                checkStructuralInvariantsLocked();
-                lock.notifyAll();
-                return result;
+                receipt = List.copyOf(fresh);
             } catch (RuntimeException | Error failed) {
-                // If publication has not begun, prepared copies are private.
-                // If a post-commit invariant throws, they are now owned
-                // by the live queue and MUST NOT be scrubbed here.
-                boolean published = queued.containsAll(fresh) && !fresh.isEmpty();
-                if (!published) for (Envelope envelope : fresh)
+                // Copies from failed preparation have never been admitted.
+                for (Envelope envelope : fresh)
                     java.util.Arrays.fill(envelope.payload, (byte) 0);
                 throw failed;
             }
+
+            // No fallible insertion/receipt copy beyond this point. All
+            // counters, queued bytes and publication become visible under
+            // the same exclusive mailbox lock.
+            queued = prepared;
+            nextMessageSequence += count;
+            retainedMessages += count;
+            retainedBytes += total;
+            checkStructuralInvariantsLocked();
+            lock.notifyAll();
+            return receipt;
         }
     }
 
