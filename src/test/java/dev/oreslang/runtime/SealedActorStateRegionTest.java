@@ -51,7 +51,7 @@ final class SealedActorStateRegionTest {
                                     () -> escaped.get().readInt("count"),
                                     "callback-scoped state view must not survive a turn");
                             assertEquals(1L, region.read(view -> view.readInt("count")).longValue());
-                            assertTrue(region.read(view -> view.readBool("ready")));
+                            assertTrue(region.<Boolean>read(view -> view.readBool("ready")));
                             assertThrows(SecurityException.class,
                                     () -> region.read(view -> {
                                         view.writeInt("count", 4);
