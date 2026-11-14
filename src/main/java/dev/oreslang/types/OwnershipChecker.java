@@ -4489,7 +4489,8 @@ public final class OwnershipChecker {
         Set<VarState> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         while (current != null && seen.add(current)) {
             if ("self".equals(current.debugName)
-                    && current.kind == ValueKind.MUT_BORROW
+                    && (current.kind == ValueKind.MUT_BORROW
+                            || current.kind == ValueKind.IMM_BORROW)
                     && current.origin == Origin.PARAM) {
                 Ast.TypeRef type = current.type.isBorrow() ? current.type.borrowedTarget() : current.type;
                 Ast.ClassDecl klass = findClass(type.name());
@@ -4952,10 +4953,13 @@ public final class OwnershipChecker {
             VarState source = capture.source;
 
             if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) {
+                // Preserve the original actor self loan across deferred select.
+                // A read-only receiver must never become a mutable mailbox
+                // capability when a continuation frame is reconstructed.
                 VarState self = new VarState(
                         source.type,
                         false,
-                        ValueKind.MUT_BORROW,
+                        source.kind,
                         Origin.PARAM);
                 continuation.define(capture.name, self);
                 continue;
