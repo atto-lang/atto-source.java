@@ -31,6 +31,10 @@ final class ActorSourceLifecycleGate {
     private final ActorRuntime.ActorId owner;
     private final String actorType;
     private Phase phase = Phase.NEW;
+    // A running initializer owns actor allocation authority across STOP.
+    // Phase STOPPING_TERMINAL alone does not imply that it has unwound.
+    private boolean initializationActive;
+    private boolean stopSealed;
     // Protected by this gate's monitor. Each accepted guest receive must
     // acquire a lease and release it on every synchronous exit path.
     // Suspended source tasks have a separate physical-quiescence fence in
@@ -53,6 +57,8 @@ final class ActorSourceLifecycleGate {
     synchronized int activeReceives() { return activeReceives; }
 
     synchronized boolean teardownActive() { return teardownActive; }
+
+    synchronized boolean initializationActive() { return initializationActive; }
 
     /**
      * An unforgeable, single-release admission receipt for one guest receive.
@@ -80,7 +86,12 @@ final class ActorSourceLifecycleGate {
 
     synchronized void beginInit(ActorRuntime.ActorId caller, String type) {
         requireOwner(caller, type);
+        // STOP can win after the outer runtime's initial !stopped check but
+        // before this reservation. Return the same typed STOP result as a
+        // late commit; neither outcome is a guest exception.
+        if (phase == Phase.STOPPING_TERMINAL) throw new InitializationStopped();
         require(Phase.NEW, "initialize");
+        initializationActive = true;
         phase = Phase.INITIALIZING;
     }
 
@@ -93,15 +104,20 @@ final class ActorSourceLifecycleGate {
         }
         require(Phase.INITIALIZING, "publish initialized state");
         if (created == null || !owner.equals(created.ownerActorId())) {
+            initializationActive = false;
             phase = Phase.FAILED;
             throw new SecurityException("source actor initialization returned foreign or null owned state");
         }
+        initializationActive = false;
         phase = Phase.READY;
     }
 
     synchronized void failInit() {
-        // A late failing callback may not downgrade a STOP or CLOSED fence.
+        // This is called when the physical initializer has actually unwound,
+        // even if STOP has already advanced the lifecycle phase.
         if (phase == Phase.INITIALIZING) phase = Phase.FAILED;
+        initializationActive = false;
+        notifyAll();
     }
 
     /**
@@ -115,6 +131,7 @@ final class ActorSourceLifecycleGate {
      * graceful path. Force/cancel/panic never grants that hook.
      */
     synchronized void sealStop(boolean allowGracefulTeardown) {
+        stopSealed = true;
         switch (phase) {
             case NEW, INITIALIZING -> phase = Phase.STOPPING_TERMINAL;
             case READY -> phase = allowGracefulTeardown
@@ -193,6 +210,17 @@ final class ActorSourceLifecycleGate {
     }
 
     synchronized void close() {
+        // A trusted finalizer must not release a live actor merely because it
+        // sees zero receiver leases. STOP, initialization completion and the
+        // graceful lifecycle callback are separate mandatory barriers.
+        if (!stopSealed || initializationActive) {
+            throw new IllegalStateException(
+                    "source actor physical retirement before STOP and init quiescence");
+        }
+        if (phase == Phase.STOPPING_GRACEFUL) {
+            throw new IllegalStateException(
+                    "source actor graceful retirement before tear_down completion");
+        }
         if (teardownActive) {
             throw new IllegalStateException(
                     "source actor physical retirement while tear_down is executing");
