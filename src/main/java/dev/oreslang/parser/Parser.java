@@ -2948,7 +2948,7 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(GUARD)) return parseGuard();
-        if (match(IF)) return parseIf();
+        if (match(IF, IFNOT, UNLESS)) return parseIf(previous().type());
         if ((check(NB)
                 || (check(IDENT) && peek().lexeme().equals("task")))
                 && current + 2 < tokens.size()
@@ -3949,12 +3949,21 @@ public final class Parser {
         return false;
     }
 
-    private Ast.Stmt parseIf() {
+    private Ast.Stmt parseIf(Token.Type introducer) {
         List<Ast.IfBranch> branches = new ArrayList<>();
         List<Ast.BindingStmt> bindings = new ArrayList<>();
+        // Inverting a refutable pattern does not establish its captures in the
+        // then arm. Do not admit implicit narrowing without a scope proof.
+        if (introducer != IF && (check(LET) || (check(LPAREN) && checkNext(LET)))) {
+            throw error(peek(), "ifnot/unless do not support pattern bindings; use if");
+        }
         ConditionHead head = parseConditionHead(false);
+        if (introducer != IF && head.binding() != null) {
+            throw error(previous(), "ifnot/unless do not support condition bindings; use if");
+        }
         bindings.add(head.binding());
-        Ast.Expr condition = head.predicate();
+        Ast.Expr condition = introducer == IF
+                ? head.predicate() : new Ast.UnaryExpr("!", head.predicate());
 
         // '{' is the braced spelling of 'then'. Intermediate branches close
         // with '} elif/else'; fi closes the final branch and the whole chain.
@@ -3984,7 +3993,7 @@ public final class Parser {
         // - 'elseif' aliases canonical 'elif'.
         // - 'else if ... then' is accepted as a single-fi branch alias.
         match(SEMICOLON);
-        consumeConditionalThen("if");
+        consumeConditionalThen(introducer == IF ? "if" : introducer == IFNOT ? "ifnot" : "unless");
         List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
