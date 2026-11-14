@@ -4,7 +4,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.ByteBuffer;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Random;
 import org.junit.jupiter.api.Test;
 
 /** Native Java source-ID table tests; NOT guest instrumented tracing proof. */
@@ -37,6 +40,27 @@ class SourceIdentityV1Test {
         assertThrows(IllegalArgumentException.class, () ->
                 SourceIdentityV1.parse("4bf92f3577b34da6a3ce929d0e0e4736",
                         SourceIdentityV1.Kind.ROUTINE));
+    }
+
+    @Test
+    void fuzzesFixedWidthIdsAndRejectsInvalidMutations() {
+        var random = new Random(0x62e1d4b76027190cL);
+        for (int n = 0; n < 2000; n++) {
+            var raw = new byte[16];
+            random.nextBytes(raw);
+            var value = "rid_" + HexFormat.of().formatHex(raw);
+            var parsed = SourceIdentityV1.parse(value, SourceIdentityV1.Kind.ROUTINE);
+            var lanes = ByteBuffer.wrap(raw);
+            assertEquals(lanes.getLong(), parsed.high());
+            assertEquals(lanes.getLong(), parsed.low());
+            for (int i = 4; i < 36; i++) {
+                var malformed = value.substring(0, i) + "G" + value.substring(i + 1);
+                assertThrows(IllegalArgumentException.class, () ->
+                        SourceIdentityV1.parse(malformed, SourceIdentityV1.Kind.ROUTINE));
+            }
+            assertThrows(IllegalArgumentException.class, () ->
+                    SourceIdentityV1.parse(value, SourceIdentityV1.Kind.SITE));
+        }
     }
 
     @Test
