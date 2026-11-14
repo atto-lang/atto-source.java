@@ -1,0 +1,10 @@
+define enum WorkerMsg {
+    Run { job_id: int },
+    Stop
+}
+fnc bad(WorkerMsg msg): int {
+    return match msg over {
+        on Run { job_id, job_id } as r { return 1; }
+        on Stop { return 0; }
+    };
+}
