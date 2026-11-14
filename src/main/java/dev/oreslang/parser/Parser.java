@@ -97,7 +97,7 @@ public final class Parser {
                 throw error(token, "unsafe is reserved until checked unsafe effects and backend lowering exist");
             }
             if (token.type() == QUANTUM) {
-                throw error(token, "quantum execution domain requires explicit backend lowering; no implicit CPU fallback");
+                throw error(token, "execution domain 'quantum' requires explicit backend lowering; no implicit CPU fallback");
             }
             if (token.type() == CPU || token.type() == GPU) {
                 boolean canonicalTask =
@@ -111,7 +111,7 @@ public final class Parser {
                                 && tokens.get(i + 1).type() == LBRACE;
                 if (!canonicalTask && !legacyNbTask) {
                     throw error(token, "synchronous execution domain '" + token.lexeme()
-                            + " { ... }' is reserved but not production-lowered yet;"
+                            + "' { ... } is reserved but not production-lowered yet;"
                             + " use '" + token.lexeme() + " task { ... }' for asynchronous work;"
                             + " no implicit CPU fallback");
                 }
@@ -247,7 +247,16 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                // Compatibility: both `pub define fnc` and `define pub fnc`
+                // denote the same file-root callable, with identical modifiers.
+                if (check(FNC) || check(ROUTINE)) {
+                    Ast.Decl callable = parseDeclarationAfterModifiers(annotations, modifiers);
+                    if (callable != null) {
+                        rootDeclarations.add(callable);
+                        continue;
+                    }
+                }
+                throw error(previous(), "expected module, class, interface, trait, type, fnc, or routine after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -482,7 +491,12 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            // Legacy nested `define` is accepted, but never creates a new
+            // scope or changes the callable's public symbol identity.
+            if (check(FNC) || check(ROUTINE)) {
+                return parseDeclarationAfterModifiers(annotations, modifiers);
+            }
+            throw error(previous(), "expected class, interface, trait, type, fnc, or routine after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -551,6 +565,17 @@ public final class Parser {
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         }
+        if (modifiers.generator) {
+            if (!modifiers.generatorStarred) {
+                throw error(peek(),
+                        "bare generator declarations require 'gen*' or 'generator*'; "
+                                + "legacy 'generator' must modify fnc/routine");
+            }
+            if (modifiers.shared || modifiers.untrusted) {
+                throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
+            }
+            return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
+        }
         if (match(CONTRACT)) {
             validateOnlyVisibilityModifiers(modifiers, "contracts");
             rejectCallableStructuralAnnotation(annotations, "contract declarations");
@@ -601,8 +626,6 @@ public final class Parser {
             Ast.CallableKind kind,
             Ast.ActorKind actorKind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
-        if (modifiers.suspends && modifiers.generator)
-            throw error(previous(), "suspends generators need suspension-aware generator frames");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         if (modifiers.trapped && (modifiers.async || modifiers.suspends)) {
             throw error(previous(), "suspending trap fnc/routine is not enabled until trap spans every await suspension");
@@ -637,11 +660,29 @@ public final class Parser {
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
+        boolean arrowReturn = check(ARROW);
         Ast.TypeRef returnType = parseReturnType(annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
-        List<Ast.Stmt> body = parseBlock();
+        List<Ast.Stmt> body = parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
+    }
+
+    /** Free/module functions may use '-> Type' then newline/end or '::' body/end. */
+    private List<Ast.Stmt> parseFreeCallableBody(boolean arrowReturn) {
+        if (check(LBRACE) || !arrowReturn) return parseBlock();
+        boolean explicit = match(DOUBLE_COLON);
+        if (!explicit && !isImplicitNewlineTerminator()) {
+            throw error(peek(), "end-delimited callable needs a newline or '::' after its return type");
+        }
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> body = parseUntil(END);
+            consume(END, "expected 'end' after callable body");
+            return body;
+        } finally {
+            localTypeScopes.pop();
+        }
     }
 
     private Ast.ClassDecl parseClass(
@@ -663,6 +704,11 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
 
+            // Nested members never require `define`, but admit either legacy
+            // modifier ordering so formatting is not a prerequisite to parsing.
+            if (match(DEFINE)) {
+                mods = mergeModifiers(mods, parseModifiers());
+            }
             if (check(DEFINE) || check(CLASS) || check(MODULE) || check(INTERFACE)
                     || check(ACTOR) || check(ISOACTOR)) {
                 throw error(peek(),
@@ -736,7 +782,22 @@ public final class Parser {
             }
             // Legacy 'fnc name' and explicit 'method name' both describe instance
             // methods. The AST's isStatic flag, not the spelling, controls binding.
-            methods.add(parseMethod(annotations, mods, isAbstract));
+            Ast.MethodDecl member = parseMethod(annotations, mods, isAbstract);
+            // Newable's explicitly declared `fnc new` is a type-level
+            // factory even when the author omits the optional `static`
+            // modifier. Do not alter other methods or synthesize a factory.
+            if (member.name().equals("new") && !member.isStatic()
+                    && interfaces.stream().anyMatch(ref -> ref.name().equals("Newable"))) {
+                if (member.explicitReceiverType() != null) {
+                    throw error(previous(), "Newable.new cannot declare a self receiver");
+                }
+                member = new Ast.MethodDecl(member.name(), member.visibility(),
+                        true, member.isAbstract(), member.async(), member.suspends(),
+                        member.structural(), member.explicitReceiverType(),
+                        member.genericParameters(), member.parameters(), member.returnType(),
+                        member.annotations(), member.body(), member.effects());
+            }
+            methods.add(member);
         }
         consume(
                 classTerminator,
@@ -1088,6 +1149,9 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (match(DEFINE)) {
+                mods = mergeModifiers(mods, parseModifiers());
+            }
             // A typed state schema is not a legacy actor field/method.
             // Reject it with an explicit admission error until the AST,
             // checker, lifetime rules and runtime-owned loan are integrated.
@@ -1282,6 +1346,9 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> memberAnnotations = parseAnnotations();
             Modifiers memberModifiers = parseModifiers();
+            if (match(DEFINE)) {
+                memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
+            }
 
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
@@ -1295,7 +1362,12 @@ public final class Parser {
                             "interface-member annotations are not represented by the current AST; "
                                     + "only @structural is accepted here and unsupported annotations must not be silently discarded");
                 }
-                String memberName = consumeCallableName("expected interface function name");
+                // Newable may declare an explicitly named factory contract.
+                // Keep `new` reserved as a local identifier and constructor
+                // keyword; only declaration-member names admit this token.
+                String memberName = match(NEW)
+                        ? "new"
+                        : consumeCallableName("expected interface function name");
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
@@ -1578,6 +1650,12 @@ public final class Parser {
     }
 
     private String parseMethodName() {
+        // `new` remains reserved as an expression keyword, but an explicit
+        // user-authored method/factory signature may name it. This alone does
+        // not synthesize a static factory or grant Newable implementation.
+        if (match(NEW)) {
+            return "new";
+        }
         if (match(LBRACKET)) {
             String namespace = consume(IDENT, "expected symbol namespace").lexeme();
             consume(DOT, "expected '.' in symbol method");
@@ -1781,6 +1859,7 @@ public final class Parser {
         boolean async = false;
         boolean suspends = false;
         boolean generator = false;
+        boolean generatorStarred = false;
         boolean structural = false;
         boolean nonLexical = false;
         boolean trapped = false;
@@ -1834,14 +1913,17 @@ public final class Parser {
                 if (generatorSeen) throw error(previous(), "duplicate 'generator' modifier");
                 generatorSeen = true;
                 generator = true;
-                // generator* is declaration sugar; plain generator remains accepted.
-                match(STAR);
+                // Plain 'generator' remains a legacy modifier only when a
+                // callable kind follows. Bare declarations require a starred
+                // marker so 'generator values()' cannot become accidental syntax.
+                generatorStarred = match(STAR);
             } else if (check(IDENT) && peek().lexeme().equals("gen") && checkNext(STAR)) {
                 Token gen = advance();
                 advance(); // '*'
                 if (generatorSeen) throw error(gen, "duplicate generator modifier");
                 generatorSeen = true;
                 generator = true;
+                generatorStarred = true;
             } else if (matchContextualStructuralModifier()) {
                 if (structuralSeen) throw error(previous(), "duplicate 'structural' modifier");
                 structuralSeen = true;
@@ -1875,7 +1957,7 @@ public final class Parser {
             }
         }
         if (async && suspends) throw error(previous(), "'async suspends' is redundant; choose one");
-        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
+        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, generatorStarred, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
     }
 
     private Modifiers mergeModifiers(Modifiers before, Modifiers after) {
@@ -1901,6 +1983,7 @@ public final class Parser {
                 before.async || after.async,
                 before.suspends || after.suspends,
                 before.generator || after.generator,
+                before.generatorStarred || after.generatorStarred,
                 before.structural || after.structural,
                 before.nonLexical || after.nonLexical,
                 before.trapped || after.trapped,
@@ -2315,6 +2398,17 @@ public final class Parser {
             }
         }
 
+        // Newable[T] is a type-level static factory trait application,
+        // not an array/collection sequence shape. Other bracketed type
+        // syntax retains the existing sequence-shape interpretation.
+        if (name.equals("Newable") && args.isEmpty() && match(LBRACKET)) {
+            if (check(RBRACKET)) throw error(peek(), "Newable[T] requires a type argument");
+            args.add(parseTypeRef());
+            if (match(COMMA)) {
+                throw error(previous(), "Newable[T] accepts exactly one type argument");
+            }
+            consume(RBRACKET, "expected ']' after Newable[T]");
+        }
         args = canonicalizeNamedParameters(args);
         while (match(LBRACKET)) {
             args.add(parseSequenceShapeDimension());
@@ -5968,6 +6062,6 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
+    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean generatorStarred, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
 }
 

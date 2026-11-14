@@ -219,7 +219,7 @@ public final class OwnershipChecker {
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
-        currentAsyncGenerator = fn.generator() && fn.async();
+        currentAsyncGenerator = fn.generator() && (fn.async() || fn.suspends());
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
@@ -519,6 +519,16 @@ public final class OwnershipChecker {
             Ast.TypeRef exposed = yielded.delegated()
                     ? iterableElementType(value.type, currentAsyncGenerator)
                     : value.type;
+            // The pre-yield scope check above only sees borrows that already
+            // existed before evaluating the yield expression. The expression
+            // itself can create a fresh borrow (for example, yield &local) or
+            // delegate an Iterator<&T>. Neither may escape into the suspended
+            // activation/consumer boundary without explicit lifetime support.
+            if (isBorrowValue(value) || (exposed != null && exposed.isBorrow())) {
+                throw error(yielded.delegated()
+                        ? "borrowed iterables or borrowed yield* elements cannot cross a generator suspension boundary"
+                        : "borrowed references cannot be yielded from a generator; yield owned/shared data instead");
+            }
             if (containsMutexGuardType(exposed)) {
                 throw error(yielded.delegated()
                         ? "MutexGuard values cannot cross a yield* delegation boundary"
@@ -577,14 +587,25 @@ public final class OwnershipChecker {
             VarState source = matched.subject() instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            Map<VarState, StateSnapshot> nextArm = base;
             for (Ast.MatchArm arm : matched.arms()) {
-                restoreState(base);
+                // A failed pattern skips the guard, but a matching pattern
+                // with a false guard has still evaluated every guard effect.
+                // Later arms must conservatively inherit either false path.
+                restoreState(nextArm);
                 Scope armScope = new Scope(scope);
                 definePatternAliases(arm.pattern(), subject.type, source, armScope);
-                if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+                Map<VarState, StateSnapshot> afterGuard = nextArm;
+                if (arm.guard() != null) {
+                    checkExpr(arm.guard(), armScope, false);
+                    afterGuard = stateSnapshot(scope);
+                }
                 checkBlock(arm.body(), armScope, returnType);
                 armScope.close();
                 if (!definitelyReturns(arm.body())) exits.add(stateSnapshot(scope));
+                if (arm.guard() != null) {
+                    nextArm = joinGuardFalsePathMoves(nextArm, afterGuard);
+                }
             }
             mergeBranchState(base, exits);
             return;
@@ -996,13 +1017,18 @@ public final class OwnershipChecker {
                     ? scope.lookup(name.name()) : null;
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            Map<VarState, StateSnapshot> nextArm = base;
             ValueInfo result = null;
             for (Ast.MatchValueArm arm : match.arms()) {
-                restoreState(base);
+                restoreState(nextArm);
                 Scope armScope = new Scope(scope);
+                Map<VarState, StateSnapshot> afterGuard = nextArm;
                 try {
                     definePatternAliases(arm.pattern(), subject.type, source, armScope);
-                    if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+                    if (arm.guard() != null) {
+                        checkExpr(arm.guard(), armScope, false);
+                        afterGuard = stateSnapshot(scope);
+                    }
 
                     int previousLoopDepth = loopDepth;
                     loopDepth = 0;
@@ -1028,6 +1054,9 @@ public final class OwnershipChecker {
                     armScope.close();
                 }
                 exits.add(stateSnapshot(scope));
+                if (arm.guard() != null) {
+                    nextArm = joinGuardFalsePathMoves(nextArm, afterGuard);
+                }
             }
             mergeBranchState(base, exits);
             return result;
@@ -1731,8 +1760,13 @@ public final class OwnershipChecker {
                 && findClass("Bytes") == null
                 && (bytesCtor.member().equals("empty")
                         || bytesCtor.member().equals("from_list")
-                        || bytesCtor.member().equals("from_string"))) {
-            for (Ast.Expr argument : call.arguments()) checkExpr(argument, scope, false);
+                        || bytesCtor.member().equals("from_string")
+                        || java.util.Set.of("from_u8", "from_u16_be", "from_i16_be", "from_u32_be",
+                                "from_i32_be", "from_i64_be", "from_uvarint", "from_zigzag_varint", "join")
+                                .contains(bytesCtor.member()))) {
+            // join moves its List<Bytes> in; every other constructor reads scalars.
+            boolean consumes = bytesCtor.member().equals("join");
+            for (Ast.Expr argument : call.arguments()) checkExpr(argument, scope, consumes);
             return new ValueInfo(Ast.TypeRef.simple("Bytes"), ValueKind.MOVE_ONLY, null);
         }
         // Exact built-in NIO2 provenance, independently rechecked in
@@ -1819,9 +1853,9 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
-                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
+                if (fn.suspends() && !fn.generator()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
-                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
@@ -1835,13 +1869,13 @@ public final class OwnershipChecker {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
-                if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
+                if (fn.suspends() && !fn.generator()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
                         signature.parameters(),
                         scope,
                         "function " + namespace.name() + "." + qualified.member());
-                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                Ast.TypeRef callResult = callableResultType(signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
@@ -2039,10 +2073,16 @@ public final class OwnershipChecker {
                     && concreteReceiver.arguments().isEmpty()
                     && findClass("Bytes") == null) {
                 ValueInfo bytesResult = switch (member.member()) {
-                    case "size", "byte_at", "index_of" ->
+                    case "size", "byte_at", "index_of",
+                            "read_u16_be", "read_i16_be", "read_u32_be", "read_i32_be", "read_i64_be",
+                            "crc32c", "crc32" ->
                             new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
                     case "equals" ->
                             new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    case "read_uvarint", "read_zigzag_varint" -> new ValueInfo(
+                            Ast.TypeRef.tupleType(List.of(
+                                    Ast.TypeRef.simple("int"), Ast.TypeRef.simple("int"))),
+                            ValueKind.COPY, null);
                     case "slice", "concat", "copy" ->
                             new ValueInfo(Ast.TypeRef.simple("Bytes"), ValueKind.MOVE_ONLY, null);
                     case "to_list" -> new ValueInfo(
@@ -3016,6 +3056,22 @@ public final class OwnershipChecker {
                         fieldType = substituteType(ownershipFieldType(target.field()),
                                 genericBindings(target.owner().genericParameters(),
                                         target.ownerType().arguments()));
+                    }
+                } else if (type.name().equals("IteratorResult")
+                        && type.arguments().size() == 1
+                        && !hasLocalTypeAliasNamed("IteratorResult")) {
+                    // IteratorResult<T> is a sealed runtime-owned protocol
+                    // record, not a user ClassDecl. Match TypeChecker's
+                    // exact public fields while preserving the owning root
+                    // for formatting/borrowing and never allowing a dynamic
+                    // or borrowed element to bypass ownership checks.
+                    Ast.TypeRef element = type.arguments().getFirst();
+                    if (member.member().equals("done")) {
+                        fieldType = Ast.TypeRef.simple("bool");
+                    } else if (member.member().equals("value")
+                            && !element.name().equals("$infer$")
+                            && !element.isBorrow()) {
+                        fieldType = new Ast.TypeRef("Option", List.of(element), false);
                     }
                 }
             }
@@ -4327,6 +4383,30 @@ public final class OwnershipChecker {
         }
     }
 
+    /**
+     * Pattern matching can skip a guard entirely, or execute that guard and
+     * proceed when it is false. In the latter case a by-value call or rt take
+     * has already consumed an owner. Join the possible MOVE effects, but do
+     * not extend pattern-local temporary borrow leases to later arms.
+     *
+     * This is a conservative ownership join, not a full path-sensitive CFG
+     * fixed-point/region proof.
+     */
+    private Map<VarState, StateSnapshot> joinGuardFalsePathMoves(
+            Map<VarState, StateSnapshot> skipped,
+            Map<VarState, StateSnapshot> executed) {
+        Map<VarState, StateSnapshot> merged = new IdentityHashMap<>(skipped);
+        for (Map.Entry<VarState, StateSnapshot> entry : skipped.entrySet()) {
+            StateSnapshot original = entry.getValue();
+            StateSnapshot evaluated = executed.get(entry.getKey());
+            if (evaluated != null && evaluated.moved() && !original.moved()) {
+                merged.put(entry.getKey(), new StateSnapshot(
+                        true, original.immutableBorrows(), original.mutableBorrowed()));
+            }
+        }
+        return merged;
+    }
+
     private Map<VarState,Boolean> movedSnapshot(Scope scope) {
         Map<VarState,Boolean> result = new IdentityHashMap<>();
         for (VarState state : scope.visibleStates()) {
@@ -4559,6 +4639,11 @@ public final class OwnershipChecker {
         // per direction; the caller loses the handle on task capture.
         if (name.equals("NioConnection")) {
             return type.arguments().isEmpty() && findClass("NioConnection") == null
+                    ? new AutoTraitRules.Capabilities(true, false, false) : none;
+        }
+        // A BinaryFile handle is affine like a socket: one owning task.
+        if (name.equals("BinaryFile")) {
+            return type.arguments().isEmpty() && declaredClass == null
                     ? new AutoTraitRules.Capabilities(true, false, false) : none;
         }
         // Split halves are affine like the connection they came from.
