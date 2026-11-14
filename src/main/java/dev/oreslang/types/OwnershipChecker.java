@@ -3994,12 +3994,7 @@ public final class OwnershipChecker {
                 }
             }
             if (sequence.tail() != null && !sequence.tail().equals("_")) {
-                if (sequence.unit() == Ast.SequenceUnit.BIT) {
-                    throw error("bit tail requires a proven BitView loan; reject before IR");
-                }
-                // A copy-owned Bytes suffix, not an implicit loan to source.
-                defineRefinementAlias(sequence.tail(), Ast.TypeRef.simple("Bytes"),
-                        null, destination);
+                throw error("named byte/bit tail requires checked loan and guard-failure cleanup");
             }
             return;
         }
