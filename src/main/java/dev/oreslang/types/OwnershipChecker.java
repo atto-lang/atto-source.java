@@ -3521,7 +3521,17 @@ public final class OwnershipChecker {
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
                     && isCopyType(type.arguments().get(1));
-            default -> false;
+            default -> {
+                // Closed, entirely nullary nominal enums carry only immutable
+                // case identity. Returning a matched case alias copies its
+                // static value; payload-bearing enums remain move-only until
+                // their owned/borrowed projection semantics are proven.
+                Ast.EnumDecl declarationEnum = type.arguments().isEmpty()
+                        ? enumDeclaration(type.name()) : null;
+                yield declarationEnum != null
+                        && declarationEnum.variants().stream()
+                            .allMatch(variant -> variant.payload() == null);
+            }
         };
     }
 
