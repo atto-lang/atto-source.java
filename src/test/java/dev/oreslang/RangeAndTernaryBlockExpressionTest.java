@@ -472,6 +472,22 @@ final class RangeAndTernaryBlockExpressionTest {
                         "val v: int = if true then { val hidden: int = 42; hidden } else 1 fi; stdio.stdout.write(hidden);"))));
     }
 
+    @Test
+    void voidConditionalExpressionsFailBeforeGuestExecution() {
+        String ternary = wrap("""
+                true ? stdio.stdout.write("selected") : stdio.stdout.write("wrong");
+                """);
+        String expressionIf = wrap("""
+                if true then stdio.stdout.write("selected")
+                else stdio.stdout.write("wrong")
+                fi;
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(ternary)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(expressionIf)));
+    }
+
     private static String wrap(String body) {
         return "pub routine main(): void { " + body + " }";
     }
