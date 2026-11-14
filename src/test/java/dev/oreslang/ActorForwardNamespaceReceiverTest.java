@@ -338,6 +338,23 @@ final class ActorForwardNamespaceReceiverTest {
     }
 
     @Test
+    void declarationOnlyActorWithoutMailboxHandlerCannotAcceptMessages() {
+        Ast.Program program = Parser.parse("""
+                declare actor Foo1;
+                mtd (Foo1 self) foo(): int { return 42; }
+                pub async routine main(): void {
+                  val actor = spawn Foo1();
+                  actor.send("payload");
+                  return;
+                }
+                """);
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(program));
+        assertTrue(failure.getMessage().contains("no receive(ActorMail<T>)"),
+                failure.getMessage());
+    }
+
+    @Test
     void declarationOnlyActorsExecuteSharedNamedMethods() throws Exception {
         String source;
         try (var stream = getClass().getResourceAsStream(
