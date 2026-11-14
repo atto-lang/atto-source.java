@@ -9663,15 +9663,20 @@ public final class ActorRuntime implements AutoCloseable {
                                     // Defense in depth: actor-owned state and
                                     // recipient must belong to this live actor
                                     // incarnation before entering guest code.
-                                    try (ActorSourceLifecycleGate.ReceiveLease receiveLease =
+                                    ActorSourceLifecycleGate.ReceiveLease receiveLease =
                                             sourceLifecycleGate.enterReceive(
                                                     ref.id(), codeActorType,
-                                                    codeActorState, sourceMail)) {
+                                                    codeActorState, sourceMail);
+                                    try {
                                         codeExecutor.receiveActor(
                                                 codeActorType,
                                                 codeActorState,
                                                 sourceMail,
                                                 sourceContext);
+                                    } finally {
+                                        // Always return the receive lifetime pin, including
+                                        // guest throw, raise, cancellation and panic unwind.
+                                        receiveLease.close();
                                     }
                                 } else {
                                     behavior.onMessage(mail.value(), context);
