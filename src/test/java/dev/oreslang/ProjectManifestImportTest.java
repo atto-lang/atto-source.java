@@ -516,4 +516,37 @@ final class ProjectManifestImportTest {
         assertFalse(out.toString(StandardCharsets.UTF_8).contains("ores"));
     }
 
+    @Test
+    void attoManifestBareImportsLinkAndExecuteAsGuest() throws Exception {
+        Path project = temp.resolve("atto-manifest-execution");
+        Path src = project.resolve("src");
+        Path tests = project.resolve("tests");
+        Files.createDirectories(src.resolve("pkg"));
+        Files.createDirectories(tests);
+        Path entry = tests.resolve("main.atto");
+        Files.writeString(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                name = "atto-test"
+                root = "."
+                [source]
+                roots = ["src"]
+                [entrypoints]
+                main = "tests/main.atto"
+                """);
+        Files.writeString(src.resolve("pkg/value.atto"), """
+                pub fnc answer(): int { return 42; }
+                """);
+        Files.writeString(entry, """
+                import fnc answer from "pkg/value";
+                pub routine main(): int { return answer(); }
+                """);
+        assertEquals(2, LinkedProgramRunner.validate(entry, Map.of()).units().size());
+        var result = LinkedProgramRunner.runWithExitStatus(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(2, result.build().units().size());
+        assertEquals(42, result.exitStatus());
+    }
+
 }

@@ -90,7 +90,7 @@ final class AttoImportEnvironmentTest {
         Files.createDirectories(source);
         Path helper = source.resolve("helper.atto");
         Path main = source.resolve("main.atto");
-        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME), """
+        Files.writeString(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME), """
                 schema_version = "1"
                 [project]
                 root = "."
@@ -152,7 +152,7 @@ final class AttoImportEnvironmentTest {
     void canonicalRootAndRealEnvironmentVariableResolveIndependentlyInCompiledAttoGuest() throws Exception {
         Path project = temp.resolve("both-kinds");
         Files.createDirectories(project.resolve("src"));
-        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME), """
+        Files.writeString(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME), """
                 schema_version = "1"
                 [project]
                 root = "."
@@ -188,7 +188,7 @@ final class AttoImportEnvironmentTest {
     void projectRootImportFollowsConfiguredManifestSubdirectory() throws Exception {
         Path project = temp.resolve("configured-root");
         Files.createDirectories(project.resolve("application/src"));
-        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME), """
+        Files.writeString(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME), """
                 schema_version = "1"
                 [project]
                 root = "application"
@@ -221,7 +221,7 @@ final class AttoImportEnvironmentTest {
     void nativeZedPackageManifestIsAnIndependentCanonicalProjectRoot() throws Exception {
         Path project = temp.resolve("zed-native-marker");
         Files.createDirectories(project.resolve("src"));
-        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME), """
+        Files.writeString(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME), """
                 [package]
                 name = "consumer"
                 """);
@@ -247,7 +247,7 @@ final class AttoImportEnvironmentTest {
     void missingAndMalformedModernPackageIdentityNeverCreateRootAuthority() throws Exception {
         Path project = temp.resolve("zed-invalid-marker");
         Files.createDirectories(project);
-        Path marker = project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME);
+        Path marker = project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME);
         Path entry = project.resolve("main.atto");
         for (String invalid : new String[] {
                 "[package]\\n", "[package]\\nname = \"../escape\"\\n",
@@ -265,13 +265,13 @@ final class AttoImportEnvironmentTest {
         Path project = temp.resolve("dual-manifest");
         Files.createDirectories(project);
         Files.writeString(project.resolve(OresProjectConfig.MANIFEST_NAME), "schema_version = \"1\"\n");
-        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME),
+        Files.writeString(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME),
                 "schema_version = \"2\"\n");
         Path entry = project.resolve("main.atto");
         assertThrows(IllegalArgumentException.class,
                 () -> OresProjectConfig.discover(entry, Map.of()));
-        Files.delete(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME));
-        Files.createDirectory(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME));
+        Files.delete(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME));
+        Files.createDirectory(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME));
         assertThrows(IllegalArgumentException.class,
                 () -> OresProjectConfig.discover(entry, Map.of()));
     }
@@ -281,9 +281,9 @@ final class AttoImportEnvironmentTest {
         Path project = temp.resolve("package-boundary");
         Path nested = project.resolve("nested");
         Files.createDirectories(nested);
-        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME),
+        Files.writeString(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME),
                 "schema_version = \"1\"\n");
-        Files.writeString(nested.resolve(OresProjectConfig.MODERN_MANIFEST_NAME),
+        Files.writeString(nested.resolve(OresProjectConfig.ATTO_MANIFEST_NAME),
                 "schema_version = \"1\"\n");
         Files.writeString(nested.resolve("secret.atto"), "pub fnc secret(): int { return 7; }");
         Path main = project.resolve("main.atto");
@@ -304,7 +304,7 @@ final class AttoImportEnvironmentTest {
         Files.createDirectories(outside);
         Files.writeString(external.resolve("lib.atto"), "pub fnc answer(): int { return 42; }");
         Files.writeString(outside.resolve("lib.atto"), "pub fnc answer(): int { return 7; }");
-        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME),
+        Files.writeString(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME),
                 "schema_version = \"1\"\n[source]\nimport_paths = [\""
                 + external.toString().replace('\\', '/') + "\"]\n");
         Path main = project.resolve("main.atto");
@@ -320,7 +320,7 @@ final class AttoImportEnvironmentTest {
     void canonicalRootImportCannotShadowModernAttoWithSymlinkedSource() throws Exception {
         Path project = temp.resolve("symlink-root");
         Files.createDirectories(project);
-        Files.writeString(project.resolve(OresProjectConfig.MODERN_MANIFEST_NAME),
+        Files.writeString(project.resolve(OresProjectConfig.ATTO_MANIFEST_NAME),
                 "schema_version = \"1\"\n");
         Path source = project.resolve("real.atto");
         Path alias = project.resolve("alias.atto");
