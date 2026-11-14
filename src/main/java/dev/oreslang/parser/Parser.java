@@ -22,6 +22,9 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // Only an explicit '-> Type :: ... end' callable body admits comma
+    // expression sequencing. The flag is restored across nested parsing.
+    private boolean commaCallableBody;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
     private final java.util.ArrayDeque<java.util.Set<String>> localTypeScopes =
             new java.util.ArrayDeque<>();
@@ -709,18 +712,19 @@ public final class Parser {
         boolean arrowReturn = check(ARROW);
         Ast.TypeRef returnType = parseReturnType(annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
-        List<Ast.Stmt> body = parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
+        List<Ast.Stmt> body = parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE, returnType);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
     }
 
     /** Free/module functions may use '-> Type' then newline/end or '::' body/end. */
-    private List<Ast.Stmt> parseFreeCallableBody(boolean arrowReturn) {
+    private List<Ast.Stmt> parseFreeCallableBody(boolean arrowReturn, Ast.TypeRef returnType) {
         if (check(LBRACE) || !arrowReturn) return parseBlock();
         boolean explicit = match(DOUBLE_COLON);
         if (!explicit && !isImplicitNewlineTerminator()) {
             throw error(peek(), "end-delimited callable needs a newline or '::' after its return type");
         }
+        if (explicit) return parseCommaCallableBody(returnType, "callable");
         localTypeScopes.push(new java.util.HashSet<>());
         try {
             List<Ast.Stmt> body = parseUntil(END);
@@ -728,6 +732,44 @@ public final class Parser {
             return body;
         } finally {
             localTypeScopes.pop();
+        }
+    }
+
+    /**
+     * An explicit arrow/double-colon body is an Erlang-like sequence:
+     * local declarations and expressions are evaluated left to right,
+     * commas delimit top-level items, and the last expression supplies
+     * the non-void result. Lowering to the normal ReturnStmt preserves
+     * existing type/ownership/effect checking and every backend's ABI.
+     *
+     * Existing explicitly returned semicolon statements are retained for
+     * source compatibility. Commas in arguments, types, tuples, conditions,
+     * match arms and nested syntactic constructs are parsed by their owners.
+     */
+    private List<Ast.Stmt> parseCommaCallableBody(Ast.TypeRef returnType, String kind) {
+        boolean previousCommaBody = commaCallableBody;
+        commaCallableBody = true;
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> body = new ArrayList<>();
+            while (!check(END) && !check(EOF)) {
+                if (check(COMMA)) {
+                    throw error(peek(), "empty item in comma-delimited " + kind + " body");
+                }
+                body.add(parseStatement());
+                if (match(COMMA) && (check(COMMA) || check(END) || check(EOF))) {
+                    throw error(peek(), "comma-delimited " + kind + " body requires an item after ','");
+                }
+            }
+            consume(END, "expected 'end' to close " + kind + " body");
+            if (!body.isEmpty() && !returnType.name().equals("void")
+                    && body.getLast() instanceof Ast.ExprStmt expression) {
+                body.set(body.size() - 1, new Ast.ReturnStmt(expression.expression()));
+            }
+            return body;
+        } finally {
+            localTypeScopes.pop();
+            commaCallableBody = previousCommaBody;
         }
     }
 
@@ -1710,9 +1752,7 @@ public final class Parser {
             if (!arrowMethodBody) {
                 throw error(previous(), "end-delimited methods require '-> ReturnType ::'");
             }
-            body = new ArrayList<>();
-            while (!check(END) && !check(EOF)) body.add(parseStatement());
-            consume(END, "expected 'end' to close method '" + name + "'");
+            body = parseCommaCallableBody(returnType, "method '" + name + "'");
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body, effects);
@@ -6110,7 +6150,8 @@ public final class Parser {
     }
 
     private boolean isSafeStatementBoundary() {
-        return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
+        return (commaCallableBody && check(COMMA))
+                || check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
                 || check(CATCH) || check(FINALLY) || isBareDoneDelimiter() || check(EOF);
     }
 
