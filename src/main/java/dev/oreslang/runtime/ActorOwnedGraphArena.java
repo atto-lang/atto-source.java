@@ -1,12 +1,13 @@
 package dev.oreslang.runtime;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.function.Consumer;
 
@@ -47,15 +48,28 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
     }
 
     public final class Lease implements AutoCloseable {
+        // A single lease object suffices: the shared VarHandle retains
+        // cross-carrier idempotent close without another AtomicBoolean
+        // allocation on the per-borrow hot path.
+        private static final VarHandle RELEASED;
+        static {
+            try {
+                RELEASED = MethodHandles.lookup()
+                        .findVarHandle(Lease.class, "released", boolean.class);
+            } catch (ReflectiveOperationException failure) {
+                throw new ExceptionInInitializerError(failure);
+            }
+        }
+
         private final NodeId id;
-        private final AtomicBoolean released = new AtomicBoolean();
+        private volatile boolean released;
 
         private Lease(NodeId id) { this.id = id; }
 
         public T get() {
             checkActor();
             synchronized (ActorOwnedGraphArena.this) {
-                if (released.get() || retiring || !live(id)) {
+                if (released || retiring || !live(id)) {
                     throw new IllegalStateException("actor graph lease is stale or retired");
                 }
                 return payload(id.slot);
@@ -63,7 +77,7 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
         }
 
         @Override public void close() {
-            if (!released.compareAndSet(false, true)) return;
+            if (!(boolean) RELEASED.compareAndSet(this, false, true)) return;
             boolean detached = false;
             synchronized (ActorOwnedGraphArena.this) {
                 int slot = id.slot;
@@ -178,9 +192,15 @@ public final class ActorOwnedGraphArena<T extends AutoCloseable> implements Auto
     public synchronized Lease borrow(NodeId id) {
         checkActor();
         requireLive(id);
+        if (loans[id.slot] == Integer.MAX_VALUE || activeLoans == Integer.MAX_VALUE) {
+            throw new IllegalStateException("actor graph loan limit exceeded");
+        }
+        // Construct before charging: an OOM or Lease class-init failure may
+        // not leave an uncloseable physical loan that strands actor STOP.
+        Lease loan = new Lease(id);
         loans[id.slot]++;
         activeLoans++;
-        return new Lease(id);
+        return loan;
     }
 
     public synchronized void link(NodeId from, NodeId to) {
