@@ -3220,6 +3220,18 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                    && call.callee() instanceof Ast.LambdaExpr inlineLambda) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "inline pipeline lambda requires exactly one upstream argument and no type arguments");
+                }
+                // Infer the lambda input from the upstream value before
+                // checking its body. A generic Unknown parameter would hide
+                // invalid operations and corrupt downstream pipeline typing.
+                Type upstream = typeOf(call.arguments().getFirst(), env, generics, self);
+                return inferValuePipelineLambda(inlineLambda, upstream, env, generics, self);
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -6116,6 +6128,108 @@ public final class TypeChecker {
         }
     }
 
+
+    /**
+     * Pipeline inputs remain a SINGLE value. A one-parameter lambda binds that
+     * entire value (even if it is a tuple). Two or more parameters explicitly
+     * destructure one statically known Tuple[T1,...,Tn], never a List/Array,
+     * a FixedArray or an implicit multi-value function return. Exact arity and
+     * slot types are checked before the lambda can be invoked.
+     */
+    private Type inferValuePipelineLambda(
+            Ast.LambdaExpr lambda, Type upstream,
+            Env parent, Set<String> generics, Type self) {
+        final int arity = lambda.parameters().size();
+        if (arity < 1) {
+            throw new IllegalArgumentException(
+                    "inline pipeline lambda must accept at least one parameter");
+        }
+        if (containsUnknown(upstream)) {
+            throw new IllegalArgumentException(
+                    "inline pipeline lambda requires a statically known upstream type");
+        }
+        final List<Type> inputs;
+        if (arity == 1) {
+            inputs = List.of(upstream);
+        } else if (upstream instanceof Tuple tuple && tuple.kind() == TupleKind.TUPLE) {
+            if (tuple.elements().size() != arity) {
+                throw new IllegalArgumentException(
+                        "pipeline tuple arity mismatch: expected " + arity
+                                + " element(s), got " + tuple.elements().size());
+            }
+            inputs = tuple.elements();
+        } else {
+            throw new IllegalArgumentException(
+                    "multi-parameter pipeline lambda requires a statically known Tuple "
+                            + "of matching arity; received " + upstream);
+        }
+
+        boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
+        Env bodyEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
+        List<Type> checkedInputs = new ArrayList<>(arity);
+        for (int i = 0; i < arity; i++) {
+            Ast.Param parameter = lambda.parameters().get(i);
+            if (parameter.mutable() || parameter.structural()) {
+                throw new IllegalArgumentException(
+                        "pipeline lambda parameter " + (i + 1)
+                                + " cannot request mutable or structural input");
+            }
+            Type actual = inputs.get(i);
+            Type declared = parameter.type().name().equals("$infer$")
+                    ? actual : resolveParam(parameter, generics, self);
+            requireReadonlyCapabilityPreserved(
+                    actual, declared, "pipeline lambda input " + (i + 1));
+            requireAssignable(actual, declared, "pipeline lambda input " + (i + 1));
+            requireAssignable(declared, actual, "pipeline lambda input " + (i + 1));
+            checkedInputs.add(declared);
+            bodyEnv.define(parameter.name(), declared, Ast.BindingKind.VAL);
+        }
+        defineImplicitArguments(bodyEnv, checkedInputs);
+
+        Map<Env.Binding, Set<String>> initialized = parent.initializationSnapshot();
+        Ast.ClassDecl previousClassOwner = currentClassOwner;
+        Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        if (nonLexical) currentClassOwner = null;
+        currentConstructorOwner = null;
+        try {
+            Type declaredResult = lambda.declaredReturnType() == null
+                    ? null : resolve(lambda.declaredReturnType(), generics, self);
+            Type result;
+            if (lambda.expressionBody() != null) {
+                result = typeOf(lambda.expressionBody(), bodyEnv, generics, self);
+            } else if (declaredResult != null) {
+                checkCallableBlock(lambda.blockBody(), bodyEnv, generics, declaredResult, self);
+                if (declaredResult != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
+                    throw new IllegalArgumentException(
+                            "non-void pipeline block lambda must explicitly return on every path");
+                }
+                result = declaredResult;
+            } else if (lambda.blockBody().size() == 1
+                    && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned
+                    && returned.value() != null) {
+                result = typeOf(returned.value(), bodyEnv, generics, self);
+                checkCallableBlock(lambda.blockBody(), bodyEnv, generics, result, self);
+            } else {
+                throw new IllegalArgumentException(
+                        "pipeline block lambda needs an explicit result type or a single return expression");
+            }
+            if (declaredResult != null) {
+                requireReadonlyCapabilityPreserved(result, declaredResult, "pipeline lambda result");
+                requireAssignable(result, declaredResult, "pipeline lambda result");
+            }
+            if (result == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "inline pipeline lambda result type cannot be unknown");
+            }
+            return result;
+        } finally {
+            // The callback is checked in a child scope, not executed during
+            // type checking. Its assignments cannot initialize outer locals.
+            parent.restoreInitialization(initialized);
+            currentClassOwner = previousClassOwner;
+            currentConstructorOwner = previousConstructorOwner;
+        }
+    }
 
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
         if (argument instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {

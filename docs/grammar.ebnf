@@ -352,10 +352,20 @@ expression      = assignment ;
 assignment      = pipeline [ "=" assignment ] ;
 pipeline        = conditional { "|>" pipeline_stage } ;
 pipeline_stage  = IDENT [ call_suffix ]
-                | ( "Option" | "Result" ) "." IDENT call_suffix ;
-(* A pipeline stage is a named callable or call; Option.* and Result.* stages
-   are lowered to instance combinators, all others pass the LHS as argument 1.
-   The left operand is evaluated once, and pipeline stages associate leftwards. *)
+                | ( "Option" | "Result" ) "." IDENT call_suffix
+                | pipe_lambda
+                | "nlex" pipe_lambda ;
+(* Stages are existing callables, including existing |x| -> expr lambdas.
+   No separate |> (name) binding syntax. A single lambda parameter receives
+   the entire upstream value, including Tuple[T1,...,TN]. Two or more lambda
+   parameters destructure ONE statically typed, exact-arity Tuple of the same
+   length; they do not turn non-tuples or ordinary named calls into variadic
+   arguments. Tuple-valued stage results remain a single typed value.
+   An unparenthesized inline lambda body ends before the next top-level |>,
+   which begins the NEXT stage; parenthesize (x |> inner) for nesting.
+   Option.* and Result.* stages lower to receiver combinators, all other
+   stages receive the upstream value as argument 1. Value is evaluated once,
+   stages associate leftwards, and actor 'pipe' remains a distinct operator. *)
 
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
 logic_or        = equality { "|" equality } ;

@@ -1695,7 +1695,17 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned tuple until explicit container lifetimes are supported");
                 copy &= info.kind == ValueKind.COPY;
-                slots.add(info.type);
+                Ast.TypeRef slot = info.type;
+                // Preserve only independently provable scalar results (e.g.
+                // int + int) so a tuple-producing inline stage can feed the
+                // next tuple-destructuring stage. Unresolved call results and
+                // dynamic/operator-overloaded values remain $infer$ and fail
+                // closed at the next destructuring boundary.
+                if (slot != null && slot.name().equals("$infer$")) {
+                    Ast.TypeRef inferredSlot = syntacticType(item, scope);
+                    if (!inferredSlot.name().equals("$infer$")) slot = inferredSlot;
+                }
+                slots.add(slot);
             }
             return new ValueInfo(Ast.TypeRef.tupleType(slots), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
@@ -1732,7 +1742,81 @@ public final class OwnershipChecker {
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
+    /**
+     * Ownership representation of a concrete tuple. Tuple[T1,...,Tn] uses
+     * one finite-sequence-shape argument; tuple literals use $tuple$.
+     * Never interpret arrays, fixed arrays/lists, unions or dynamic lists as
+     * destructurable tuples merely because they have the right length.
+     */
+    private static List<Ast.TypeRef> staticPipelineTupleSlots(Ast.TypeRef type) {
+        if (type == null || type.inferArguments() || type.isBorrow()) return null;
+        if (type.isTupleType()) return type.arguments();
+        if (!type.name().equals("Tuple") || type.arguments().size() != 1) return null;
+        Ast.TypeRef shape = type.arguments().getFirst();
+        if (!shape.isSequenceShape()) return null;
+        List<Ast.TypeRef> slots = shape.arguments();
+        if (slots.isEmpty() || slots.stream().anyMatch(slot ->
+                slot.isSequenceShape() || slot.isRepeatMany() || slot.isRepeatExact()
+                        || slot.isNamedParameter() || slot.inferArguments())) return null;
+        return slots;
+    }
+
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                && call.callee() instanceof Ast.LambdaExpr lambda) {
+            int arity = lambda.parameters().size();
+            if (call.arguments().size() != 1 || call.typeArgumentsPresent()
+                    || arity < 1) {
+                throw error("inline pipeline lambda requires one upstream argument and at least one parameter");
+            }
+            // Check/move the entire upstream exactly once. Every destructured
+            // field receives its OWN lexical binding; no implicit clone of
+            // move-only tuple elements or extra evaluation of the tuple.
+            ValueInfo input = checkExpr(call.arguments().getFirst(), scope, true);
+            if (isBorrowValue(input) || containsMutexGuardType(input.type)) {
+                throw error("inline pipeline lambda cannot consume a borrow or guard-bearing input "
+                        + "without a proven scoped lifetime");
+            }
+            if (input.type == null || input.type.name().equals("$infer$")) {
+                throw error("inline pipeline lambda requires an ownership-resolved upstream type");
+            }
+            List<Ast.TypeRef> inputs;
+            if (arity == 1) {
+                inputs = List.of(input.type);
+            } else {
+                List<Ast.TypeRef> slots = staticPipelineTupleSlots(input.type);
+                if (slots == null) {
+                    throw error("multi-parameter pipeline lambda requires a statically known Tuple input");
+                }
+                if (slots.size() != arity) {
+                    throw error("pipeline tuple arity mismatch: expected " + arity
+                            + " element(s), got " + slots.size());
+                }
+                if (slots.stream().anyMatch(slot -> slot == null
+                        || slot.isBorrow() || slot.name().equals("$infer$")
+                        || containsMutexGuardType(slot))) {
+                    throw error("pipeline tuple destructuring cannot publish borrowed, guarded or unresolved slots");
+                }
+                inputs = slots;
+            }
+            // Contextualize the ownership-only lambda view without rewriting
+            // the canonical AST or minting executable type/ownership proofs.
+            List<Ast.Param> contextualParams = new ArrayList<>(arity);
+            for (int i = 0; i < arity; i++) {
+                Ast.Param parameter = lambda.parameters().get(i);
+                if (parameter.mutable() || parameter.structural()) {
+                    throw error("pipeline lambda parameter " + (i + 1)
+                            + " cannot request mutable or structural input");
+                }
+                contextualParams.add(new Ast.Param(
+                        parameter.type().name().equals("$infer$") ? inputs.get(i) : parameter.type(),
+                        parameter.name(), false, false));
+            }
+            Ast.LambdaExpr contextual = new Ast.LambdaExpr(
+                    contextualParams, lambda.expressionBody(),
+                    lambda.blockBody(), lambda.nonLexical(), lambda.declaredReturnType());
+            return checkLambda(contextual, scope, null, false, false, true);
+        }
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive
@@ -3265,6 +3349,17 @@ public final class OwnershipChecker {
             String recursiveBinding,
             boolean allowActorSelfCapture,
             boolean deferredCleanup) {
+        return checkLambda(lambda, outer, recursiveBinding,
+                allowActorSelfCapture, deferredCleanup, false);
+    }
+
+    private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture,
+            boolean deferredCleanup,
+            boolean immediatePipelineStage) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
@@ -3322,6 +3417,7 @@ public final class OwnershipChecker {
         // Closures may execute after the class constructor returns; their
         // bodies cannot write fixed slots through the ctor-only exception.
         initializingClass = null;
+        ValueInfo immediateResult = null;
         try {
             if (lambda.expressionBody() != null) {
                 // An expression body has return-value ownership semantics even
@@ -3330,9 +3426,37 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a lambda");
                 }
+                if (immediatePipelineStage && isBorrowValue(returned)) {
+                    throw error("inline pipeline lambda cannot return a borrow without a proven loan lifetime");
+                }
+                immediateResult = returned;
+                // The ownership pass does not run the full type inferencer.
+                // Retain a narrowly provable scalar result for the next
+                // inline stage rather than incorrectly rejecting a legal
+                // |n| -> n + 1 |> |m| -> m * 2 chain. Never infer a
+                // borrow, mutable alias, or unknown callable result here.
+                if (immediatePipelineStage && returned.type != null
+                        && returned.type.name().equals("$infer$")) {
+                    Ast.TypeRef scalar = syntacticType(lambda.expressionBody(), closure);
+                    if (!scalar.name().equals("$infer$") && !scalar.isBorrow()) {
+                        immediateResult = new ValueInfo(scalar, kindOfType(scalar), null);
+                    }
+                }
             } else {
                 for (Ast.Stmt stmt : lambda.blockBody()) {
                     checkStatement(stmt, closure, Ast.TypeRef.inferred());
+                }
+                if (immediatePipelineStage) {
+                    Ast.TypeRef resultType = lambda.declaredReturnType();
+                    if (resultType == null && lambda.blockBody().size() == 1
+                            && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned
+                            && returned.value() != null) {
+                        resultType = syntacticType(returned.value(), closure);
+                    }
+                    if (resultType == null || resultType.isBorrow()) {
+                        throw error("inline pipeline block requires an owned, statically resolved result");
+                    }
+                    immediateResult = new ValueInfo(resultType, kindOfType(resultType), null);
                 }
             }
         } finally {
@@ -3341,7 +3465,10 @@ public final class OwnershipChecker {
             initializingClass = previousInitializingClass;
             closure.close();
         }
-        return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
+        // An immediately invoked stage transfers the result, not a closure.
+        // Ordinary lexical lambdas preserve their existing Fnc value shape.
+        return immediatePipelineStage ? immediateResult
+                : new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
     }
 
     private CaptureSet collectCaptures(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
@@ -4150,6 +4277,22 @@ public final class OwnershipChecker {
             return state == null ? Ast.TypeRef.inferred() : state.type;
         }
         if (expr instanceof Ast.NewExpr created) return created.type();
+        if (expr instanceof Ast.BinaryExpr binary) {
+            Ast.TypeRef left = syntacticType(binary.left(), scope);
+            Ast.TypeRef right = syntacticType(binary.right(), scope);
+            if (left.name().equals(right.name())
+                    && left.arguments().isEmpty() && right.arguments().isEmpty()
+                    && Set.of("int", "uint", "i8", "i16", "i32", "i64",
+                            "u8", "u16", "u32", "u64", "float",
+                            "f32", "f64").contains(left.name())
+                    && Set.of("+", "-", "*", "/").contains(binary.operator())) {
+                return left;
+            }
+            // Other binary operators and mixed types have no ownership-only
+            // scalar type proof; the independent type checker remains
+            // authoritative and this pass fails closed when necessary.
+            return Ast.TypeRef.inferred();
+        }
         if (expr instanceof Ast.TrapExpr trapped) {
             // Preserve the Option wrapper during generic call inference, even
             // when the operand is a local or literal rather than a CallExpr.

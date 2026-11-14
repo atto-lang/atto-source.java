@@ -5259,6 +5259,38 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                    && call.callee() instanceof Ast.LambdaExpr) {
+                // Preserve left-to-right value-first evaluation even when the
+                // upstream expression takes the suspendable source-task path.
+                evalSuspendableArguments(
+                        task, call.arguments(), env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            evalSuspendableExpr(t, call.callee(), env,
+                                    (t2, callee, failure2) -> {
+                                        if (failure2 != null) {
+                                            continuation.accept(t2, null, failure2);
+                                            return;
+                                        }
+                                        try {
+                                            if (!(callee instanceof Invokable callable)) {
+                                                throw new IllegalArgumentException("pipeline lambda is not callable");
+                                            }
+                                            Invocation invocation = invokableInvocation(
+                                                    callable, inlinePipelineLambdaArguments(call, values));
+                                            completeSourceInvocation(
+                                                    t2, invocation, false, env, continuation);
+                                        } catch (RuntimeException | Error callFailure) {
+                                            continuation.accept(t2, null, callFailure);
+                                        }
+                                    });
+                        });
+                return;
+            }
             String integerIntrinsic = integerIntrinsicName(call, env);
             if (integerIntrinsic != null) {
                 if (call.typeArgumentsPresent()) {
@@ -7235,7 +7267,50 @@ public final class OresEvalRootNode extends RootNode {
             return Parser.ROOT_MODULE;
         }
 
+        /**
+         * Inline |a,b| stages are unary in the pipeline algebra: they consume
+         * one statically checked Tuple[aType,bType], then bind each slot once.
+         * |whole| continues to receive the unexpanded tuple. This runtime
+         * arity guard protects against malformed or incompatible guest values;
+         * only the independent type/ownership check authorizes destructuring.
+         */
+        private List<Object> inlinePipelineLambdaArguments(
+                Ast.CallExpr call, List<Object> incoming) {
+            if (!(call.callee() instanceof Ast.LambdaExpr lambda)
+                    || call.origin() != Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                    || incoming.size() != 1) {
+                throw new IllegalArgumentException(
+                        "inline value pipeline requires exactly one upstream argument");
+            }
+            int arity = lambda.parameters().size();
+            if (arity < 1) {
+                throw new IllegalArgumentException(
+                        "inline value pipeline lambda requires at least one parameter");
+            }
+            if (arity == 1) return incoming;
+            Object value = incoming.getFirst();
+            if (!(value instanceof List<?> tuple) || tuple.size() != arity) {
+                throw new IllegalArgumentException(
+                        "inline value pipeline tuple arity mismatch: expected " + arity);
+            }
+            // Tuple slots are already evaluated. Do not evaluate or clone any
+            // owned element when constructing the invocation argument list.
+            return new ArrayList<>(tuple);
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                    && call.callee() instanceof Ast.LambdaExpr) {
+                // A pipeline is value-first. Constructing a closure can read
+                // captures, so its environment must be observed AFTER the
+                // upstream expression has been evaluated exactly once.
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                Object callee = eval(call.callee(), env);
+                if (!(callee instanceof Invokable callable)) {
+                    throw new IllegalArgumentException("pipeline lambda is not callable");
+                }
+                return invokableInvocation(callable, inlinePipelineLambdaArguments(call, args));
+            }
             String integerIntrinsic = integerIntrinsicName(call, env);
             if (integerIntrinsic != null) {
                 if (call.typeArgumentsPresent()) {
