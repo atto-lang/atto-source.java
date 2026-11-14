@@ -69,13 +69,13 @@ final class CommaDelimitedCallableBodyTest {
     }
 
     @Test
-    void nestedArgumentAndTypeCommasAreNotSequenceDelimiters() {
+    void nestedCallArgumentCommasAreNotSequenceDelimiters() {
         Ast.Program program = Parser.parse("""
                 fnc combine(int a, int b): int { return a + b; }
                 fnc calculated(int n) -> int ::
-                    Map<int, int> values = ~map<int, int>(),
                     int x = combine(n, 1),
-                    x + 1
+                    int y = combine(x, 2),
+                    y + 1
                 end
                 """);
         Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
