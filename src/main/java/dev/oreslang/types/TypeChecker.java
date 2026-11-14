@@ -3076,6 +3076,17 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            // Native .atto collection functions back these direct member calls.
+            // Never fabricate an Unknown-valued polymorphic method signature.
+            if (call.callee() instanceof Ast.MemberExpr collectionMethod
+                    && Set.of("map", "filter", "reduce").contains(collectionMethod.member())) {
+                Type collectionReceiver = deref(
+                        typeOf(collectionMethod.receiver(), env, generics, self));
+                if (collectionReceiver instanceof ListType list) {
+                    return checkNativeCollectionCombinator(
+                            call, list, collectionMethod.member(), env, generics, self);
+                }
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -4354,6 +4365,13 @@ public final class TypeChecker {
             if (sumReceiver instanceof Function) {
                 throw new IllegalArgumentException("unknown function member '" + member.member()
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
+            }
+            if (sumReceiver instanceof ListType
+                    && Set.of("map", "filter", "reduce").contains(member.member())) {
+                throw new IllegalArgumentException(
+                        "collection." + member.member()
+                                + " is a direct-call-only generic method; "
+                                + "use values." + member.member() + "(...)");
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (collectionMember != null
@@ -8502,6 +8520,83 @@ public final class TypeChecker {
                 "Map." + operation + " requires a directly owned writable let binding "
                         + "or a writable actor self field; mutable Map receiver "
                         + "loans, const/val and captured method values are not admitted");
+    }
+
+    /**
+     * Type-check the syntactic sugar for the compiled core/collections.atto
+     * functions. A method value is not reifiable: direct calls alone have
+     * enough context to infer the mapped element and accumulator types.
+     *
+     * V1 intentionally rejects non-scalar payloads because the generic core
+     * implementation uses get/add and has no proven affine transfer contract.
+     */
+    private Type checkNativeCollectionCombinator(
+            Ast.CallExpr call, ListType source, String operation,
+            Env env, Set<String> generics, Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "collection." + operation + " infers types from the callback; "
+                            + "call-site type arguments are not supported");
+        }
+        int arity = operation.equals("reduce") ? 2 : 1;
+        if (call.arguments().size() != arity
+                || call.arguments().stream().anyMatch(arg -> arg instanceof Ast.SpreadExpr)) {
+            throw new IllegalArgumentException(
+                    "collection." + operation + " expects "
+                            + (arity == 1 ? "one callback" : "an initial value and callback"));
+        }
+        Type element = source.element();
+        if (!nativeCollectionCopyScalar(element)) {
+            throw new IllegalArgumentException(
+                    "collection." + operation + " requires a concrete Copy scalar element "
+                            + "until native ownership-aware combinators are verified");
+        }
+        Type accumulator = null;
+        if (operation.equals("reduce")) {
+            accumulator = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+            if (!nativeCollectionCopyScalar(accumulator)) {
+                throw new IllegalArgumentException(
+                        "collection.reduce requires a concrete Copy scalar accumulator");
+            }
+        }
+        Ast.Expr callbackSource = call.arguments().get(arity - 1);
+        Type callbackType = typeOf(callbackSource, env, generics, self);
+        if (!(callbackType instanceof Function callback)
+                || callback.async()
+                || callback.mutableParameters().contains(true)
+                || callback.parameters().size() != arity) {
+            throw new IllegalArgumentException(
+                    "collection." + operation + " requires a synchronous, non-mutating "
+                            + arity + "-parameter callback");
+        }
+        if (operation.equals("reduce")) {
+            requireAssignable(accumulator, callback.parameters().get(0),
+                    "collection.reduce accumulator parameter");
+            requireAssignable(element, callback.parameters().get(1),
+                    "collection.reduce element parameter");
+            requireAssignable(callback.result(), accumulator,
+                    "collection.reduce callback result");
+            return accumulator;
+        }
+        requireAssignable(element, callback.parameters().getFirst(),
+                "collection." + operation + " callback element");
+        if (operation.equals("filter")) {
+            requireAssignable(callback.result(), Primitive.BOOL,
+                    "collection.filter predicate result");
+            return source;
+        }
+        Type result = deref(callback.result());
+        if (!nativeCollectionCopyScalar(result)) {
+            throw new IllegalArgumentException(
+                    "collection.map requires a concrete Copy scalar result");
+        }
+        return new ListType(result);
+    }
+
+    private static boolean nativeCollectionCopyScalar(Type type) {
+        return type == Primitive.INT || type == Primitive.BOOL
+                || type == Primitive.STRING || type == Primitive.FLOAT
+                || type == Primitive.DECIMAL || type == Primitive.COMPLEX;
     }
 
     private Type builtinCollectionMember(Type receiver, String member) {
