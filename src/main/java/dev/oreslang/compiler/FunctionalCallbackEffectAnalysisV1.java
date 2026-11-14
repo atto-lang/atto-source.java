@@ -125,11 +125,15 @@ public final class FunctionalCallbackEffectAnalysisV1 {
 
         private void inspectCombinator(Ast.CallExpr call) {
             if (!(call.callee() instanceof Ast.MemberExpr member)
-                    || !COMBINATORS.contains(member.member())
-                    || call.arguments().size() != 1
-                    || !(member.receiver() instanceof Ast.NameExpr receiver)) {
+                    || !COMBINATORS.contains(member.member())) {
                 return;
             }
+            if (call.arguments().size() != 1
+                    || !(member.receiver() instanceof Ast.NameExpr)) {
+                complete = false; // unexamined combinator shape, never a full scan
+                return;
+            }
+            Ast.NameExpr receiver = (Ast.NameExpr) member.receiver();
             // The same syntax can name a user method. Classify only a
             // directly declared Option/Result parameter, checked by the
             // real frontend; a shadowed local binding invalidates coverage.
@@ -137,13 +141,9 @@ public final class FunctionalCallbackEffectAnalysisV1 {
                     .filter(p -> p.name().equals(receiver.name()))
                     .findFirst().orElse(null);
             if (parameter == null || parameter.type() == null
-                    || !Set.of("Option", "Result").contains(parameter.type().name())) {
-                return;
-            }
-            if (function.body().stream().anyMatch(stmt ->
-                    stmt instanceof Ast.BindingStmt b
-                            && b.name().equals(receiver.name()))) {
-                complete = false;
+                    || !Set.of("Option", "Result").contains(parameter.type().name())
+                    || shadows(function.body(), receiver.name())) {
+                complete = false; // user-defined method or shadowed parameter
                 return;
             }
             Set<Effect> callbackEffects =
@@ -160,6 +160,17 @@ public final class FunctionalCallbackEffectAnalysisV1 {
             sites.add(new Site(module, function.name(), member.member(),
                     inferred, EffectContracts.pureAllowance().containsAll(inferred)));
         }
+    }
+
+    /** Nested blocks cannot shadow a recognized formal sum receiver. */
+    private static boolean shadows(List<Ast.Stmt> statements, String name) {
+        for (Ast.Stmt statement : statements) {
+            if (statement instanceof Ast.BindingStmt binding
+                    && binding.name().equals(name)) return true;
+            if (statement instanceof Ast.BlockStmt block
+                    && shadows(block.body(), name)) return true;
+        }
+        return false;
     }
 
     private static Set<Effect> inlineEffects(Ast.Expr expr) {
