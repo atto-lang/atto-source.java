@@ -25,10 +25,25 @@ public final class Ast {
         return name;
     }
 
-    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+    public enum ExportScope { PUBLIC, PACKAGE }
+    public enum ExportKind { CLASS, FNC, ROUTINE, ACTOR, INTERFACE, TRAIT, TYPE }
+    /** Compile-time export authority, resolved after collecting every file-root declaration. */
+    public record ExportDecl(String name, ExportScope scope, ExportKind kind) {
+        public ExportDecl {
+            java.util.Objects.requireNonNull(name);
+            java.util.Objects.requireNonNull(scope);
+        }
+    }
+
+    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules,
+                          List<ExportDecl> exports) {
         public Program {
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
+            exports = List.copyOf(exports);
+        }
+        public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(namespace, imports, modules, List.of());
         }
         public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
