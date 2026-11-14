@@ -1,0 +1,43 @@
+# Source-repository only. No cross-organization mirror or secrets.
+# HOST PREFLIGHT ONLY — never count as compiler-executed GEMM or AOT proof.
+name: OresLLM f32 actor host admission v1 (java)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/F32ActorHostPreflightV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ExecutionContext.java'
+      - 'tests/F32ActorHostPreflightV1Smoke.java'
+      - 'tests/run-f32-actor-host-preflight-v1.sh'
+      - '.github/workflows/oresllm-f32-actor-host-admission-v1.yml'
+      - 'tests/F32ActorTurnLeaseV1Smoke.java'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host-preflight-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact PR source head without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source and clean checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "ORESLLM_F32_SOURCE_PR_HEAD_VERIFIED|sha=$EXPECTED_HEAD|guest=NOT_EXECUTED"
+      - name: Execute java actual host-side gate and adversarial tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "${JAVA_HOME_21_X64:-}" || { echo 'JDK21 runner image missing; fail closed' >&2; exit 2; }
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          bash tests/run-f32-actor-host-preflight-v1.sh
+          echo "ORESLLM_F32_HOST_PREFLIGHT_ONLY_PASS|backend=java|compiler_guest=NOT_EXECUTED|native_gemm=NOT_EXECUTED"

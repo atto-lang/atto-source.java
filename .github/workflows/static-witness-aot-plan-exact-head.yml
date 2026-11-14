@@ -1,0 +1,48 @@
+name: Java static witness AOT plan - exact-head compiler helper
+on:
+  pull_request:
+    paths:
+      - .github/workflows/static-witness-aot-plan-exact-head.yml
+      - src/main/java/dev/oreslang/types/TypeclassRegistry.java
+      - src/main/java/dev/oreslang/compiler/StaticWitnessAotPlan.java
+      - tools/ci/StaticWitnessAotProbe.java
+      - docs/STATIC_WITNESS_AOT_PLANNER_20261110.md
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  static-witness-frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact PR commit without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify current head and tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          echo "JAVA_STATIC_WITNESS_HEAD=$(git rev-parse HEAD)"
+          echo "JAVA_STATIC_WITNESS_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ github.token }}
+      - name: Compile and execute real static witness compiler helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/atto-static-witness-classes"
+          javac -d "$RUNNER_TEMP/atto-static-witness-classes" \
+            src/main/java/dev/oreslang/types/TypeclassRegistry.java \
+            src/main/java/dev/oreslang/compiler/StaticWitnessAotPlan.java \
+            tools/ci/StaticWitnessAotProbe.java
+          java -cp "$RUNNER_TEMP/atto-static-witness-classes" StaticWitnessAotProbe
+          echo 'Compiler helper executed; Native Image and HIR/MIR linking NOT tested.' >> "$GITHUB_STEP_SUMMARY"
