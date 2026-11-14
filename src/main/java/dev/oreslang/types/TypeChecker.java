@@ -5048,14 +5048,23 @@ public final class TypeChecker {
             Ast.EnumDecl nominalEnum = enums.get(named.name());
             if (nominalEnum != null) {
                 int separator = constructor.constructor().lastIndexOf('.');
+                String variantName = constructor.constructor();
+                boolean permittedOwner = separator < 0;
                 if (separator > 0) {
                     Ast.EnumDecl namedEnum = findEnum(constructor.constructor().substring(0, separator));
-                    if (namedEnum == nominalEnum) {
-                        Ast.EnumVariant variant = enumVariant(nominalEnum, constructor.constructor().substring(separator + 1));
+                    permittedOwner = namedEnum == nominalEnum;
+                    variantName = constructor.constructor().substring(separator + 1);
+                }
+                if (permittedOwner) {
+                    // A bare case name resolves only against the statically
+                    // known nominal scrutinee; never search a global enum pool.
+                    for (Ast.EnumVariant variant : nominalEnum.variants()) {
+                        if (!variant.name().equals(variantName)) continue;
                         args = variant.payload() == null ? List.of()
                                 : List.of(resolve(
                                         Ast.TypeRef.readonlyRecordType(variant.payload().recordMembers()),
                                         generics, self));
+                        break;
                     }
                 }
             }
@@ -5168,6 +5177,19 @@ public final class TypeChecker {
         return false;
     }
 
+    // Nominal enum cases may be spelled with or without their owner only
+    // when that owner is already established by the checked match subject.
+    // A foreign qualified case never aliases the expected enum.
+    private boolean sameConstructorForSubject(String a, String b, Type subject) {
+        if (a.equals(b)) return true;
+        if (!(subject instanceof Named named) || !enums.containsKey(named.name())) return false;
+        String prefix = named.name() + ".";
+        String ca = a.startsWith(prefix) ? a.substring(prefix.length()) : a;
+        String cb = b.startsWith(prefix) ? b.substring(prefix.length()) : b;
+        if (ca.contains(".") || cb.contains(".")) return false;
+        return ca.equals(cb);
+    }
+
     private boolean patternSubsumes(
             Ast.Pattern earlier,
             Ast.Pattern later,
@@ -5224,7 +5246,7 @@ public final class TypeChecker {
         }
 
         if (earlier instanceof Ast.ConstructorPattern a && later instanceof Ast.ConstructorPattern b) {
-            if (!a.constructor().equals(b.constructor())
+            if (!sameConstructorForSubject(a.constructor(), b.constructor(), subject)
                     || a.arguments().size() != b.arguments().size()) return false;
             for (int i = 0; i < a.arguments().size(); i++) {
                 if (!patternSubsumes(
@@ -5345,7 +5367,8 @@ public final class TypeChecker {
                 String patternName = declarationEnum.name() + "." + variant.name();
                 for (Ast.Pattern pattern : patterns) {
                     if (!(pattern instanceof Ast.ConstructorPattern constructor)
-                            || !constructor.constructor().equals(patternName)) continue;
+                            || !(constructor.constructor().equals(patternName)
+                                || constructor.constructor().equals(variant.name()))) continue;
                     if (variant.payload() == null && constructor.arguments().isEmpty()) {
                         variants.add(new Ast.WildcardPattern());
                     } else if (variant.payload() != null && constructor.arguments().size() == 1) {
