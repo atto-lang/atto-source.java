@@ -136,6 +136,8 @@ public final class ActorContractWitness {
                 Ast.DeclaredActorDecl actor = actorEntry.getValue().declaration();
                 List<MethodProof> methodProofs = new ArrayList<>();
                 Map<String, String> fulfilled = new LinkedHashMap<>();
+                Map<String, String> fulfilledState = new LinkedHashMap<>();
+                Located<Ast.ActorStateAttachmentDecl> ownedState = state.get(actorName);
 
                 for (Ast.TypeRef interfaceName : actor.contracts()) {
                     Located<Ast.InterfaceDecl> target = contracts.get(interfaceName.name());
@@ -162,10 +164,66 @@ public final class ActorContractWitness {
                     }
 
                     for (Ast.InterfaceMember member : iface.members()) {
+                        if (member instanceof Ast.InterfaceFieldDecl requiredField) {
+                            // This is a compiler-only storage-shape obligation,
+                            // NEVER a method, public trait field or state loan.
+                            if ((requiredField.bindingKind() != Ast.BindingKind.LET
+                                            && requiredField.bindingKind() != Ast.BindingKind.VAL)
+                                    || requiredField.type().isBorrow()
+                                    || requiredField.type().inferArguments()
+                                    || !requiredField.type().arguments().isEmpty()
+                                    || !(requiredField.type().name().equals("int")
+                                            || requiredField.type().name().equals("bool"))
+                                    || (requiredField.bindingKind() == Ast.BindingKind.LET
+                                            && requiredField.mutableReferent())) {
+                                throw new IllegalArgumentException(
+                                        "ACTOR_STATE_REQUIREMENT_UNSAFE_TYPE: "
+                                                + iface.name() + "." + requiredField.name());
+                            }
+                            String previous = fulfilledState.putIfAbsent(
+                                    requiredField.name(), iface.name());
+                            if (previous != null) {
+                                throw new IllegalArgumentException(
+                                        "ACTOR_STATE_REQUIREMENT_AMBIGUOUS: " + actorName + "."
+                                                + requiredField.name() + " in " + previous
+                                                + " and " + iface.name());
+                            }
+                            if (ownedState == null) {
+                                throw new IllegalArgumentException(
+                                        "ACTOR_STATE_REQUIREMENT_MISSING: " + actorName + "."
+                                                + requiredField.name() + " has no attached state schema");
+                            }
+                            Ast.AttachedActorStateField matching = null;
+                            for (Ast.AttachedActorStateField field :
+                                    ownedState.declaration().fields()) {
+                                if (field.name().equals(requiredField.name())) {
+                                    matching = field;
+                                    break;
+                                }
+                            }
+                            if (matching == null) {
+                                throw new IllegalArgumentException(
+                                        "ACTOR_STATE_REQUIREMENT_MISSING: " + actorName + "."
+                                                + requiredField.name());
+                            }
+                            if (!matching.type().equals(requiredField.type())
+                                    || matching.bindingKind() != requiredField.bindingKind()
+                                    || matching.initializer() == null) {
+                                throw new IllegalArgumentException(
+                                        "ACTOR_STATE_REQUIREMENT_MISMATCH: " + actorName + "."
+                                                + requiredField.name());
+                            }
+                            continue;
+                        }
                         if (!(member instanceof Ast.InterfaceFunctionDecl requirement)) {
                             throw new IllegalArgumentException(
-                                    "actor interface contract v1 requires method-only members: "
+                                    "actor interface contract accepts only mtd and attached state requirements: "
                                             + iface.name());
+                        }
+                        if (fulfilledState.containsKey(requirement.name())) {
+                            throw new IllegalArgumentException(
+                                    "ACTOR_STATE_METHOD_COLLISION: " + actorName + "."
+                                            + requirement.name());
                         }
                         if (requirement.structural()
                                 || !requirement.genericParameters().isEmpty()
@@ -221,7 +279,6 @@ public final class ActorContractWitness {
                         k.packageIdentity().equals(packageIdentity)
                                 && k.namespace().equals(namespace.getKey())
                                 && k.actor().equals(actorName));
-                Located<Ast.ActorStateAttachmentDecl> ownedState = state.get(actorName);
                 if (!hasMethod && ownedState == null) {
                     throw new IllegalArgumentException(
                             "declaration-only actor has no implementation constituents: " + actorName);
