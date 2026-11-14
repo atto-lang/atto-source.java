@@ -762,8 +762,10 @@ public final class Parser {
                 }
             }
             consume(END, "expected 'end' to close " + kind + " body");
-            if (!body.isEmpty() && !returnType.name().equals("void")
-                    && body.getLast() instanceof Ast.ExprStmt expression) {
+            // Even void tails must satisfy the declared result contract:
+            // a terminal int cannot silently be discarded in an
+            // expression body. A void-returning effect remains valid.
+            if (!body.isEmpty() && body.getLast() instanceof Ast.ExprStmt expression) {
                 body.set(body.size() - 1, new Ast.ReturnStmt(expression.expression()));
             }
             return body;
