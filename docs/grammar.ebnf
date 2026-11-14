@@ -19,6 +19,7 @@ top_level_item  = annotated_module_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
+                | generator_decl
                 | class_decl
                 | interface_decl
                 | trait_decl
@@ -48,6 +49,14 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 callable_kind   = "fnc" | "routine" ;
+
+generator_decl  = { annotation } visibility [ "async" | "suspend" | "suspends" ]
+                  generator_marker callable_name [ generic_params ]
+                  ( "(" [ param_list ] ")" return_spec block
+                  | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
+generator_marker = "gen" "*" | "generator" "*" ;
+(* Legacy compatibility also permits generator/gen* in callable-modifier
+   position around fnc/routine. Canonical source omits fnc/routine. *)
 
 actor_callable_decl
                 = { annotation } visibility { "async" | "nlex" | "structural" | "shared" } "actor" "fnc" callable_name [ generic_params ]
@@ -109,7 +118,14 @@ static_function_decl
                   "(" [ param_list ] ")" return_spec block ;
 
 contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
-                  [ "extends" type_ref { "," type_ref } ] interface_body ;
+                  [ "extends" type_ref { "," type_ref } ] module_contract_body ;
+module_contract_body = "{" { module_contract_member } "}"
+                     | { module_contract_member } "end" ;
+module_contract_member = interface_member
+                       | "actor" IDENT member_terminator ;
+(* Stage 1: 'actor IDENT;' requires a public nominal actor declaration in
+   the conforming module. External 'mtd(Actor receiver)' implementations and
+   per-actor method requirements are NOT yet part of this grammar. *)
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -229,14 +245,18 @@ loop_stmt       = "loop" block ;
 while_stmt      = "while" ( "(" condition_head ")" | condition_head ) [ ";" ] loop_body ;
 
 if_stmt         = "if" condition_head
-                  ( block
-                    { conditional_branch condition_head block }
-                    [ "else" block ]
+                  ( braced_if_tail
                   | [ ";" ] ( "then" | deprecated_if_do ) { statement }
                     { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement } }
                     [ "else" { statement } ]
                   )
                   "fi" ;
+braced_if_tail  = "{" { statement }
+                  { "}" conditional_branch condition_head "{" { statement } }
+                  [ "}" "else" "{" { statement } ]
+                  [ deprecated_if_close ] ;
+deprecated_if_close
+                = "}" ; (* accepted with migration diagnostic before fi *)
 conditional_branch
                 = "elif"
                 | "elseif"                 (* accepted alias *)
@@ -244,6 +264,7 @@ conditional_branch
 deprecated_if_do
                 = "do" ;                   (* accepted for migration; canonical spelling is then *)
 condition_head  = condition
+                | "let" refutable_pattern "=" logic_or [ "&&" condition ]
                 | logic_or "as" "let" IDENT "when" condition
                 | "(" logic_or "as" "let" IDENT "when" condition ")" ;
 condition       = condition_and { "|" condition_and } ;
@@ -354,6 +375,7 @@ comparison      = additive
                   | "is" "type" type_ref [ IDENT ]
                   | "matches" pattern
                   | "as" [ "?" ] type_ref
+                  | "as" "let" IDENT        (* condition-local value capture *)
                   } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
@@ -776,3 +798,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    rebinds before every test, including after continue. If bindings cover
    their predicate and remaining branch chain, but do not escape the if.
    See VALUE_BOUNDARIES.md for aggregate ordering and unsupported surfaces. *)
+
+(* refutable_pattern excludes a bare binding or wildcard; constructor/pattern
+   tests reuse existing pattern ownership. Expression captures retain ordinary
+   let move/borrow rules and only exist in their condition and matching body.
+   Skippable short-circuit/conditional capture paths are rejected. *)
+refutable_pattern = pattern ;
