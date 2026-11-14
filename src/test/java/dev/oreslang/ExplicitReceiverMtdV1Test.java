@@ -130,6 +130,49 @@ final class ExplicitReceiverMtdV1Test {
     }
 
     @Test
+    void rejectsAnnotationAndLifecyclePrivilegeEscalation() {
+        for (String source : new String[] {
+                """
+                define class Point as end
+                @Structural
+                mtd (self: Point) value(): int { return 1; }
+                """,
+                """
+                define class Point as end
+                mtd (self: Point) new(): Point { return new Point(); }
+                """,
+                """
+                define class Point as end
+                mtd (self: Point) constructor(): void { return; }
+                """,
+                """
+                define class Point as end
+                mtd (self: Point) on_start(): void { return; }
+                """
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
+    void rejectsAmbiguousNominalClassesAndRepeatedExternalArity() {
+        for (String source : new String[] {
+                """
+                define class Point as end
+                define class Point as end
+                mtd (self: Point) read_x(): int { return 1; }
+                """,
+                """
+                define class Point as end
+                mtd (self: Point) read_x(int x): int { return x; }
+                mtd (mut self: Point) read_x(int x): int { return x; }
+                """
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
     void immutableReceiverCannotModifyOwnerState() {
         Ast.Program program = Parser.parse("""
                 define class Point as
