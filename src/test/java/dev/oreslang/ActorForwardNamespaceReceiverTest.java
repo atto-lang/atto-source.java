@@ -318,6 +318,56 @@ final class ActorForwardNamespaceReceiverTest {
     }
 
     @Test
+    void sameNamedActorsInSiblingModulesRetainExactOwnershipIdentity() {
+        Ast.Program valid = Parser.parse("""
+                use namespace workers;
+                define module west as
+                  declare actor Worker;
+                  mtd (Worker self) foo(): int { return 41; }
+                end
+                define module east as
+                  declare actor Worker;
+                  mtd (Worker self) foo(): int { return 42; }
+                end
+                """);
+        assertDoesNotThrow(() -> OwnershipChecker.check(valid),
+                "two nominal Worker actors cannot share ownership identity");
+
+        Ast.Program illegalMutCall = Parser.parse("""
+                use namespace workers;
+                define module west as
+                  declare actor Worker;
+                  mtd (Worker mut self) mutate(): void { return; }
+                  mtd (Worker self) invalid(): void {
+                    self.mutate();
+                    return;
+                  }
+                end
+                define module east as
+                  declare actor Worker;
+                  mtd (Worker self) foo(): int { return 42; }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(illegalMutCall),
+                "an ambiguous unqualified Worker name must not skip mutable loan validation");
+
+        Ast.Program illegalEscape = Parser.parse("""
+                define module west as
+                  declare actor Worker;
+                  mtd (Worker self) leak(): Worker { return self; }
+                end
+                define module east as
+                  declare actor Worker;
+                  mtd (Worker self) foo(): int { return 42; }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(illegalEscape),
+                "an ambiguous unqualified Worker name must not permit actor self escape");
+    }
+
+    @Test
     void readonlyActorSelfCannotEscapeItsMailboxTurn() {
         for (String receiver : new String[]{"Foo1 self", "Foo1 mut self"}) {
             Ast.Program program = Parser.parse("""
