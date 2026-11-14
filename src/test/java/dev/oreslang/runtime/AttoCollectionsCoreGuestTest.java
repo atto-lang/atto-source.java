@@ -115,7 +115,9 @@ final class AttoCollectionsCoreGuestTest {
         Files.writeString(shadow.resolve("collections.atto"), "not AttoLang");
         assertTrue(CoreLibrarySources.oresCoreSource("ores.core/collections")
                 .contains("pub fnc map_array"));
-        assertEquals(CoreLibrarySources.oresCoreUnitId("ores.core/collections.ores"),
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.oresCoreUnitId("ores.core/collections.ores"));
+        assertEquals("@ores.core/collections.atto",
                 CoreLibrarySources.oresCoreUnitId("ores.core/collections.atto"));
     }
 }
