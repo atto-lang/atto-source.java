@@ -40,6 +40,8 @@ final class ActorSourceLifecycleGate {
 
     synchronized int activeReceives() { return activeReceives; }
 
+    synchronized boolean teardownActive() { return teardownActive; }
+
     /**
      * An unforgeable, single-release admission receipt for one guest receive.
      * A STOP arriving after admission can seal new mail but cannot revoke a
