@@ -45,13 +45,16 @@ final class AdaptiveTraceCodeV1<T> {
         private final long epoch;
         private final long sequence;
         private final int probeMask;
+        private final long policyVersion;
         private boolean consumed;
 
-        private Ticket(AdaptiveTraceCodeV1<?> owner, long epoch, long sequence, int mask) {
+        private Ticket(AdaptiveTraceCodeV1<?> owner, long epoch, long sequence,
+                int mask, long policyVersion) {
             this.owner = owner;
             this.epoch = epoch;
             this.sequence = sequence;
             this.probeMask = mask;
+            this.policyVersion = policyVersion;
         }
     }
 
@@ -115,8 +118,11 @@ final class AdaptiveTraceCodeV1<T> {
     synchronized Invocation<T> pin() {
         if (retired) throw new IllegalStateException("trace code owner retired");
         if (active.pins == Integer.MAX_VALUE) throw new IllegalStateException("too many invocation pins");
+        // Allocate the logical pin before charging it: allocation failure must
+        // not leave an uncloseable pin that prevents generation retirement.
+        Invocation<T> invocation = new Invocation<>(this, active);
         active.pins++;
-        return new Invocation<>(this, active);
+        return invocation;
     }
 
     /** Reserve bounded compile authority; no compiler runs while lock held. */
@@ -135,7 +141,7 @@ final class AdaptiveTraceCodeV1<T> {
             throw new IllegalStateException("live code-generation quota exceeded");
         }
         requestedCompilations++; // Includes failed/aborted compiles to prevent DoS.
-        pending = new Ticket(this, epoch, ++sequence, probeMask);
+        pending = new Ticket(this, epoch, ++sequence, probeMask, policy.version());
         return pending;
     }
 
@@ -144,6 +150,7 @@ final class AdaptiveTraceCodeV1<T> {
         verifyTicket(ticket);
         Objects.requireNonNull(artifact, "compiled artifact");
         if (!identity.equals(artifact.identity) || ticket.probeMask != artifact.probeMask
+                || ticket.policyVersion != policy.version()
                 || (ticket.probeMask & ~policy.activeMask()) != 0) {
             throw new SecurityException("changed IR, ABI, effects, ownership or trace policy");
         }
@@ -178,6 +185,10 @@ final class AdaptiveTraceCodeV1<T> {
             pending.owner = null;
             pending = null;
         }
+        // The dispatcher may be kept for diagnostic tombstones after STOP.
+        // Detach the final active image while preserving any pinned invocation
+        // in generations until its actual terminal close. No code is freed here.
+        active = null;
         prune();
     }
 
@@ -192,11 +203,17 @@ final class AdaptiveTraceCodeV1<T> {
     private synchronized void release(Generation<T> generation) {
         if (generation.pins <= 0) throw new IllegalStateException("invocation pin underflow");
         generation.pins--;
-        prune();
+        if (retired || generation != active) prune();
     }
 
     private void prune() {
-        generations.removeIf(gen -> gen != active && gen.pins == 0);
+        // Avoid a capturing Predicate allocation during logical invocation
+        // completion. Retired dispatchers have no active image and release
+        // every generation once the final pinned continuation terminates.
+        for (int i = generations.size() - 1; i >= 0; --i) {
+            Generation<T> gen = generations.get(i);
+            if (gen != active && gen.pins == 0) generations.remove(i);
+        }
     }
 
     synchronized int retainedGenerations() { return generations.size(); }
