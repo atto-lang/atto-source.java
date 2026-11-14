@@ -40,11 +40,21 @@ class SourceLogCallsiteBindingV1Test {
                 module, "main", 0, "hammer.finished", RID, END));
     }
 
+    // Both admission stages must bind the *same* parsed AST object identity.
+    private static java.util.Map<Ast.CallExpr,
+            dev.oreslang.runtime.SourceIdentityV1.Site> bind(
+            Fixture fixture, List<SourceLogCallsiteBindingV1.Entry> sites) {
+        var checkedRoutines = SourceRoutineBindingV1.bind(fixture.ast(), List.of(
+                new SourceRoutineBindingV1.Entry(
+                        fixture.module(), "main", 0, RID)));
+        return SourceLogCallsiteBindingV1.bind(
+                fixture.ast(), sites, checkedRoutines);
+    }
+
     @Test
     void realParsedLogCallsReceiveDistinctImmutableSiteDescriptors() {
         var fixture = parse(SOURCE);
-        var sites = SourceLogCallsiteBindingV1.bind(
-                fixture.ast(), entries(fixture.module()));
+        var sites = bind(fixture, entries(fixture.module()));
         assertEquals(2, sites.size());
         var distinct = new java.util.HashSet<String>();
         for (var entry : sites.entrySet()) {
@@ -62,19 +72,42 @@ class SourceLogCallsiteBindingV1Test {
     void refusesMissingForgedAndDuplicatedStaticSiteRows() {
         var f = parse(SOURCE);
         assertThrows(IllegalArgumentException.class,
-            () -> SourceLogCallsiteBindingV1.bind(
-                f.ast(), entries(f.module()).subList(0, 1)));
+            () -> bind(f, entries(f.module()).subList(0, 1)));
         var duplicate = new ArrayList<>(entries(f.module()));
         duplicate.set(1, new SourceLogCallsiteBindingV1.Entry(
             f.module(), "main", 0, "hammer.finished", RID, START));
         assertThrows(IllegalArgumentException.class,
-            () -> SourceLogCallsiteBindingV1.bind(f.ast(), duplicate));
+            () -> bind(f, duplicate));
         var wrong = new ArrayList<>(entries(f.module()));
         wrong.set(1, new SourceLogCallsiteBindingV1.Entry(
             f.module(), "main", 0, "hammer.finished",
             "rid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", END));
         assertThrows(IllegalArgumentException.class,
-            () -> SourceLogCallsiteBindingV1.bind(f.ast(), wrong));
+            () -> bind(f, wrong));
+    }
+
+    @Test
+    void refusesDifferentAstWithSameStructureAndUnverifiedRoutineTable() {
+        var first = parse(SOURCE);
+        var second = parse(SOURCE);
+        var checked = SourceRoutineBindingV1.bind(first.ast(), List.of(
+                new SourceRoutineBindingV1.Entry(first.module(), "main", 0, RID)));
+        assertThrows(IllegalArgumentException.class,
+                () -> SourceLogCallsiteBindingV1.bind(
+                        second.ast(), entries(second.module()), checked));
+        assertThrows(NullPointerException.class,
+                () -> SourceLogCallsiteBindingV1.bind(
+                        first.ast(), entries(first.module()), null));
+    }
+
+    @Test
+    void refusesUncheckedNestedReturnCall() {
+        var hidden = parse(
+                "pub fnc main(): int { return log.info(\"hidden\"); }");
+        assertThrows(IllegalArgumentException.class,
+                () -> bind(hidden, List.of(
+                        new SourceLogCallsiteBindingV1.Entry(
+                                hidden.module(), "main", 0, "hidden", RID, START))));
     }
 
     @Test
@@ -82,13 +115,13 @@ class SourceLogCallsiteBindingV1Test {
         var dynamic = parse(
             "pub fnc main(): void { const msg = \"secret\"; log.info(msg); }");
         assertThrows(IllegalArgumentException.class,
-            () -> SourceLogCallsiteBindingV1.bind(dynamic.ast(),
+            () -> bind(dynamic,
                     List.of(new SourceLogCallsiteBindingV1.Entry(
                             dynamic.module(), "main", 0, "secret", RID, START))));
         var repeated = parse(
             "pub fnc main(): void { log.info(\"dup\"); log.info(\"dup\"); }");
         assertThrows(IllegalArgumentException.class,
-            () -> SourceLogCallsiteBindingV1.bind(repeated.ast(),
+            () -> bind(repeated,
                     List.of(new SourceLogCallsiteBindingV1.Entry(
                             repeated.module(), "main", 0, "dup", RID, START))));
     }
