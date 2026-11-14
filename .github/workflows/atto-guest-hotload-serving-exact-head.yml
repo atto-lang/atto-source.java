@@ -1,0 +1,45 @@
+name: Atto guest hotload serving transaction (exact-head)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/HotReloadManager.java'
+      - 'src/test/java/dev/oreslang/HotReloadServingGuestCurrentMainTest.java'
+      - 'examples/hot-upgrade/**'
+      - '.github/workflows/atto-guest-hotload-serving-exact-head.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  graalvm-real-guest-hotload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Source checkout and full-tree identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$(git rev-parse HEAD^{tree})"
+          echo "source HEAD $(git rev-parse HEAD)"
+          echo "source TREE $(git rev-parse HEAD^{tree})"
+          git status --porcelain
+      - name: Run actual GraalVM/Truffle .atto guest actor and loader regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=HotReloadServingGuestCurrentMainTest,HotReloadManagerSafetyTest,IsolationHotReloadTest \
+            -DfailIfNoTests=true test
+      - name: Upload genuine JUnit receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-guest-serving-junit
+          path: target/surefire-reports/*HotReload*Test*
+          if-no-files-found: warn
