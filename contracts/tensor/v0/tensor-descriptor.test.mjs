@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {validateTensorDescriptor as v} from './tensor-descriptor.mjs';
+const d=(patch={})=>({dtype:'f64',shape:[2,3],strides:[3,1],offset:0,storageScalars:6,ownership:'owned',device:'cpu',...patch});
+test('valid dense and transposed tensors',()=>{assert.equal(v(d()).elements,6);assert.equal(v(d({strides:[1,2]})).rank,2)});
+test('valid reversed views',()=>assert.equal(v(d({strides:[-3,-1],offset:5})).minOffset,0));
+test('rank and bounds errors',()=>{assert.throws(()=>v(d({strides:[1]})),/rank/);assert.throws(()=>v(d({offset:5})),/outside storage/);assert.throws(()=>v(d({strides:[-3,1]})),/outside storage/)});
+test('zero-length dimensions and rank zero',()=>{assert.equal(v(d({shape:[0,3],strides:[3,1],storageScalars:0})).elements,0);assert.equal(v(d({shape:[],strides:[],storageScalars:1})).elements,1)});
+test('overflow and malformed records',()=>{assert.throws(()=>v(d({shape:[2147483647,2147483647,2147483647],strides:[1,1,1]})),/overflow/);assert.throws(()=>v({...d(),unknown:1}),/keys/);assert.throws(()=>v(d({shape:[2,,3]})),/shape/)});
+test('moved handle and invalid enum rejected',()=>{assert.throws(()=>v(d({ownership:'moved'})),/moved/);assert.throws(()=>v(d({device:'quantum'})),/device/)});
+test('empty view offset bounded',()=>assert.throws(()=>v(d({shape:[0],strides:[1],offset:7})),/empty view offset/));
