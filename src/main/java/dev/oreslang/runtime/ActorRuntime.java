@@ -10183,8 +10183,11 @@ public final class ActorRuntime implements AutoCloseable {
                             } finally {
                                 synchronized (lifecycleLock) {
                                     if (!sourceReceiveSuspended) {
+                                        // A completed DATA receive still owns its logical
+                                        // permit until markMessageProcessed has settled
+                                        // the drain/observer accounting below. On failure,
+                                        // hold the permit until fail-stop retirement.
                                         activeMail = null;
-                                        releaseReceivePermitLocked();
                                     }
                                 }
                             }
@@ -10204,6 +10207,13 @@ public final class ActorRuntime implements AutoCloseable {
                     // its continuation completes; the continuation marks it.
                     if (!envelope.isContinuation() && !sourceReceiveSuspended) {
                         markMessageProcessed(envelope.sequence());
+                        synchronized (lifecycleLock) {
+                            // Exactly as on suspended Future completion: release
+                            // DATA admission only after successful accounting and
+                            // all synchronous drain notifications. An exception
+                            // leaves this permit owned by fail-stop cleanup.
+                            releaseReceivePermitLocked();
+                        }
                     }
                     processed++;
 
