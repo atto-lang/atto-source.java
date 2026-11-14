@@ -41,7 +41,7 @@ jobs:
       - name: Execute real Java/Graal .atto guest tests and diagnostics
         run: >-
           mvn -B -ntp
-          -Dtest=CanonicalEnumDeclarationGuestTest,BareEnumPatternGuestTest,NullaryEnumCaseAliasGuestTest,NamedEnumCaseFieldsGuestTest
+          -Dtest=CanonicalEnumDeclarationGuestTest,BareEnumPatternGuestTest,NullaryEnumCaseAliasGuestTest,NamedEnumCaseFieldsGuestTest,BorrowedEnumCaseLoanTest
           -DfailIfNoTests=true test
       - name: Preserve executed Surefire receipts
         if: always()
