@@ -478,7 +478,7 @@ final class RangeAndTernaryBlockExpressionTest {
                 true ? stdio.stdout.write("selected") : stdio.stdout.write("wrong");
                 """);
         String expressionIf = wrap("""
-                if true then stdio.stdout.write("selected")
+                val impossible: int = if true then stdio.stdout.write("selected")
                 else stdio.stdout.write("wrong")
                 fi;
                 """);
