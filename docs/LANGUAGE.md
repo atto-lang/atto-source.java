@@ -4,7 +4,11 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 ## Files, modules, and imports
 
-A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+A source file may begin with an optional, flat, compile-time `namespace name;` declaration. The source namespace identifies the source unit for compiler metadata and ABI invalidation; it is **not** a runtime value, a type-only declaration container, an import alias, or a replacement for the physical source-unit identity. It does not grant access to private declarations, and cross-file imports still require explicit paths and selectors. Dotted/nested source namespaces are not part of the current syntax.
+
+A source file may contain multiple named modules. A module owns declarations and is itself a runtime-qualified value scope: exported members are accessed through the module name, such as `math.add(1, 2)`. Modules may expose functions, classes, bindings, and module state; type names and value names are checked in their respective declaration namespaces. Modules are flat and cannot contain other modules. The implementation-reserved name `__root__` represents file-root declarations and cannot be declared or imported as a module.
+
+A source namespace does **not** imply that all backend implementations can link or execute it. In particular, the native LLVM backend currently fails closed on runtime namespace use and on linked namespace/type identities; Java/Graal support must not be advertised as cross-backend parity.
 
 ```ores
 define module math
@@ -157,9 +161,22 @@ define module math conforms MathApi as
 end
 ```
 
-Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants as well as functions. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
+Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants, functions, and a public nominal actor declaration. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
 
-A module contract is not a class/struct interface and cannot be implemented by a class or actor.
+```atto
+define contract ActorApi as
+  actor Worker;
+end
+
+define module workers conforms ActorApi as
+  pub define actor Worker as
+  end
+end
+```
+
+The `actor Worker;` requirement is a **static type-presence requirement**, not an actor instance, runtime capability, synthesized handler, or permission to read actor-owned memory. A private, generic, or different-module actor, or an ordinary class named `Worker`, cannot satisfy it. The actor requirement's name also cannot collide with a required field or function, including inherited names. Contract inheritance retains this requirement, and exported ABI fingerprints include it.
+
+A module contract is not a class/struct interface and cannot be implemented by a class or actor. External receiver-method definitions (`mtd name(Actor a)(...)`), `define actor A as a;`, and required receiver method hooks are separately proposed and are **not enabled by this actor-type requirement**. See [actor/module contracts v1](ACTOR_MODULE_CONTRACTS_V1.md).
 
 ## Functions and returns
 
@@ -386,15 +403,35 @@ finite sequence shapes.
 
 ## Bindings
 
-Every local binding is declared as exactly one of:
+Every local binding is declared with a fixed/rebindable permission:
 
-- `const`: compile-time constant; cannot be reassigned.
-- `val`: runtime single-assignment binding; cannot be reassigned.
-- `let`: mutable binding and the only local binding kind that may be reassigned.
+- `const`: fixed readonly local binding; its checked initializer is evaluated
+  eagerly once in lexical order and the binding cannot be reassigned.
+- `val`: runtime single-assignment binding; it cannot be reassigned and keeps
+  its existing referent-mutation permission subject to ownership checks.
+- `let`: rebindable binding and the only local binding kind that may be
+  reassigned.
+
+A proven compile-time-constant value is optimization/type-check metadata, not
+the meaning of the `const` binding keyword. Contexts such as switch/case
+patterns that require a compile-time constant expression check that property
+explicitly.
+
+Primitive type-first locals are immutable by default:
+
+```ores
+int answer = compute();
+bool ready = check_ready();
+```
+
+For the supported scalar subset this has the same fixed readonly binding
+permission as `const int answer = compute();`. Use explicit `let` when
+rebinding is intended.
 
 ```ores
 const max = 10;
-val request_id = process.context_id;
+const request_id = process.context_id;
+val mutable_view = process.mutable_view;
 let retries = 0;
 retries = retries + 1;
 ```
@@ -419,7 +456,7 @@ A bare `_` is a sequence discard pattern: it consumes that array/tuple position 
 [_, _, const final] = (1, 2, 3);
 ```
 
-`_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding; unlike a standalone `const x = ...` declaration, the aggregate being destructured does not need to be a compile-time constant.
+`_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding, matching standalone local `const` binding semantics; neither spelling by itself requires the initializer value to be known at compile time.
 
 Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. If the returned type is a union, destructuring is allowed only when every union alternative supports the requested pattern; each extracted binding receives the union of the corresponding alternative member types. Function-parameter destructuring is intentionally not part of this syntax yet.
 
@@ -1027,20 +1064,29 @@ fi
 
 Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
 
-Inline value binding is supported with an explicit boolean predicate:
+Inline captures preserve their initializer value and use ordinary `let` ownership:
 
 ```ores
-if some_call() as let value when value > 0 {
+if is_ready(some_call() as let value) {
   consume(value);
-} fi
-while some_call() as let value when value > 0 {
+fi
+if (some_call() as let value) > 0 then
+  consume(value);
+fi
+while is_ready(some_call() as let value) {
   consume(value);
 }
+if let Some(value) = maybe_call() then
+  consume(value);
+fi
 ```
 
-Each reached initializer is evaluated once. The `if` binding is scoped to its
-predicate and remaining branch chain; a `while` binding is recreated on every
-test, including after `continue`. See [the full contract](VALUE_BOUNDARIES.md).
+Each reached initializer evaluates once. Captures are scoped to that condition
+and matching body, and loops recreate them for every test. The condition is
+bool; capturing does not add truthiness or duplicate ownership. A consuming
+predicate moves its argument; explicitly borrow when the body needs the owner.
+The older `expr as let value when predicate` head remains supported with its
+original remaining-branch-chain scope. See [the full contract](VALUE_BOUNDARIES.md).
 
 ## Exceptions and defer
 
@@ -1540,7 +1586,7 @@ Iterator variables are declarations, so every `for ... of ...` header must expli
 
 Bare forms such as `for item of values` are rejected at compile time with `variable used before declared`. `val` is not accepted as a for-of binder; the iterator surface intentionally uses only `const` and `let`.
 
-`const` in a for-of header means that the compiler/runtime initializes a fresh immutable iteration slot on each turn. It does **not** claim that the element value is a compile-time constant; the ordinary compile-time-constant initializer rule for standalone `const` declarations does not apply to this compiler-initialized slot. `let` creates the same per-iteration slot but permits rebinding that local.
+`const` in a for-of header means that the compiler/runtime initializes a fresh immutable iteration slot on each turn, the same binding-level immutability used by standalone local `const`. It does **not** claim that the element value is a compile-time constant. `let` creates the same per-iteration slot but permits rebinding that local.
 
 Parentheses may fence the entire iterator header when that improves readability or avoids syntactic ambiguity:
 
@@ -2064,7 +2110,10 @@ Oreslang keeps four related operations separate:
 - `match` performs proof-checked pattern partitioning, while `switch` is
   constant/equality case dispatch.
 
-Every `if` closes with `fi`, even when its branch bodies use braces.
+Every `if` closes with `fi`. In braced conditionals, `{` replaces `then`,
+`} elif` / `} else` separate branches, and `fi` closes the final branch; there
+is no final `}` before `fi`. The historical `} fi` is accepted with a migration
+diagnostic.
 Executable match/switch arms use `->`; `=>` remains type-level syntax.
 
 Plain `match` is exclusive-by-default. The checker proves every pair of

@@ -67,8 +67,17 @@ public final class ProtectedScalarMirV1 {
                     maxIdentities, mailboxCapacity,
                     identity -> {
                         ScalarStateContainer state = new ScalarStateContainer(initialValue, 1);
-                        return message -> state.tryAddChecked(message).orElseThrow(
-                                () -> new IllegalStateException("virtual state writer unavailable"));
+                        return new LocalVirtualActorI64.Turn() {
+                            @Override public void on_message(long message) {
+                                state.tryAddChecked(message).orElseThrow(
+                                        () -> new IllegalStateException("virtual state writer unavailable"));
+                            }
+                            @Override public void close() {
+                                state.close();
+                                if (!state.readyForReclamation())
+                                    throw new IllegalStateException("virtual state lease not quiescent");
+                            }
+                        };
                     }, supervisorControl);
         }
 
@@ -144,7 +153,7 @@ public final class ProtectedScalarMirV1 {
         if (!(kind == Kind.STATE_CONTAINER ? isInt(method.returnType())
                                           : isVoid(method.returnType())))
             throw invalid("method return type is incompatible with protected declaration");
-        matchBody(method.bodyTokens(), kind, field.name(), arg.name());
+        matchBody(method.bodyTokens(), method.bodyTokenKinds(), kind, field.name(), arg.name());
         return new Plan(kind, name, field.name(), method.name(), arg.name(), initial,
                 kind == Kind.STATE_CONTAINER ? STATE_WRITE : VIRTUAL_WRITE);
     }
@@ -172,15 +181,44 @@ public final class ProtectedScalarMirV1 {
 
     private static final class Cursor {
         final List<String> tokens;
+        final List<String> kinds;
         int index;
-        Cursor(List<String> tokens) { this.tokens = List.copyOf(tokens); }
+        Cursor(List<String> tokens, List<String> kinds) {
+            this.tokens = List.copyOf(tokens);
+            this.kinds = List.copyOf(kinds);
+        }
+        private static String expectedKind(String word) {
+            return switch (word) {
+                case "return" -> "RETURN";
+                case "(" -> "LPAREN";
+                case ")" -> "RPAREN";
+                case "{" -> "LBRACE";
+                case "}" -> "RBRACE";
+                case "-" -> "MINUS";
+                case "|" -> "PIPE";
+                case "->" -> "ARROW";
+                case "." -> "DOT";
+                case "=" -> "EQUAL";
+                case "+" -> "PLUS";
+                case ";" -> "SEMICOLON";
+                default -> "IDENT";
+            };
+        }
         void need(String expected) {
-            if (index >= tokens.size() || !tokens.get(index).equals(expected))
-                throw invalid("expected '" + expected + "' at protected method token " + index);
+            if (index >= tokens.size() || !tokens.get(index).equals(expected)
+                    || !kinds.get(index).equals(expectedKind(expected)))
+                throw invalid("expected typed '" + expected + "' at protected method token " + index);
+            index++;
+        }
+        void needIdent(String expected) {
+            if (index >= tokens.size() || !tokens.get(index).equals(expected)
+                    || !kinds.get(index).equals("IDENT"))
+                throw invalid("expected identifier '" + expected + "' at protected method token " + index);
             index++;
         }
         String ident() {
-            if (index >= tokens.size()) throw invalid("missing protected state alias");
+            if (index >= tokens.size() || !kinds.get(index).equals("IDENT"))
+                throw invalid("missing typed protected state alias");
             String name = tokens.get(index++);
             if (!name.matches("[A-Za-z_][A-Za-z_0-9]*"))
                 throw invalid("invalid protected state alias");
@@ -192,10 +230,11 @@ public final class ProtectedScalarMirV1 {
         }
     }
 
-    private static void matchBody(List<String> tokens, Kind kind, String field, String parameter) {
-        if (tokens.size() > 96)
-            throw invalid("protected-method token budget exceeded");
-        Cursor c = new Cursor(tokens);
+    private static void matchBody(List<String> tokens, List<String> kinds,
+                                  Kind kind, String field, String parameter) {
+        if (tokens.size() > 96 || tokens.size() != kinds.size())
+            throw invalid("protected-method token provenance or budget exceeded");
+        Cursor c = new Cursor(tokens, kinds);
         if (kind == Kind.STATE_CONTAINER) c.need("return");
         c.need("handle_state");
         c.need("(");
@@ -204,15 +243,17 @@ public final class ProtectedScalarMirV1 {
         c.need("write");
         c.need("|");
         String alias = c.ident();
+        if (alias.equals(parameter))
+            throw invalid("protected state alias shadows method parameter");
         c.need("|");
         c.need("->");
         c.need("{");
-        c.need(alias); c.need("."); c.need(field);
+        c.needIdent(alias); c.need("."); c.needIdent(field);
         c.need("=");
-        c.need(alias); c.need("."); c.need(field);
-        c.need("+"); c.need(parameter); c.need(";");
+        c.needIdent(alias); c.need("."); c.needIdent(field);
+        c.need("+"); c.needIdent(parameter); c.need(";");
         if (kind == Kind.STATE_CONTAINER) {
-            c.need(alias); c.need("."); c.need(field); c.need(";");
+            c.needIdent(alias); c.need("."); c.needIdent(field); c.need(";");
         }
         c.need("}"); c.need(")"); c.need(";");
         c.done();

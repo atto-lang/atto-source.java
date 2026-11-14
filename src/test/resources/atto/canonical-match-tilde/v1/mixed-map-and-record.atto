@@ -1,0 +1,1 @@
+pub fnc main(): int { const x = ~(foo: 1, "bar" => 2); return 42; }
