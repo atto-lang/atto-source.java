@@ -96,6 +96,42 @@ public final class TraceJitRetirementSmoke {
                 "closing final old pin releases all retired generations");
     }
 
+    private static void closeRaceChargesExactlyOneTerminalRelease() throws InterruptedException {
+        for (int round = 0; round < 32; round++) {
+            var router = new AdaptiveTraceCodeV1<>(
+                    policy(), identity(), 15, "body", 2, 2);
+            var frame = router.pin();
+            router.retire();
+            check(router.retainedGenerations() == 1, "retired pinned frame held");
+            var ready = new CountDownLatch(2);
+            var start = new CountDownLatch(1);
+            var unexpected = new AtomicInteger();
+            Runnable closer = () -> {
+                ready.countDown();
+                try {
+                    if (!start.await(5, TimeUnit.SECONDS))
+                        throw new AssertionError("close barrier expired");
+                    frame.close();
+                    frame.close();
+                } catch (Throwable failure) {
+                    unexpected.incrementAndGet();
+                }
+            };
+            Thread a = new Thread(closer);
+            Thread b = new Thread(closer);
+            a.start();
+            b.start();
+            check(ready.await(5, TimeUnit.SECONDS), "close workers ready");
+            start.countDown();
+            a.join(5000);
+            b.join(5000);
+            check(!a.isAlive() && !b.isAlive(), "close workers terminated");
+            check(unexpected.get() == 0, "cross-carrier close never underflows");
+            check(router.retainedGenerations() == 0,
+                    "one physical close retires the final pinned image");
+        }
+    }
+
     private static void policyAndRetireRace() throws InterruptedException {
         for (int i = 0; i < 64; i++) {
             var trace = policy();
@@ -183,6 +219,7 @@ public final class TraceJitRetirementSmoke {
     public static void main(String[] args) throws Exception {
         retireAllGenerationsOnlyAfterFinalPin();
         policyRevocationCannotBeReplayed();
+        closeRaceChargesExactlyOneTerminalRelease();
         policyAndRetireRace();
         allocationObservationWithoutForcingGc();
         System.out.println("TRACE_JIT_RETIRE_PASS assertions=" + assertions);
