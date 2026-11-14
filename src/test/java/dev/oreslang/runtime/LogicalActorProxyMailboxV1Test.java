@@ -26,7 +26,7 @@ final class LogicalActorProxyMailboxV1Test {
             mailbox.complete(1L);
             var before = mailbox.snapshot();
             assertThrows(IllegalStateException.class,
-                    () -> mailbox.admitTurnAtomic(List.of(bytes("xx"), bytes("yyyy"))),
+                    () -> mailbox.admitTurnAtomic(List.of(bytes("xxx"), bytes("yyyy"))),
                     "oversized aggregate batch must not insert even first element");
             assertEquals(before, mailbox.snapshot(),
                     "quota rejection cannot consume sequence, byte credit or queued DATA");
