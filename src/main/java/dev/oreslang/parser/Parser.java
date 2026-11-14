@@ -1135,12 +1135,14 @@ public final class Parser {
                         + "compiler-checked stable logical identity, activation fencing "
                         + "and cross-backend lowering; not yet enabled");
             }
+        }
         // Do not silently lower the requested syntax to legacy isoactor,
         // which does not certify a physical actor-owned heap or sealed state.
         if (name.equals("isolated") && current + 1 < tokens.size()
                 && tokens.get(current + 1).type() == ACTOR) {
             throw error(peek(), "define isolated actor requires compiler-owned "
                     + "arena isolation and sealed state-loan lowering; not yet enabled");
+        }
         if (name.equals("readable") || name.equals("transform")
                 || name.equals("writable") || name.equals("duplex")) {
             if (current + 2 < tokens.size()
