@@ -80,7 +80,7 @@ final class DopInvertedGuestAdmissionTest {
     void invertedSchemaCanNeverBeTreatedAsAnOrdinaryExecutableStruct() {
         for (String source : List.of(
                 "define inverted struct Row as value: int; token: int; end",
-                "define module Data\\n  define inverted struct Row as value: int; token: int; end\\nend")) {
+                "define module Data\n  define inverted struct Row as value: int; token: int; end\nend")) {
             var program = Parser.parse(source);
             assertThrows(IllegalArgumentException.class, () -> OresCompiler.analyze(program),
                     "already-parsed inverted metadata must not bypass the type checker");
