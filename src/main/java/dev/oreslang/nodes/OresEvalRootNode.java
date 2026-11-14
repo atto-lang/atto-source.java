@@ -2013,6 +2013,11 @@ public final class OresEvalRootNode extends RootNode {
                 return block.body().stream().anyMatch(
                         nested -> statementContainsPotentialSuspension(nested, seen));
             }
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope) {
+                return expressionContainsPotentialSuspension(scope.name(), seen)
+                        || scope.body().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen));
+            }
             if (stmt instanceof Ast.TaskScopeStmt) {
                 // Scope exit always waits for physical child quiescence.
                 return true;
@@ -2298,6 +2303,8 @@ public final class OresEvalRootNode extends RootNode {
                 return block.body().stream().anyMatch(this::containsSourceLoop);
             if (stmt instanceof Ast.TaskScopeStmt scope)
                 return scope.body().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope)
+                return scope.body().stream().anyMatch(this::containsSourceLoop);
             if (stmt instanceof Ast.IfStmt conditional)
                 return conditional.branches().stream().anyMatch(
                         branch -> branch.body().stream().anyMatch(this::containsSourceLoop))
@@ -2561,6 +2568,48 @@ public final class OresEvalRootNode extends RootNode {
                 if (stmt instanceof Ast.UsingBorrowStmt) {
                     throw new IllegalStateException(
                             "using request.borrow() as view is not executable without checked loan cleanup");
+                }
+                if (stmt instanceof Ast.UsingTelemetrySpanStmt scope) {
+                    evalSuspendableExpr(task, scope.name(), env,
+                            (t, label, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, SourceFlow.throwing(failure));
+                                    return;
+                                }
+                                final dev.oreslang.runtime.TelemetrySpanScope active;
+                                try {
+                                    if (!(label instanceof String name)) {
+                                        throw new IllegalArgumentException(
+                                                "telemetry.span requires a string name");
+                                    }
+                                    active = dev.oreslang.runtime.TelemetrySpanScope.open(name);
+                                } catch (RuntimeException | Error openFailure) {
+                                    continuation.accept(t, SourceFlow.throwing(openFailure));
+                                    return;
+                                }
+                                Env spanEnv = new Env(env);
+                                spanEnv.define(scope.binding(), active, Ast.BindingKind.CONST);
+                                SourceCleanupFrame cleanup = t.registerSourceCleanup(
+                                        (owner, finished) -> {
+                                            try {
+                                                active.close();
+                                                finished.accept(owner, SourceFlow.normal());
+                                            } catch (RuntimeException | Error closeFailure) {
+                                                finished.accept(owner, SourceFlow.throwing(closeFailure));
+                                            }
+                                        });
+                                runBlock(t, scope.body(), spanEnv, (owner, flow) -> {
+                                    owner.disarmSourceCleanup(cleanup);
+                                    try {
+                                        active.close();
+                                        continuation.accept(owner, flow);
+                                    } catch (RuntimeException | Error closeFailure) {
+                                        continuation.accept(owner, mergeFinallyFlow(
+                                                flow, SourceFlow.throwing(closeFailure)));
+                                    }
+                                });
+                            });
+                    return;
                 }
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -6553,6 +6602,19 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "using request.borrow() as view is not executable without checked loan cleanup");
             }
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope) {
+                Object value = eval(scope.name(), env);
+                if (!(value instanceof String name)) {
+                    throw new IllegalArgumentException(
+                            "telemetry.span requires a string name");
+                }
+                try (var active = dev.oreslang.runtime.TelemetrySpanScope.open(name)) {
+                    Env spanEnv = new Env(env);
+                    spanEnv.define(scope.binding(), active, Ast.BindingKind.CONST);
+                    executeBlock(scope.body(), spanEnv, true);
+                }
+                return;
+            }
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
             }
@@ -8310,6 +8372,32 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof dev.oreslang.runtime.TelemetrySpanScope scope) {
+                return switch (name) {
+                    case "attribute" -> (Invokable) args -> {
+                        if (args.size() != 2 || !(args.get(0) instanceof String key)) {
+                            throw new IllegalArgumentException(
+                                    "span.attribute requires (string key, scalar value)");
+                        }
+                        scope.attribute(key, args.get(1));
+                        return null;
+                    };
+                    case "trace_id" -> (Invokable) args -> {
+                        requireZero(args, "span.trace_id");
+                        return scope.traceId();
+                    };
+                    case "span_id" -> (Invokable) args -> {
+                        requireZero(args, "span.span_id");
+                        return scope.spanId();
+                    };
+                    case "recording" -> (Invokable) args -> {
+                        requireZero(args, "span.recording");
+                        return scope.recording();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown telemetry span member " + name);
+                };
+            }
             if (receiver instanceof dev.oreslang.runtime.OresBytes bytes) {
                 return switch (name) {
                     case "size" -> (Invokable) args -> {
