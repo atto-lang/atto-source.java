@@ -33,10 +33,13 @@ public final class Parser {
     private final List<ExternalReceiverMethod> rootReceiverMethods = new ArrayList<>();
     private List<ExternalReceiverMethod> moduleReceiverMethods;
 
-    // Forward signatures (type, trait, interface, actor, isoactor) are
-    // compile-time-only and absent from executable ASTs. An actor forward
-    // does not create a mailbox, instance, capability, or executable type:
-    // its matching definition must be in the same declaration scope.
+    // Non-actor forward signatures (type, trait, interface) remain
+    // compile-time-only and absent from executable ASTs. An actor/isoactor
+    // forward may either resolve to a same-scope define-actor body, or be
+    // completed by external type-first mtd declarations in this source.
+    // Only the latter synthesizes a real empty-state actor ClassDecl; the
+    // forward by itself creates neither actor instances nor mailbox authority.
+    // Both forms are local-only: no implicit cross-file receiver binding.
     private record ForwardType(Token.Type kind, String name, Ast.Visibility visibility,
                                List<String> generics) { }
     private final List<ForwardType> rootForwards = new ArrayList<>();
