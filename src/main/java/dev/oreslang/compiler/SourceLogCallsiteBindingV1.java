@@ -26,6 +26,7 @@ public final class SourceLogCallsiteBindingV1 {
 
     private record Selector(String module, String function, int arity,
                             String message) { }
+    private record RoutineSelector(String module, String function, int arity) { }
 
     public static Map<Ast.CallExpr, SourceIdentityV1.Site> bind(
             Ast.Program program, List<Entry> entries) {
@@ -36,7 +37,7 @@ public final class SourceLogCallsiteBindingV1 {
         }
         Map<Selector, SourceIdentityV1.Site> bySelector = new HashMap<>();
         var ids = new HashSet<SourceIdentityV1.Id>();
-        var routineIds = new HashMap<String, String>();
+        var routineIds = new HashMap<RoutineSelector, String>();
         for (Entry entry : entries) {
             Objects.requireNonNull(entry, "source site entry");
             requireLiteral(entry.message());
@@ -52,8 +53,8 @@ public final class SourceLogCallsiteBindingV1 {
                     || entry.arity() < 0) {
                 throw new IllegalArgumentException("invalid source log selector");
             }
-            String functionKey = entry.module() + "\u001f" + entry.function()
-                    + "\u001f" + entry.arity();
+            var functionKey = new RoutineSelector(entry.module(),
+                    entry.function(), entry.arity());
             String previous = routineIds.putIfAbsent(functionKey, entry.routineId());
             if (previous != null && !previous.equals(entry.routineId())) {
                 throw new IllegalArgumentException("one Java function cannot have multiple routine IDs");
