@@ -149,7 +149,7 @@ public final class FunctionalCallbackEffectAnalysisV1 {
             Set<Effect> callbackEffects =
                     inlineEffects(call.arguments().getFirst());
             Graph graph = new Graph();
-            graph.add(Callable.pure("sum::combinator", Set.of(),
+            graph.add(Callable.pure("sum::combinator", Set.of(Effect.ALLOC),
                     List.of(Call.callback("callback"))));
             graph.add(Callable.inferred("sum::inline_callback",
                     callbackEffects, List.of()));
