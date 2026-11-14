@@ -6275,6 +6275,10 @@ public final class TypeChecker {
                         result = Primitive.STRING;
                         parameters = List.of(Primitive.STRING, Primitive.INT);
                     }
+                    case "open_binary_async" -> {
+                        result = new Named("BinaryFile", List.of());
+                        parameters = List.of(Primitive.STRING);
+                    }
                     case "exists", "exists_blocking", "is_dir", "is_dir_blocking",
                             "is_symlink", "is_symlink_blocking" -> {
                         result = Primitive.BOOL; parameters = List.of(Primitive.STRING);
@@ -6309,6 +6313,27 @@ public final class TypeChecker {
                         parameters = List.of(Primitive.STRING, Primitive.INT);
                     }
                     default -> { return null; }
+                }
+            }
+            case "BinaryFile" -> {
+                switch (name) {
+                    case "append_async" -> {
+                        result = Primitive.INT; parameters = List.of(new Named("Bytes", List.of()));
+                    }
+                    case "read_at_async" -> {
+                        result = new Named("Bytes", List.of());
+                        parameters = List.of(Primitive.INT, Primitive.INT);
+                    }
+                    case "size_async" -> {
+                        result = Primitive.INT; parameters = List.of();
+                    }
+                    case "truncate_async" -> {
+                        result = Primitive.VOID; parameters = List.of(Primitive.INT);
+                    }
+                    case "sync_async", "close_async" -> {
+                        result = Primitive.VOID; parameters = List.of();
+                    }
+                    default -> throw new IllegalArgumentException("unknown BinaryFile member " + name);
                 }
             }
             case "NioListener" -> {

@@ -6067,6 +6067,17 @@ public final class OresEvalRootNode extends RootNode {
                     // Actor/mailbox boundary capabilities remain forbidden.
                     // Nested channel capabilities still fail detachAsyncValue.
                     detached.add(channel);
+                } else if (arg instanceof dev.oreslang.runtime.NativeBinaryFile file) {
+                    // Affine file handle: MOVES into an owned BinaryFile formal only.
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"BinaryFile".equals(formal.name())
+                            || !formal.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "async task argument " + (i + 1)
+                                        + " moves a BinaryFile and requires an owned BinaryFile parameter");
+                    }
+                    detached.add(file);
                 } else if (arg instanceof dev.oreslang.runtime.AsyncNioTcp.ReadHalf
                         || arg instanceof dev.oreslang.runtime.AsyncNioTcp.WriteHalf) {
                     // Split halves are affine like the connection: they MOVE into
@@ -8345,6 +8356,13 @@ public final class OresEvalRootNode extends RootNode {
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.READ,
                                 "fs." + name, () -> fs.readText(values));
                     };
+                    case "open_binary_async" -> (Invokable) args -> {
+                        requireOne(args, "fs.open_binary_async");
+                        String path = requireString(args.getFirst(), "fs.open_binary_async path");
+                        return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
+                                "fs.open_binary_async",
+                                () -> dev.oreslang.runtime.NativeIo.openBinaryFile(context, path));
+                    };
                     case "read_text_bounded_async" -> (Invokable) args -> {
                         requireTwo(args, "fs.read_text_bounded_async");
                         // Capture immutable validated scalar arguments before
@@ -8449,6 +8467,51 @@ public final class OresEvalRootNode extends RootNode {
                         return listener.closeAsync();
                     };
                     default -> throw new IllegalArgumentException("unknown async NIO listener member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.NativeBinaryFile file) {
+                dev.oreslang.runtime.RuntimePermissions.Permission read =
+                        dev.oreslang.runtime.RuntimePermissions.Permission.READ;
+                dev.oreslang.runtime.RuntimePermissions.Permission write =
+                        dev.oreslang.runtime.RuntimePermissions.Permission.WRITE;
+                return switch (name) {
+                    case "append_async" -> (Invokable) args -> {
+                        requireOne(args, "BinaryFile.append_async");
+                        if (!(args.getFirst() instanceof dev.oreslang.runtime.OresBytes data)) {
+                            throw new IllegalArgumentException("BinaryFile.append_async needs Bytes");
+                        }
+                        return context.nativeIo().submit(context, write, "BinaryFile.append_async",
+                                () -> file.append(data));
+                    };
+                    case "sync_async" -> (Invokable) args -> {
+                        requireZero(args, "BinaryFile.sync_async");
+                        return context.nativeIo().submit(context, write, "BinaryFile.sync_async",
+                                () -> { file.sync(); return null; });
+                    };
+                    case "read_at_async" -> (Invokable) args -> {
+                        requireTwo(args, "BinaryFile.read_at_async");
+                        long offset = bytesIndex(args.get(0), "BinaryFile.read_at_async offset");
+                        int length = bytesIndex(args.get(1), "BinaryFile.read_at_async length");
+                        return context.nativeIo().submit(context, read, "BinaryFile.read_at_async",
+                                () -> file.readAt(offset, length));
+                    };
+                    case "size_async" -> (Invokable) args -> {
+                        requireZero(args, "BinaryFile.size_async");
+                        return context.nativeIo().submit(context, read, "BinaryFile.size_async",
+                                file::size);
+                    };
+                    case "truncate_async" -> (Invokable) args -> {
+                        requireOne(args, "BinaryFile.truncate_async");
+                        long size = bytesIndex(args.getFirst(), "BinaryFile.truncate_async size");
+                        return context.nativeIo().submit(context, write, "BinaryFile.truncate_async",
+                                () -> { file.truncate(size); return null; });
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "BinaryFile.close_async");
+                        return context.nativeIo().submit(context, write, "BinaryFile.close_async",
+                                () -> { file.close(); return null; });
+                    };
+                    default -> throw new IllegalArgumentException("unknown BinaryFile member " + name);
                 };
             }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.ReadHalf reader) {
