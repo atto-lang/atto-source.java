@@ -21,6 +21,7 @@ final class ActorSourceTearDownTest {
         final AtomicInteger ownerLookups = new AtomicInteger();
         volatile CountDownLatch ownerLookupEntered;
         volatile CountDownLatch releaseOwnerLookup;
+        volatile AtomicBoolean injectedTeardownOwnerFailure;
 
         State(ActorRuntime.ActorId owner) {
             this.owner = owner;
@@ -28,6 +29,11 @@ final class ActorSourceTearDownTest {
 
         @Override
         public ActorRuntime.ActorId ownerActorId() {
+            if (injectedTeardownOwnerFailure != null
+                    && injectedTeardownOwnerFailure.get()) {
+                throw new IllegalStateException(
+                        "injected source teardown owner lookup failure");
+            }
             if (ownerLookups.incrementAndGet() == 2 && ownerLookupEntered != null) {
                 ownerLookupEntered.countDown();
                 try {
@@ -52,6 +58,7 @@ final class ActorSourceTearDownTest {
         private final AtomicInteger teardowns = new AtomicInteger();
         private final AtomicInteger finalCleanups = new AtomicInteger();
         private final AtomicInteger teardownOutputsAccepted = new AtomicInteger();
+        private final AtomicBoolean teardownOwnerLookupFails = new AtomicBoolean();
         private final boolean teardownFails;
         private boolean teardownEmitsOutput;
         private volatile CountDownLatch teardownEntered;
@@ -88,6 +95,7 @@ final class ActorSourceTearDownTest {
             State state = new State(context.self().id());
             state.ownerLookupEntered = ownerLookupEntered;
             state.releaseOwnerLookup = releaseOwnerLookup;
+            state.injectedTeardownOwnerFailure = teardownOwnerLookupFails;
             return state;
         }
 
@@ -146,6 +154,43 @@ final class ActorSourceTearDownTest {
     private static SharedCodeImageStore.CodeImage image(SharedCodeImageStore store) {
         Ast.Program program = Parser.parse("pub routine main(): void { return; }");
         return store.publish("teardown/source.ores", program);
+    }
+
+    @Test
+    void failedTeardownOwnershipAdmissionDoesNotStrandActorFinalization()
+            throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().get(3, TimeUnit.SECONDS);
+            // The only injected failure occurs inside beginTeardown(), before
+            // the guest callback claims the lifecycle lane. This previously
+            // left the source gate STOPPING_GRACEFUL forever, even after the
+            // runtime reported the failure, and host stop() timed out.
+            executor.teardownOwnerLookupFails.set(true);
+            AtomicReference<Throwable> hostStopFailure = new AtomicReference<>();
+            Thread stopper = Thread.ofVirtual().start(() -> {
+                try {
+                    ref.stop();
+                } catch (Throwable failure) {
+                    hostStopFailure.set(failure);
+                }
+            });
+            stopper.join(5_000);
+            assertFalse(stopper.isAlive(),
+                    "failed beginTeardown stranded physical finalization");
+            assertNull(hostStopFailure.get(),
+                    () -> "host stop failed: " + hostStopFailure.get());
+            CompletionException doneFailure = assertThrows(
+                    CompletionException.class, () -> ref.done().join());
+            assertEquals("injected source teardown owner lookup failure",
+                    doneFailure.getCause().getMessage());
+            assertEquals(0, executor.teardowns.get(),
+                    "guest hook must not run after failed ownership admission");
+            assertFalse(ref.isAlive());
+        }
     }
 
     @Test
