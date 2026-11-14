@@ -7850,6 +7850,50 @@ public final class OresEvalRootNode extends RootNode {
             return context.submitWorkflowGuest(payload);
         }
 
+        /**
+         * A host or linked AST may bypass ordinary static typechecking.
+         * Refuse to duplicate/publish atomic identity inside any of the
+         * supported guest container representations until explicit sharing
+         * authority and its lifetime have been lowered.
+         */
+        private static boolean containsAtomicCell(Object value, Set<Object> seen, int[] budget) {
+            if (value instanceof AtomicI64Cell) return true;
+            if (value == null || value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Enum<?>) return false;
+            if (--budget[0] < 0) return true; // bounded fail-closed traversal
+            if (!seen.add(value)) return false;
+            if (value instanceof OptionValue option) {
+                return option.present() && containsAtomicCell(option.value(), seen, budget);
+            }
+            if (value instanceof ResultValue result) {
+                return containsAtomicCell(result.value(), seen, budget);
+            }
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values())
+                    if (containsAtomicCell(field, seen, budget)) return true;
+                return false;
+            }
+            if (value instanceof List<?> list) {
+                for (Object element : list)
+                    if (containsAtomicCell(element, seen, budget)) return true;
+                return false;
+            }
+            if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (containsAtomicCell(entry.getKey(), seen, budget)
+                            || containsAtomicCell(entry.getValue(), seen, budget)) return true;
+                }
+                return false;
+            }
+            if (value instanceof Object[] array) {
+                for (Object element : array)
+                    if (containsAtomicCell(element, seen, budget)) return true;
+                return false;
+            }
+            return false;
+        }
+
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
                 case "fail" -> {
@@ -7858,12 +7902,17 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     throw new IllegalStateException(message);
                 }
-                // Borrow/take/share alter compiler ownership state, not the JVM handle.
-                case "borrow", "take", "share" -> value;
-                // Static ownership checking currently admits rt copy only for proven
-                // Copy values on this convergence branch, so returning the immutable
-                // scalar/value representation is an independent language-level copy.
-                case "copy" -> value;
+                case "borrow", "take" -> value;
+                case "share", "copy" -> {
+                    if (containsAtomicCell(value,
+                            java.util.Collections.newSetFromMap(new IdentityHashMap<>()),
+                            new int[] {4_096})) {
+                        throw new SecurityException(
+                                "rt " + operation + " cannot duplicate or publish Atomic<int> "
+                                        + "without proven shared-domain ownership");
+                    }
+                    yield value;
+                }
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + operation + "'");
             };
