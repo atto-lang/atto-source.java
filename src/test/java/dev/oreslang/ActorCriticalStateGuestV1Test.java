@@ -154,6 +154,26 @@ final class ActorCriticalStateGuestV1Test {
     }
 
     @Test
+    void invalidPhysicalMainCannotPublishAnExecutableActorCodeImage() throws Exception {
+        var build = physicalBuild();
+        Path source = root.resolve("src/counter/main.atto");
+        String original = Files.readString(source);
+        String malformed = original.replace(
+                "pub async routine main(): void",
+                "pub async routine main(): int");
+        assertNotEquals(original, malformed);
+        Files.writeString(source, malformed);
+        try (var images = new SharedCodeImageStore()) {
+            var denied = assertThrows(IllegalArgumentException.class,
+                    () -> build.compileCriticalStateActorGuestV1(images));
+            assertTrue(denied.getMessage().contains(
+                    "ACTOR_DECLARED_MAIN_LINK_V1_UNSUPPORTED"), denied.getMessage());
+            assertEquals(0, images.imageCount(),
+                    "unverified main must not publish even an otherwise valid receive image");
+        }
+    }
+
+    @Test
     void privateActorKindCannotSpoofSharedDeclaredSourceKind() throws Exception {
         var build = physicalBuild();
         try (var images = new SharedCodeImageStore();
