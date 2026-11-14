@@ -26,6 +26,19 @@ public final class OresCompiler {
     }
 
     /**
+     * Check real AttoLang source (syntax, types and ownership) before
+     * inspecting call-site-specialized Option/Result callback effects.
+     *
+     * V1 is a fail-closed, partial analysis report, NOT source-language pure
+     * admission and NOT a generated guest/native executable.
+     */
+    public static FunctionalCallbackEffectAnalysisV1.Report analyzeFunctionalCallbacksV1(
+            String source) {
+        return FunctionalCallbackEffectAnalysisV1.analyzeChecked(
+                parseAndTypeCheck(source));
+    }
+
+    /**
      * Explicit AttoLang strict-v1 *front-end* admission for AOT build pipelines.
      * It emits a checked AST, not native code or a guest-AOT proof. The caller
      * must still use an AOT backend and verify a program-specific executable.
