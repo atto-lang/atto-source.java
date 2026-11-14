@@ -204,6 +204,58 @@ final class SupervisorControlSnapshotCoordinatorTest {
     }
 
     @Test
+    void duplicateControlRunnableCannotFailItsOriginalInFlightRead() throws Exception {
+        var submitted = new AtomicReference<Runnable>();
+        var completion = new AtomicReference<OresFuture.Callback<Void>>();
+        var captureEntered = new CountDownLatch(1);
+        var finishCapture = new CountDownLatch(1);
+        ActorRuntime.ControlDispatcher dispatcher = task ->
+                OresFuture.<Void>fromCallback(done -> {
+                    submitted.set(task);
+                    completion.set(done);
+                });
+        try (var runtime = runtime(dispatcher);
+             var observer = new SupervisorRegistryObservation(
+                     runtime, System::nanoTime, () -> {
+                         captureEntered.countDown();
+                         try {
+                             if (!finishCapture.await(5, TimeUnit.SECONDS))
+                                 throw new IllegalStateException("test capture timed out");
+                         } catch (InterruptedException interrupted) {
+                             Thread.currentThread().interrupt();
+                             throw new IllegalStateException("test interrupted", interrupted);
+                         }
+                         return java.time.Instant.now();
+                     });
+             var service = new SupervisorControlSnapshotCoordinator(runtime, observer);
+             ExecutorService worker = Executors.newFixedThreadPool(2)) {
+            Object session = new Object();
+            var g = grant(service, runtime, session);
+            var pending = read(service, g, session);
+            assertNotNull(submitted.get());
+            var original = worker.submit(submitted.get());
+            try {
+                assertTrue(captureEntered.await(2, TimeUnit.SECONDS),
+                        "original physical CONTROL turn never started");
+                // The same callback is run a second time by a broken
+                // dispatcher while the original retains its actor lease.
+                worker.submit(submitted.get()).get(5, TimeUnit.SECONDS);
+                assertFalse(pending.toCompletableFuture().isDone(),
+                        "duplicate command corrupted the original read result");
+                assertEquals(1, service.activeControlRequests(),
+                        "duplicate command released the original physical lease");
+            } finally {
+                finishCapture.countDown();
+            }
+            original.get(5, TimeUnit.SECONDS);
+            assertEquals("partial",
+                    pending.toCompletableFuture().get(5, TimeUnit.SECONDS).status());
+            completion.get().resolve(null);
+            assertEquals(0, service.activeControlRequests());
+        }
+    }
+
+    @Test
     void queuedDeadlineRetainsCapacityUntilPhysicalTurnFinishes() throws Exception {
         var queue = new QueuedControl();
         try (var runtime = runtime(queue.dispatcher());
