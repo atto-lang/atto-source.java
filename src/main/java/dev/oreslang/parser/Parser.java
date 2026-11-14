@@ -1708,33 +1708,34 @@ public final class Parser {
             List<ExternalReceiverMethod> externalMethods, String scope) {
         if (externalMethods.isEmpty()) return declarations;
 
-        // Build a scoped class index exactly once: a long source cannot turn
-        // N external declarations into O(N * declared-types) scans.
+        // Index the current source scope once; never bind to imported classes
+        // or scan the whole declaration list for each method.
         java.util.Map<String, Integer> classSlots = new java.util.HashMap<>();
         for (int i = 0; i < declarations.size(); i++) {
-            if (declarations.get(i) instanceof Ast.ClassDecl klass) {
-                // Duplicate nominal names are rejected by the type checker.
-                // Here, they must also make receiver resolution ambiguous.
-                if (classSlots.putIfAbsent(klass.name(), i) != null) {
-                    throw error(externalMethods.getFirst().origin(),
-                            "ambiguous receiver class '" + klass.name() + "' in " + scope);
-                }
+            if (declarations.get(i) instanceof Ast.ClassDecl klass
+                    && classSlots.putIfAbsent(klass.name(), i) != null) {
+                throw error(externalMethods.getFirst().origin(),
+                        "ambiguous receiver class '" + klass.name() + "' in " + scope);
             }
         }
-        List<Ast.Decl> attached = new ArrayList<>(declarations);
-        java.util.Map<String, java.util.Set<Ast.MethodArity>> slots = new java.util.HashMap<>();
+
+        // Stage additions first and rebuild each class once. Reconstructing a
+        // class for every method creates quadratic work for large source
+        // modules and obscures duplicates behind incremental AST mutation.
+        java.util.Map<String, List<Ast.MethodDecl>> additions = new java.util.LinkedHashMap<>();
+        java.util.Map<String, java.util.Set<Ast.MethodArity>> usedSlots = new java.util.HashMap<>();
         for (ExternalReceiverMethod external : externalMethods) {
             Integer index = classSlots.get(external.owner());
             if (index == null) {
                 throw error(external.origin(), "external mtd receiver '" + external.owner()
                         + "' must be declared in the same " + scope);
             }
-            Ast.ClassDecl klass = (Ast.ClassDecl) attached.get(index);
+            Ast.ClassDecl klass = (Ast.ClassDecl) declarations.get(index);
             if (klass.actorKind() != Ast.ActorKind.NONE || !klass.genericParameters().isEmpty()) {
                 throw error(external.origin(),
                         "external mtd requires an ordinary nongeneric class; actor state is sealed");
             }
-            java.util.Set<Ast.MethodArity> identities = slots.computeIfAbsent(
+            java.util.Set<Ast.MethodArity> identities = usedSlots.computeIfAbsent(
                     external.owner(), key -> {
                         java.util.Set<Ast.MethodArity> existing = new java.util.HashSet<>();
                         for (Ast.MethodDecl method : klass.methods()) {
@@ -1747,8 +1748,16 @@ public final class Parser {
                         + external.owner() + "." + external.method().name()
                         + "/" + external.method().arity());
             }
+            additions.computeIfAbsent(external.owner(), key -> new ArrayList<>())
+                    .add(external.method());
+        }
+
+        List<Ast.Decl> attached = new ArrayList<>(declarations);
+        for (var addition : additions.entrySet()) {
+            int index = classSlots.get(addition.getKey());
+            Ast.ClassDecl klass = (Ast.ClassDecl) declarations.get(index);
             List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
-            methods.add(external.method());
+            methods.addAll(addition.getValue());
             attached.set(index, new Ast.ClassDecl(
                     klass.name(), klass.visibility(), klass.isAbstract(), klass.actorKind(),
                     klass.genericParameters(), klass.parents(), klass.interfaces(),
