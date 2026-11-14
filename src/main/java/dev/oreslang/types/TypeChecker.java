@@ -5316,8 +5316,17 @@ public final class TypeChecker {
         }
 
         if (earlier instanceof Ast.ConstructorPattern a && later instanceof Ast.ConstructorPattern b) {
-            if (!sameConstructorForSubject(a.constructor(), b.constructor(), subject)
-                    || a.arguments().size() != b.arguments().size()) return false;
+            if (!sameConstructorForSubject(a.constructor(), b.constructor(), subject)) return false;
+            // Validated named payload fields only bind readonly projections;
+            // they never filter the value. A prior unguarded named-field arm
+            // therefore subsumes every later pattern of the same nominal case.
+            if (a.namedFields() != null) return true;
+            if (b.namedFields() != null) {
+                return a.arguments().size() == 1
+                        && (a.arguments().getFirst() instanceof Ast.BindingPattern
+                            || a.arguments().getFirst() instanceof Ast.WildcardPattern);
+            }
+            if (a.arguments().size() != b.arguments().size()) return false;
             for (int i = 0; i < a.arguments().size(); i++) {
                 if (!patternSubsumes(
                         a.arguments().get(i),
