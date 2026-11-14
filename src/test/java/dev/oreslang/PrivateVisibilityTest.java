@@ -43,7 +43,7 @@ final class PrivateVisibilityTest {
                     return 7;
                   }
 
-                  pub read_other(&Vault other): int {
+                  pub read_other(borrow Vault other): int {
                     return other.reveal();
                   }
 
@@ -68,7 +68,7 @@ final class PrivateVisibilityTest {
                   val right = new Vault();
                   val Fnc<int> callback = Vault.hidden_callback();
 
-                  stdio.stdout.write(left.read_other(&right));
+                  stdio.stdout.write(left.read_other(rt borrow right));
                   stdio.stdout.write(":");
                   stdio.stdout.write(left.destructured(right));
                   stdio.stdout.write(":");
