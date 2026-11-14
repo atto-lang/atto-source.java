@@ -1746,15 +1746,21 @@ public final class Parser {
             }
         }
         java.util.Set<String> declarationOnlyActors = new java.util.HashSet<>();
+        java.util.Set<String> receiverOwners = new java.util.HashSet<>();
         for (ExternalReceiverMethod external : externalMethods) {
-            if (classSlots.containsKey(external.owner())) continue;
-            ForwardType forward = actorSignatures.get(external.owner());
-            if (forward == null) {
-                throw error(external.origin(), "external mtd receiver '" + external.owner()
-                        + "' must be declared in the same " + scope);
+            receiverOwners.add(external.owner());
+        }
+        // Actor declaration order, not the order in which external methods
+        // first appear, determines the nominal AST slot. This matters for
+        // stable compiler traversal, metadata generation and exact-AOT images.
+        for (ForwardType forward : forwards) {
+            if ((forward.kind() != ACTOR && forward.kind() != ISOACTOR)
+                    || !receiverOwners.contains(forward.name())
+                    || classSlots.containsKey(forward.name())) {
+                continue;
             }
             if (!forward.generics().isEmpty()) {
-                throw error(external.origin(),
+                throw error(externalMethods.getFirst().origin(),
                         "external actor mtd requires nongeneric declared actor in v1");
             }
             Ast.ActorKind kind = forward.kind() == ISOACTOR
@@ -1764,7 +1770,7 @@ public final class Parser {
             attached.add(new Ast.ClassDecl(
                     forward.name(), forward.visibility(), false, kind, List.of(),
                     List.of(), List.of(), List.of(), null, List.of(),
-                    new Ast.ActorConcurrency(Ast.ActorTransport.GENERIC, 1, 1)));
+                    Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC)));
         }
 
         java.util.Map<String, List<Ast.MethodDecl>> additions =
