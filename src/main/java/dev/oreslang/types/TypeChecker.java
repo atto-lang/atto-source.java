@@ -5138,11 +5138,17 @@ public final class TypeChecker {
                     bindings.define(field, resolvedField, Ast.BindingKind.VAL);
                 }
             } else {
-                if (args.size() != constructor.arguments().size()) {
+                boolean wholeCopyCase = constructor.wholeAlias() != null
+                        && args.size() == 1 && constructor.arguments().isEmpty();
+                if (wholeCopyCase && safeCaseFields == null) {
+                    throw new IllegalArgumentException(
+                            "whole-variant alias with non-Copy payload requires case-borrow lowering");
+                }
+                if (!wholeCopyCase && args.size() != constructor.arguments().size()) {
                     throw new IllegalArgumentException("constructor pattern " + constructor.constructor()
                             + " expects " + args.size() + " argument(s), got " + constructor.arguments().size());
                 }
-                for (int i = 0; i < args.size(); i++) {
+                for (int i = 0; i < constructor.arguments().size(); i++) {
                     checkPattern(constructor.arguments().get(i), args.get(i), bindings, generics, self);
                 }
             }
