@@ -4096,6 +4096,14 @@ public final class TypeChecker {
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
                 if (collectionBuiltin != null) {
+                    if (member.member().equals("get_copy")
+                            && !(member.receiver() instanceof Ast.NameExpr)) {
+                        // The first scalar Copy lane requires an explicit
+                        // compiler-checked named owner. Nested projections
+                        // and temporaries need stronger root provenance.
+                        throw new IllegalArgumentException(
+                                "get_copy requires a named builtin Array<int>/List<int> receiver");
+                    }
                     if (receiver instanceof Named map && map.name().equals("Map")
                             && (member.member().equals("set")
                                     || member.member().equals("delete"))) {
@@ -8972,6 +8980,18 @@ public final class TypeChecker {
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), list.element());
+                case "get_copy" -> {
+                    // Candidate safe-collection-access-v1: only concrete Copy<int>
+                    // is admitted until generic Copy and provenance obligations
+                    // are implemented. Legacy get(int) remains direct-value.
+                    if (!list.element().equals(Primitive.INT)) {
+                        throw new IllegalArgumentException(
+                                "collection get_copy requires a proven Copy<int> element; "
+                                        + "other element types are not admitted yet");
+                    }
+                    yield new Function(List.of(Primitive.INT),
+                            new Named("Option", List.of(Primitive.INT)));
+                }
                 case "add" -> new Function(List.of(list.element()), Primitive.VOID);
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),

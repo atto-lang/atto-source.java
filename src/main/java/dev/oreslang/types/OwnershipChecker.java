@@ -2157,6 +2157,44 @@ public final class OwnershipChecker {
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
             Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
+            // First compiler-owned Copy<int> access path. The value is owned,
+            // not a ReadLoan, and the receiver must have a stable named root.
+            // Reserve a shared loan across index-argument evaluation so a
+            // nested mutation or move cannot sneak between root validation
+            // and the eventual checked-copy read.
+            if (member.member().equals("get_copy")
+                    && memberReceiverType != null
+                    && (memberReceiverType.name().equals("Array")
+                            || memberReceiverType.name().equals("List"))) {
+                if (!(member.receiver() instanceof Ast.NameExpr receiverName)
+                        || call.arguments().size() != 1
+                        || memberReceiverType.arguments().size() != 1
+                        || !memberReceiverType.arguments().getFirst().name().equals("int")
+                        || !memberReceiverType.arguments().getFirst().arguments().isEmpty()
+                        || findClass(memberReceiverType.name()) != null
+                        || hasLocalTypeAliasNamed(memberReceiverType.name())) {
+                    throw error("get_copy requires a named builtin Array<int>/List<int> "
+                            + "receiver and one checked index");
+                }
+                VarState owner = requireState(scope, receiverName.name());
+                requireUsable(owner, receiverName.name(), false);
+                beginPersistentBorrow(owner, false);
+                VarState root = ownershipRoot(owner);
+                try {
+                    ValueInfo index = checkExpr(call.arguments().getFirst(), scope, false);
+                    if (isBorrowValue(index) || containsMutexGuardType(index.type)) {
+                        throw error("get_copy index cannot smuggle a borrowed capability");
+                    }
+                } finally {
+                    if (root.immutableBorrows <= 0) {
+                        throw new IllegalStateException("missing get_copy shared root loan");
+                    }
+                    root.immutableBorrows--;
+                }
+                Ast.TypeRef intType = Ast.TypeRef.simple("int");
+                Ast.TypeRef result = new Ast.TypeRef("Option", List.of(intType), false);
+                return new ValueInfo(result, ValueKind.COPY, null);
+            }
             if (memberReceiverType == null
                     && (member.member().equals("add") || member.member().equals("set"))
                     && (member.receiver() instanceof Ast.MemberExpr
