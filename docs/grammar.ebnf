@@ -248,15 +248,11 @@ if_stmt         = "if" condition_head
                   ( braced_if_tail
                   | [ ";" ] ( "then" | deprecated_if_do ) { statement }
                     { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement } }
-                    [ "else" { statement } ]
-                  )
-                  "fi" ;
-braced_if_tail  = "{" { statement }
-                  { "}" conditional_branch condition_head "{" { statement } }
-                  [ "}" "else" "{" { statement } ]
-                  [ deprecated_if_close ] ;
-deprecated_if_close
-                = "}" ; (* accepted with migration diagnostic before fi *)
+                    [ "else" { statement } ] "fi"
+                  ) ;
+braced_if_tail  = block
+                  { conditional_branch condition_head block }
+                  [ "else" block ] ;
 conditional_branch
                 = "elif"
                 | "elseif"                 (* accepted alias *)

@@ -3956,20 +3956,18 @@ public final class Parser {
         bindings.add(head.binding());
         Ast.Expr condition = head.predicate();
 
-        // '{' is the braced spelling of 'then'. Intermediate branches close
-        // with '} elif/else'; fi closes the final branch and the whole chain.
+        // Braced if arms are imperative and close at '}', never at 'fi'.
         if (check(LBRACE)) {
-            branches.add(new Ast.IfBranch(condition, parseConditionalBraceBody()));
+            branches.add(new Ast.IfBranch(condition, parseBlock()));
             while (matchConditionalBranch()) {
                 head = parseConditionHead(false);
                 bindings.add(head.binding());
                 condition = head.predicate();
-                branches.add(new Ast.IfBranch(condition, parseConditionalBraceBody()));
+                branches.add(new Ast.IfBranch(condition, parseBlock()));
             }
 
             List<Ast.Stmt> elseBody = List.of();
-            if (match(ELSE)) elseBody = parseConditionalBraceBody();
-            consume(FI, "expected 'fi' to close if");
+            if (match(ELSE)) elseBody = parseBlock();
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 
@@ -4002,19 +4000,6 @@ public final class Parser {
         if (match(ELSE)) elseBody = parseUntil(FI);
         consume(FI, "expected 'fi' to close if");
         return lowerConditionBindings(branches, bindings, elseBody);
-    }
-
-    private List<Ast.Stmt> parseConditionalBraceBody() {
-        consume(LBRACE, "expected '{' before conditional branch");
-        List<Ast.Stmt> body = parseUntil(RBRACE, FI);
-        if (match(RBRACE) && check(FI)) {
-            Token redundant = previous();
-            warnings.add(new SyntaxWarning(redundant.line(), redundant.column(),
-                    "redundant '}' before 'fi'; fi closes the final conditional branch"));
-        }
-        // The caller consumes the branch separator or the final fi. Retain
-        // the historical '} fi' spelling with a migration diagnostic.
-        return body;
     }
 
     private void consumeConditionalThen(String branch) {
