@@ -132,7 +132,7 @@ final class TildeArrayTupleValueGuestTest {
     void unsupportedAggregateConstructorsFailClosed() {
         for (String invalid : new String[]{
                 "~map(\"a\" => 1)", "~set(1, 2)", "~vector(1, 2)",
-                "~entry(\"key\" => 1)", "~pair(1, 2)", "~record(name: \"Ada\")",
+                "~entry(\"key\" => 1)", "~pair(1, 2)", // ~record(...) is canonical on main (parsed inline)
                 "~array<int>(1, 2)", "~tuple<int, string>(1, \"hi\")"}) {
             IllegalArgumentException failure = assertThrows(
                     IllegalArgumentException.class, () -> initializer(invalid), invalid);
@@ -151,7 +151,8 @@ final class TildeArrayTupleValueGuestTest {
         Ast.UnaryExpr spacedTuple = assertInstanceOf(
                 Ast.UnaryExpr.class, initializer("~ tuple(1, 2)"));
         assertEquals("~", spacedTuple.operator());
-        assertInstanceOf(Ast.CallExpr.class, spacedTuple.operand());
+        // A spaced sigil stays unary ~; main represents a bare tuple(...) as TupleExpr.
+        assertInstanceOf(Ast.TupleExpr.class, spacedTuple.operand());
 
         // Whitespace before '<' must remain comparison syntax.
         Ast.BinaryExpr comparison = assertInstanceOf(

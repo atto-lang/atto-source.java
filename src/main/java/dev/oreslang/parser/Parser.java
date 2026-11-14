@@ -4870,6 +4870,17 @@ public final class Parser {
     /** Dispatch only explicit, allowlisted ~kind(...) / ~kind<T>(...) heads.
      *  Ordinary unary ~expr remains on the original operator path.
      */
+    /** Forms the canonical ~ branch in parseUnary owns: ~tuple(, ~record(, ~map( and ~map<. */
+    private boolean mainParsesTildeInline() {
+        String kind = tokens.get(current + 1).lexeme();
+        Token.Type next = tokens.get(current + 2).type();
+        return switch (kind) {
+            case "tuple", "record" -> next == LPAREN;
+            case "map" -> next == LPAREN || next == LT;
+            default -> false;
+        };
+    }
+
     private boolean isTildeAggregateConstructorHead() {
         if (!check(TILDE) || current + 2 >= tokens.size()
                 || tokens.get(current + 1).type() != IDENT) return false;
@@ -4915,8 +4926,7 @@ public final class Parser {
         // main parses ~<T>(), ~tuple, ~record and ~map inline below; the remaining
         // built-in tilde kinds (~array, ~vector, ~list, ~set, ~entry, ~pair, ...) use
         // the postfix constructor path so they keep indexed/member/call postfixes.
-        if (isTildeAggregateConstructorHead()
-                && !List.of("tuple", "record", "map").contains(tokens.get(current + 1).lexeme()))
+        if (isTildeAggregateConstructorHead() && !mainParsesTildeInline())
             return parsePostfix();
         if (match(BANG, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(TILDE)) {

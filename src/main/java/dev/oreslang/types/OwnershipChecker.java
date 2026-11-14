@@ -3127,6 +3127,26 @@ public final class OwnershipChecker {
             if (wholeOwnerForUnlinked && type.name().equals("$infer$")) {
                 return new BorrowPlace(receiver.owner(), Ast.TypeRef.inferred());
             }
+            // Canonical Tuple[T1, ..., Tn]: a literal index selects one statically typed
+            // position. A name index into a heterogeneous tuple has no static type.
+            if (type.name().equals("Tuple")
+                    && indexed.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Number position) {
+                // Tuple[T1, ..., Tn] is stored as Tuple<$shape$<T1, ..., Tn>>.
+                List<Ast.TypeRef> slots = type.arguments().size() == 1
+                        && type.arguments().getFirst().isSequenceShape()
+                        ? type.arguments().getFirst().arguments()
+                        : type.arguments();
+                long at = position.longValue();
+                if (at < 0 || at >= slots.size())
+                    throw error("projected borrow tuple index is out of range");
+                Ast.TypeRef element = slots.get((int) at);
+                if (element.name().startsWith("$repeat"))
+                    throw error("projected borrow index requires a fixed tuple position");
+                if (element.name().equals("$infer$") || element.isBorrow())
+                    throw error("projected borrow index requires a known owned element type");
+                return new BorrowPlace(receiver.owner(), element);
+            }
             if (!((type.name().equals("Array") || type.name().equals("List"))
                     && type.arguments().size() == 1)) {
                 throw error("projected borrow index requires a statically typed Array/List");
