@@ -1,0 +1,42 @@
+// Canonical Copy-safe enum matching against the actual guest evaluator.
+define enum WorkerMsg {
+    Run { job_id: int, payload: string },
+    Cancel { job_id: int },
+    Stop
+}
+
+fnc code(WorkerMsg msg): int {
+    return match msg over {
+        on Run { job_id, payload } as r {
+            return r.job_id + job_id;
+        }
+        on Cancel { job_id } as c {
+            return c.job_id;
+        }
+        on Stop {
+            return 0;
+        }
+    };
+}
+
+fnc statement_code(WorkerMsg msg): int {
+    do match msg over
+        on Run { job_id, payload } as r -> {
+            return r.job_id;
+        }
+        on Cancel { job_id } as c -> {
+            return c.job_id;
+        }
+        on Stop -> {
+            return 0;
+        }
+    end
+}
+
+pub fnc main(): void {
+    stdio.println(code(WorkerMsg.Run(infer struct { job_id: 21, payload: "ok" })));
+    stdio.println(code(WorkerMsg.Cancel(infer struct { job_id: 7 })));
+    stdio.println(code(WorkerMsg.Stop()));
+    stdio.println(statement_code(WorkerMsg.Run(infer struct { job_id: 8, payload: "ok" })));
+    return;
+}
