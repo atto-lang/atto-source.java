@@ -45,7 +45,7 @@ public final class FunctionalCallbackEffectAnalysisV1 {
         }
     }
 
-    public static Report analyzeChecked(Ast.Program checked) {
+    static Report analyzeChecked(Ast.Program checked) {
         Objects.requireNonNull(checked, "checked AttoLang AST");
         List<Site> sites = new ArrayList<>();
         boolean complete = true;
@@ -70,7 +70,6 @@ public final class FunctionalCallbackEffectAnalysisV1 {
         private final String module;
         private final Ast.FunctionDecl function;
         private final List<Site> sites;
-        private int siteCount;
         private boolean complete = true;
 
         Walker(String module, Ast.FunctionDecl function, List<Site> sites) {
@@ -160,7 +159,6 @@ public final class FunctionalCallbackEffectAnalysisV1 {
                     "sum::combinator", Map.of("callback", "sum::inline_callback"));
             sites.add(new Site(module, function.name(), member.member(),
                     inferred, EffectContracts.pureAllowance().containsAll(inferred)));
-            siteCount++;
         }
     }
 
