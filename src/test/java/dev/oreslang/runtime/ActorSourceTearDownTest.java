@@ -384,4 +384,33 @@ final class ActorSourceTearDownTest {
             assertEquals(1, executor.teardowns.get());
         }
     }
+
+    @Test
+    void stopRacingSourceMailboxDispatchIsNotAReceiveAdmissionFailure()
+            throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            SharedCodeImageStore.CodeImage codeImage = image(store);
+            // Host scheduling deliberately varies from round to round.
+            // Whatever the outcome, STOP must not turn a not-yet-admitted
+            // receive into an actor failure when the runtime wins the race.
+            for (int round = 0; round < 24; round++) {
+                Executor executor = new Executor(codeImage, false);
+                var ref = runtime.spawnCodeActor(
+                        ActorRuntime.ActorKind.SHARED, executor, "Worker");
+                ref.ready().get(2, TimeUnit.SECONDS);
+                for (int message = 0; message < 4; message++) {
+                    ref.send("ordinary-" + message);
+                }
+                Thread stopper = Thread.ofVirtual().start(ref::stop);
+                stopper.join(2_000);
+                assertFalse(stopper.isAlive(), "STOP must not strand the carrier");
+                ref.done().get(2, TimeUnit.SECONDS);
+                assertTrue(ref.failure().isEmpty(),
+                        "a normal STOP racing receive admission must not poison DONE");
+                assertEquals(1, executor.teardowns.get(),
+                        "graceful teardown is exactly once in round " + round);
+            }
+        }
+    }
 }
