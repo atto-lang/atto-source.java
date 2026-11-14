@@ -2144,6 +2144,30 @@ public final class Parser {
         return Ast.TypeRef.union(options);
     }
 
+    /** The type suffix '?' wraps Option; it never implies an omittable slot. */
+    private record FormalPresenceType(Ast.TypeRef type, boolean sugar) {}
+    private FormalPresenceType parseFormalPresenceType(boolean pipeDelimited) {
+        Ast.TypeRef type = pipeDelimited ? parsePipeParameterType() : parseTypeRef();
+        if (!match(QUESTION)) return new FormalPresenceType(type, false);
+        if (type.name().equals("void") || type.name().equals("null")
+                || type.inferArguments())
+            throw error(previous(), "type-level '?' requires a concrete value type");
+        return new FormalPresenceType(new Ast.TypeRef("Option", List.of(type), false), true);
+    }
+    private Ast.Param finishFormalPresence(
+            FormalPresenceType type, String name, boolean structural, boolean mutable) {
+        boolean omittable = match(QUESTION);
+        Ast.Expr defaultValue = match(EQUAL) ? parseExpression() : null;
+        if (defaultValue != null && !omittable)
+            throw error(previous(), "default requires name-level '?'");
+        if (omittable && (structural || mutable))
+            throw error(previous(), "omittable structural/mutable parameters unsupported");
+        if (omittable && defaultValue == null && !type.type().name().equals("Option"))
+            throw error(previous(), "non-Option omittable parameter requires a default");
+        return new Ast.Param(type.type(), name, structural, mutable,
+                omittable, type.sugar(), defaultValue);
+    }
+
     private List<Ast.Param> parseDeclaredPipeParameters() {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
@@ -2155,19 +2179,21 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                Ast.TypeRef type = parsePipeParameterType();
+                FormalPresenceType parsed = parseFormalPresenceType(true);
+                Ast.TypeRef type = parsed.type();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                params.add(finishFormalPresence(parsed, name, false, mutable));
                 continue;
             }
 
-            Ast.TypeRef type = parsePipeParameterType();
+            FormalPresenceType parsed = parseFormalPresenceType(true);
+                Ast.TypeRef type = parsed.type();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(finishFormalPresence(parsed, name, structural, mutable));
         } while (match(COMMA));
         requireDistinctParameterNames(params);
         return List.copyOf(params);
@@ -2238,13 +2264,14 @@ public final class Parser {
 
             // Canonical type-first structural spelling: structural Foo y
             if (structural) {
-                Ast.TypeRef type = parseTypeRef();
+                FormalPresenceType parsed = parseFormalPresenceType(false);
+                Ast.TypeRef type = parsed.type();
                 boolean mutable = match(MUT);
                 String name = consume(IDENT, "expected parameter name").lexeme();
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(finishFormalPresence(parsed, name, true, false));
                 continue;
             }
 
@@ -2253,24 +2280,26 @@ public final class Parser {
                 String name = advance().lexeme();
                 Token marker = consume(IDENT, "expected structural");
                 if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
-                Ast.TypeRef type = parseTypeRef();
+                FormalPresenceType parsed = parseFormalPresenceType(false);
+                Ast.TypeRef type = parsed.type();
                 boolean mutable = match(MUT);
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(finishFormalPresence(parsed, name, true, false));
                 continue;
             }
 
             // Function annotation spelling: @AllowStructural(y) fnc x(y Foo)
             if (check(IDENT) && annotationStructuralNames.contains(peek().lexeme()) && checkNext(IDENT)) {
                 String name = advance().lexeme();
-                Ast.TypeRef type = parseTypeRef();
+                FormalPresenceType parsed = parseFormalPresenceType(false);
+                Ast.TypeRef type = parsed.type();
                 boolean mutable = match(MUT);
                 if (mutable) {
                     throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
                 }
-                params.add(new Ast.Param(type, name, true, false));
+                params.add(finishFormalPresence(parsed, name, true, false));
                 continue;
             }
 
@@ -2286,19 +2315,21 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
-                Ast.TypeRef type = parseTypeRef();
+                FormalPresenceType parsed = parseFormalPresenceType(false);
+                Ast.TypeRef type = parsed.type();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                params.add(finishFormalPresence(parsed, name, false, mutable));
                 continue;
             }
 
-            Ast.TypeRef type = parseTypeRef();
+            FormalPresenceType parsed = parseFormalPresenceType(false);
+                Ast.TypeRef type = parsed.type();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "expected parameter name after type").lexeme();
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(finishFormalPresence(parsed, name, structural, mutable));
         } while (match(COMMA));
         requireDistinctParameterNames(params);
         return params;
@@ -2329,7 +2360,8 @@ public final class Parser {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
             if (allowed.contains(param.name())) found.add(param.name());
-            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
+            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable(),
+                    param.omittable(), param.optionTypeSugar(), param.defaultValue()));
         }
         if (!found.equals(allowed)) {
             java.util.Set<String> missing = new java.util.HashSet<>(allowed);
@@ -5762,14 +5794,16 @@ public final class Parser {
                 } else if (check(IDENT) && checkNext(COLON)) {
                     String name = advance().lexeme();
                     consume(COLON, "expected ':' after lambda parameter name");
-                    Ast.TypeRef type = parsePipeParameterType();
+                    FormalPresenceType parsed = parseFormalPresenceType(true);
+                Ast.TypeRef type = parsed.type();
                     boolean mutable = match(MUT);
-                    params.add(new Ast.Param(type, name, false, mutable));
+                    params.add(finishFormalPresence(parsed, name, false, mutable));
                 } else {
-                    Ast.TypeRef type = parsePipeParameterType();
+                    FormalPresenceType parsed = parseFormalPresenceType(true);
+                Ast.TypeRef type = parsed.type();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name, false, mutable));
+                    params.add(finishFormalPresence(parsed, name, false, mutable));
                 }
             } while (match(COMMA));
         }
@@ -5784,6 +5818,8 @@ public final class Parser {
 
     private Ast.LambdaExpr parseLambdaBody(
             List<Ast.Param> params, boolean nonLexical, boolean inlinePipelineStage) {
+        if (params.stream().anyMatch(Ast.Param::omittable))
+            throw error(previous(), "omittable lambda needs verified callable-value ABI");
         // Immediate '{' denotes an inferred block. Preserve expression-bodied
         // lambdas, while recognizing an explicitly typed *braced* block:
         //   || -> void { cleanup(); }

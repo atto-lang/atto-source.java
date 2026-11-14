@@ -328,7 +328,29 @@ public final class Ast {
         }
     }
 
-    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
+    /** Type optionality and call-site omittability are independent syntax. */
+    public record Param(TypeRef type, String name, boolean structural, boolean mutable,
+                        boolean omittable, boolean optionTypeSugar, Expr defaultValue) {
+        public Param {
+            java.util.Objects.requireNonNull(type, "parameter type");
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("blank parameter");
+            if (optionTypeSugar && !(type.name().equals("Option")
+                    && type.arguments().size() == 1 && !type.inferArguments()))
+                throw new IllegalArgumentException("type-level '?' must normalize to Option<T>");
+            if (omittable && (structural || mutable))
+                throw new IllegalArgumentException("omittable structural/mutable parameter unsupported");
+            if (defaultValue != null && !omittable)
+                throw new IllegalArgumentException("default requires name-level '?'");
+            if (omittable && defaultValue == null && !type.name().equals("Option"))
+                throw new IllegalArgumentException("omittable non-Option parameter requires default");
+        }
+        public Param(TypeRef type, String name, boolean structural, boolean mutable,
+                     boolean omittable, boolean optionTypeSugar) {
+            this(type, name, structural, mutable, omittable, optionTypeSugar, null);
+        }
+        public Param(TypeRef type, String name, boolean structural, boolean mutable) {
+            this(type, name, structural, mutable, false, false, null);
+        }
         public Param(TypeRef type, String name) { this(type, name, false, false); }
         public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
     }
