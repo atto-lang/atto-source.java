@@ -39,6 +39,20 @@ final class TrapThreeBackendParityGateTest {
 
 
     @Test
+    void samePureTrapIntGuestAsLlvmAndNetMustReturn42() throws Exception {
+        String source = fixture("trap-int-native42.atto");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        Source guest = Source.newBuilder(OresLanguage.ID, source, "trap-int-native42.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            Value result = context.eval(guest);
+            assertTrue(result.fitsInLong(), "guest must return signed int");
+            assertEquals(42L, result.asLong(), "same stage-one trap int guest on all backends");
+        }
+    }
+
+    @Test
     void ordinaryCheckedCastFailureIsOuterNone() throws Exception {
         String source = fixture("ordinary-cast-failure.atto");
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
