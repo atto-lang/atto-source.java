@@ -124,3 +124,19 @@ guest-support claim.
    for any claim that the scanner covered the whole program.
 4. Run these exact `.atto` bytes on Java, LLVM, .NET Native AOT, Wasm and
    Forge; pin each backend source/compiler head and required test steps.
+
+### Composition and coverage hardening
+
+Two additional `.atto` cases pin the existing eager `|>` and exhaustive
+value-match contract: `pipeline-match.atto` expects guest output
+`42` followed by `0`, and `reject-incomplete-match.atto` must be rejected
+by the semantic checker (not the lexer). The JUnit suite now has nine new
+cases in `FunctionalCallbackEffectAnalysisV1Test`, alongside the six
+existing effect-graph regression cases.
+
+The v1 scanner is deliberately bounded at depth 64, 8,192 inspected
+nodes per function and 1,024 reported call sites. Incomplete/over-budget
+analysis returns `complete=false` and must never be interpreted as a full
+purity proof. Unknown or non-parameter combinator receivers also mark
+coverage incomplete. No actor, method body, user-defined collection type,
+imported graph or arbitrary closure has yet been certified.
