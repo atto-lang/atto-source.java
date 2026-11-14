@@ -133,4 +133,27 @@ final class FunctionalCallbackEffectAnalysisV1Test {
         var report = OresCompiler.analyzeFunctionalCallbacksV1(source);
         assertFalse(report.complete(), "branch bodies are not walked by v1");
     }
+
+    @Test
+    void valueMatchAndFunctionalPipelineRunAsRealAttoGuest() throws Exception {
+        String source = fixture("pipeline-match.atto");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        Source guest = Source.newBuilder(OresLanguage.ID, source, "pipeline-match.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("42\\n0", output.toString(StandardCharsets.UTF_8)
+                .strip().replace("\\r", ""));
+    }
+
+    @Test
+    void incompleteOptionMatchRejectsBySemanticProofNotJustParser() throws Exception {
+        String source = fixture("reject-incomplete-match.atto");
+        assertDoesNotThrow(() -> Parser.parse(source));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+    }
 }
