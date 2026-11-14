@@ -463,6 +463,21 @@ public final class OwnershipChecker {
             checkBlock(block.body(), scope, returnType);
             return;
         }
+        if (stmt instanceof Ast.UsingTelemetrySpanStmt span) {
+            checkExpr(span.name(), scope, false);
+            Scope local = new Scope(scope);
+            local.define(span.binding(), new VarState(
+                    Ast.TypeRef.simple("$TelemetrySpan"), false, false,
+                    ValueKind.MOVE_ONLY, Origin.LOCAL));
+            try {
+                checkBlock(span.body(), local, returnType);
+            } finally {
+                local.close();
+            }
+            // Unlike a transport borrow, immutable trace identity is safe
+            // across suspension. Other live loans still obey their own rules.
+            return;
+        }
         if (stmt instanceof Ast.TaskScopeStmt taskScope) {
             checkBlock(taskScope.body(), scope, returnType);
             // Structured scope exit is an implicit asynchronous wait for
@@ -1087,6 +1102,9 @@ public final class OwnershipChecker {
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
+            if (consuming && state.type.name().equals("$TelemetrySpan")) {
+                throw error("lexical telemetry span handle cannot escape via assignment, return, or ownership transfer");
+            }
             if (consuming && initializingClass != null && name.name().equals("self")) {
                 throw error("partially initialized constructor self cannot escape");
             }
@@ -1364,10 +1382,47 @@ public final class OwnershipChecker {
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
+            if (receiverValue.type.name().equals("$TelemetrySpan")) {
+                throw error("lexical telemetry span methods are direct-call-only; do not extract a callable");
+            }
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver == null) concreteReceiver = receiverValue.type;
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
+            }
+            // Built-in ActorMail<T>/ActorOutput<T> fields are VM-owned immutable
+            // projections, not arbitrary mutable guest-class fields. The type
+            // checker already recognizes their exact nominal protocol shapes.
+            // Mirror that recognition here so Copy scalar payloads and fixed
+            // metadata are not misclassified as unknown move-only aliases.
+            // Never extend this path to a user class/type alias that shadows
+            // the runtime envelope, or to a non-Copy payload projection.
+            if (member.receiver() instanceof Ast.NameExpr envelopeName
+                    && isBuiltinActorEnvelopeValue(scope.lookup(envelopeName.name()))) {
+                if (concreteReceiver == null || concreteReceiver.arguments().size() != 1) {
+                    throw error("invalid built-in actor envelope ownership type");
+                }
+                Ast.TypeRef actorId = Ast.TypeRef.simple("ActorId");
+                Ast.TypeRef fieldType = switch (member.member()) {
+                    case "value" -> concreteReceiver.arguments().getFirst();
+                    case "sequence" -> Ast.TypeRef.simple("int");
+                    case "recipient", "actor_id" -> actorId;
+                    case "sender" -> new Ast.TypeRef("Option", List.of(actorId), false);
+                    default -> null;
+                };
+                boolean valid = concreteReceiver.name().equals("ActorMail")
+                        ? Set.of("value", "sequence", "recipient", "sender")
+                                .contains(member.member())
+                        : Set.of("value", "sequence", "actor_id")
+                                .contains(member.member());
+                if (!valid || fieldType == null) {
+                    throw error("unknown built-in actor envelope field '" + member.member() + "'");
+                }
+                return new ValueInfo(
+                        fieldType,
+                        member.member().equals("value")
+                                ? kindOfType(fieldType) : ValueKind.COPY,
+                        null);
             }
             // A collection's element count is a copyable scalar read, never a
             // projection into the collection: `val int n = list.size` must
@@ -1469,9 +1524,24 @@ public final class OwnershipChecker {
             // AutoTraitRules lattice. Task-specific runtime seams are limited
             // to affine Future<T> MOVE and synchronized Channel<T> handles;
             // guards, Rc and foreign/scheduler authority remain non-Send.
+            //
+            // A single Task is one execution boundary. Share the proof budget
+            // across ALL captured types, not one fresh budget per capture:
+            // thousands of distinct shallow fields or nested wrappers must
+            // not amplify compiler work or mint partially verified captures.
+            if (captured.values.size() > TASK_CAPTURE_MAX_NODES) {
+                throw error("independent task capture proof complexity limit exceeded");
+            }
+            TaskCaptureProofBudget captureBudget = new TaskCaptureProofBudget();
             for (Capture capture : captured.values.values()) {
-                if (!capture.source.type.isBorrow()
-                        && forbiddenTaskCapability(capture.source.type)) {
+                if (capture.source.type.isBorrow()) continue;
+                boolean forbidden = forbiddenTaskCapability(
+                        capture.source.type, captureBudget);
+                if (captureBudget.exhausted) {
+                    throw error("independent task capture proof complexity limit exceeded"
+                            + " at '" + capture.name + "'");
+                }
+                if (forbidden) {
                     throw error("independent task capture '" + capture.name
                             + "' contains a non-Send execution capability; "
                             + "pass owned values or an explicit Channel<T> instead");
@@ -1493,6 +1563,15 @@ public final class OwnershipChecker {
             LinkedHashMap<String, Ast.TaskCaptureTransfer> admitted =
                     new LinkedHashMap<>();
             for (Capture capture : captured.values.values()) {
+                // A Copy admission must be backed by the resolved type, not
+                // merely by a previous VarState flag. An ambiguous/inferred
+                // capture cannot mint a duplicate ownership capability.
+                // This is independent of the earlier transitive Send proof.
+                if (capture.source.kind == ValueKind.COPY
+                        && !isCopyType(capture.source.type)) {
+                    throw error("independent Task capture '" + capture.name
+                            + "' lacks a resolved Copy proof");
+                }
                 Ast.TaskCaptureTransfer transfer =
                         !capture.write
                                 && !capture.consume
@@ -1695,7 +1774,17 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned tuple until explicit container lifetimes are supported");
                 copy &= info.kind == ValueKind.COPY;
-                slots.add(info.type);
+                Ast.TypeRef slot = info.type;
+                // Preserve only independently provable scalar results (e.g.
+                // int + int) so a tuple-producing inline stage can feed the
+                // next tuple-destructuring stage. Unresolved call results and
+                // dynamic/operator-overloaded values remain $infer$ and fail
+                // closed at the next destructuring boundary.
+                if (slot != null && slot.name().equals("$infer$")) {
+                    Ast.TypeRef inferredSlot = syntacticType(item, scope);
+                    if (!inferredSlot.name().equals("$infer$")) slot = inferredSlot;
+                }
+                slots.add(slot);
             }
             return new ValueInfo(Ast.TypeRef.tupleType(slots), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
@@ -1753,7 +1842,81 @@ public final class OwnershipChecker {
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
+    /**
+     * Ownership representation of a concrete tuple. Tuple[T1,...,Tn] uses
+     * one finite-sequence-shape argument; tuple literals use $tuple$.
+     * Never interpret arrays, fixed arrays/lists, unions or dynamic lists as
+     * destructurable tuples merely because they have the right length.
+     */
+    private static List<Ast.TypeRef> staticPipelineTupleSlots(Ast.TypeRef type) {
+        if (type == null || type.inferArguments() || type.isBorrow()) return null;
+        if (type.isTupleType()) return type.arguments();
+        if (!type.name().equals("Tuple") || type.arguments().size() != 1) return null;
+        Ast.TypeRef shape = type.arguments().getFirst();
+        if (!shape.isSequenceShape()) return null;
+        List<Ast.TypeRef> slots = shape.arguments();
+        if (slots.isEmpty() || slots.stream().anyMatch(slot ->
+                slot.isSequenceShape() || slot.isRepeatMany() || slot.isRepeatExact()
+                        || slot.isNamedParameter() || slot.inferArguments())) return null;
+        return slots;
+    }
+
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                && call.callee() instanceof Ast.LambdaExpr lambda) {
+            int arity = lambda.parameters().size();
+            if (call.arguments().size() != 1 || call.typeArgumentsPresent()
+                    || arity < 1) {
+                throw error("inline pipeline lambda requires one upstream argument and at least one parameter");
+            }
+            // Check/move the entire upstream exactly once. Every destructured
+            // field receives its OWN lexical binding; no implicit clone of
+            // move-only tuple elements or extra evaluation of the tuple.
+            ValueInfo input = checkExpr(call.arguments().getFirst(), scope, true);
+            if (isBorrowValue(input) || containsMutexGuardType(input.type)) {
+                throw error("inline pipeline lambda cannot consume a borrow or guard-bearing input "
+                        + "without a proven scoped lifetime");
+            }
+            if (input.type == null || input.type.name().equals("$infer$")) {
+                throw error("inline pipeline lambda requires an ownership-resolved upstream type");
+            }
+            List<Ast.TypeRef> inputs;
+            if (arity == 1) {
+                inputs = List.of(input.type);
+            } else {
+                List<Ast.TypeRef> slots = staticPipelineTupleSlots(input.type);
+                if (slots == null) {
+                    throw error("multi-parameter pipeline lambda requires a statically known Tuple input");
+                }
+                if (slots.size() != arity) {
+                    throw error("pipeline tuple arity mismatch: expected " + arity
+                            + " element(s), got " + slots.size());
+                }
+                if (slots.stream().anyMatch(slot -> slot == null
+                        || slot.isBorrow() || slot.name().equals("$infer$")
+                        || containsMutexGuardType(slot))) {
+                    throw error("pipeline tuple destructuring cannot publish borrowed, guarded or unresolved slots");
+                }
+                inputs = slots;
+            }
+            // Contextualize the ownership-only lambda view without rewriting
+            // the canonical AST or minting executable type/ownership proofs.
+            List<Ast.Param> contextualParams = new ArrayList<>(arity);
+            for (int i = 0; i < arity; i++) {
+                Ast.Param parameter = lambda.parameters().get(i);
+                if (parameter.mutable() || parameter.structural()) {
+                    throw error("pipeline lambda parameter " + (i + 1)
+                            + " cannot request mutable or structural input");
+                }
+                contextualParams.add(new Ast.Param(
+                        parameter.type().name().equals("$infer$") ? inputs.get(i) : parameter.type(),
+                        parameter.name(), false, false));
+            }
+            Ast.LambdaExpr contextual = new Ast.LambdaExpr(
+                    contextualParams, lambda.expressionBody(),
+                    lambda.blockBody(), lambda.nonLexical(), lambda.declaredReturnType());
+            return checkLambda(contextual, scope, null, false, false, true);
+        }
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive
@@ -1846,6 +2009,36 @@ public final class OwnershipChecker {
         if (isBuiltinFormattingCall(call, scope)) {
             checkFormattingArguments(call.arguments(), scope);
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr spanCall
+                && spanCall.receiver() instanceof Ast.NameExpr spanName) {
+            VarState handle = scope.lookup(spanName.name());
+            if (handle != null && handle.type.name().equals("$TelemetrySpan")) {
+                requireUsable(handle, spanName.name(), false);
+                Ast.TypeRef result;
+                switch (spanCall.member()) {
+                    case "attribute" -> {
+                        if (call.arguments().size() != 2) {
+                            throw error("telemetry span attribute requires exactly two arguments");
+                        }
+                        checkExpr(call.arguments().get(0), scope, true);
+                        checkExpr(call.arguments().get(1), scope, true);
+                        result = Ast.TypeRef.simple("void");
+                    }
+                    case "recording" -> {
+                        if (!call.arguments().isEmpty()) throw error("span.recording takes no arguments");
+                        result = Ast.TypeRef.simple("bool");
+                    }
+                    case "trace_id", "span_id" -> {
+                        if (!call.arguments().isEmpty()) throw error("span IDs take no arguments");
+                        result = Ast.TypeRef.simple("String");
+                    }
+                    default -> throw error("unsupported telemetry span member: " + spanCall.member());
+                }
+                // Only a direct call may use the live span; extracting a bound
+                // callable could retain the handle after lexical scope exit.
+                return new ValueInfo(result, ValueKind.COPY, null);
+            }
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
@@ -3148,6 +3341,26 @@ public final class OwnershipChecker {
             if (wholeOwnerForUnlinked && type.name().equals("$infer$")) {
                 return new BorrowPlace(receiver.owner(), Ast.TypeRef.inferred());
             }
+            // Canonical Tuple[T1, ..., Tn]: a literal index selects one statically typed
+            // position. A name index into a heterogeneous tuple has no static type.
+            if (type.name().equals("Tuple")
+                    && indexed.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Number position) {
+                // Tuple[T1, ..., Tn] is stored as Tuple<$shape$<T1, ..., Tn>>.
+                List<Ast.TypeRef> slots = type.arguments().size() == 1
+                        && type.arguments().getFirst().isSequenceShape()
+                        ? type.arguments().getFirst().arguments()
+                        : type.arguments();
+                long at = position.longValue();
+                if (at < 0 || at >= slots.size())
+                    throw error("projected borrow tuple index is out of range");
+                Ast.TypeRef element = slots.get((int) at);
+                if (element.name().startsWith("$repeat"))
+                    throw error("projected borrow index requires a fixed tuple position");
+                if (element.name().equals("$infer$") || element.isBorrow())
+                    throw error("projected borrow index requires a known owned element type");
+                return new BorrowPlace(receiver.owner(), element);
+            }
             if (!((type.name().equals("Array") || type.name().equals("List"))
                     && type.arguments().size() == 1)) {
                 throw error("projected borrow index requires a statically typed Array/List");
@@ -3266,6 +3479,17 @@ public final class OwnershipChecker {
             String recursiveBinding,
             boolean allowActorSelfCapture,
             boolean deferredCleanup) {
+        return checkLambda(lambda, outer, recursiveBinding,
+                allowActorSelfCapture, deferredCleanup, false);
+    }
+
+    private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture,
+            boolean deferredCleanup,
+            boolean immediatePipelineStage) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
@@ -3292,6 +3516,9 @@ public final class OwnershipChecker {
             }
             if (containsMutexGuardType(source.type)) {
                 throw error("closure cannot capture guard-bearing value '" + capture.name + "'; MutexGuard values are lexical");
+            }
+            if (source.type.name().equals("$TelemetrySpan") && !deferredCleanup) {
+                throw error("lexical telemetry span handle cannot escape into a closure");
             }
 
             if (capture.write) {
@@ -3323,6 +3550,7 @@ public final class OwnershipChecker {
         // Closures may execute after the class constructor returns; their
         // bodies cannot write fixed slots through the ctor-only exception.
         initializingClass = null;
+        ValueInfo immediateResult = null;
         try {
             if (lambda.expressionBody() != null) {
                 // An expression body has return-value ownership semantics even
@@ -3331,9 +3559,37 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a lambda");
                 }
+                if (immediatePipelineStage && isBorrowValue(returned)) {
+                    throw error("inline pipeline lambda cannot return a borrow without a proven loan lifetime");
+                }
+                immediateResult = returned;
+                // The ownership pass does not run the full type inferencer.
+                // Retain a narrowly provable scalar result for the next
+                // inline stage rather than incorrectly rejecting a legal
+                // |n| -> n + 1 |> |m| -> m * 2 chain. Never infer a
+                // borrow, mutable alias, or unknown callable result here.
+                if (immediatePipelineStage && returned.type != null
+                        && returned.type.name().equals("$infer$")) {
+                    Ast.TypeRef scalar = syntacticType(lambda.expressionBody(), closure);
+                    if (!scalar.name().equals("$infer$") && !scalar.isBorrow()) {
+                        immediateResult = new ValueInfo(scalar, kindOfType(scalar), null);
+                    }
+                }
             } else {
                 for (Ast.Stmt stmt : lambda.blockBody()) {
                     checkStatement(stmt, closure, Ast.TypeRef.inferred());
+                }
+                if (immediatePipelineStage) {
+                    Ast.TypeRef resultType = lambda.declaredReturnType();
+                    if (resultType == null && lambda.blockBody().size() == 1
+                            && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt returned
+                            && returned.value() != null) {
+                        resultType = syntacticType(returned.value(), closure);
+                    }
+                    if (resultType == null || resultType.isBorrow()) {
+                        throw error("inline pipeline block requires an owned, statically resolved result");
+                    }
+                    immediateResult = new ValueInfo(resultType, kindOfType(resultType), null);
                 }
             }
         } finally {
@@ -3342,7 +3598,10 @@ public final class OwnershipChecker {
             initializingClass = previousInitializingClass;
             closure.close();
         }
-        return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
+        // An immediately invoked stage transfers the result, not a closure.
+        // Ordinary lexical lambdas preserve their existing Fnc value shape.
+        return immediatePipelineStage ? immediateResult
+                : new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
     }
 
     private CaptureSet collectCaptures(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
@@ -3424,6 +3683,11 @@ public final class OwnershipChecker {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.TaskScopeStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.UsingTelemetrySpanStmt s) {
+                scanExpr(s.name(), blockLocals, outer, recursiveBinding, captures, false);
+                Set<String> scoped = new HashSet<>(blockLocals);
+                scoped.add(s.binding());
+                scanStatements(s.body(), scoped, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.IfStmt s) {
@@ -4159,6 +4423,22 @@ public final class OwnershipChecker {
             return state == null ? Ast.TypeRef.inferred() : state.type;
         }
         if (expr instanceof Ast.NewExpr created) return created.type();
+        if (expr instanceof Ast.BinaryExpr binary) {
+            Ast.TypeRef left = syntacticType(binary.left(), scope);
+            Ast.TypeRef right = syntacticType(binary.right(), scope);
+            if (left.name().equals(right.name())
+                    && left.arguments().isEmpty() && right.arguments().isEmpty()
+                    && Set.of("int", "uint", "i8", "i16", "i32", "i64",
+                            "u8", "u16", "u32", "u64", "float",
+                            "f32", "f64").contains(left.name())
+                    && Set.of("+", "-", "*", "/").contains(binary.operator())) {
+                return left;
+            }
+            // Other binary operators and mixed types have no ownership-only
+            // scalar type proof; the independent type checker remains
+            // authoritative and this pass fails closed when necessary.
+            return Ast.TypeRef.inferred();
+        }
         if (expr instanceof Ast.TrapExpr trapped) {
             // Preserve the Option wrapper during generic call inference, even
             // when the operand is a local or literal rather than a CallExpr.
@@ -4425,6 +4705,8 @@ public final class OwnershipChecker {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope
+                    && definitelyReturns(scope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional
                     && !conditional.branches().isEmpty()
                     && conditional.branches().stream().allMatch(branch -> definitelyReturns(branch.body()))
@@ -4581,10 +4863,19 @@ public final class OwnershipChecker {
      * MOVE rather than duplicating cancellation/consumer authority.
      */
     private boolean forbiddenTaskCapability(Ast.TypeRef type) {
+        // TraceContext is safe to inherit; the mutable lexical span HANDLE is
+        // not a Send capability even when its underlying IDs are immutable.
+        if (type != null && type.name().equals("$TelemetrySpan")) return true;
+        return forbiddenTaskCapability(type, new TaskCaptureProofBudget());
+    }
+
+    private boolean forbiddenTaskCapability(
+            Ast.TypeRef type, TaskCaptureProofBudget budget) {
         return !taskCaptureCapabilities(
                 type,
                 java.util.Collections.newSetFromMap(
-                        new IdentityHashMap<>())).send();
+                        new IdentityHashMap<>()),
+                budget, 0).send();
     }
 
     /**
@@ -4603,11 +4894,36 @@ public final class OwnershipChecker {
      * </ul>
      * Unknown nominal/generic provenance fails closed.
      */
+    // TypeRef shape checking precedes AutoTraitRules inference. Give this
+    // upstream traversal its own *shared* budget so nested Option/Result,
+    // tuples and nominal fields cannot exhaust the compiler stack or reset
+    // limits for each child before reaching the canonical auto-trait lattice.
+    private static final int TASK_CAPTURE_MAX_DEPTH = 128;
+    private static final int TASK_CAPTURE_MAX_NODES = 4096;
+
+    private static final class TaskCaptureProofBudget {
+        private int remaining = TASK_CAPTURE_MAX_NODES;
+        private boolean exhausted;
+    }
+
     private AutoTraitRules.Capabilities taskCaptureCapabilities(
             Ast.TypeRef type,
             Set<Ast.ClassDecl> visitingClasses) {
+        return taskCaptureCapabilities(
+                type, visitingClasses, new TaskCaptureProofBudget(), 0);
+    }
+
+    private AutoTraitRules.Capabilities taskCaptureCapabilities(
+            Ast.TypeRef type,
+            Set<Ast.ClassDecl> visitingClasses,
+            TaskCaptureProofBudget budget,
+            int depth) {
         AutoTraitRules.Capabilities none =
                 new AutoTraitRules.Capabilities(false, false, false);
+        if (depth >= TASK_CAPTURE_MAX_DEPTH || budget.remaining-- <= 0) {
+            budget.exhausted = true;
+            return none;
+        }
         AutoTraitRules.Capabilities scalar =
                 AutoTraitRules.infer(AutoTraitRules.TypeModel.scalar());
 
@@ -4639,7 +4955,7 @@ public final class OwnershipChecker {
             boolean share = true;
             for (Ast.TypeRef member : type.arguments()) {
                 AutoTraitRules.Capabilities child =
-                        taskCaptureCapabilities(member, visitingClasses);
+                        taskCaptureCapabilities(member, visitingClasses, budget, depth + 1);
                 send &= child.send();
                 sync &= child.sync();
                 share &= child.share();
@@ -4647,11 +4963,20 @@ public final class OwnershipChecker {
             return new AutoTraitRules.Capabilities(send, sync, share);
         }
 
+        if (type.isRecordType()) {
+            // A readonly structural RECORD is a view. Field-wise Send only
+            // proves its elements are transferable; it does not prove the
+            // backing allocation is owned, frozen, or independent of actor
+            // state. A proven owned struct can still move below, but records
+            // need explicit snapshot/region provenance before Task transfer.
+            return none;
+        }
+
         if (type.isClosedAggregateType()) {
             boolean send = true;
             for (Ast.TypeRef member : type.aggregateMembers().values()) {
                 AutoTraitRules.Capabilities child =
-                        taskCaptureCapabilities(member, visitingClasses);
+                        taskCaptureCapabilities(member, visitingClasses, budget, depth + 1);
                 send &= child.send();
             }
             // Readonly structural metadata describes a view, not a frozen
@@ -4781,18 +5106,15 @@ public final class OwnershipChecker {
 
         if (name.equals("Option") || name.equals("IteratorResult")) {
             return type.arguments().size() == 1
-                    ? taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses)
+                    ? taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1)
                     : none;
         }
         if (name.equals("Result")) {
             if (type.arguments().size() != 2) return none;
             AutoTraitRules.Capabilities left =
-                    taskCaptureCapabilities(
-                            type.arguments().get(0), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().get(0), visitingClasses, budget, depth + 1);
             AutoTraitRules.Capabilities right =
-                    taskCaptureCapabilities(
-                            type.arguments().get(1), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().get(1), visitingClasses, budget, depth + 1);
             return new AutoTraitRules.Capabilities(
                     left.send() && right.send(),
                     left.sync() && right.sync(),
@@ -4811,8 +5133,7 @@ public final class OwnershipChecker {
                     && !hasLocalTypeAliasNamed("void")
                     && findClass("void") == null;
             boolean payloadSend = emptyPayload
-                    || taskCaptureCapabilities(
-                            payload, visitingClasses).send();
+                    || taskCaptureCapabilities(payload, visitingClasses, budget, depth + 1).send();
             return new AutoTraitRules.Capabilities(
                     payloadSend, false, false);
         }
@@ -4820,8 +5141,7 @@ public final class OwnershipChecker {
         if (name.equals("Channel")) {
             if (type.arguments().size() != 1) return none;
             AutoTraitRules.Capabilities payload =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1);
             return payload.send()
                     ? new AutoTraitRules.Capabilities(true, true, true)
                     : none;
@@ -4830,8 +5150,7 @@ public final class OwnershipChecker {
         if (name.equals("SharedMutex")) {
             if (type.arguments().size() != 1) return none;
             AutoTraitRules.Capabilities payload =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1);
             return payload.send()
                     ? new AutoTraitRules.Capabilities(true, true, true)
                     : none;
@@ -4856,8 +5175,7 @@ public final class OwnershipChecker {
         if (wrapperKind != null && declaredClass == null) {
             if (type.arguments().size() != 1) return none;
             AutoTraitRules.Capabilities child =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1);
             AutoTraitRules.TypeModel childModel =
                     TypeAutoTraits.modelFromCapabilities(child);
             boolean shareableDomain =
@@ -4877,8 +5195,7 @@ public final class OwnershipChecker {
         }) {
             if (type.arguments().size() != 1) return none;
             AutoTraitRules.Capabilities element =
-                    taskCaptureCapabilities(
-                            type.arguments().getFirst(), visitingClasses);
+                    taskCaptureCapabilities(type.arguments().getFirst(), visitingClasses, budget, depth + 1);
             // Mutable sequence ownership may move when elements are Send, but
             // the sequence itself is not implicitly Sync/Share.
             return new AutoTraitRules.Capabilities(
@@ -4916,8 +5233,7 @@ public final class OwnershipChecker {
                         genericBindings(
                                 field.owner().genericParameters(),
                                 field.ownerType().arguments()));
-                if (!taskCaptureCapabilities(
-                        fieldType, visitingClasses).send()) {
+                if (!taskCaptureCapabilities(fieldType, visitingClasses, budget, depth + 1).send()) {
                     return none;
                 }
             }
@@ -5119,6 +5435,19 @@ public final class OwnershipChecker {
         Ast.TypeRef iterableShape = sequenceDestructureSourceType(concrete);
         if (!iterableShape.equals(concrete)) {
             return sequenceDestructureBindingType(iterableShape, index, rest);
+        }
+
+        // Source spelling Tuple[T0, T1, ...] carries its elements in one
+        // $shape$ argument. Bind each element at ITS type, so a scalar element
+        // stays Copy even when a sibling element (e.g. Bytes) is move-only.
+        if (concrete.name().equals("Tuple") && findClass("Tuple") == null
+                && concrete.arguments().size() == 1
+                && concrete.arguments().getFirst().isSequenceShape()) {
+            List<Ast.TypeRef> fields = concrete.arguments().getFirst().arguments();
+            if (fields.stream().anyMatch(field -> field.isRepeatExact() || field.isRepeatMany())) {
+                return Ast.TypeRef.inferred();
+            }
+            return sequenceDestructureBindingType(Ast.TypeRef.tupleType(fields), index, rest);
         }
 
         if (concrete.isTupleType()) {

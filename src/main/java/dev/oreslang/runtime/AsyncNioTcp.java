@@ -25,7 +25,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class AsyncNioTcp {
     private static final int MAX_BYTES = 1024 * 1024;
-    private static final int IO_TIMEOUT_SECONDS = 10;
+    // Reads have NO implicit timeout: idle connections are legitimate (an idle
+    // subscriber, a pooled client). Idle/heartbeat timeouts are application
+    // policy (process.sleep_async + Future.race; cancelling a read closes the
+    // socket). Writes keep a deadline so a peer that stops reading is a slow
+    // consumer that fails instead of pinning buffers forever (nats-server
+    // uses the same 10 s default write_deadline).
+    private static final int WRITE_TIMEOUT_SECONDS = 10;
     private AsyncNioTcp() { }
 
     public static OresFuture<Listener> listenAsync(
@@ -178,7 +184,7 @@ public final class AsyncNioTcp {
                         }
                         if (count == 0) {
                             try {
-                                channel.read(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null, this);
+                                channel.read(buffer, null, this);
                             } catch (RuntimeException failure) {
                                 reading.set(false);
                                 callback.reject(failure);
@@ -198,7 +204,7 @@ public final class AsyncNioTcp {
                     }
                 };
                 try {
-                    channel.read(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null, handler);
+                    channel.read(buffer, null, handler);
                 } catch (RuntimeException failure) {
                     reading.set(false);
                     callback.reject(failure);
@@ -244,7 +250,7 @@ public final class AsyncNioTcp {
                         }
                         if (buffer.hasRemaining()) {
                             try {
-                                channel.write(buffer, IO_TIMEOUT_SECONDS,
+                                channel.write(buffer, WRITE_TIMEOUT_SECONDS,
                                         TimeUnit.SECONDS, null, this);
                             } catch (RuntimeException failure) {
                                 writing.set(false);
@@ -269,7 +275,7 @@ public final class AsyncNioTcp {
                         retire.run();
                         callback.resolve(null);
                     } else {
-                        channel.write(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null, handler);
+                        channel.write(buffer, WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS, null, handler);
                     }
                 } catch (RuntimeException failure) {
                     writing.set(false);
@@ -298,7 +304,7 @@ public final class AsyncNioTcp {
             ByteBuffer buffer = ByteBuffer.allocate(maxBytes);
             return OresFuture.fromCallback(callback -> {
                 try {
-                    channel.read(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null,
+                    channel.read(buffer, null,
                             new CompletionHandler<Integer, Void>() {
                         @Override public void completed(Integer count, Void ignored) {
                             if (closed.get()) {
@@ -314,8 +320,7 @@ public final class AsyncNioTcp {
                             if (count == 0) {
                                 // Keep the admission claim until a real byte/EOF arrives.
                                 try {
-                                    channel.read(buffer, IO_TIMEOUT_SECONDS,
-                                            TimeUnit.SECONDS, null, this);
+                                    channel.read(buffer, null, this);
                                 } catch (RuntimeException failure) {
                                     reading.set(false);
                                     callback.reject(failure);
@@ -396,7 +401,7 @@ public final class AsyncNioTcp {
                 respInput = enlarged;
             }
             try {
-                channel.read(respInput, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null,
+                channel.read(respInput, null,
                         new CompletionHandler<Integer, Void>() {
                     @Override public void completed(Integer count, Void ignored) {
                         if (count == null || count < 0) {
@@ -478,7 +483,7 @@ public final class AsyncNioTcp {
                         }
                         if (buffer.hasRemaining()) {
                             try {
-                                channel.write(buffer, IO_TIMEOUT_SECONDS,
+                                channel.write(buffer, WRITE_TIMEOUT_SECONDS,
                                         TimeUnit.SECONDS, null, this);
                             } catch (RuntimeException failure) {
                                 writing.set(false);
@@ -499,7 +504,7 @@ public final class AsyncNioTcp {
                         writing.set(false);
                         callback.resolve(null);
                     } else {
-                        channel.write(buffer, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS,
+                        channel.write(buffer, WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS,
                                 null, handler);
                     }
                 } catch (RuntimeException failure) {

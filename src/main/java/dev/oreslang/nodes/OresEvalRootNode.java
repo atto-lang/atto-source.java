@@ -355,6 +355,26 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) {
+                        // Also deny raw parsed-AST callers that bypass normal
+                        // TypeChecker admission: no silent empty actor object.
+                        if (!klass.sealedStateFields().isEmpty())
+                            throw new IllegalStateException(
+                                    "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: "
+                                    + "sealed actor state cannot run as ordinary fields");
+                        // Raw AST evaluation is not required to pass TypeChecker.
+                        // A forged user method must never shadow the future
+                        // compiler-owned state loan intrinsic in this path.
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && klass.methods().stream().anyMatch(
+                                        m -> m.name().equals("handle_state"))) {
+                            throw new IllegalStateException(
+                                    "ACTOR_STATE_INTRINSIC_FORGED: actor '"
+                                            + klass.name() + "' defines handle_state");
+                        }
+                        if (klass.methods().stream().anyMatch(Ast.MethodDecl::critical)) {
+                            throw new IllegalStateException(
+                                    "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED: raw AST critical method");
+                        }
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                         classModules.put(klass, module.name());
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);
@@ -2013,6 +2033,11 @@ public final class OresEvalRootNode extends RootNode {
                 return block.body().stream().anyMatch(
                         nested -> statementContainsPotentialSuspension(nested, seen));
             }
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope) {
+                return expressionContainsPotentialSuspension(scope.name(), seen)
+                        || scope.body().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen));
+            }
             if (stmt instanceof Ast.TaskScopeStmt) {
                 // Scope exit always waits for physical child quiescence.
                 return true;
@@ -2308,6 +2333,8 @@ public final class OresEvalRootNode extends RootNode {
                 return block.body().stream().anyMatch(this::containsSourceLoop);
             if (stmt instanceof Ast.TaskScopeStmt scope)
                 return scope.body().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope)
+                return scope.body().stream().anyMatch(this::containsSourceLoop);
             if (stmt instanceof Ast.IfStmt conditional)
                 return conditional.branches().stream().anyMatch(
                         branch -> branch.body().stream().anyMatch(this::containsSourceLoop))
@@ -2571,6 +2598,48 @@ public final class OresEvalRootNode extends RootNode {
                 if (stmt instanceof Ast.UsingBorrowStmt) {
                     throw new IllegalStateException(
                             "using request.borrow() as view is not executable without checked loan cleanup");
+                }
+                if (stmt instanceof Ast.UsingTelemetrySpanStmt scope) {
+                    evalSuspendableExpr(task, scope.name(), env,
+                            (t, label, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, SourceFlow.throwing(failure));
+                                    return;
+                                }
+                                final dev.oreslang.runtime.TelemetrySpanScope active;
+                                try {
+                                    if (!(label instanceof String name)) {
+                                        throw new IllegalArgumentException(
+                                                "telemetry.span requires a string name");
+                                    }
+                                    active = dev.oreslang.runtime.TelemetrySpanScope.open(name);
+                                } catch (RuntimeException | Error openFailure) {
+                                    continuation.accept(t, SourceFlow.throwing(openFailure));
+                                    return;
+                                }
+                                Env spanEnv = new Env(env);
+                                spanEnv.define(scope.binding(), active, Ast.BindingKind.CONST);
+                                SourceCleanupFrame cleanup = t.registerSourceCleanup(
+                                        (owner, finished) -> {
+                                            try {
+                                                active.close();
+                                                finished.accept(owner, SourceFlow.normal());
+                                            } catch (RuntimeException | Error closeFailure) {
+                                                finished.accept(owner, SourceFlow.throwing(closeFailure));
+                                            }
+                                        });
+                                runBlock(t, scope.body(), spanEnv, (owner, flow) -> {
+                                    owner.disarmSourceCleanup(cleanup);
+                                    try {
+                                        active.close();
+                                        continuation.accept(owner, flow);
+                                    } catch (RuntimeException | Error closeFailure) {
+                                        continuation.accept(owner, mergeFinallyFlow(
+                                                flow, SourceFlow.throwing(closeFailure)));
+                                    }
+                                });
+                            });
+                    return;
                 }
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -4320,6 +4389,40 @@ public final class OresEvalRootNode extends RootNode {
                         return;
                     }
 
+
+                    // Unlike && and ||, bool XOR is eager. The two operands
+                    // can each suspend, so preserve actor-task continuation
+                    // order and complete the continuation exactly once.
+                    if (binary.operator().equals("^^")) {
+                        evalSuspendableExpr(
+                                task, binary.left(), env,
+                                (t, left, failure) -> {
+                                    if (failure != null) {
+                                        continuation.accept(t, null, failure);
+                                        return;
+                                    }
+                                    evalSuspendableExpr(
+                                            t, binary.right(), env,
+                                            (t2, right, failure2) -> {
+                                                if (failure2 != null) {
+                                                    continuation.accept(t2, null, failure2);
+                                                    return;
+                                                }
+                                                final boolean result;
+                                                try {
+                                                    result = truth(left) ^ truth(right);
+                                                } catch (RuntimeException | Error evaluationFailure) {
+                                                    continuation.accept(t2, null, evaluationFailure);
+                                                    return;
+                                                }
+                                                // Do not catch an exception raised by a downstream
+                                                // continuation and then call it a second time.
+                                                continuation.accept(t2, result, null);
+                                            });
+                                });
+                        return;
+                    }
+
                     evalSuspendableExpr(
                             task,
                             binary.left(),
@@ -5303,6 +5406,38 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                    && call.callee() instanceof Ast.LambdaExpr) {
+                // Preserve left-to-right value-first evaluation even when the
+                // upstream expression takes the suspendable source-task path.
+                evalSuspendableArguments(
+                        task, call.arguments(), env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            evalSuspendableExpr(t, call.callee(), env,
+                                    (t2, callee, failure2) -> {
+                                        if (failure2 != null) {
+                                            continuation.accept(t2, null, failure2);
+                                            return;
+                                        }
+                                        try {
+                                            if (!(callee instanceof Invokable callable)) {
+                                                throw new IllegalArgumentException("pipeline lambda is not callable");
+                                            }
+                                            Invocation invocation = invokableInvocation(
+                                                    callable, inlinePipelineLambdaArguments(call, values));
+                                            completeSourceInvocation(
+                                                    t2, invocation, false, env, continuation);
+                                        } catch (RuntimeException | Error callFailure) {
+                                            continuation.accept(t2, null, callFailure);
+                                        }
+                                    });
+                        });
+                return;
+            }
             String integerIntrinsic = integerIntrinsicName(call, env);
             if (integerIntrinsic != null) {
                 if (call.typeArgumentsPresent()) {
@@ -6531,6 +6666,19 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "using request.borrow() as view is not executable without checked loan cleanup");
             }
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope) {
+                Object value = eval(scope.name(), env);
+                if (!(value instanceof String name)) {
+                    throw new IllegalArgumentException(
+                            "telemetry.span requires a string name");
+                }
+                try (var active = dev.oreslang.runtime.TelemetrySpanScope.open(name)) {
+                    Env spanEnv = new Env(env);
+                    spanEnv.define(scope.binding(), active, Ast.BindingKind.CONST);
+                    executeBlock(scope.body(), spanEnv, true);
+                }
+                return;
+            }
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
             }
@@ -7279,7 +7427,50 @@ public final class OresEvalRootNode extends RootNode {
             return Parser.ROOT_MODULE;
         }
 
+        /**
+         * Inline |a,b| stages are unary in the pipeline algebra: they consume
+         * one statically checked Tuple[aType,bType], then bind each slot once.
+         * |whole| continues to receive the unexpanded tuple. This runtime
+         * arity guard protects against malformed or incompatible guest values;
+         * only the independent type/ownership check authorizes destructuring.
+         */
+        private List<Object> inlinePipelineLambdaArguments(
+                Ast.CallExpr call, List<Object> incoming) {
+            if (!(call.callee() instanceof Ast.LambdaExpr lambda)
+                    || call.origin() != Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                    || incoming.size() != 1) {
+                throw new IllegalArgumentException(
+                        "inline value pipeline requires exactly one upstream argument");
+            }
+            int arity = lambda.parameters().size();
+            if (arity < 1) {
+                throw new IllegalArgumentException(
+                        "inline value pipeline lambda requires at least one parameter");
+            }
+            if (arity == 1) return incoming;
+            Object value = incoming.getFirst();
+            if (!(value instanceof List<?> tuple) || tuple.size() != arity) {
+                throw new IllegalArgumentException(
+                        "inline value pipeline tuple arity mismatch: expected " + arity);
+            }
+            // Tuple slots are already evaluated. Do not evaluate or clone any
+            // owned element when constructing the invocation argument list.
+            return new ArrayList<>(tuple);
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
+                    && call.callee() instanceof Ast.LambdaExpr) {
+                // A pipeline is value-first. Constructing a closure can read
+                // captures, so its environment must be observed AFTER the
+                // upstream expression has been evaluated exactly once.
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                Object callee = eval(call.callee(), env);
+                if (!(callee instanceof Invokable callable)) {
+                    throw new IllegalArgumentException("pipeline lambda is not callable");
+                }
+                return invokableInvocation(callable, inlinePipelineLambdaArguments(call, args));
+            }
             String integerIntrinsic = integerIntrinsicName(call, env);
             if (integerIntrinsic != null) {
                 if (call.typeArgumentsPresent()) {
@@ -8263,6 +8454,32 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof dev.oreslang.runtime.TelemetrySpanScope scope) {
+                return switch (name) {
+                    case "attribute" -> (Invokable) args -> {
+                        if (args.size() != 2 || !(args.get(0) instanceof String key)) {
+                            throw new IllegalArgumentException(
+                                    "span.attribute requires (string key, scalar value)");
+                        }
+                        scope.attribute(key, args.get(1));
+                        return null;
+                    };
+                    case "trace_id" -> (Invokable) args -> {
+                        requireZero(args, "span.trace_id");
+                        return scope.traceId();
+                    };
+                    case "span_id" -> (Invokable) args -> {
+                        requireZero(args, "span.span_id");
+                        return scope.spanId();
+                    };
+                    case "recording" -> (Invokable) args -> {
+                        requireZero(args, "span.recording");
+                        return scope.recording();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown telemetry span member " + name);
+                };
+            }
             if (receiver instanceof dev.oreslang.runtime.OresBytes bytes) {
                 return switch (name) {
                     case "size" -> (Invokable) args -> {
@@ -9123,6 +9340,15 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "ActorRef.send");
                         typedRef.send(args.getFirst());
                         return null;
+                    };
+                    case "try_send" -> (Invokable) args -> {
+                        requireOne(args, "ActorRef.try_send");
+                        return typedRef.trySend(args.getFirst());
+                    };
+                    case "send_async" -> (Invokable) args -> {
+                        requireOne(args, "ActorRef.send_async");
+                        return context.actors().ownCurrentActorFuture(
+                                typedRef.sendAsync(args.getFirst()));
                     };
                     case "stop" -> (Invokable) args -> {
                         requireZero(args, "ActorRef.stop");
