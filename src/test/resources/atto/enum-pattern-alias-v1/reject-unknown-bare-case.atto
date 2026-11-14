@@ -1,0 +1,8 @@
+define enum Messages { Ready, Stop }
+fnc bad(Messages message): int {
+    return match message over {
+        on Ready { return 1; }
+        on Unknown { return 2; }
+        on Stop { return 3; }
+    };
+}
