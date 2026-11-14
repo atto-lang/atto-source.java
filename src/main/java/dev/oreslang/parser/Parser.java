@@ -3887,7 +3887,9 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseConditionalBraceBody();
-            consume(FI, "expected 'fi' to close if");
+            // The braced imperative form is self-delimiting; retain optional
+            // legacy fi only for source compatibility.
+            match(FI);
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 
@@ -4688,6 +4690,35 @@ public final class Parser {
         return false;
     }
 
+    /**
+     * Value-producing if is distinct from statement if. It requires a
+     * final else, and each arm is evaluated as an expression, including the
+     * ternary-only lexical value-block arm syntax already supported here.
+     * Lower to ConditionalExpr so strict bool typing, branch laziness,
+     * ownership and static result joins share ternary semantics.
+     */
+    private Ast.Expr parseValueIf() {
+        List<Ast.Expr> conditions = new ArrayList<>();
+        List<Ast.Expr> values = new ArrayList<>();
+        do {
+            ConditionHead head = parseConditionHead(false);
+            if (head.binding() != null) {
+                throw error(peek(), "value-producing if cannot introduce an as-let binding; use an imperative if");
+            }
+            match(SEMICOLON);
+            consume(THEN, "value-producing if requires 'then'");
+            conditions.add(head.predicate());
+            values.add(parseTernaryArm(true));
+        } while (match(ELSEIF));
+        consume(ELSE, "value-producing if requires 'else' to produce a value");
+        Ast.Expr value = parseTernaryArm(false);
+        consume(FI, "expected 'fi' after value-producing if");
+        for (int i = conditions.size() - 1; i >= 0; i--) {
+            value = new Ast.ConditionalExpr(conditions.get(i), values.get(i), value);
+        }
+        return value;
+    }
+
     private Ast.Expr parseConditional() {
         Ast.Expr condition = parseRange();
         if (!match(QUESTION)) return condition;
@@ -5395,6 +5426,7 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (match(IF)) return parseValueIf();
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
