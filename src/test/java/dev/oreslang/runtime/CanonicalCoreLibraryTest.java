@@ -18,6 +18,20 @@ final class CanonicalCoreLibraryTest {
     @Test
     void packagedCoreIdentityAndClosedRegistry() throws Exception {
         assertEquals(Set.of("numeric.ores", "collections.atto"), CoreLibrarySources.packagedCorePaths());
+        assertEquals("@ores.core/collections.atto",
+                CoreLibrarySources.oresCoreUnitId("ores.core/collections"));
+        assertEquals(CoreLibrarySources.oresCoreUnitId("ores.core/collections"),
+                CoreLibrarySources.oresCoreUnitId("ores.core/collections.atto"));
+        assertEquals(CoreLibrarySources.oresCoreUnitId("ores.core/collections"),
+                CoreLibrarySources.oresCoreUnitId("ores.core/collections.ores"));
+        String guestCollectionSource =
+                CoreLibrarySources.oresCoreSource("ores.core/collections");
+        for (String collection : Set.of("array", "vector", "list")) {
+            for (String op : Set.of("map", "filter", "reduce")) {
+                assertTrue(guestCollectionSource.contains(
+                        "pub fnc " + op + "_" + collection + "<"));
+            }
+        }
         assertEquals("@ores.core/numeric.ores",
                 CoreLibrarySources.oresCoreUnitId("ores.core/numeric"));
         assertTrue(CoreLibrarySources.oresCoreSource("ores.core/numeric")
