@@ -673,15 +673,24 @@ public final class Ast {
      * ownership/typed projection implementation before admission.
      */
     public record ConstructorPattern(String constructor, List<Pattern> arguments,
-                                     String wholeAlias) implements Pattern {
+                                     String wholeAlias, List<String> namedFields) implements Pattern {
         public ConstructorPattern {
             arguments = List.copyOf(arguments);
+            // null is a historical positional constructor pattern;
+            // non-null, including an empty list, is a named-field pattern.
+            if (namedFields != null) namedFields = List.copyOf(namedFields);
             if (wholeAlias != null && (wholeAlias.isBlank() || wholeAlias.equals("_"))) {
                 throw new IllegalArgumentException("enum whole-variant alias requires a name");
             }
+            if (namedFields != null && !arguments.isEmpty()) {
+                throw new IllegalArgumentException("named enum fields cannot mix positional patterns");
+            }
         }
         public ConstructorPattern(String constructor, List<Pattern> arguments) {
-            this(constructor, arguments, null);
+            this(constructor, arguments, null, null);
+        }
+        public ConstructorPattern(String constructor, List<Pattern> arguments, String wholeAlias) {
+            this(constructor, arguments, wholeAlias, null);
         }
     }
 
