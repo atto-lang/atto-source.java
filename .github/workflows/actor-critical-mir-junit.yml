@@ -60,7 +60,7 @@ jobs:
           # Fail closed if a test class vanishes, a test is skipped, or the
           # pinned minimum suite shrinks. No Python or test-code override.
           total=0
-          for item in 'ActorCriticalStateSyntaxV2Test:18' 'ExternalActorRuntimeIngressSyntaxTest:3' 'ActorCriticalStateGuestV1Test:7'; do
+          for item in 'ActorCriticalStateSyntaxV2Test:18' 'ExternalActorRuntimeIngressSyntaxTest:3' 'ActorCriticalStateGuestV1Test:8'; do
             name="${item%%:*}"
             minimum="${item##*:}"
             report="target/surefire-reports/TEST-dev.oreslang.${name}.xml"
@@ -83,5 +83,5 @@ jobs:
             unset counts
             echo "ATTO_JUNIT_CLASS_PASS $name"
           done
-          if (( total < 28 )); then echo "Too few tests: $total" >&2; exit 1; fi
+          if (( total < 29 )); then echo "Too few tests: $total" >&2; exit 1; fi
           echo "ATTO_ACTOR_CRITICAL_RECEIVE_JUNIT_PASS tests=$total SOURCE_MIR_MAILBOX_EXECUTED=true FULL_ATTO_MAIN_EXECUTED=false"
