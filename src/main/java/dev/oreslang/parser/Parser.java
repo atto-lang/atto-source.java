@@ -2154,9 +2154,24 @@ public final class Parser {
             throw error(previous(), "type-level '?' requires a concrete value type");
         return new FormalPresenceType(new Ast.TypeRef("Option", List.of(type), false), true);
     }
+    /**
+     * The two spellings share one source-to-AST normalization. A type-first
+     * declaration reads its name-level '?' after the identifier. Name-first
+     * declarations may place it only before ':', never after the type.
+     */
     private Ast.Param finishFormalPresence(
             FormalPresenceType type, String name, boolean structural, boolean mutable) {
-        boolean omittable = match(QUESTION);
+        return finishFormalPresence(type, name, structural, mutable, false, false);
+    }
+
+    private Ast.Param finishFormalPresence(
+            FormalPresenceType type, String name, boolean structural, boolean mutable,
+            boolean nameFirst, boolean prefixOmittable) {
+        if (nameFirst && check(QUESTION)) {
+            throw error(peek(),
+                    "name-first omission '?' must precede ':'; duplicate type '?' is invalid");
+        }
+        boolean omittable = nameFirst ? prefixOmittable : match(QUESTION);
         Ast.Expr defaultValue = match(EQUAL) ? parseExpression() : null;
         if (defaultValue != null && !omittable)
             throw error(previous(), "default requires name-level '?'");
@@ -2168,26 +2183,39 @@ public final class Parser {
                 omittable, type.sugar(), defaultValue);
     }
 
+    /**
+     * Only inspect formal-list positions. Do not steal expression postfix '?',
+     * ternary syntax, named call arguments or ordinary type suffixes.
+     */
+    private boolean nameFirstFormalAhead() {
+        return check(IDENT) && (checkNext(COLON)
+                || (checkNext(QUESTION) && current + 2 < tokens.size()
+                        && tokens.get(current + 2).type() == COLON));
+    }
+
+    private Ast.Param parseNameFirstFormal(boolean pipeDelimited) {
+        String name = consume(IDENT, "expected parameter name").lexeme();
+        boolean omittable = match(QUESTION);
+        consume(COLON, "expected ':' after parameter name or name-level '?'");
+        FormalPresenceType type = parseFormalPresenceType(pipeDelimited);
+        boolean mutable = match(MUT);
+        return finishFormalPresence(type, name, false, mutable, true, omittable);
+    }
+
     private List<Ast.Param> parseDeclaredPipeParameters() {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
             boolean structural = matchContextualKeyword("structural");
 
-            // Migration spelling for named-argument-friendly declarations:
-            // |value: Type| is accepted, while oreslang-format emits |Type value|.
-            if (!structural && check(IDENT) && checkNext(COLON)) {
-                String name = advance().lexeme();
-                consume(COLON, "expected ':' after compatibility parameter name");
-                FormalPresenceType parsed = parseFormalPresenceType(true);
-                Ast.TypeRef type = parsed.type();
-                boolean mutable = match(MUT);
-                params.add(finishFormalPresence(parsed, name, false, mutable));
+            // Name-first and type-first forms are equivalent. Keep the
+            // name-level omission marker before ':' when name comes first.
+            if (!structural && nameFirstFormalAhead()) {
+                params.add(parseNameFirstFormal(true));
                 continue;
             }
 
             FormalPresenceType parsed = parseFormalPresenceType(true);
-                Ast.TypeRef type = parsed.type();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "lambda-style callable declaration parameters require canonical 'Type name'").lexeme();
             if (structural && mutable) {
@@ -2310,20 +2338,14 @@ public final class Parser {
                 structural = true;
             }
 
-            // Temporary compatibility spelling: name: Type. Canonical source
-            // remains Type name so ':' stays available for named call arguments.
-            if (!structural && check(IDENT) && checkNext(COLON)) {
-                String name = advance().lexeme();
-                consume(COLON, "expected ':' after compatibility parameter name");
-                FormalPresenceType parsed = parseFormalPresenceType(false);
-                Ast.TypeRef type = parsed.type();
-                boolean mutable = match(MUT);
-                params.add(finishFormalPresence(parsed, name, false, mutable));
+            // Both x: T and x?: T are first-class equivalents of T x and
+            // T x? respectively. Only this formal grammar consumes name '?'.
+            if (!structural && nameFirstFormalAhead()) {
+                params.add(parseNameFirstFormal(false));
                 continue;
             }
 
             FormalPresenceType parsed = parseFormalPresenceType(false);
-                Ast.TypeRef type = parsed.type();
             boolean mutable = match(MUT);
             String name = consume(IDENT, "expected parameter name after type").lexeme();
             if (structural && mutable) {
@@ -5791,16 +5813,10 @@ public final class Parser {
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
-                } else if (check(IDENT) && checkNext(COLON)) {
-                    String name = advance().lexeme();
-                    consume(COLON, "expected ':' after lambda parameter name");
-                    FormalPresenceType parsed = parseFormalPresenceType(true);
-                Ast.TypeRef type = parsed.type();
-                    boolean mutable = match(MUT);
-                    params.add(finishFormalPresence(parsed, name, false, mutable));
+                } else if (nameFirstFormalAhead()) {
+                    params.add(parseNameFirstFormal(true));
                 } else {
                     FormalPresenceType parsed = parseFormalPresenceType(true);
-                Ast.TypeRef type = parsed.type();
                     boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
                     params.add(finishFormalPresence(parsed, name, false, mutable));
