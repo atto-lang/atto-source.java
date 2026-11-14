@@ -13,10 +13,11 @@ import java.util.Set;
  * its permit until terminal completion and physical cleanup. No OS thread is
  * blocked waiting for a permit; a full gate returns null to its bounded caller.
  *
- * <p>Integration note: this is the runtime primitive and testable contract,
- * not yet the ActorCell scheduler. Existing ActorRuntime still serializes
- * all guest turns; wiring true concurrent dispatch also requires distinct
- * stacks/continuations and correct critical-read/write physical arbitration.
+ * <p>Integration note: ActorCell now tracks this permit across source DATA
+ * receive suspension, completion and physical retirement, but its existing
+ * single-writer carrier gate still limits all physical guest execution to one
+ * turn at a time. The independent method/parallel receive runtime requires
+ * per-invocation stacks, continuation ownership, and proven critical loans.
  */
 public final class ActorReceiveAdmission implements AutoCloseable {
     private final long incarnation;
