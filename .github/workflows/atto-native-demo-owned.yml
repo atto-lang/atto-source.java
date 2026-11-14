@@ -1,0 +1,165 @@
+# Source-owner CI only. No cross-org private-source transfer.
+# PR: source-free self-test. Reviewed-main dispatch: real Java guest tests.
+name: AttoLang native multi-file demo (compiler-owned)
+
+on:
+  # Source-free policy admission even before this new workflow reaches main.
+  push:
+    branches: ['main', 'ci/native-multifile-demos-owned-20261110']
+    paths:
+      - '.github/workflows/atto-native-demo-owned.yml'
+      - 'scripts/ci/native-multifile-demo-owned.sh'
+      - 'scripts/ci/verify-atto-owned-matrix.sh'
+      - 'scripts/ci/atto-runtime-classpath-audit.sh'
+      - 'scripts/ci/test-atto-runtime-classpath-audit.sh'
+      - 'scripts/ci/AttoDemoSevenReceiptVerifier.java'
+  pull_request:
+    paths:
+      - '.github/workflows/atto-native-demo-owned.yml'
+      - 'scripts/ci/native-multifile-demo-owned.sh'
+      - 'scripts/ci/verify-atto-owned-matrix.sh'
+      - 'scripts/ci/atto-runtime-classpath-audit.sh'
+      - 'scripts/ci/test-atto-runtime-classpath-audit.sh'
+      - 'scripts/ci/AttoDemoSevenReceiptVerifier.java'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atto-native-owned-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-free-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact workflow source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install pinned JDK for source-free receipt validation
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Validate runner and synthetic-negative oracle (no guest)
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          bash -n scripts/ci/native-multifile-demo-owned.sh
+          bash -n scripts/ci/atto-runtime-classpath-audit.sh
+          bash -n scripts/ci/test-atto-runtime-classpath-audit.sh
+          bash -n scripts/ci/verify-atto-owned-matrix.sh
+          bash scripts/ci/native-multifile-demo-owned.sh --self-test
+          bash scripts/ci/test-atto-runtime-classpath-audit.sh
+          bash scripts/ci/verify-atto-owned-matrix.sh --self-test
+          mkdir -p "$RUNNER_TEMP/atto-seven-junit-verifier"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/atto-seven-junit-verifier" \
+            scripts/ci/AttoDemoSevenReceiptVerifier.java
+          java -cp "$RUNNER_TEMP/atto-seven-junit-verifier" \
+            AttoDemoSevenReceiptVerifier --self-test
+          # Same unprivileged/no-network JDK25 admission pattern proven on
+          # the funded source-free alternate-org runner. No private guest here.
+          sudo -n env -i PATH="$JAVA_HOME/bin:/usr/bin:/bin" JAVA_HOME="$JAVA_HOME" \
+            HOME=/nonexistent TMPDIR=/tmp LANG=C.UTF-8 \
+            /usr/bin/unshare --net -- \
+            /usr/bin/setpriv --reuid=65534 --regid=65534 \
+              --clear-groups --no-new-privs \
+            /usr/bin/timeout --signal=TERM --kill-after=5s 15s \
+            "$JAVA_HOME/bin/java" -version > "$RUNNER_TEMP/atto-sandbox-java.stdout" \
+            2> "$RUNNER_TEMP/atto-sandbox-java.stderr"
+          grep -Fq 'version "25' "$RUNNER_TEMP/atto-sandbox-java.stderr"
+          echo 'SOURCE_FREE_GUEST_ISOLATION_ADMISSION_PASS child_uid=65534 network_namespace=true'
+          echo 'SOURCE_FREE_ONLY: compiler guest NOT_EXECUTED'
+
+  java-linked-guest:
+    # This runs only after separately reviewed workflow is merged into main.
+    # An unreviewed PR must not execute on a private-compiler CI job.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: source-free-admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ATTO_EXPECTED_DEMO_SHA: 62e6466bedac2633ba9234b2789a9ee6a74ede91
+      ATTO_EXPECTED_COMPILER_SHA: 6d8eb70048eafc9a84c5aebe9c1bb06104f16e76
+      ATTO_EXPECTED_POLICY_SHA: ${{ github.sha }}
+      ATTO_POLICY_DIR: ${{ github.workspace }}/policy
+      ATTO_COMPILER_DIR: ${{ github.workspace }}/compiler
+      ATTO_DEMO_DIR: ${{ github.workspace }}/demo
+      ATTO_RECEIPT_DIR: ${{ github.workspace }}/atto-native-owned-receipt
+    steps:
+      - name: Confirm exact source-owner main dispatch
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$HEAD_REF" = refs/heads/main
+          [[ "$ATTO_EXPECTED_DEMO_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$ATTO_EXPECTED_COMPILER_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test -n "$ATTO_EXPECTED_POLICY_SHA"
+
+      - name: Checkout trusted workflow policy
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          path: policy
+          persist-credentials: false
+
+      - name: Checkout pinned private compiler within own source repo
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: 6d8eb70048eafc9a84c5aebe9c1bb06104f16e76
+          path: compiler
+          persist-credentials: false
+
+      - name: Pin JDK 25
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Fetch only pinned PUBLIC demo code without token
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_LFS_SKIP_SMUDGE: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p -- "$ATTO_DEMO_DIR"
+          git -C "$ATTO_DEMO_DIR" init -q
+          git -C "$ATTO_DEMO_DIR" remote add origin \
+            https://github.com/ores-truffle-oreslang/oreslang-demos.git
+          git -C "$ATTO_DEMO_DIR" -c core.hooksPath=/dev/null \
+            -c credential.helper= fetch --no-tags --depth=1 origin \
+            "$ATTO_EXPECTED_DEMO_SHA"
+          git -C "$ATTO_DEMO_DIR" -c core.hooksPath=/dev/null \
+            checkout --detach --force FETCH_HEAD
+          test "$(git -C "$ATTO_DEMO_DIR" rev-parse HEAD)" = "$ATTO_EXPECTED_DEMO_SHA"
+          test -z "$(git -C "$ATTO_DEMO_DIR" status --porcelain --untracked-files=all)"
+          echo "PINNED_PUBLIC_DEMO=$ATTO_EXPECTED_DEMO_SHA (private source never exported)"
+
+      - name: Run seven real linked guest cases with compiler-owned runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p -- "$ATTO_RECEIPT_DIR"
+          # Never run scripts or GitHub Actions files from the public demo PR.
+          bash "$ATTO_POLICY_DIR/scripts/ci/native-multifile-demo-owned.sh" --run
+
+      - name: Preserve private-repo receipts, never compiler source
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: atto-native-multifile-owned-guest-receipt
+          path: ${{ github.workspace }}/atto-native-owned-receipt/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,1 @@
+pub fnc main(): int { const x = infer struct{value: 42}; return match x over on ~(value: n) -> n default -> 0 end; }
