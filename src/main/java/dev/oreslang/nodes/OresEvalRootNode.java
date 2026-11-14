@@ -10730,13 +10730,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 if (sequence.tail() != null && !sequence.tail().equals("_")) {
-                    if (sequence.unit() == Ast.SequenceUnit.BIT) {
-                        // Direct evaluator calls can bypass type-checking. Do
-                        // not silently round a non-aligned bit tail to Bytes.
-                        throw new IllegalArgumentException(
-                                "bits[] named tail requires checked BitView lifetime lowering");
-                    }
-                    captures.put(sequence.tail(), bytes.slice(prefix, size));
+                    // Defense in depth for forged AST or unchecked evaluator
+                    // entry points: no unproven borrowed or copied handles.
+                    throw new IllegalArgumentException(
+                            "named byte/bit tail requires checked loan and guard-failure cleanup");
                 }
                 for (String name : captures.keySet())
                     if (bindings.containsKey(name))
