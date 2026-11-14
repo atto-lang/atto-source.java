@@ -1,0 +1,4 @@
+// EXPECTED_COMPILE_REJECT: Atomic<int> has no proven Sendable transport authority.
+actor fnc invalid(Atomic<int> counter): void {
+  return;
+}
