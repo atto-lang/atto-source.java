@@ -50,6 +50,11 @@ public final class TypeChecker {
             "Channel", "Future", "Fnc", "Function",
             "HttpClientResponse", "HttpClientBody");
 
+    /** Strict source-profile flag is local to this checker; never process-global. */
+    private boolean strictAttoEquality;
+    /** Exact return spelling scoped to the checked source callable. */
+    private Ast.TypeRef strictCallableReturnSource;
+
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
             Ast.InterfaceDecl owner,
@@ -209,6 +214,14 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        return checkTypesWithDiagnostics(program, false);
+    }
+
+    /**
+     * Explicit strict source profile. The normal linked/legacy checker stays
+     * unchanged; strict callers must not bypass this path after parsing.
+     */
+    public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program, boolean strictAttoEquality) {
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
@@ -216,6 +229,7 @@ public final class TypeChecker {
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
+        checker.strictAttoEquality = strictAttoEquality;
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
@@ -248,6 +262,19 @@ public final class TypeChecker {
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, Ast.InterfaceDecl> linkedContracts) {
+        return checkTypesWithLinkedMetadataWithDiagnostics(
+                program, linkedClasses, linkedAliases, linkedContracts, false);
+    }
+
+    /**
+     * Source-profile-aware linked type analysis. Strict equality checks must
+     * survive the full cross-file metadata and annotation-expansion path.
+     */
+    public static TypeCheckResult checkTypesWithLinkedMetadataWithDiagnostics(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.InterfaceDecl> linkedContracts,
+            boolean strictAttoEquality) {
         if (linkedContracts == null) {
             throw new IllegalArgumentException("linked contracts cannot be null");
         }
@@ -267,6 +294,7 @@ public final class TypeChecker {
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
+        checker.strictAttoEquality = strictAttoEquality;
         checker.validateImports(program);
         checker.collect(program);
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
@@ -928,6 +956,7 @@ public final class TypeChecker {
                     param.name(),
                     parameterType,
                     param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            if (strictAttoEquality) env.defineStrictSourceType(param.name(), param.type());
         }
         defineImplicitArguments(env, argumentTypes);
 
@@ -965,10 +994,13 @@ public final class TypeChecker {
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async() || asyncGeneratorProtocol;
         boolean previousMaySuspend = currentMaySuspend;
+        Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
+        strictCallableReturnSource = strictAttoEquality && !fn.generator() ? fn.returnType() : null;
         currentMaySuspend = fn.async() || fn.suspends();
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
+            strictCallableReturnSource = previousStrictReturnSource;
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
@@ -1565,6 +1597,7 @@ public final class TypeChecker {
                         param.name(),
                         parameterType,
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                if (strictAttoEquality) constructorEnv.defineStrictSourceType(param.name(), param.type());
             }
             defineImplicitArguments(constructorEnv, constructorArgumentTypes);
 
@@ -1772,6 +1805,7 @@ public final class TypeChecker {
                             "mailbox payload of actor '" + klass.name() + ".receive'");
                 }
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                if (strictAttoEquality) env.defineStrictSourceType(param.name(), param.type());
             }
             defineImplicitArguments(env, methodArgumentTypes);
             Type returns = resolve(method.returnType(), generics, callableSelf);
@@ -1796,10 +1830,13 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
+            Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
+            strictCallableReturnSource = strictAttoEquality ? method.returnType() : null;
             currentMaySuspend = method.async() || method.suspends();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
+                strictCallableReturnSource = previousStrictReturnSource;
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
@@ -2015,6 +2052,11 @@ public final class TypeChecker {
                     expected,
                     "initializer for module binding " + field.name());
             requireAssignable(actual, expected, "initializer for " + field.name());
+            if (strictAttoEquality) {
+                requireStrictNumericSourceAssignment(field.type(),
+                        field.initializer(), new Env(null),
+                        "module initializer for " + field.name());
+            }
         }
     }
 
@@ -2139,6 +2181,8 @@ public final class TypeChecker {
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
         boolean previousDiscard = inDiscardingSelectArm;
+        Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
+        strictCallableReturnSource = null; // isolated task/lambda/select arm has its own return contract
         loopDepth = 0;
         currentGenerator = false;
         currentAsyncCallable = false;
@@ -2150,6 +2194,7 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             inDiscardingSelectArm = previousDiscard;
+            strictCallableReturnSource = previousStrictReturnSource;
         }
     }
 
@@ -2254,6 +2299,10 @@ public final class TypeChecker {
                     ? actual
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
+            if (strictAttoEquality && binding.declaredType() != null) {
+                requireStrictNumericSourceAssignment(binding.declaredType(),
+                        binding.initializer(), env, "initializer for " + binding.name());
+            }
 
             // Resolve CONST selector metadata before defining the new binding so
             // an initializer alias refers to the lexical source, not to the just-
@@ -2267,6 +2316,14 @@ public final class TypeChecker {
 
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            if (strictAttoEquality) {
+                Ast.TypeRef sourceType = binding.declaredType();
+                if (sourceType == null) {
+                    String inferred = strictNumericSource(binding.initializer(), env);
+                    if (inferred != null) sourceType = Ast.TypeRef.simple(inferred);
+                }
+                if (sourceType != null) env.defineStrictSourceType(binding.name(), sourceType);
+            }
             if (binding.kind() == Ast.BindingKind.CONST) {
                 if (constantInteger != null) {
                     env.defineConstantInteger(binding.name(), constantInteger);
@@ -2357,6 +2414,10 @@ public final class TypeChecker {
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
+            if (strictAttoEquality && ret.value() != null && strictCallableReturnSource != null) {
+                requireStrictNumericSourceAssignment(
+                        strictCallableReturnSource, ret.value(), env, "return value");
+            }
             return;
         }
         if (stmt instanceof Ast.YieldStmt yielded) {
@@ -2730,6 +2791,11 @@ public final class TypeChecker {
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
+            if (strictAttoEquality) {
+                requireStrictNumericSourceAssignment(
+                        strictSourceRef(assignment.target(), env),
+                        assignment.value(), env, "assignment");
+            }
             Type targetType;
             List<Type> dynamicFixedSlots = List.of();
             String initializedIndexedField = null;
@@ -3019,7 +3085,19 @@ public final class TypeChecker {
                     yield Primitive.INT;
                 }
                 case "eq", "neq", "==", "!=" -> {
+                    // Revalidate the typed AST: future macro/annotation expansion
+                    // must not synthesize a legacy operator past lexical admission.
+                    if (strictAttoEquality
+                            && (binary.operator().equals("==") || binary.operator().equals("!="))) {
+                        throw new IllegalArgumentException(
+                                "ATTO_STRICT_INVALID_EQUALITY_TOKEN: use eq / neq / !eq");
+                    }
                     requireEqualityComparable(left, right);
+                    if (strictAttoEquality && Types.isNumeric(deref(left))
+                            && Types.isNumeric(deref(right))) {
+                        requireStrictNumericEqualitySourceTypes(
+                                binary.left(), binary.right(), env);
+                    }
                     yield Primitive.BOOL;
                 }
                 case "is" -> {
@@ -3232,6 +3310,9 @@ public final class TypeChecker {
                             label, target.genericSpecs(),
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
+                    if (strictAttoEquality) {
+                        checkStrictNumericCallArguments(target, call.arguments(), env);
+                    }
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
@@ -6062,6 +6143,9 @@ public final class TypeChecker {
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            if (strictAttoEquality && !param.type().name().equals("$infer$")) {
+                lambdaEnv.defineStrictSourceType(param.name(), param.type());
+            }
         }
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Type declaredLambdaResult = lambda.declaredReturnType() == null
@@ -8859,10 +8943,211 @@ public final class TypeChecker {
         return type == Primitive.STRING || type instanceof StringLiteral;
     }
 
+    /**
+     * Source-type provenance for strict AttoLang equality.
+     *
+     * The legacy type resolver intentionally maps all fixed-width integers to
+     * Primitive.INT and all binary floating widths to Primitive.FLOAT. That
+     * lossy representation is insufficient evidence for strict equality:
+     * i32 eq i64 would otherwise look like INT eq INT.
+     *
+     * Preserve only proven source-level scalar identities here, never infer a
+     * width from the erased Primitive type. Unknown expression forms fail
+     * closed. This proof does NOT alter the legacy numerical evaluator.
+     */
+    private String strictNumericName(Ast.TypeRef ref, Set<String> seen) {
+        if (ref == null) return null;
+        if (ref.isBorrow()) return strictNumericName(ref.borrowedTarget(), seen);
+        String name = ref.name();
+        if (Set.of("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                "int", "uint", "bigint", "f32", "f64", "float", "decimal",
+                "complex64", "complex128", "complex").contains(name)) {
+            return ref.arguments().isEmpty() && !ref.inferArguments() ? name : null;
+        }
+        if (!seen.add(name)) return null;
+        Ast.TypeAliasDecl alias = findTypeAlias(name);
+        if (alias == null || !alias.genericParameters().isEmpty()) return null;
+        return strictNumericName(alias.target(), seen);
+    }
+
+    private String strictNumericName(Ast.TypeRef ref) {
+        return strictNumericName(ref, new HashSet<>());
+    }
+
+    private Ast.TypeRef strictSourceRef(Ast.Expr expr, Env env) {
+        if (expr instanceof Ast.NameExpr name) {
+            Ast.TypeRef declared = env.lookupStrictSourceType(name.name());
+            if (declared == null && name.name().equals("self")
+                    && lexicalClassOrigin != null) {
+                return Ast.TypeRef.simple(lexicalClassOrigin.name());
+            }
+            return declared;
+        }
+        if (expr instanceof Ast.NewExpr object) return object.type();
+        if (expr instanceof Ast.CastExpr cast) return cast.targetType();
+        if (expr instanceof Ast.MemberExpr member) {
+            Ast.TypeRef receiver = strictSourceRef(member.receiver(), env);
+            if (receiver == null || receiver.isBorrow()) return null;
+            Ast.ClassDecl klass = findClass(receiver.name());
+            if (klass == null || !klass.genericParameters().isEmpty()) return null;
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (field.name().equals(member.member())) return field.type();
+            }
+            return null;
+        }
+        if (expr instanceof Ast.IndexExpr index) {
+            Ast.TypeRef receiver = strictSourceRef(index.receiver(), env);
+            if (receiver == null) return null;
+            if (Set.of("Array", "List", "Vector", "Slice", "FixedArray", "FixedList")
+                    .contains(receiver.name()) && receiver.arguments().size() == 1) {
+                return receiver.arguments().getFirst();
+            }
+            if (receiver.name().equals("Tuple")
+                    && index.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Long n
+                    && n >= 0 && n < receiver.arguments().size()) {
+                return receiver.arguments().get(n.intValue());
+            }
+        }
+        return null;
+    }
+
+    private String strictNumericSource(Ast.Expr expr, Env env) {
+        if (expr instanceof Ast.LiteralExpr lit) {
+            if (lit.value() instanceof Long) return "int";
+            if (lit.value() instanceof Double) return "float";
+            return null;
+        }
+        Ast.TypeRef declared = strictSourceRef(expr, env);
+        if (declared != null) return strictNumericName(declared);
+        if (expr instanceof Ast.UnaryExpr unary
+                && Set.of("+", "-", "~").contains(unary.operator())) {
+            return strictNumericSource(unary.operand(), env);
+        }
+        if (expr instanceof Ast.ConditionalExpr ternary) {
+            String yes = strictNumericSource(ternary.whenTrue(), env);
+            String no = strictNumericSource(ternary.whenFalse(), env);
+            return yes != null && yes.equals(no) ? yes : null;
+        }
+        if (expr instanceof Ast.BinaryExpr arithmetic
+                && Set.of("+", "-", "*").contains(arithmetic.operator())) {
+            String left = strictNumericSource(arithmetic.left(), env);
+            String right = strictNumericSource(arithmetic.right(), env);
+            return left != null && left.equals(right) ? left : null;
+        }
+        if (expr instanceof Ast.CallExpr call && call.callee() instanceof Ast.NameExpr fn) {
+            // An in-scope callable binding shadows any same-named module function.
+            // Never assign its erased result the global function's scalar width.
+            if (env.lookup(fn.name()) != null) return null;
+            Ast.FunctionDecl target = findFunction(fn.name(), call.arguments().size());
+            return target == null || !target.genericParameters().isEmpty()
+                    ? null : strictNumericName(target.returnType());
+        }
+        // Unknown / polymorphic / effectful scalar origins cannot prove width
+        // merely because the erased type checker currently says INT or FLOAT.
+        return null;
+    }
+
+    /**
+     * Narrow strict-mode scalar flow gate. Literal specialization is checked
+     * against the declared width, never treated as a widening conversion of
+     * an already typed source value. Legacy numeric assignment is untouched.
+     */
+    private void requireStrictNumericSourceAssignment(
+            Ast.TypeRef expectedType, Ast.Expr value, Env env, String where) {
+        if (!strictAttoEquality) return;
+        String expected = strictNumericName(expectedType);
+        if (expected == null) return;
+        if (value instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long n
+                && Set.of("i8", "i16", "i32", "i64", "u8", "u16",
+                        "u32", "u64", "int", "uint", "bigint").contains(expected)) {
+            boolean inRange = switch (expected) {
+                case "i8" -> n >= Byte.MIN_VALUE && n <= Byte.MAX_VALUE;
+                case "i16" -> n >= Short.MIN_VALUE && n <= Short.MAX_VALUE;
+                case "i32" -> n >= Integer.MIN_VALUE && n <= Integer.MAX_VALUE;
+                case "u8" -> n >= 0 && n <= 0xffL;
+                case "u16" -> n >= 0 && n <= 0xffffL;
+                case "u32" -> n >= 0 && n <= 0xffffffffL;
+                case "u64", "uint" -> n >= 0;
+                default -> true; // i64 / int / bigint, limited to parsed Long literals
+            };
+            if (inRange) return;
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_NUMERIC_LITERAL_OUT_OF_RANGE: "
+                    + n + " does not fit " + expected + " in " + where);
+        }
+        if (value instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Double number
+                && Set.of("f32", "f64", "float").contains(expected)) {
+            // Unsuffixed floating literals are contextually rounded by IEEE-754
+            // round-to-nearest ties-to-even; ordinary 0.1 -> f32 is valid.
+            if (Double.isFinite(number)
+                    && (!expected.equals("f32") || Float.isFinite(number.floatValue()))) return;
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_NUMERIC_LITERAL_OUT_OF_RANGE: "
+                    + number + " overflows " + expected + " in " + where);
+        }
+        String actual = strictNumericSource(value, env);
+        if (actual == null) {
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_UNRESOLVED_NUMERIC_WIDTH: " + where
+                    + " needs exact " + expected + " source provenance");
+        }
+        if (!expected.equals(actual)) {
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_INCOMPATIBLE_EQUALITY_TYPES: "
+                    + "numeric source " + actual + " cannot flow to " + expected
+                    + " in " + where + " without an explicit conversion");
+        }
+    }
+
+    private void checkStrictNumericCallArguments(
+            Ast.FunctionDecl target, List<Ast.Expr> arguments, Env env) {
+        if (!strictAttoEquality || !target.genericParameters().isEmpty()
+                || target.parameters().size() != arguments.size()) return;
+        for (int i = 0; i < arguments.size(); i++) {
+            requireStrictNumericSourceAssignment(
+                    target.parameters().get(i).type(), arguments.get(i), env,
+                    "argument " + (i + 1) + " to " + target.name());
+        }
+    }
+
+    private void requireStrictNumericEqualitySourceTypes(
+            Ast.Expr left, Ast.Expr right, Env env) {
+        String leftSource = strictNumericSource(left, env);
+        String rightSource = strictNumericSource(right, env);
+        if (leftSource == null || rightSource == null) {
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_UNRESOLVED_NUMERIC_WIDTH: equality requires "
+                    + "statically proven exact scalar source types; got "
+                    + leftSource + " and " + rightSource);
+        }
+        if (!leftSource.equals(rightSource)) {
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_INCOMPATIBLE_EQUALITY_TYPES: "
+                    + leftSource + " and " + rightSource + "; explicit conversion required");
+        }
+    }
+
     private void requireEqualityComparable(Type left, Type right) {
         Type a = deref(left);
         Type b = deref(right);
-        if (Types.isNumeric(a) && Types.isNumeric(b)) return;
+        if (strictAttoEquality
+                && (Types.containsUncertainType(a) || Types.containsUncertainType(b))) {
+            // Generic/unknown equality is not AOT-safe until all generic
+            // instantiations are specialized with a statically proven Eq
+            // contract. Do not let permissive legacy overlap hide the gap.
+            throw new IllegalArgumentException("ATTO_STRICT_UNRESOLVED_EQUALITY_TYPE: "
+                    + a + " and " + b);
+        }
+        if (Types.isNumeric(a) && Types.isNumeric(b)) {
+            if (strictAttoEquality && !a.equals(b)) {
+                throw new IllegalArgumentException("ATTO_STRICT_INCOMPATIBLE_EQUALITY_TYPES: "
+                        + a + " and " + b + "; explicit conversion required");
+            }
+            return;
+        }
         if (isStringLike(a) && isStringLike(b)) return;
         if (typesMayOverlap(a, b) || assignable(a, b) || assignable(b, a)) return;
         throw new IllegalArgumentException(
@@ -11352,6 +11637,18 @@ public final class TypeChecker {
         private final boolean descendantsNonLexical;
         private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();
+        // Strict-only source spellings, kept separate from legacy erasure types.
+        private final Map<String, Ast.TypeRef> strictSourceTypes = new HashMap<>();
+        private void defineStrictSourceType(String name, Ast.TypeRef source) {
+            if (!bindings.containsKey(name)) {
+                throw new IllegalStateException("strict type provenance requires a declared binding");
+            }
+            strictSourceTypes.put(name, source);
+        }
+        private Ast.TypeRef lookupStrictSourceType(String name) {
+            if (bindings.containsKey(name)) return strictSourceTypes.get(name);
+            return parent == null ? null : parent.lookupStrictSourceType(name);
+        }
         /** Literal integer constants used only for exact fixed-product index selection. */
         private final Map<String, Long> constantIntegers = new HashMap<>();
         /** Literal string constants used only for exact fixed-product field selection. */
