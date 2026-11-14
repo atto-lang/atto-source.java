@@ -18,6 +18,9 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorSourceTearDownTest {
     private static final class State implements ActorRuntime.ActorOwnedGuestState {
         final ActorRuntime.ActorId owner;
+        final AtomicInteger ownerLookups = new AtomicInteger();
+        volatile CountDownLatch ownerLookupEntered;
+        volatile CountDownLatch releaseOwnerLookup;
 
         State(ActorRuntime.ActorId owner) {
             this.owner = owner;
@@ -25,6 +28,20 @@ final class ActorSourceTearDownTest {
 
         @Override
         public ActorRuntime.ActorId ownerActorId() {
+            if (ownerLookups.incrementAndGet() == 2 && ownerLookupEntered != null) {
+                ownerLookupEntered.countDown();
+                try {
+                    if (releaseOwnerLookup == null
+                            || !releaseOwnerLookup.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "test did not release actor state owner lookup");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "actor state owner lookup interrupted", interrupted);
+                }
+            }
             return owner;
         }
     }
@@ -43,6 +60,8 @@ final class ActorSourceTearDownTest {
         private volatile CountDownLatch releaseReceive;
         private volatile CountDownLatch startupEntered;
         private volatile CountDownLatch releaseStartup;
+        private volatile CountDownLatch ownerLookupEntered;
+        private volatile CountDownLatch releaseOwnerLookup;
 
         Executor(SharedCodeImageStore.CodeImage image, boolean teardownFails) {
             this.image = image;
@@ -66,7 +85,10 @@ final class ActorSourceTearDownTest {
                     throw new IllegalStateException("test never released source initializer");
                 }
             }
-            return new State(context.self().id());
+            State state = new State(context.self().id());
+            state.ownerLookupEntered = ownerLookupEntered;
+            state.releaseOwnerLookup = releaseOwnerLookup;
+            return state;
         }
 
         @Override
@@ -124,6 +146,53 @@ final class ActorSourceTearDownTest {
     private static SharedCodeImageStore.CodeImage image(SharedCodeImageStore store) {
         Ast.Program program = Parser.parse("pub routine main(): void { return; }");
         return store.publish("teardown/source.ores", program);
+    }
+
+    @Test
+    void stopSealsWhileSourceReceiveOwnerLookupIsBlocked() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            executor.ownerLookupEntered = new CountDownLatch(1);
+            executor.releaseOwnerLookup = new CountDownLatch(1);
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().get(3, TimeUnit.SECONDS);
+            ref.send("blocked-lookup");
+            assertTrue(executor.ownerLookupEntered.await(3, TimeUnit.SECONDS),
+                    "source receive did not begin ownership check");
+            AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+            Thread stopper = Thread.ofVirtual().start(() -> {
+                try {
+                    ref.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
+            boolean sealedBeforeLookupReleased = false;
+            try {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (System.nanoTime() < deadline) {
+                    if (!ref.isAlive()) {
+                        sealedBeforeLookupReleased = true;
+                        break;
+                    }
+                    Thread.yield();
+                }
+            } finally {
+                executor.releaseOwnerLookup.countDown();
+            }
+            stopper.join(5_000);
+            assertTrue(sealedBeforeLookupReleased,
+                    "host STOP blocked behind executor owner lookup");
+            assertFalse(stopper.isAlive(), "STOP did not physically complete");
+            assertNull(stopFailure.get(), () -> "host STOP failure: " + stopFailure.get());
+            ref.done().get(5, TimeUnit.SECONDS);
+            assertTrue(ref.failure().isEmpty(), "normal STOP became guest failure");
+            assertEquals(0, executor.receives.get(),
+                    "STOP must reject a receive whose owner lookup was not admitted");
+            assertEquals(1, executor.teardowns.get());
+        }
     }
 
     @Test
