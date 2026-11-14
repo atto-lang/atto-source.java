@@ -177,9 +177,9 @@ final class DeferredChannelOwnershipHardeningTest {
                 actor fnc bad(): void {
                   val Channel<int> output = Channel.new<int>(1);
                   val Mutex<int> mutex = Mutex.new(3);
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   nb cb writech output, 42 || -> {
-                    stdio.println(guard.is_released());
+                    stdio.println(lock_guard.is_released());
                   };
                   return;
                 }

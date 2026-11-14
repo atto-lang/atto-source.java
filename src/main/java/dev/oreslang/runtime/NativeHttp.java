@@ -55,6 +55,82 @@ public final class NativeHttp implements AutoCloseable {
 
     // JDK HTTP server limits are JVM-wide and read on its first initialization.
     // Embedders that initialize it earlier must configure these themselves.
+    /** Validate the decoded HTTP header collection before a guest sees the request.
+     * JDK parser byte limits apply separately before this method is reached.
+     * This additional per-field limit rejects oversized-but-otherwise-valid
+     * requests that the JDK's aggregate 32 KiB maximum would permit.
+     */
+    static void validateHeadersForAdmission(
+            com.sun.net.httpserver.Headers headers, String protocol, int bodyLimit) {
+        List<String> hosts = headers.get("Host");
+        if (("HTTP/1.1".equalsIgnoreCase(protocol) && hosts == null)
+                || (hosts != null && (hosts.size() != 1 || !validHostValue(hosts.get(0))))) {
+            // Host is required for HTTP/1.1 and, whenever present, must not
+            // permit duplicate or ambiguous routing targets.
+            throw new IllegalArgumentException("invalid Host header");
+        }
+        List<String> lengths = headers.get("Content-Length");
+        List<String> transfers = headers.get("Transfer-Encoding");
+        if (lengths != null && (lengths.size() != 1 || lengths.get(0) == null
+                || !lengths.get(0).matches("[0-9]+"))) {
+            throw new IllegalArgumentException("ambiguous Content-Length");
+        }
+        if (transfers != null && (lengths != null || transfers.size() != 1
+                || transfers.get(0) == null
+                || !"chunked".equalsIgnoreCase(transfers.get(0).trim())
+                || !"HTTP/1.1".equalsIgnoreCase(protocol))) {
+            // Do not let different HTTP parsers disagree on body framing.
+            throw new IllegalArgumentException("ambiguous Transfer-Encoding");
+        }
+        int size = 0;
+        for (var entry : headers.entrySet()) {
+            String name = entry.getKey();
+            size += name.length();
+            for (String value : entry.getValue()) {
+                if (value == null || name.length() + value.length() > 8192) {
+                    throw new IllegalArgumentException("HTTP header field too large");
+                }
+                size += value.length();
+            }
+        }
+        if (size > 32768 || headers.size() > 100) {
+            throw new IllegalArgumentException("headers too large");
+        }
+        if (lengths != null) {
+            long parsed = Long.parseLong(lengths.get(0));
+            if (parsed > bodyLimit) throw new IllegalArgumentException("body too large");
+        }
+    }
+
+    private static boolean validHostValue(String host) {
+        if (host == null || host.isEmpty()) return false;
+        for (int i = 0; i < host.length(); i++) {
+            char c = host.charAt(i);
+            // Reject ASCII whitespace, controls, non-ASCII bytes and URI
+            // delimiters that could produce a different downstream authority.
+            // Bracketed IPv6 literals and host:port are still permitted.
+            if (c <= 0x20 || c >= 0x7f || c == '/' || c == '\\'
+                    || c == '?' || c == '#' || c == '@' || c == ',') return false;
+        }
+        return true;
+    }
+
+    /** An invalid request-body framing stream is a client error, not HTTP 500.
+     * Keep response-side I/O failures as server errors, and preserve 413 limits.
+     */
+    static int operationFailureStatus(Throwable failure, boolean requestBodyRead) {
+        if ("body too large".equals(failure.getMessage())) return 413;
+        if (requestBodyRead && failure instanceof IOException) return 400;
+        // Strict UTF-8 decoding in bodyText() wraps CharacterCodingException.
+        // This is malformed client payload, not an internal server error.
+        // Both the request-body boundary and the decoder's typed cause must
+        // match, so unrelated handler failures cannot masquerade as HTTP 400.
+        if (requestBodyRead && failure instanceof IllegalArgumentException
+                && "invalid UTF-8".equals(failure.getMessage())
+                && failure.getCause() instanceof CharacterCodingException) return 400;
+        return 500;
+    }
+
     private static void configureTransportDefaults() {
         Map.of("jdk.httpserver.maxConnections", "1024",
                "sun.net.httpserver.maxReqHeaders", "100",
@@ -286,14 +362,7 @@ public final class NativeHttp implements AutoCloseable {
             String target = raw.getRequestURI().toASCIIString();
             if (target.length() > 8192) throw new IllegalArgumentException("request target too long");
             segments(raw.getRequestURI().getRawPath());
-            int size = 0;
-            for (var entry : raw.getRequestHeaders().entrySet()) {
-                size += entry.getKey().length();
-                for (String value : entry.getValue()) size += value.length();
-            }
-            if (size > 32768 || raw.getRequestHeaders().size() > 100) throw new IllegalArgumentException("headers too large");
-            String length = raw.getRequestHeaders().getFirst("Content-Length");
-            if (length != null && Long.parseLong(length) > bodyLimit) throw new IllegalArgumentException("body too large");
+            validateHeadersForAdmission(raw.getRequestHeaders(), raw.getProtocol(), bodyLimit);
         }
         public synchronized OresFuture<Object> shutdown(int graceMillis) {
             supervisor();
@@ -548,7 +617,7 @@ public final class NativeHttp implements AutoCloseable {
                 if (state.bodyRead) throw new IllegalStateException("request body already consumed");
                 state.bodyRead = true;
             }
-            return operation(() -> {
+            return bodyOperation(() -> {
                 byte[] bytes = state.raw.getRequestBody().readNBytes(state.server.bodyLimit + 1);
                 if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("body too large");
                 return utf8(bytes);
@@ -562,7 +631,7 @@ public final class NativeHttp implements AutoCloseable {
                 if (state.bodyRead && !state.streamingBody) throw new IllegalStateException("request body already consumed");
                 state.streamingBody = true; state.bodyRead = true;
             }
-            return operation(() -> {
+            return bodyOperation(() -> {
                 byte[] bytes = state.raw.getRequestBody().readNBytes(Math.min(maximum, state.server.bodyLimit - state.bodyBytes + 1));
                 state.bodyBytes += bytes.length;
                 if (state.bodyBytes > state.server.bodyLimit) throw new IllegalArgumentException("body too large");
@@ -658,7 +727,13 @@ public final class NativeHttp implements AutoCloseable {
         public OresFuture<Object> finish() { return operation(() -> { if (!state.committed) throw new IllegalStateException("response not started"); state.finish(); return null; }); }
         public void abort() { synchronized (state) { checkOwner(); } state.abort(500); }
         private boolean noBody(int status) { return state.raw.getRequestMethod().equals("HEAD") || status == 204 || status == 205 || status == 304; }
+        private OresFuture<Object> bodyOperation(Callable<Object> operation) {
+            return operation(operation, true);
+        }
         private OresFuture<Object> operation(Callable<Object> operation) {
+            return operation(operation, false);
+        }
+        private OresFuture<Object> operation(Callable<Object> operation, boolean requestBodyRead) {
             synchronized (state) {
                 checkOwner();
                 if (state.busy) throw new IllegalStateException("await the pending HTTP operation first");
@@ -676,7 +751,7 @@ public final class NativeHttp implements AutoCloseable {
                         result.completeFromRuntime(value);
                     } catch (Throwable failure) {
                         synchronized (state) { state.busy = false; }
-                        state.abort("body too large".equals(failure.getMessage()) ? 413 : 500);
+                        state.abort(operationFailureStatus(failure, requestBodyRead));
                         SourceBoundaryTrace.record(failure, "native:http", state.requestId, "I/O");
                         result.failFromRuntime(failure);
                         if (failure instanceof VirtualMachineError fatal) throw fatal;
