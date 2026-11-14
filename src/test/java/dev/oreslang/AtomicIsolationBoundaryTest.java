@@ -47,6 +47,43 @@ final class AtomicIsolationBoundaryTest {
     }
 
     @Test
+    void rtShareCannotLaunderAtomicIdentity() {
+        String message = reject("""
+                pub fnc main(): void {
+                    val counter: Atomic<int> = Atomic.new(0);
+                    val leaked = rt share counter;
+                    return;
+                }
+                """);
+        assertTrue(message.contains("Atomic<int>"), message);
+    }
+
+    @Test
+    void rtCopyCannotCloneAtomicIdentity() {
+        String message = reject("""
+                pub fnc main(): void {
+                    val counter: Atomic<int> = Atomic.new(0);
+                    val cloned = rt copy counter;
+                    return;
+                }
+                """);
+        assertTrue(message.contains("Atomic<int>"), message);
+    }
+
+    @Test
+    void nestedOptionCannotBypassAtomicShareDenial() {
+        String message = reject("""
+                pub fnc main(): void {
+                    val counter: Atomic<int> = Atomic.new(0);
+                    val nested: Option<Atomic<int>> = Some(counter);
+                    val leaked = rt share nested;
+                    return;
+                }
+                """);
+        assertTrue(message.contains("Atomic<int>"), message);
+    }
+
+    @Test
     void unsupportedAtomicTypesFailClosed() {
         String message = reject("""
                 pub fnc main(): void {
