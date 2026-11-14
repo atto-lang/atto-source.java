@@ -99,12 +99,39 @@ final class StatelessDeclaredActorExecutionTest {
     }
 
     @Test
-    void missingInitCannotCreateRunnableActor() {
-        var source = "declare actor Worker;"
+    void absentInitUsesCompilerSynthesizedNoopButStillHasReadinessBarrier() {
+        var source = "namespace standalone; declare actor Worker;"
                 + "define external mtd (Worker w) receive(ActorMail<int> mail): void { return; }";
-        var error = assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheckStatelessDeclaredActors(source));
-        assertTrue(error.getMessage().contains("STATELESS_ACTOR_INCOMPLETE"), error.getMessage());
+        var checked = OresCompiler.parseAndTypeCheckStatelessDeclaredActors(source);
+        var actor = checked.modules().stream().flatMap(m -> m.declarations().stream())
+                .filter(d -> d instanceof Ast.ClassDecl).map(d -> (Ast.ClassDecl) d)
+                .findFirst().orElseThrow();
+        assertEquals(java.util.List.of("on_start", "receive"),
+                actor.methods().stream().map(Ast.MethodDecl::name).toList());
+        var bootstrap = actor.methods().getFirst();
+        assertEquals(Ast.Visibility.PRIVATE, bootstrap.visibility());
+        assertTrue(bootstrap.body().getFirst() instanceof Ast.ReturnStmt returnStmt
+                && returnStmt.value() == null);
+    }
+
+    @Test
+    @Timeout(15)
+    void omittedInitExecutesRealStatelessGuestReceiveOnActorLane() throws Exception {
+        // The same guest as the explicit-init test, but the compiler must
+        // synthesize the no-op startup hook before the runtime READY barrier.
+        String source = source().replace(
+                "define external mtd (Worker w) init(): void { return; }\\n", "");
+        assertFalse(source.contains("init(): void"));
+        Ast.Program checked = OresCompiler.parseAndTypeCheckStatelessDeclaredActors(source);
+        String codeUnit = "stateless-declared-actor-no-init.atto";
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (var lease = OresLanguage.openPrecheckedProgram(codeUnit, source, checked);
+             Context context = Context.newBuilder(OresLanguage.ID)
+                     .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, codeUnit)
+                    .mimeType(OresLanguage.MIME_TYPE).buildLiteral());
+        }
+        assertEquals("delivered", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
