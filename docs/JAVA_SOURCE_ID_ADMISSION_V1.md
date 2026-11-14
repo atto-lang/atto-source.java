@@ -28,3 +28,30 @@ The standalone class and a smoke harness compiled and ran under local `javac --r
 6. Use OpenTelemetry fields for runtime `trace_id`/`span_id` and dedicated namespaced attributes for static `routine_id`/`site_id`.
 
 See [AttoLang source-ID proposal #62](https://github.com/ores-truffle-oreslang/attolang-language-spec.md/pull/62), [common independent compiler contract #287](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/287), and existing [Java adaptive control plane #3035](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/3035).
+
+## New bounded Java recording substrate (not guest compiler lowering)
+
+`StaticSiteProbeV1` is a Java-owned fixed-capacity atomic receipt ring for
+previously admitted `SourceIdentityV1.Site` descriptors, with an opt-in
+package-private recording toggle. The disabled path returns before allocation
+or context validation. Enabled events contain only static routine/site IDs and
+validated 128-bit trace + 64-bit span identifiers (or both absent); arbitrary
+guest log payloads are **not retained**. Eight concurrent publishers exercised
+12,000 events into a 32-slot ring without blocking, with explicit bounded drop
+accounting. The recorder performs no network I/O or exporter work.
+
+The committed production class was compiled under JDK 21
+`javac --release 21 -Xlint:all -Werror` and a standalone smoke harness printed
+`JAVA_STATIC_SITE_PROBE_HOST_PASS: threads=8 events=12000`. This is
+**host Java execution**, not a JUnit test invocation or a Truffle compiled
+guest probe. A dedicated JUnit `StaticSiteProbeV1Test` is now included, with
+enabled/disabled checks, invalid W3C context rejection, concurrent publishers
+and receipt-drain tests. The JUnit suite remains pending exact-head Maven CI.
+
+The remaining integration gate is to attach *the very same validated static
+site* to an actual parsed, typechecked guest logging expression and invoke
+the recorder from a compiler-lowered guest callsite. Do not install this
+prototype as a guest-callable Java-interop API. The current parser does not
+implement the proposed `log.info(...)` source annotation/automatic site-ID
+lowering; no complete guest instrumentation is claimed.
+
