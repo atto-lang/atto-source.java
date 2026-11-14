@@ -177,6 +177,41 @@ final class ExplicitReceiverMtdV1Test {
     }
 
     @Test
+    void externalMutableReceiverCannotBorrowImmutableOwner() {
+        Ast.Program program = Parser.parse("""
+                define class Point as
+                  pub let int x = 0;
+                end
+                mtd (mut self: Point) move_by(int dx): void {
+                  self.x = self.x + dx;
+                }
+                fnc invalid(): int {
+                  val point = new Point();
+                  point.move_by(1);
+                  return 0;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+    }
+
+    @Test
+    void externalInstanceMethodCannotBeCapturedAsImplicitClosure() {
+        Ast.Program program = Parser.parse("""
+                define class Point as
+                  pub let int x = 4;
+                end
+                mtd (self: Point) read_x(): int {
+                  return self.x;
+                }
+                fnc invalid(): void {
+                  val point = new Point();
+                  val captured = point.read_x;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+    }
+
+    @Test
     void immutableReceiverCannotModifyOwnerState() {
         Ast.Program program = Parser.parse("""
                 define class Point as
