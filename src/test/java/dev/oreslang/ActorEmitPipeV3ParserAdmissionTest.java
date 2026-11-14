@@ -31,6 +31,17 @@ final class ActorEmitPipeV3ParserAdmissionTest {
         reject("spawn Parse() | spawn Validate() pipe spawn Sink()");
     }
 
+    @Test void fullSourceFixturesCannotBeMarkedExecutableWithoutGuestLowering() throws Exception {
+        for (String file : new String[] {
+                "double-42.atto", "int-to-bool.atto", "reject-inconsistent-emits.atto"
+        }) {
+            String source = java.nio.file.Files.readString(java.nio.file.Path.of(
+                    "contracts", "actor-pipe-emitted-v3", file));
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source),
+                    "future actor guests must fail closed until source compiler/lowering is real: " + file);
+        }
+    }
+
     @Test void nonActorBitwiseExpressionsRetainTheirGrammar() {
         assertDoesNotThrow(() -> Parser.parse(program("1 | 2")));
         assertDoesNotThrow(() -> Parser.parse(
