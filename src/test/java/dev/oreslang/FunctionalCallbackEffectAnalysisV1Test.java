@@ -12,7 +12,6 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -105,9 +104,9 @@ final class FunctionalCallbackEffectAnalysisV1Test {
                 fnc increment(int x): int {
                   return x + 1;
                 }
-                fnc compare(Option<int> source): int {
-                  val first = source.map((int x) -> x + 1);
-                  val second = source.map((int x) -> increment(x));
+                fnc compare(Option<int> first_source, Option<int> second_source): int {
+                  val first = first_source.map((int x) -> x + 1);
+                  val second = second_source.map((int x) -> increment(x));
                   return 42;
                 }
                 """;
