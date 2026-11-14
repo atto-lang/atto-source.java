@@ -10706,6 +10706,44 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
+            if (pattern instanceof Ast.SequencePattern sequence) {
+                if (!(value instanceof dev.oreslang.runtime.OresBytes bytes)) return false;
+                final int size = bytes.size();
+                final long sourceUnits = sequence.unit() == Ast.SequenceUnit.BYTE
+                        ? size : (long) size * 8L;
+                final int prefix = sequence.elements().size();
+                if (prefix > sourceUnits ||
+                        (sequence.tail() == null && prefix != sourceUnits)) return false;
+
+                // Compare before publishing captures: a truncated or unequal
+                // branch must never initialize user-visible partial bindings.
+                java.util.LinkedHashMap<String, Object> captures = new java.util.LinkedHashMap<>();
+                for (int i = 0; i < prefix; i++) {
+                    Ast.SequenceElement element = sequence.elements().get(i);
+                    int unit = sequence.unit() == Ast.SequenceUnit.BYTE
+                            ? bytes.byteAt(i)
+                            : ((bytes.byteAt(i >>> 3) >>> (7 - (i & 7))) & 1);
+                    if (element.literal() != null && element.literal() != unit) return false;
+                    if (element.binding() != null && !element.binding().equals("_")) {
+                        captures.put(element.binding(), sequence.unit() == Ast.SequenceUnit.BYTE
+                                ? (Object) (long) unit : (Object) (unit != 0));
+                    }
+                }
+                if (sequence.tail() != null && !sequence.tail().equals("_")) {
+                    if (sequence.unit() == Ast.SequenceUnit.BIT) {
+                        // Direct evaluator calls can bypass type-checking. Do
+                        // not silently round a non-aligned bit tail to Bytes.
+                        throw new IllegalArgumentException(
+                                "bits[] named tail requires checked BitView lifetime lowering");
+                    }
+                    captures.put(sequence.tail(), bytes.slice(prefix, size));
+                }
+                for (String name : captures.keySet())
+                    if (bindings.containsKey(name))
+                        throw new IllegalStateException("duplicate sequence pattern capture: " + name);
+                bindings.putAll(captures);
+                return true;
+            }
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
                 if (bindings.containsKey(binding.name())) {
