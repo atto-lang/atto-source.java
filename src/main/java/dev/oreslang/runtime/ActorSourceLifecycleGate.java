@@ -11,7 +11,10 @@ import java.util.Objects;
  * itself a proof of external `declare actor` lowering or sealed state.</p>
  */
 final class ActorSourceLifecycleGate {
-    enum Phase { NEW, INITIALIZING, READY, TEARING_DOWN, FAILED, CLOSED }
+    enum Phase {
+        NEW, INITIALIZING, READY, STOPPING_GRACEFUL, STOPPING_TERMINAL,
+        TEARING_DOWN, FAILED, CLOSED
+    }
 
     private final ActorRuntime.ActorId owner;
     private final String actorType;
@@ -43,9 +46,30 @@ final class ActorSourceLifecycleGate {
     }
 
     synchronized void failInit() {
-        // The actor may be stopped concurrently during a startup callback.
-        // A late callback must not resurrect a stopped incarnation.
+        // A late failing callback may not downgrade a STOP or CLOSED fence.
         if (phase == Phase.INITIALIZING) phase = Phase.FAILED;
+    }
+
+    /**
+     * Seal runtime-only source ingress at the SAME linearization point as the
+     * ActorCell STOP CAS, not at eventual physical finalization. This method
+     * cannot execute guest code or call back into the actor runtime.
+     *
+     * In particular, a concurrent initializer may still physically unwind,
+     * but its commitInit MUST fail once STOP has won. An already initialized
+     * actor may enter one cooperative teardown only for the runtime-approved
+     * graceful path. Force/cancel/panic never grants that hook.
+     */
+    synchronized void sealStop(boolean allowGracefulTeardown) {
+        switch (phase) {
+            case NEW, INITIALIZING -> phase = Phase.STOPPING_TERMINAL;
+            case READY -> phase = allowGracefulTeardown
+                    ? Phase.STOPPING_GRACEFUL : Phase.STOPPING_TERMINAL;
+            case STOPPING_GRACEFUL -> {
+                if (!allowGracefulTeardown) phase = Phase.STOPPING_TERMINAL;
+            }
+            case STOPPING_TERMINAL, TEARING_DOWN, FAILED, CLOSED -> { /* terminal */ }
+        }
     }
 
     synchronized void requireReceive(
@@ -65,7 +89,7 @@ final class ActorSourceLifecycleGate {
             ActorRuntime.ActorId caller, String type,
             ActorRuntime.ActorOwnedGuestState state) {
         requireOwner(caller, type);
-        require(Phase.READY, "tear down source actor");
+        require(Phase.STOPPING_GRACEFUL, "tear down source actor");
         if (state == null || !owner.equals(state.ownerActorId())) {
             throw new SecurityException(
                     "source actor teardown does not own active incarnation state");
