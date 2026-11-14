@@ -76,3 +76,28 @@ stable post-optimization debug info or an authenticated deployed artifact.
 Linking that immutable mapping to actual guest log-expression AST nodes and
 the bounded recorder is the next independently tested Java compiler gate.
 
+
+## Literal log-site AST admission candidate (2026-11-14)
+
+`SourceLogCallsiteBindingV1` works with actual Java `Ast.Program` /
+`Ast.CallExpr` nodes rather than parsing text a second time. It assigns
+registry-checked `rid_` and `sid_` values to the **identity of the original
+parsed callsite AST node**, only for direct
+`log.info("literal")` expression statements in currently supported
+synchronous functions and non-suspending `using telemetry.span` scopes.
+
+The strict v1 binder denies dynamic arguments, duplicate same-literal
+sites, unknown/missing IDs, stale rows, async/actor/generator statements
+and unsafe Unicode/control text. Valid UTF-16 surrogate pairs represent
+UTF-8 messages and are accepted; malformed pairs are rejected. The companion
+`SourceLogCallsiteBindingV1Test` exercises the real Java parser and source
+binding with positive and negative cases.
+
+**This is still a compiler admission candidate, NOT emitted/observed Java
+guest telemetry.** The source TypeChecker and production evaluator do not yet
+consume the site binding. The existing `StaticSiteProbeV1` ring was separately
+compiled and tested locally, but no parsed `log.info` statement has yet
+executed through that ring. Maven/JUnit and guest Truffle node instrumentation
+remain pending a functional, authorized runner. No site metadata is promoted
+to runtime authority merely because the parser can produce an AST.
+
