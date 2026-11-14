@@ -122,6 +122,30 @@ class SourceLogCallsiteBindingV1Test {
     }
 
     @Test
+    void refusesGuestOwnedLogParameterAndSpanAlias() {
+        var guestParameter = parse(
+                "pub fnc main(int log): void { log.info(\"hammer.started\"); }");
+        var checked = SourceRoutineBindingV1.bind(
+                guestParameter.ast(), List.of(new SourceRoutineBindingV1.Entry(
+                        guestParameter.module(), "main", 1, RID)));
+        assertThrows(IllegalArgumentException.class,
+                () -> SourceLogCallsiteBindingV1.bind(
+                        guestParameter.ast(),
+                        List.of(new SourceLogCallsiteBindingV1.Entry(
+                                guestParameter.module(), "main", 1, "hammer.started",
+                                RID, START)),
+                        checked));
+
+        var scopeAlias = parse(
+                "pub fnc main(): void {"
+                + " using telemetry.span(\"hammer\") as log {"
+                + " log.info(\"hammer.started\"); } }");
+        assertThrows(IllegalArgumentException.class,
+                () -> bind(scopeAlias, List.of(new SourceLogCallsiteBindingV1.Entry(
+                        scopeAlias.module(), "main", 0, "hammer.started", RID, START))));
+    }
+
+    @Test
     void refusesDynamicPayloadAndAmbiguousRepeatedLiteral() {
         var dynamic = parse(
             "pub fnc main(): void { const msg = \"secret\"; log.info(msg); }");
