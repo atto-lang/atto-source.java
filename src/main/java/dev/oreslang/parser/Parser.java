@@ -29,7 +29,7 @@ public final class Parser {
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
 
-    private record ExternalReceiverMethod(String owner, Ast.MethodDecl method) { }
+    private record ExternalReceiverMethod(String owner, Ast.MethodDecl method, Token origin) { }
     private final List<ExternalReceiverMethod> rootReceiverMethods = new ArrayList<>();
     private List<ExternalReceiverMethod> moduleReceiverMethods;
 
@@ -1665,6 +1665,14 @@ public final class Parser {
 
     private ExternalReceiverMethod parseExternalReceiverMethod(
             List<Ast.Annotation> annotations, Modifiers mods) {
+        Token declaration = peek();
+        // Declarations outside the class body have a deliberately narrow
+        // contract. Until semantic annotation expansion and method-slot
+        // provenance have an independent audit, reject annotations rather than
+        // silently discard or reinterpret a source-level capability.
+        if (!annotations.isEmpty()) {
+            throw error(declaration, "external mtd annotations are unsupported in v1");
+        }
         if (mods.isStatic || mods.isAbstract || mods.async || mods.suspends
                 || mods.generator || mods.trapped || mods.structural
                 || mods.nonLexical || mods.shared || mods.untrusted) {
@@ -1681,50 +1689,66 @@ public final class Parser {
         }
         consume(RPAREN, "expected ')' after typed receiver");
         String name = parseMethodName();
+        if (name.equals("new") || name.equals("constructor") || name.equals("on_start")) {
+            throw error(previous(), "external mtd cannot declare constructors, factories or lifecycle hooks");
+        }
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '(' after external method name");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after external method parameters");
         Ast.TypeRef receiver = mutable ? Ast.TypeRef.borrowed(target, true) : target;
-        CallableStructural structural = normalizeCallableStructural(annotations, false);
-        Ast.MethodDecl method = finishMethod(structural.annotations(), mods, false, name,
+        Ast.MethodDecl method = finishMethod(annotations, mods, false, name,
                 generics, receiver, params, false);
-        return new ExternalReceiverMethod(target.name(), method);
+        return new ExternalReceiverMethod(target.name(), method, declaration);
     }
 
     private List<Ast.Decl> attachExternalReceiverMethods(
             List<Ast.Decl> declarations,
             List<ExternalReceiverMethod> externalMethods, String scope) {
         if (externalMethods.isEmpty()) return declarations;
-        List<Ast.Decl> attached = new ArrayList<>(declarations);
-        for (ExternalReceiverMethod external : externalMethods) {
-            int classIndex = -1;
-            for (int i = 0; i < attached.size(); i++) {
-                if (attached.get(i) instanceof Ast.ClassDecl klass
-                        && klass.name().equals(external.owner())) {
-                    if (classIndex != -1) {
-                        throw error(previous(), "ambiguous receiver class '" + external.owner() + "' in " + scope);
-                    }
-                    classIndex = i;
+
+        // Build a scoped class index exactly once: a long source cannot turn
+        // N external declarations into O(N * declared-types) scans.
+        java.util.Map<String, Integer> classSlots = new java.util.HashMap<>();
+        for (int i = 0; i < declarations.size(); i++) {
+            if (declarations.get(i) instanceof Ast.ClassDecl klass) {
+                // Duplicate nominal names are rejected by the type checker.
+                // Here, they must also make receiver resolution ambiguous.
+                if (classSlots.putIfAbsent(klass.name(), i) != null) {
+                    throw error(externalMethods.getFirst().origin(),
+                            "ambiguous receiver class '" + klass.name() + "' in " + scope);
                 }
             }
-            if (classIndex < 0) {
-                throw error(previous(), "external mtd receiver '" + external.owner()
+        }
+        List<Ast.Decl> attached = new ArrayList<>(declarations);
+        java.util.Map<String, java.util.Set<Ast.MethodArity>> slots = new java.util.HashMap<>();
+        for (ExternalReceiverMethod external : externalMethods) {
+            Integer index = classSlots.get(external.owner());
+            if (index == null) {
+                throw error(external.origin(), "external mtd receiver '" + external.owner()
                         + "' must be declared in the same " + scope);
             }
-            Ast.ClassDecl klass = (Ast.ClassDecl) attached.get(classIndex);
+            Ast.ClassDecl klass = (Ast.ClassDecl) attached.get(index);
             if (klass.actorKind() != Ast.ActorKind.NONE || !klass.genericParameters().isEmpty()) {
-                throw error(previous(), "external mtd requires an ordinary nongeneric class; actor state is sealed");
+                throw error(external.origin(),
+                        "external mtd requires an ordinary nongeneric class; actor state is sealed");
             }
-            if (klass.methods().stream().anyMatch(method ->
-                    method.overloadIdentity().equals(external.method().overloadIdentity()))) {
-                throw error(previous(), "duplicate receiver method "
+            java.util.Set<Ast.MethodArity> identities = slots.computeIfAbsent(
+                    external.owner(), key -> {
+                        java.util.Set<Ast.MethodArity> existing = new java.util.HashSet<>();
+                        for (Ast.MethodDecl method : klass.methods()) {
+                            existing.add(method.overloadIdentity());
+                        }
+                        return existing;
+                    });
+            if (!identities.add(external.method().overloadIdentity())) {
+                throw error(external.origin(), "duplicate receiver method "
                         + external.owner() + "." + external.method().name()
                         + "/" + external.method().arity());
             }
             List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
             methods.add(external.method());
-            attached.set(classIndex, new Ast.ClassDecl(
+            attached.set(index, new Ast.ClassDecl(
                     klass.name(), klass.visibility(), klass.isAbstract(), klass.actorKind(),
                     klass.genericParameters(), klass.parents(), klass.interfaces(),
                     klass.fields(), klass.constructor(), methods, klass.actorConcurrency()));
