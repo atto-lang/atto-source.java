@@ -61,6 +61,16 @@ final class ActorSourceLifecycleGate {
     synchronized boolean initializationActive() { return initializationActive; }
 
     /**
+     * The runtime checks this BEFORE publishing finalized=true. close() still
+     * asserts the same contract as a last line of defense against misordered
+     * state release. No user callback runs while this gate monitor is held.
+     */
+    synchronized boolean readyForRetirement() {
+        return stopSealed && !initializationActive && activeReceives == 0
+                && !teardownActive && phase != Phase.STOPPING_GRACEFUL;
+    }
+
+    /**
      * An unforgeable, single-release admission receipt for one guest receive.
      * A STOP arriving after admission can seal new mail but cannot revoke a
      * still-executing callback's ownership of its receiver frame.
