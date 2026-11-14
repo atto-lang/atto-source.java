@@ -121,10 +121,15 @@ final class LogicalPunctuationOperatorTest {
         }
         for (String source : List.of(
                 "fnc bad(): bool { return true ^ false; }",
-                "fnc bad(): bool { return true ^ ^ false; }",
-                "fnc bad(): void { if true, false then return; fi }",
-                "fnc bad(): void { while true, false do break; done }")) {
+                "fnc bad(): bool { return true ^ ^ false; }")) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+        // Condition-only aliases stay valid (spec ch.16): ',' is && and a bare '|' is ||.
+        for (String source : List.of(
+                "fnc ok(): void { if true, false then return; fi }",
+                "fnc ok(): void { while true, false do break; done }",
+                "fnc ok(): void { if true | false then return; fi }")) {
+            assertDoesNotThrow(() -> Parser.parse(source), source);
         }
     }
 

@@ -267,9 +267,10 @@ condition_head  = condition
                 | "let" refutable_pattern "=" logic_or [ "&&" condition ]
                 | logic_or "as" "let" IDENT "when" condition
                 | "(" logic_or "as" "let" IDENT "when" condition ")" ;
-(* Boolean condition heads share the canonical expression grammar. The
-   historical condition-only comma/pipe aliases are no longer logical operators. *)
-condition       = logic_or ;
+(* Condition heads use the canonical expression grammar plus two condition-only
+   aliases (spec ch.16): ',' means && and binds loosest, and a bare '|' between
+   bool operands means ||. Prefer && and || in new code. *)
+condition       = logic_or { "," logic_or } ;
 
 match_stmt      = [ "do" ] "match" [ "first" ] expression
                   ( "over"
@@ -371,8 +372,8 @@ pipeline_stage  = IDENT [ call_suffix ]
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
 (* Canonical bool punctuation: && > ^^ > ||, left associative.
    && and || short-circuit. ^^ evaluates both sides once, left-to-right.
-   Bare |, bare &, single ^ and word operators are not logical syntax.
-   Historical condition-only comma/pipe notation is migration-only. *)
+   Outside condition heads, bare |, bare &, single ^ and word operators are
+   not logical syntax. *)
 logic_or        = logic_xor { "||" logic_xor } ;
 logic_xor       = logic_and { "^^" logic_and } ;
 logic_and       = equality { "&&" equality } ;

@@ -7962,8 +7962,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Object left = eval(binary.left(), env);
                 Object right = eval(binary.right(), env);
-                // Single '|' remains a distinct integer/union operator and
-                // must never be treated as boolean OR at runtime.
+                if (binary.operator().equals("|") && left instanceof Boolean lb && right instanceof Boolean rb) {
+                    return lb || rb;
+                }
                 return binary(binary.operator(), left, right);
             }
             if (expr instanceof Ast.TypeTestExpr test) {
