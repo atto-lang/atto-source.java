@@ -7,10 +7,11 @@
 - Private source: `ores-truffle-oreslang/oreslang-source.java` (numeric repo ID `1400792274`).
 - Teardown [PR #3093](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/3093): head `80a2016ec01d01d2e6571ad9947e2039c4c75263`, root tree `886fe0928eae0df7bbafece01bf37b7c30c1a58b`.
 - Guarded-access [PR #3094](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/3094): head `acb9d1967dff8f714f5f87cad6a17e44b29c20c5`, root tree `587ab333c79ab04166ffa70191570b234777c95f`.
+- Combined review-only integration [PR #3101](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/3101): head `3beb3d8fca127cd666bf4ec8f55a6db586e9f9c6`, exact root tree `d8a2e78472d7ab382fe44c2bd4ed125eb08daa4d`. It is a stacked draft based on #3094, incorporating #3093 close scrub and adding a close-versus-guard regression; it is **not** an independently authorized source export or a merged mainline result.
 - Candidate private carrier: `beamscale/bmscl-compiler`, numeric ID `1383937120`, observed base `3d1fe5886e3b166163245020acef6af2410ad3d8`.
 - Carrier Actions health: [run 43643639329](https://github.com/beamscale/bmscl-compiler/actions/runs/43643639329) actually executed compiler version checks. **This establishes neither source-build correctness nor approval to export private source.**
 - Source and candidate carrier `main` both report `protected:false` with required checks off.
-- Source `.github/private-ci-approved-repositories.txt` itself labels `beamscale/bmscl-compiler 1383937120` a **proposed carrier requiring independent @ORESoftware review**. Its current carrier-contract manifest does not approve #3093/#3094. Both PR heads represent different trees; no combined implementation/merge-head has been tested.
+- Source `.github/private-ci-approved-repositories.txt` itself labels `beamscale/bmscl-compiler 1383937120` a **proposed carrier requiring independent @ORESoftware review**. Its current carrier-contract manifest does not approve #3093/#3094. The individual PR heads represent different trees; a combined integration candidate now exists at #3101, but **no combined implementation has been executed or merged**.
 
 ## Mandatory security and integration gates
 
