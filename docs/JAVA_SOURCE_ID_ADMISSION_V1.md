@@ -117,3 +117,14 @@ These new Java AST binder changes are **unexecuted**: the local host
 `StaticSiteProbeV1` smoke test does not exercise the actual parser,
 typechecker or newly changed binder. Require JDK21 Maven/JUnit and the
 full guest logging fixture before promoting this PR.
+
+
+### Guest-owned logging name shadowing denied
+
+The strict Java frontend site binder now denies a verified function that has
+a parameter named `log` or a `using telemetry.span` alias named `log`. Without
+that gate, a guest-owned name could be confused with the compiler-intrinsic
+`log.info` surface, and a static site manifest could be incorrectly attached.
+Companion JUnit negative fixtures are committed but have **not** been executed
+under the full Maven/Java compiler in the currently available environment.
+No guest logging side effect or Truffle probe is claimed.
