@@ -1,8 +1,9 @@
 package dev.oreslang.runtime;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.ArrayList;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Supervisor-side immutable code-generation dispatch for an opt-in trusted JIT.
@@ -72,9 +73,20 @@ final class AdaptiveTraceCodeV1<T> {
 
     /** Close only when the logical invocation ends, NOT at await/suspension. */
     static final class Invocation<T> implements AutoCloseable {
+        // A static VarHandle removes the per-invocation AtomicBoolean object
+        // while preserving thread-safe, idempotent terminal release.
+        private static final VarHandle CLOSED;
+        static {
+            try {
+                CLOSED = MethodHandles.lookup()
+                        .findVarHandle(Invocation.class, "closed", boolean.class);
+            } catch (ReflectiveOperationException failure) {
+                throw new ExceptionInInitializerError(failure);
+            }
+        }
         private final AdaptiveTraceCodeV1<T> owner;
         private final Generation<T> generation;
-        private final AtomicBoolean closed = new AtomicBoolean(false);
+        private volatile boolean closed;
         private Invocation(AdaptiveTraceCodeV1<T> owner, Generation<T> generation) {
             this.owner = owner;
             this.generation = generation;
@@ -83,7 +95,7 @@ final class AdaptiveTraceCodeV1<T> {
         long generation() { return generation.id; }
         int compiledMask() { return generation.probeMask; }
         @Override public void close() {
-            if (closed.compareAndSet(false, true)) owner.release(generation);
+            if ((boolean) CLOSED.compareAndSet(this, false, true)) owner.release(generation);
         }
     }
 
