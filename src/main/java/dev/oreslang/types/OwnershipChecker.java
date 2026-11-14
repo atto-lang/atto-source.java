@@ -2293,8 +2293,11 @@ public final class OwnershipChecker {
                 if (bytesResult != null) {
                     for (Ast.Expr argument : call.arguments()) checkExpr(argument, scope, false);
                     return bytesResult;
+                }
+            }
             // Async TCP v1.1: split() CONSUMES the connection and yields two
             // independently owned, affine halves.
+            if (concreteReceiver != null
                     && concreteReceiver.name().equals("NioConnection")
                     && concreteReceiver.arguments().isEmpty()
                     && findClass("NioConnection") == null
@@ -2303,12 +2306,15 @@ public final class OwnershipChecker {
                 if (member.receiver() instanceof Ast.NameExpr socketName) {
                     VarState socketState = scope.lookup(socketName.name());
                     if (socketState != null) move(socketState, socketName.name());
+                }
                 return new ValueInfo(
                         Ast.TypeRef.tupleType(List.of(
                                 Ast.TypeRef.simple("NioReader"), Ast.TypeRef.simple("NioWriter"))),
                         ValueKind.MOVE_ONLY, null);
+            }
             // Typed Map lookups only READ their key: a move-only Bytes key is
             // borrowed, never consumed. Map.set still moves key and value in.
+            if (concreteReceiver != null
                     && concreteReceiver.name().equals("Map")
                     && concreteReceiver.arguments().size() == 2
                     && findClass("Map") == null
@@ -2318,11 +2324,13 @@ public final class OwnershipChecker {
                 checkExpr(call.arguments().getFirst(), scope, false);
                 if (member.member().equals("delete")) {
                     return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                }
                 Ast.TypeRef mapValue = concreteReceiver.arguments().get(1);
                 return new ValueInfo(
                         new Ast.TypeRef("Option", List.of(mapValue), false),
                         isCopyType(mapValue) ? ValueKind.COPY : ValueKind.MOVE_ONLY,
                         null);
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
