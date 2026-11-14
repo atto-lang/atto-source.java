@@ -4,6 +4,8 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/runtime/NativeQuicAdmission.java'
       - 'src/test/java/dev/oreslang/runtime/NativeQuicAdmissionTest.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeQuicLoopbackUdp.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeQuicLoopbackUdpSmoke.java'
       - 'docs/QUIC_HTTP3_BACKEND_GATE.md'
       - '.github/workflows/native-quic-admission.yml'
   workflow_dispatch:
@@ -24,3 +26,13 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run exact-checkout JUnit admission negatives
         run: mvn -q -Dtest=NativeQuicAdmissionTest test
+      - name: Compile and run JDK25 nonblocking loopback UDP smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/quic-loopback"
+          javac -d "$RUNNER_TEMP/quic-loopback" \
+            src/main/java/dev/oreslang/runtime/NativeQuicLoopbackUdp.java \
+            src/test/java/dev/oreslang/runtime/NativeQuicLoopbackUdpSmoke.java
+          java -cp "$RUNNER_TEMP/quic-loopback" \
+            dev.oreslang.runtime.NativeQuicLoopbackUdpSmoke

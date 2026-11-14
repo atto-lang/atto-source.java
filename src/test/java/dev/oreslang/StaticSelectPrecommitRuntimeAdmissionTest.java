@@ -19,7 +19,13 @@ final class StaticSelectPrecommitRuntimeAdmissionTest {
     @Test
     void forgedNonActorSelectCannotEvaluateCandidateBeforeAdmission()
             throws Exception {
-        for (String form : new String[] {"nb select", "do nb select"}) {
+        for (String form : new String[] {
+                "nb select {",
+                "do nb select {",
+                "nb select over",
+                "do nb select over"
+        }) {
+            boolean endDelimited = form.endsWith("over");
             String source = """
                     fnc side_effect_payload(): int {
                       stdio.stdout.write("operand-executed");
@@ -28,11 +34,10 @@ final class StaticSelectPrecommitRuntimeAdmissionTest {
                     pub fnc main(): void {
                       val Channel<int> ready = Channel.new<int>(1);
                     """ + "  " + form + """
-                     {
                         case writech ready, side_effect_payload(): {
                           stdio.stdout.write("arm-executed");
                         }
-                      }
+                    """ + (endDelimited ? "  end\n" : "  }\n") + """
                       return;
                     }
                     """;
