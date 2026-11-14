@@ -1,0 +1,16 @@
+define enum WorkerMsg {
+    Run { job_id: int, note: string },
+    Stop
+}
+
+fnc code(WorkerMsg msg): int {
+    return match msg over {
+        on Run as r { return r.job_id; }
+        on Stop as s { return 0; }
+    };
+}
+
+pub fnc main(): void {
+    stdio.println(code(WorkerMsg.Run(infer struct { job_id: 99, note: "ok" })));
+    return;
+}
