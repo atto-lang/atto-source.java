@@ -226,10 +226,17 @@ if_stmt         = "if" condition_head
                   ( block
                     { conditional_branch condition_head block }
                     [ "else" block ]
-                  | [ ";" ] ( "then" | deprecated_if_do ) { statement }
-                    { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement } }
-                    [ "else" { statement } ] "fi"
+                  | [ ";" ] ( "then" | deprecated_if_do ) { statement [ "," ] }
+                    { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement [ "," ] } }
+                    [ "else" { statement [ "," ] } ] "fi"
                   ) ;
+(* In a value-returning callable's tail position, a then/fi arm's final
+   expression yields the return value. An explicit return is equivalent.
+   A comma separates statements within keyword-delimited arms; binding
+   declarations and assignments remain sequential. Braced if arms are
+   imperative and do not implicitly return. A complete tail conditional
+   needs an else arm (or another independently proven return path). *)
+
 conditional_branch
                 = "elif"
                 | "elseif"                 (* accepted alias *)
