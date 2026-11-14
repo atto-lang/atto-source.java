@@ -22,8 +22,8 @@ final class CanonicalCoreLibraryTest {
                 CoreLibrarySources.oresCoreUnitId("ores.core/collections"));
         assertEquals(CoreLibrarySources.oresCoreUnitId("ores.core/collections"),
                 CoreLibrarySources.oresCoreUnitId("ores.core/collections.atto"));
-        assertEquals(CoreLibrarySources.oresCoreUnitId("ores.core/collections"),
-                CoreLibrarySources.oresCoreUnitId("ores.core/collections.ores"));
+        assertThrows(IllegalArgumentException.class,
+                () -> CoreLibrarySources.oresCoreUnitId("ores.core/collections.ores"));
         String guestCollectionSource =
                 CoreLibrarySources.oresCoreSource("ores.core/collections");
         for (String collection : Set.of("array", "vector", "list")) {
