@@ -3058,6 +3058,20 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            // This lexically scoped binding is known to represent exactly one
+            // nominal enum case. No general enum field access or dynamic
+            // type-reflection is introduced by this static type refinement.
+            if (member.receiver() instanceof Ast.NameExpr caseName) {
+                Env.Binding bound = env.lookup(caseName.name());
+                if (bound != null && bound.caseFields() != null) {
+                    Type field = bound.caseFields().get(member.member());
+                    if (field == null) {
+                        throw new IllegalArgumentException("unknown narrowed enum field '"
+                                + member.member() + "' on " + caseName.name());
+                    }
+                    return field;
+                }
+            }
             if (member.receiver() instanceof Ast.NameExpr enumName
                     && env.lookup(enumName.name()) == null) {
                 Ast.EnumDecl declarationEnum = findEnum(enumName.name());
@@ -4968,6 +4982,16 @@ public final class TypeChecker {
         }
     }
 
+    private boolean copySafeEnumField(Type field) {
+        // This first named-case slice intentionally excludes Bytes, pointers,
+        // actor references, dynamic containers and user-defined owned types.
+        // A value must be represented as an immutable Copy scalar to admit a
+        // shorthand field binding without an explicit borrow dataflow proof.
+        return field == Primitive.INT || field == Primitive.FLOAT
+                || field == Primitive.BOOL || field == Primitive.STRING
+                || field instanceof StringLiteral || field instanceof BoolLiteral;
+    }
+
     private void checkPattern(
             Ast.Pattern pattern, Type subject, Env bindings, Set<String> generics, Type self) {
         if (pattern instanceof Ast.WildcardPattern) return;
@@ -5084,24 +5108,54 @@ public final class TypeChecker {
             if (args == null) {
                 throw new IllegalArgumentException("constructor " + constructor.constructor() + " is not valid for " + subject);
             }
-            // Reject an unproved payload alias *before* the generic arity
-            // diagnostic so compiler negatives validate the ownership gate.
-            if (constructor.wholeAlias() != null
-                    && (nominalEnum == null || !args.isEmpty())) {
-                throw new IllegalArgumentException(
-                        "whole-variant alias with payload is reserved until case-borrow lowering");
+            Map<String, Type> safeCaseFields = null;
+            if (nominalEnum != null && args.size() == 1
+                    && args.getFirst() instanceof Record record) {
+                // Named field bindings and whole-case aliases are admitted
+                // only if every field in the selected payload is an immutable
+                // Copy scalar. Otherwise a non-Copy field could be implicitly
+                // extracted or the whole alias could escape its receive turn.
+                if (record.members().values().stream().allMatch(this::copySafeEnumField)) {
+                    safeCaseFields = record.members();
+                }
             }
-            if (args.size() != constructor.arguments().size()) {
-                throw new IllegalArgumentException("constructor pattern " + constructor.constructor()
-                        + " expects " + args.size() + " argument(s), got " + constructor.arguments().size());
-            }
-            for (int i = 0; i < args.size(); i++) {
-                checkPattern(constructor.arguments().get(i), args.get(i), bindings, generics, self);
+            if (constructor.namedFields() != null) {
+                if (nominalEnum == null || args.size() != 1 || safeCaseFields == null) {
+                    throw new IllegalArgumentException(
+                            "named enum field patterns require a Copy-safe nominal payload; "
+                                    + "borrow-aware Bytes payload matching is not implemented");
+                }
+                java.util.Set<String> usedFields = new java.util.HashSet<>();
+                for (String field : constructor.namedFields()) {
+                    if (!usedFields.add(field)) {
+                        throw new IllegalArgumentException("duplicate enum pattern field '" + field + "'");
+                    }
+                    Type resolvedField = safeCaseFields.get(field);
+                    if (resolvedField == null) {
+                        throw new IllegalArgumentException(
+                                "unknown enum payload field '" + field + "' in " + constructor.constructor());
+                    }
+                    bindings.define(field, resolvedField, Ast.BindingKind.VAL);
+                }
+            } else {
+                if (args.size() != constructor.arguments().size()) {
+                    throw new IllegalArgumentException("constructor pattern " + constructor.constructor()
+                            + " expects " + args.size() + " argument(s), got " + constructor.arguments().size());
+                }
+                for (int i = 0; i < args.size(); i++) {
+                    checkPattern(constructor.arguments().get(i), args.get(i), bindings, generics, self);
+                }
             }
             if (constructor.wholeAlias() != null) {
-                bindings.define(constructor.wholeAlias(),
+                if (nominalEnum == null || (args.size() == 1 && safeCaseFields == null)) {
+                    throw new IllegalArgumentException(
+                            "whole-variant alias with non-Copy payload requires case-borrow lowering");
+                }
+                if (args.size() > 1) throw new IllegalArgumentException(
+                        "unsupported enum alias payload representation");
+                bindings.defineCaseAlias(constructor.wholeAlias(),
                         overlayReadonlyCapabilities(subject, subject),
-                        Ast.BindingKind.VAL);
+                        safeCaseFields == null ? Map.of() : safeCaseFields);
             }
             return;
         }
@@ -8109,6 +8163,12 @@ public final class TypeChecker {
         private final boolean descendantsNonLexical;
         private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();
+        private void defineCaseAlias(String name, Type type, Map<String, Type> caseFields) {
+            Binding binding = new Binding(type, Ast.BindingKind.VAL, Set.of(), caseFields);
+            if (bindings.putIfAbsent(name, binding) != null) {
+                throw new IllegalArgumentException("duplicate enum pattern binding '" + name + "'");
+            }
+        }
         private final Map<String, Type> inferredTypes = new HashMap<>();
         private final Set<String> reservedInferredNames = new HashSet<>();
         private void reserveInferredType(String name) {
@@ -8222,12 +8282,19 @@ public final class TypeChecker {
             private final Type type;
             private final Ast.BindingKind kind;
             private final Set<String> uninitializedFields;
+            private final Map<String, Type> caseFields;
 
             private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields) {
+                this(type, kind, uninitializedFields, null);
+            }
+            private Binding(Type type, Ast.BindingKind kind, Set<String> uninitializedFields,
+                            Map<String, Type> caseFields) {
                 this.type = type;
                 this.kind = kind;
                 this.uninitializedFields = new LinkedHashSet<>(uninitializedFields);
+                this.caseFields = caseFields == null ? null : Map.copyOf(caseFields);
             }
+            private Map<String, Type> caseFields() { return caseFields; }
             private Type type() { return type; }
             private Ast.BindingKind kind() { return kind; }
             private boolean hasUninitializedFields() { return !uninitializedFields.isEmpty(); }
