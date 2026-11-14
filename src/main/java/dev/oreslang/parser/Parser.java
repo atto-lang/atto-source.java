@@ -29,6 +29,10 @@ public final class Parser {
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
 
+    private record ExternalReceiverMethod(String owner, Ast.MethodDecl method) { }
+    private final List<ExternalReceiverMethod> rootReceiverMethods = new ArrayList<>();
+    private List<ExternalReceiverMethod> moduleReceiverMethods;
+
     // Forward type signatures are compile-time-only and intentionally absent
     // from executable ASTs. The v1 contract requires an exact same-scope
     // definition; cross-file and unresolved linker stubs fail closed.
@@ -142,6 +146,11 @@ public final class Parser {
             rejectUnsupportedAcceleratorSyntax();
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
+
+            if (isExternalReceiverMethodHead()) {
+                rootReceiverMethods.add(parseExternalReceiverMethod(annotations, modifiers));
+                continue;
+            }
 
             if (isContextualIdentifier("declare")) {
                 rootForwards.add(parseForwardType(annotations, modifiers));
@@ -264,6 +273,8 @@ public final class Parser {
             rootDeclarations.add(declaration);
         }
 
+        rootDeclarations = attachExternalReceiverMethods(
+                rootDeclarations, rootReceiverMethods, "file root");
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
@@ -383,7 +394,10 @@ public final class Parser {
         List<Ast.Decl> declarations = new ArrayList<>();
         List<ForwardType> enclosing = moduleForwards;
         List<ForwardType> forwards = new ArrayList<>();
+        List<ExternalReceiverMethod> enclosingReceiverMethods = moduleReceiverMethods;
+        List<ExternalReceiverMethod> receiverMethods = new ArrayList<>();
         moduleForwards = forwards;
+        moduleReceiverMethods = receiverMethods;
         try {
             while (!check(END) && !check(EOF)) {
                 Ast.Decl declaration = parseModuleMember();
@@ -393,8 +407,10 @@ public final class Parser {
             validateForwardTypes(forwards, declarations, "module " + name);
         } finally {
             moduleForwards = enclosing;
+            moduleReceiverMethods = enclosingReceiverMethods;
         }
-        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
+        return new Ast.ModuleDecl(name, annotations, contracts,
+                attachExternalReceiverMethods(declarations, receiverMethods, "module " + name));
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
@@ -408,6 +424,11 @@ public final class Parser {
         rejectUnsupportedAcceleratorSyntax();
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
+
+        if (isExternalReceiverMethodHead()) {
+            moduleReceiverMethods.add(parseExternalReceiverMethod(annotations, modifiers));
+            return null;
+        }
 
         if (isContextualIdentifier("declare")) {
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
@@ -1634,6 +1655,87 @@ public final class Parser {
             consume(RPAREN, "expected ')' after method parameters");
         }
 
+        return finishMethod(annotations, mods, enclosingAbstractClass, name,
+                generics, receiverType, params, structural.enabled());
+    }
+
+    private boolean isExternalReceiverMethodHead() {
+        return isContextualIdentifier("mtd") && checkNext(LPAREN);
+    }
+
+    private ExternalReceiverMethod parseExternalReceiverMethod(
+            List<Ast.Annotation> annotations, Modifiers mods) {
+        if (mods.isStatic || mods.isAbstract || mods.async || mods.suspends
+                || mods.generator || mods.trapped || mods.structural
+                || mods.nonLexical || mods.shared || mods.untrusted) {
+            throw error(peek(), "external mtd permits only visibility modifiers in v1");
+        }
+        advance(); // contextual mtd
+        consume(LPAREN, "expected '(' after external mtd");
+        boolean mutable = match(MUT);
+        consume(SELF, "receiver must start with self or mut self");
+        consume(COLON, "external receiver requires ': Type'");
+        Ast.TypeRef target = parseTypeRef();
+        if (!target.arguments().isEmpty() || target.isBorrow() || target.name().equals("self")) {
+            throw error(previous(), "external receiver must be a local nongeneric nominal class");
+        }
+        consume(RPAREN, "expected ')' after typed receiver");
+        String name = parseMethodName();
+        List<String> generics = parseGenericParameters();
+        consume(LPAREN, "expected '(' after external method name");
+        List<Ast.Param> params = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after external method parameters");
+        Ast.TypeRef receiver = mutable ? Ast.TypeRef.borrowed(target, true) : target;
+        CallableStructural structural = normalizeCallableStructural(annotations, false);
+        Ast.MethodDecl method = finishMethod(structural.annotations(), mods, false, name,
+                generics, receiver, params, false);
+        return new ExternalReceiverMethod(target.name(), method);
+    }
+
+    private List<Ast.Decl> attachExternalReceiverMethods(
+            List<Ast.Decl> declarations,
+            List<ExternalReceiverMethod> externalMethods, String scope) {
+        if (externalMethods.isEmpty()) return declarations;
+        List<Ast.Decl> attached = new ArrayList<>(declarations);
+        for (ExternalReceiverMethod external : externalMethods) {
+            int classIndex = -1;
+            for (int i = 0; i < attached.size(); i++) {
+                if (attached.get(i) instanceof Ast.ClassDecl klass
+                        && klass.name().equals(external.owner())) {
+                    if (classIndex != -1) {
+                        throw error(previous(), "ambiguous receiver class '" + external.owner() + "' in " + scope);
+                    }
+                    classIndex = i;
+                }
+            }
+            if (classIndex < 0) {
+                throw error(previous(), "external mtd receiver '" + external.owner()
+                        + "' must be declared in the same " + scope);
+            }
+            Ast.ClassDecl klass = (Ast.ClassDecl) attached.get(classIndex);
+            if (klass.actorKind() != Ast.ActorKind.NONE || !klass.genericParameters().isEmpty()) {
+                throw error(previous(), "external mtd requires an ordinary nongeneric class; actor state is sealed");
+            }
+            if (klass.methods().stream().anyMatch(method ->
+                    method.overloadIdentity().equals(external.method().overloadIdentity()))) {
+                throw error(previous(), "duplicate receiver method "
+                        + external.owner() + "." + external.method().name()
+                        + "/" + external.method().arity());
+            }
+            List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
+            methods.add(external.method());
+            attached.set(classIndex, new Ast.ClassDecl(
+                    klass.name(), klass.visibility(), klass.isAbstract(), klass.actorKind(),
+                    klass.genericParameters(), klass.parents(), klass.interfaces(),
+                    klass.fields(), klass.constructor(), methods, klass.actorConcurrency()));
+        }
+        return attached;
+    }
+
+    private Ast.MethodDecl finishMethod(
+            List<Ast.Annotation> annotations, Modifiers mods, boolean enclosingAbstractClass,
+            String name, List<String> generics, Ast.TypeRef receiverType,
+            List<Ast.Param> params, boolean structural) {
         // A keyword-delimited method requires the explicit slim-arrow return
         // spelling and a contiguous '::' header/body boundary. Braced
         // methods continue accepting either return-type spelling.
@@ -1661,7 +1763,7 @@ public final class Parser {
             while (!check(END) && !check(EOF)) body.add(parseStatement());
             consume(END, "expected 'end' to close method '" + name + "'");
         } else body = parseBlock();
-        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
+        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural,
                 receiverType, generics, params, returnType, annotations, body, effects);
     }
 
