@@ -164,6 +164,54 @@ final class ActorForwardNamespaceReceiverTest {
     }
 
     @Test
+    void sameNamespaceDoesNotPermitSiblingMethodLookupOrActorFieldAccess() {
+        var siblingMethod = Parser.parse("""
+                use namespace two_workers;
+                declare actor Foo1;
+                declare actor Foo2;
+                define actor Foo1 as
+                  mtd first_only(): int { return 1; }
+                  receive(ActorMail<String> mail): void {
+                    self.second_only();
+                    self.end();
+                    return;
+                  }
+                end
+                define actor Foo2 as
+                  mtd second_only(): int { return 2; }
+                  receive(ActorMail<String> mail): void {
+                    self.end();
+                    return;
+                  }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(siblingMethod));
+
+        var foreignField = Parser.parse("""
+                declare actor Foo1;
+                declare actor Foo2;
+                define actor Foo1 as
+                  mtd peek_other(Foo2 other): int { return other.secret; }
+                end
+                define actor Foo2 as
+                  let int secret;
+                end
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(foreignField));
+    }
+
+    @Test
+    void duplicateActorDefinitionsDoNotSatisfyOneForwardAmbiguously() {
+        reject("""
+                declare actor Foo1;
+                define actor Foo1 as end
+                define actor Foo1 as end
+                """, "ambiguous forward");
+    }
+
+    @Test
     void actualTwoActorGuestRunsWithIndependentMethodSets() throws Exception {
         String source;
         try (var stream = getClass().getResourceAsStream(
