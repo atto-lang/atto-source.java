@@ -14,6 +14,80 @@ import static org.junit.jupiter.api.Assertions.*;
 final class LogicalActorProxyMailboxV1Test {
 
     @Test
+    void atomicTurnBatchPreservesFifoAndDoesNotLeakPartialAdmission() {
+        try (var mailbox = new LogicalActorProxyMailboxV1(3, 4, 7)) {
+            byte[] borrowed = bytes("one");
+            var first = mailbox.admitTurnAtomic(List.of(borrowed, bytes("x")));
+            borrowed[0] = 99;
+            assertEquals(1L, first.get(0).messageSequence());
+            assertEquals(2L, first.get(1).messageSequence());
+            assertArrayEquals(bytes("one"), mailbox.pollDispatch().payload(),
+                    "batch snapshots borrowed sender memory");
+            mailbox.complete(1L);
+            var before = mailbox.snapshot();
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.admitTurnAtomic(List.of(bytes("xx"), bytes("yyyy"))),
+                    "oversized aggregate batch must not insert even first element");
+            assertEquals(before, mailbox.snapshot(),
+                    "quota rejection cannot consume sequence, byte credit or queued DATA");
+
+            var admitted = mailbox.admitTurnAtomic(List.of(bytes("yy"), bytes("z")));
+            assertEquals(3L, admitted.get(0).messageSequence());
+            assertEquals(4L, admitted.get(1).messageSequence());
+            assertEquals(2L, mailbox.pollDispatch().messageSequence());
+            assertEquals(3L, mailbox.pollDispatch().messageSequence());
+            assertEquals(4L, mailbox.pollDispatch().messageSequence());
+            mailbox.complete(4L);
+            mailbox.complete(3L);
+            mailbox.complete(2L);
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+            assertEquals(4L, mailbox.snapshot().completionWatermark());
+        }
+    }
+
+    @Test
+    void atomicTurnBatchStopAndFreezeDoNotBypassLogicalCredits() throws Exception {
+        for (int iteration = 0; iteration < 128; iteration++) {
+            var mailbox = new LogicalActorProxyMailboxV1(4, 4, 16);
+            var latch = new CountDownLatch(1);
+            var sender = new Thread(() -> {
+                try {
+                    latch.await();
+                    try { mailbox.admitTurnAtomic(List.of(bytes("a"), bytes("b"))); }
+                    catch (IllegalStateException ignored) { }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            var stopper = new Thread(() -> {
+                try { latch.await(); mailbox.close(); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            sender.start();
+            stopper.start();
+            latch.countDown();
+            sender.join();
+            stopper.join();
+            assertTrue(mailbox.snapshot().closed());
+            assertEquals(0, mailbox.snapshot().retainedMessages());
+            assertThrows(IllegalStateException.class,
+                    () -> mailbox.admitTurnAtomic(List.of(bytes("c"))));
+        }
+        try (var mailbox = new LogicalActorProxyMailboxV1(2, 4, 8)) {
+            var freeze = mailbox.freezeDispatchForUpgrade();
+            mailbox.admitTurnAtomic(List.of(bytes("a"), bytes("b")));
+            assertEquals(2, mailbox.snapshot().queuedMessages());
+            assertNull(mailbox.pollDispatch(), "upgrade freeze must prevent dispatch, not admission");
+            freeze.commit();
+            assertEquals(1L, mailbox.pollDispatch().messageSequence());
+            assertEquals(2L, mailbox.pollDispatch().messageSequence());
+        }
+    }
+
+
+    @Test
     void freezeStopsDispatchButKeepsBoundedAdmissionOpenUntilCommit() {
         try (var mailbox = new LogicalActorProxyMailboxV1(
                 8, 1024, 4096)) {
