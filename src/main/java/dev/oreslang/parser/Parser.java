@@ -247,7 +247,16 @@ public final class Parser {
                     rootDeclarations.add(parseTypeAlias(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
+                // Compatibility: both `pub define fnc` and `define pub fnc`
+                // denote the same file-root callable, with identical modifiers.
+                if (check(FNC) || check(ROUTINE)) {
+                    Ast.Decl callable = parseDeclarationAfterModifiers(annotations, modifiers);
+                    if (callable != null) {
+                        rootDeclarations.add(callable);
+                        continue;
+                    }
+                }
+                throw error(previous(), "expected module, class, interface, trait, type, fnc, or routine after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -482,7 +491,12 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            // Legacy nested `define` is accepted, but never creates a new
+            // scope or changes the callable's public symbol identity.
+            if (check(FNC) || check(ROUTINE)) {
+                return parseDeclarationAfterModifiers(annotations, modifiers);
+            }
+            throw error(previous(), "expected class, interface, trait, type, fnc, or routine after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -690,6 +704,11 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
 
+            // Nested members never require `define`, but admit either legacy
+            // modifier ordering so formatting is not a prerequisite to parsing.
+            if (match(DEFINE)) {
+                mods = mergeModifiers(mods, parseModifiers());
+            }
             if (check(DEFINE) || check(CLASS) || check(MODULE) || check(INTERFACE)
                     || check(ACTOR) || check(ISOACTOR)) {
                 throw error(peek(),
@@ -763,7 +782,22 @@ public final class Parser {
             }
             // Legacy 'fnc name' and explicit 'method name' both describe instance
             // methods. The AST's isStatic flag, not the spelling, controls binding.
-            methods.add(parseMethod(annotations, mods, isAbstract));
+            Ast.MethodDecl member = parseMethod(annotations, mods, isAbstract);
+            // Newable's explicitly declared `fnc new` is a type-level
+            // factory even when the author omits the optional `static`
+            // modifier. Do not alter other methods or synthesize a factory.
+            if (member.name().equals("new") && !member.isStatic()
+                    && interfaces.stream().anyMatch(ref -> ref.name().equals("Newable"))) {
+                if (member.explicitReceiverType() != null) {
+                    throw error(previous(), "Newable.new cannot declare a self receiver");
+                }
+                member = new Ast.MethodDecl(member.name(), member.visibility(),
+                        true, member.isAbstract(), member.async(), member.suspends(),
+                        member.structural(), member.explicitReceiverType(),
+                        member.genericParameters(), member.parameters(), member.returnType(),
+                        member.annotations(), member.body(), member.effects());
+            }
+            methods.add(member);
         }
         consume(
                 classTerminator,
@@ -1115,6 +1149,9 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (match(DEFINE)) {
+                mods = mergeModifiers(mods, parseModifiers());
+            }
             // A typed state schema is not a legacy actor field/method.
             // Reject it with an explicit admission error until the AST,
             // checker, lifetime rules and runtime-owned loan are integrated.
@@ -1309,6 +1346,9 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> memberAnnotations = parseAnnotations();
             Modifiers memberModifiers = parseModifiers();
+            if (match(DEFINE)) {
+                memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
+            }
 
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
@@ -1322,7 +1362,12 @@ public final class Parser {
                             "interface-member annotations are not represented by the current AST; "
                                     + "only @structural is accepted here and unsupported annotations must not be silently discarded");
                 }
-                String memberName = consumeCallableName("expected interface function name");
+                // Newable may declare an explicitly named factory contract.
+                // Keep `new` reserved as a local identifier and constructor
+                // keyword; only declaration-member names admit this token.
+                String memberName = match(NEW)
+                        ? "new"
+                        : consumeCallableName("expected interface function name");
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
@@ -1605,6 +1650,12 @@ public final class Parser {
     }
 
     private String parseMethodName() {
+        // `new` remains reserved as an expression keyword, but an explicit
+        // user-authored method/factory signature may name it. This alone does
+        // not synthesize a static factory or grant Newable implementation.
+        if (match(NEW)) {
+            return "new";
+        }
         if (match(LBRACKET)) {
             String namespace = consume(IDENT, "expected symbol namespace").lexeme();
             consume(DOT, "expected '.' in symbol method");
@@ -2347,6 +2398,17 @@ public final class Parser {
             }
         }
 
+        // Newable[T] is a type-level static factory trait application,
+        // not an array/collection sequence shape. Other bracketed type
+        // syntax retains the existing sequence-shape interpretation.
+        if (name.equals("Newable") && args.isEmpty() && match(LBRACKET)) {
+            if (check(RBRACKET)) throw error(peek(), "Newable[T] requires a type argument");
+            args.add(parseTypeRef());
+            if (match(COMMA)) {
+                throw error(previous(), "Newable[T] accepts exactly one type argument");
+            }
+            consume(RBRACKET, "expected ']' after Newable[T]");
+        }
         args = canonicalizeNamedParameters(args);
         while (match(LBRACKET)) {
             args.add(parseSequenceShapeDimension());

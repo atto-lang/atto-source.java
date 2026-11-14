@@ -447,9 +447,10 @@ public final class TypeChecker {
     }
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
-        if ("Symbol".equals(name)) {
-            throw new IllegalArgumentException("Symbol is a reserved nominal built-in; cannot declare "
-                    + declarationKind + " Symbol");
+        if ("Symbol".equals(name) || "Newable".equals(name)) {
+            throw new IllegalArgumentException(name
+                    + " is a reserved compiler-owned nominal type; cannot declare "
+                    + declarationKind + " " + name);
         }
     }
 
@@ -1538,6 +1539,21 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            // The static Newable[T] witness is checked at the owning class,
+            // never inferred from a similarly named method or normal
+            // instance-interface structural conformance.
+            if (method.name().equals("new")) {
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name() + "' cannot expose new(); "
+                                    + "actor activation requires runtime-owned spawn/virtual-actor admission");
+                }
+                if (klass.interfaces().stream().noneMatch(ref -> ref.name().equals("Newable"))) {
+                    throw new IllegalArgumentException(
+                            "class '" + klass.name() + "' declares new() without implementing Newable; "
+                                    + "T.new() is never an implicit constructor");
+                }
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
@@ -1747,6 +1763,10 @@ public final class TypeChecker {
         Set<String> implemented = new HashSet<>();
         for (Ast.TypeRef interfaceRef : klass.interfaces()) {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
+            if (interfaceRef.name().equals("Newable")) {
+                validateNewableFactory(klass, interfaceRef, classGenerics, self);
+                continue; // Static factory witness is not an instance shape.
+            }
             if (interfaceRef.name().equals("StreamOperator")) {
                 streamPortsForClass(klass, nominalClassType(klass));
                 continue;
@@ -1763,6 +1783,67 @@ public final class TypeChecker {
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
+        }
+    }
+
+    /**
+     * First executable AOT-safe Newable slice: a compiler-owned static factory
+     * witness with no source-created nominal trait that could spoof it.
+     * One public, zero-argument, synchronous new() produces exactly this
+     * concrete class type. Variadic and generic static factories require a
+     * separately versioned witness ABI, so they reject rather than degrade.
+     */
+    private void validateNewableFactory(
+            Ast.ClassDecl klass, Ast.TypeRef marker, Set<String> classGenerics, Type self) {
+        if (klass.actorKind() != Ast.ActorKind.NONE || klass.isAbstract()) {
+            throw new IllegalArgumentException("Newable requires a concrete non-actor class: "
+                    + klass.name());
+        }
+        if (!klass.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Newable static factory on generic class '" + klass.name()
+                            + "' requires specialized AOT static witness lowering");
+        }
+        if (marker.inferArguments() || marker.arguments().size() != 1
+                || marker.arguments().getFirst().isNamedParameter()
+                || marker.arguments().getFirst().isSequenceShape()) {
+            throw new IllegalArgumentException(
+                    "Newable[T] requires exactly one concrete class type argument");
+        }
+        Type expected = nominalClassType(klass);
+        Type declared = resolve(marker.arguments().getFirst(), classGenerics, self);
+        if (!declared.equals(expected)) {
+            throw new IllegalArgumentException(
+                    "Newable[T] target must be the implementing class '" + klass.name()
+                            + "', not " + marker.arguments().getFirst());
+        }
+        List<Ast.MethodDecl> factories = klass.methods().stream()
+                .filter(method -> method.name().equals("new")).toList();
+        if (factories.size() != 1) {
+            throw new IllegalArgumentException(
+                    "Newable[" + klass.name()
+                            + "] requires exactly one user-defined new() factory");
+        }
+        Ast.MethodDecl factory = factories.getFirst();
+        if (!factory.isStatic()
+                || factory.visibility() != Ast.Visibility.PUBLIC
+                || factory.isAbstract() || factory.async() || factory.suspends()
+                || factory.structural()
+                || factory.explicitReceiverType() != null
+                || !factory.genericParameters().isEmpty()
+                || !factory.parameters().isEmpty()
+                || !factory.effects().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Newable[" + klass.name()
+                            + "] requires public synchronous static new(): "
+                            + klass.name() + " with no receiver or parameters");
+        }
+        Type returned = resolve(factory.returnType(), classGenerics, self);
+        if (!returned.equals(expected)) {
+            throw new IllegalArgumentException(
+                    "Newable[" + klass.name()
+                            + "].new() must return exactly " + klass.name()
+                            + "; got " + factory.returnType());
         }
     }
 
@@ -10588,6 +10669,9 @@ public final class TypeChecker {
             }
             case "StreamOperator" -> throw new IllegalArgumentException(
                     "StreamOperator<I,O> is a reserved actor implements marker, not a runtime value type");
+            case "Newable" -> throw new IllegalArgumentException(
+                    "Newable[T] is a compiler-owned type-level factory contract; "
+                            + "use it only in a class implements clause");
             case "ActorMail", "ActorOutput", "ActorOutputStream" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(
