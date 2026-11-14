@@ -5873,7 +5873,8 @@ public final class OresEvalRootNode extends RootNode {
                         : HttpResponseDraft.text(requireString(args.getFirst(), "HttpResponse body"));
             }
             if (created.type().name().equals("Array")
-                    || created.type().name().equals("List")) {
+                    || created.type().name().equals("List")
+                    || created.type().name().equals("Vector")) {
                 if (!args.isEmpty()) {
                     throw new IllegalArgumentException(
                             created.type().name()
