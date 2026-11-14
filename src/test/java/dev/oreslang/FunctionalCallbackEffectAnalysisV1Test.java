@@ -42,7 +42,7 @@ final class FunctionalCallbackEffectAnalysisV1Test {
         var site = report.sites().getFirst();
         assertEquals("increment", site.function());
         assertEquals("map", site.operation());
-        assertEquals(Set.of(Effect.THROW), site.inferredEffects(),
+        assertEquals(Set.of(Effect.THROW, Effect.ALLOC), site.inferredEffects(),
                 "checked arithmetic can fail; observational purity does not mean no throw");
         assertTrue(site.eligibleForPure());
     }
@@ -69,7 +69,7 @@ final class FunctionalCallbackEffectAnalysisV1Test {
         var report = OresCompiler.analyzeFunctionalCallbacksV1(source);
         assertTrue(report.complete());
         assertEquals(1, report.sites().size());
-        assertEquals(Set.of(Effect.UNKNOWN_CALL),
+        assertEquals(Set.of(Effect.UNKNOWN_CALL, Effect.ALLOC),
                 report.sites().getFirst().inferredEffects());
         assertFalse(report.sites().getFirst().eligibleForPure());
     }
