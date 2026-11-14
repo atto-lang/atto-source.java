@@ -105,21 +105,29 @@ final class ActorSourceLifecycleGate {
         phase = Phase.INITIALIZING;
     }
 
-    synchronized void commitInit(ActorRuntime.ActorOwnedGuestState created) {
-        // Use a typed STOP outcome instead of relying on caller observation of
-        // phase after an arbitrary IllegalStateException. A malicious or
-        // malformed state accessor may throw that very same exception type.
-        if (phase == Phase.STOPPING_TERMINAL) {
-            throw new InitializationStopped();
+    void commitInit(ActorRuntime.ActorOwnedGuestState created) {
+        // ActorOwnedGuestState is supplied by a host/guest executor. Its owner
+        // accessor may throw, park, or reenter runtime APIs. Never call it
+        // while holding the gate's admission/STOP monitor.
+        synchronized (this) {
+            if (phase == Phase.STOPPING_TERMINAL) throw new InitializationStopped();
+            require(Phase.INITIALIZING, "publish initialized state");
         }
-        require(Phase.INITIALIZING, "publish initialized state");
-        if (created == null || !owner.equals(created.ownerActorId())) {
+        ActorRuntime.ActorId observedOwner =
+                created == null ? null : created.ownerActorId();
+        synchronized (this) {
+            // STOP may win while the untrusted accessor is executing.
+            if (phase == Phase.STOPPING_TERMINAL) throw new InitializationStopped();
+            require(Phase.INITIALIZING, "publish initialized state");
+            if (!owner.equals(observedOwner)) {
+                initializationActive = false;
+                phase = Phase.FAILED;
+                throw new SecurityException(
+                        "source actor initialization returned foreign or null owned state");
+            }
             initializationActive = false;
-            phase = Phase.FAILED;
-            throw new SecurityException("source actor initialization returned foreign or null owned state");
+            phase = Phase.READY;
         }
-        initializationActive = false;
-        phase = Phase.READY;
     }
 
     synchronized void failInit() {
@@ -153,35 +161,59 @@ final class ActorSourceLifecycleGate {
         }
     }
 
-    synchronized void requireReceive(
+    void requireReceive(
             ActorRuntime.ActorId caller, String type,
             ActorRuntime.ActorOwnedGuestState state,
             ActorRuntime.ActorInboxMail<?> mail) {
-        requireOwner(caller, type);
-        require(Phase.READY, "deliver source actor mail");
-        if (state == null || !owner.equals(state.ownerActorId())
-                || mail == null || !owner.equals(mail.recipient())) {
-            throw new SecurityException(
-                    "source actor mailbox/state owner does not match active incarnation");
+        // Only immutable ownership snapshots may enter a gate monitor.
+        ActorRuntime.ActorId stateOwner =
+                state == null ? null : state.ownerActorId();
+        ActorRuntime.ActorId recipient =
+                mail == null ? null : mail.recipient();
+        synchronized (this) {
+            requireReceiveOwners(caller, type, stateOwner, recipient);
         }
     }
 
-    synchronized ReceiveLease enterReceive(
+    ReceiveLease enterReceive(
             ActorRuntime.ActorId caller, String type,
             ActorRuntime.ActorOwnedGuestState state,
             ActorRuntime.ActorInboxMail<?> mail) {
-        // Validation and receipt admission must be ONE atomic operation with
-        // respect to STOP. Calling requireReceive() alone is not a lease.
-        requireReceive(caller, type, state, mail);
+        ActorRuntime.ActorId stateOwner =
+                state == null ? null : state.ownerActorId();
+        ActorRuntime.ActorId recipient =
+                mail == null ? null : mail.recipient();
+        return enterReceiveOwners(caller, type, stateOwner, recipient);
+    }
+
+    /**
+     * Trusted actor-cell dispatch must obtain state/mailbox owner snapshots
+     * OUTSIDE lifecycleLock, then linearize this operation against STOP while
+     * holding lifecycleLock. This method never calls guest/host user code.
+     */
+    synchronized ReceiveLease enterReceiveOwners(
+            ActorRuntime.ActorId caller, String type,
+            ActorRuntime.ActorId stateOwner, ActorRuntime.ActorId recipient) {
+        requireReceiveOwners(caller, type, stateOwner, recipient);
         if (activeReceives == Integer.MAX_VALUE) {
             throw new IllegalStateException("source actor receive lease accounting overflow");
         }
         // Construct the only allocation BEFORE incrementing the count.
-        // OutOfMemoryError during receipt allocation must not strand a
-        // permanent outstanding receive and block native resource retirement.
+        // OutOfMemoryError cannot strand a permanent outstanding receipt.
         ReceiveLease lease = new ReceiveLease(this);
         activeReceives++;
         return lease;
+    }
+
+    private void requireReceiveOwners(
+            ActorRuntime.ActorId caller, String type,
+            ActorRuntime.ActorId stateOwner, ActorRuntime.ActorId recipient) {
+        requireOwner(caller, type);
+        require(Phase.READY, "deliver source actor mail");
+        if (!owner.equals(stateOwner) || !owner.equals(recipient)) {
+            throw new SecurityException(
+                    "source actor mailbox/state owner does not match active incarnation");
+        }
     }
 
     private synchronized void leaveReceive() {
@@ -192,21 +224,25 @@ final class ActorSourceLifecycleGate {
         notifyAll();
     }
 
-    synchronized void beginTeardown(
+    void beginTeardown(
             ActorRuntime.ActorId caller, String type,
             ActorRuntime.ActorOwnedGuestState state) {
-        requireOwner(caller, type);
-        require(Phase.STOPPING_GRACEFUL, "tear down source actor");
-        if (activeReceives != 0) {
-            throw new IllegalStateException(
-                    "source actor tear_down requires all receive invocations to quiesce");
+        ActorRuntime.ActorId stateOwner =
+                state == null ? null : state.ownerActorId();
+        synchronized (this) {
+            requireOwner(caller, type);
+            require(Phase.STOPPING_GRACEFUL, "tear down source actor");
+            if (activeReceives != 0) {
+                throw new IllegalStateException(
+                        "source actor tear_down requires all receive invocations to quiesce");
+            }
+            if (!owner.equals(stateOwner)) {
+                throw new SecurityException(
+                        "source actor teardown does not own active incarnation state");
+            }
+            phase = Phase.TEARING_DOWN;
+            teardownActive = true;
         }
-        if (state == null || !owner.equals(state.ownerActorId())) {
-            throw new SecurityException(
-                    "source actor teardown does not own active incarnation state");
-        }
-        phase = Phase.TEARING_DOWN;
-        teardownActive = true;
     }
 
     synchronized void finishTeardown(ActorRuntime.ActorId caller, String type) {
