@@ -230,3 +230,22 @@ compiled with JDK 21 `--release 21 -Xlint:all -Werror`; an isolated test
 exercised 1,000 additional failed hook-admission/terminal-revocation
 cycles and passed. Full `ActorRuntime` JUnit, GraalVM 25 and compiled
 `.atto` remain **NOT_EXECUTED** pending authorized runner admission.
+
+## Cross-carrier state-reference publication (2026-11-14)
+
+Another source runtime review identified that
+`ActorCell.codeActorState` was published by the actor dispatcher
+without the same `lifecycleLock` used by host-side STOP and graceful
+teardown eligibility checks. The state *reference* is now
+`volatile`, establishing a Java Memory Model visibility guarantee
+between the initializing carrier and later host readers. This is
+not a shared-mutable-state capability: actor ownership and
+`critical-read`/`critical-write` remain mandatory for guest state
+access, and physical teardown still waits for each receive and
+continuation receipt.
+
+Existing source STOP/initialization and blocked-host-accessor
+regressions cover the affected lifecycle interleavings; this
+specific visibility adjustment is **NOT independently proven by full
+Maven/JDK25 integration**, which remains blocked by GitHub Actions
+failing before job steps.
