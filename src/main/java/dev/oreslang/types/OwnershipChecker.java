@@ -1004,6 +1004,11 @@ public final class OwnershipChecker {
                 definePatternAliases(arm.pattern(), subject.type, source, local);
                 if (arm.guard() != null) checkExpr(arm.guard(), local, false);
                 ValueInfo value = checkExpr(arm.value(), local, consuming);
+                // A value-producing match MUST NOT hand its case-local loan
+                // to the outer expression after this arm scope closes.
+                if (local.hasScopedEnumCaseLoan() && isBorrowValue(value)) {
+                    throw error("borrowed enum case cannot escape a value-producing match expression");
+                }
                 local.close();
                 exits.add(stateSnapshot(scope));
                 if (result == null) result = value;
