@@ -2714,7 +2714,7 @@ public final class TypeChecker {
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
                 if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
-                if (binding.kind() != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + binding.kind().name().toLowerCase() + " binding '" + name.name() + "'");
+                if (binding.kind() != Ast.BindingKind.LET) throw new IllegalArgumentException("E_IMMUTABLE_REBIND: cannot reassign " + binding.kind().name().toLowerCase() + " binding '" + name.name() + "'");
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
