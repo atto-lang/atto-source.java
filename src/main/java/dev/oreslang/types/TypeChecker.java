@@ -2204,14 +2204,42 @@ public final class TypeChecker {
                     : overlayReadonlyCapabilities(actual, declaredAhead);
             requireAssignable(actual, declared, "initializer for " + binding.name());
 
+            // Stage-one scalar contract: both `int x = e` and
+            // `const int x = e` parse to CONST and must evaluate at compile
+            // time. Do not turn a non-constant expression into runtime `val`.
+            // Aggregate const / legacy const mut have a separately tracked
+            // ownership migration; this gate cannot certify those shapes.
+            Object scalarConstant = null;
+            if (binding.kind() == Ast.BindingKind.CONST && isScalarConstLocal(binding)) {
+                if (binding.mutableReferent()) {
+                    throw new IllegalArgumentException(
+                            "E_CONST_MUT_UNSUPPORTED: mutable scalar constant has no interior storage");
+                }
+                try {
+                    scalarConstant = evaluateScalarConstant(binding.initializer(), env, 0);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalArgumentException(
+                            "E_CONST_OVERFLOW: constant initializer for '" + binding.name() + "'", overflow);
+                }
+                if (scalarConstant == null) {
+                    throw new IllegalArgumentException(
+                            "E_NON_CONST_INITIALIZER: constant initializer for '" + binding.name()
+                                    + "' is not compile-time evaluable");
+                }
+            }
+
             // Resolve CONST selector metadata before defining the new binding so
             // an initializer alias refers to the lexical source, not to the just-
             // declared name in a shadowing scope.
             Long constantInteger = null;
             String constantString = null;
+            Boolean constantBoolean = null;
             if (binding.kind() == Ast.BindingKind.CONST) {
-                constantInteger = constantTupleIndex(binding.initializer(), env);
-                constantString = constantStringKey(binding.initializer(), env);
+                constantInteger = scalarConstant instanceof Long value
+                        ? value : constantTupleIndex(binding.initializer(), env);
+                constantString = scalarConstant instanceof String value
+                        ? value : constantStringKey(binding.initializer(), env);
+                constantBoolean = scalarConstant instanceof Boolean value ? value : null;
             }
 
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
@@ -2222,6 +2250,9 @@ public final class TypeChecker {
                 }
                 if (constantString != null) {
                     env.defineConstantString(binding.name(), constantString);
+                }
+                if (constantBoolean != null) {
+                    env.defineConstantBoolean(binding.name(), constantBoolean);
                 }
             }
             return;
@@ -8714,6 +8745,92 @@ public final class TypeChecker {
                 .reduce(Types::unionOf).orElse(Unknown.INSTANCE);
     }
 
+    /** Only closed primitive locals enter the first const parity slice. */
+    private boolean isScalarConstLocal(Ast.BindingStmt binding) {
+        Ast.TypeRef type = binding.declaredType();
+        return type != null && type.arguments().isEmpty() && !type.inferArguments()
+                && Set.of("int", "bool", "string", "String").contains(type.name());
+    }
+
+    /**
+     * Bounded deterministic scalar constant evaluator. A runtime call, read,
+     * effect, borrow, actor-state access, or unknown name is NOT a constant.
+     * No guest execution or host callback is performed during this check.
+     */
+    private Object evaluateScalarConstant(Ast.Expr expression, Env env, int depth) {
+        if (depth > 64) throw new IllegalArgumentException(
+                "E_CONST_EVAL_BUDGET: scalar constant expression exceeds nesting limit");
+        if (expression instanceof Ast.LiteralExpr literal) {
+            return literal.value() instanceof Long || literal.value() instanceof Boolean
+                    || literal.value() instanceof String ? literal.value() : null;
+        }
+        if (expression instanceof Ast.NameExpr name) {
+            Long integer = env.lookupConstantInteger(name.name());
+            if (integer != null) return integer;
+            Boolean bool = env.lookupConstantBoolean(name.name());
+            if (bool != null) return bool;
+            return env.lookupConstantString(name.name());
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            Object value = evaluateScalarConstant(unary.operand(), env, depth + 1);
+            return switch (unary.operator()) {
+                case "+" -> value instanceof Long ? value : null;
+                case "-" -> value instanceof Long integer ? Math.negateExact(integer) : null;
+                case "!" -> value instanceof Boolean bool ? !bool : null;
+                default -> null;
+            };
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            Object left = evaluateScalarConstant(binary.left(), env, depth + 1);
+            Object right = evaluateScalarConstant(binary.right(), env, depth + 1);
+            if (left == null || right == null) return null;
+            String operator = binary.operator();
+            if (left instanceof Long a && right instanceof Long b) {
+                return switch (operator) {
+                    case "+" -> Math.addExact(a, b);
+                    case "-" -> Math.subtractExact(a, b);
+                    case "*" -> Math.multiplyExact(a, b);
+                    case "eq", "==" -> a.longValue() == b.longValue();
+                    case "neq", "!=" -> a.longValue() != b.longValue();
+                    case "<" -> a < b;
+                    case "<=" -> a <= b;
+                    case ">" -> a > b;
+                    case ">=" -> a >= b;
+                    default -> null;
+                };
+            }
+            if (left instanceof Boolean a && right instanceof Boolean b) {
+                return switch (operator) {
+                    case "&&" -> a && b;
+                    case "||" -> a || b;
+                    case "^^" -> a ^ b;
+                    case "eq", "==" -> a.equals(b);
+                    case "neq", "!=" -> !a.equals(b);
+                    default -> null;
+                };
+            }
+            if (left instanceof String a && right instanceof String b) {
+                return switch (operator) {
+                    case "+" -> a + b;
+                    case "eq", "==" -> a.equals(b);
+                    case "neq", "!=" -> !a.equals(b);
+                    default -> null;
+                };
+            }
+            return null;
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            Object predicate = evaluateScalarConstant(conditional.condition(), env, depth + 1);
+            if (!(predicate instanceof Boolean condition)) return null;
+            // Check the entire constant expression for unsupported/effectful
+            // branches even when a runtime path would be skipped.
+            Object yes = evaluateScalarConstant(conditional.whenTrue(), env, depth + 1);
+            Object no = evaluateScalarConstant(conditional.whenFalse(), env, depth + 1);
+            return yes == null || no == null ? null : condition ? yes : no;
+        }
+        return null;
+    }
+
     /** Folds trivial signed integer constants without performing guest arithmetic. */
     private Long constantIntegerLiteral(Ast.Expr expression) {
         if (expression instanceof Ast.LiteralExpr literal
@@ -11244,6 +11361,8 @@ public final class TypeChecker {
         private final Map<String, Long> constantIntegers = new HashMap<>();
         /** Literal string constants used only for exact fixed-product field selection. */
         private final Map<String, String> constantStrings = new HashMap<>();
+        /** Evaluated bool constants for independent, immutable nested declarations. */
+        private final Map<String, Boolean> constantBooleans = new HashMap<>();
         private final Map<String, Type> inferredTypes = new HashMap<>();
         private final Set<String> reservedInferredNames = new HashSet<>();
         /**
@@ -11333,6 +11452,16 @@ public final class TypeChecker {
         private String lookupConstantString(String name) {
             if (bindings.containsKey(name)) return constantStrings.get(name);
             return parent == null ? null : parent.lookupConstantString(name);
+        }
+        private void defineConstantBoolean(String name, boolean value) {
+            if (!bindings.containsKey(name)) {
+                throw new IllegalStateException("boolean constant metadata requires existing binding");
+            }
+            constantBooleans.put(name, value);
+        }
+        private Boolean lookupConstantBoolean(String name) {
+            if (bindings.containsKey(name)) return constantBooleans.get(name);
+            return parent == null ? null : parent.lookupConstantBoolean(name);
         }
         private Binding lookup(String name) {
             Binding binding = bindings.get(name);
