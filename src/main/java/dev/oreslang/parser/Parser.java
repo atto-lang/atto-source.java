@@ -2835,17 +2835,24 @@ public final class Parser {
                 variant.append('.').append(consume(IDENT,
                         "expected variant member after '.'").lexeme());
             } while (check(DOT));
-            consume(AS, "qualified variant destructuring requires 'as ( ... )'");
-            consume(LPAREN, "expected '(' after variant 'as'");
-            List<Ast.Pattern> fields = new ArrayList<>();
-            if (!check(RPAREN)) {
-                do {
-                    fields.add(new Ast.BindingPattern(consume(IDENT,
-                            "expected binding name in variant payload").lexeme()));
-                } while (match(COMMA));
+            if (match(AS)) {
+                if (match(LPAREN)) {
+                    // Legacy positional payload bindings remain distinct from
+                    // the canonical whole-variant `as name` alias.
+                    List<Ast.Pattern> fields = new ArrayList<>();
+                    if (!check(RPAREN)) {
+                        do {
+                            fields.add(new Ast.BindingPattern(consume(IDENT,
+                                    "expected binding name in variant payload").lexeme()));
+                        } while (match(COMMA));
+                    }
+                    consume(RPAREN, "expected ')' after variant payload bindings");
+                    return new Ast.ConstructorPattern(variant.toString(), fields);
+                }
+                String alias = consume(IDENT, "expected whole-variant alias after 'as'").lexeme();
+                return new Ast.ConstructorPattern(variant.toString(), List.of(), alias);
             }
-            consume(RPAREN, "expected ')' after variant payload bindings");
-            return new Ast.ConstructorPattern(variant.toString(), fields);
+            return new Ast.ConstructorPattern(variant.toString(), List.of());
         }
 
         if (check(IDENT)) {
@@ -2856,11 +2863,17 @@ public final class Parser {
                     do args.add(parsePattern()); while (match(COMMA));
                 }
                 consume(RPAREN, "expected ')' after constructor pattern");
-                return new Ast.ConstructorPattern(name, args);
+                String alias = match(AS)
+                        ? consume(IDENT, "expected whole-variant alias name").lexeme()
+                        : null;
+                return new Ast.ConstructorPattern(name, args, alias);
             }
             // Upper-case bare names are zero-arity constructors; lower-case names bind.
             if (!name.isEmpty() && Character.isUpperCase(name.charAt(0))) {
-                return new Ast.ConstructorPattern(name, List.of());
+                String alias = match(AS)
+                        ? consume(IDENT, "expected whole-variant alias name").lexeme()
+                        : null;
+                return new Ast.ConstructorPattern(name, List.of(), alias);
             }
             return new Ast.BindingPattern(name);
         }
