@@ -2,6 +2,8 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.PackageNamespaceBuild;
+import dev.oreslang.compiler.ActorCriticalStateMirV3;
+import dev.oreslang.compiler.StateRegionLoanReceipt;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
@@ -124,6 +126,68 @@ final class ActorCriticalStateSyntaxV2Test {
         }
         return new PackageNamespaceBuild(
                 OresProjectConfig.load(root.resolve(".atto.pkg.toml"), Map.of()));
+    }
+
+    @Test
+    void manifestCounterHasOrderedAndBalancedGenerationFencedMir() throws Exception {
+        var build = physicalBuild();
+        var plan = build.auditCriticalStateMirV3();
+        assertEquals(build.packageIdentity(), plan.packageIdentity());
+        assertEquals("counter", plan.namespace());
+        assertEquals("Counter", plan.actor());
+        assertEquals("receive", plan.method());
+        assertEquals("src/counter/receive.atto", plan.sourceUnit());
+        assertEquals("total", plan.stateField());
+        assertEquals("int", plan.scalarType());
+        assertEquals(64, plan.sourceSha256().length());
+        assertEquals(java.util.List.of(
+                ActorCriticalStateMirV3.Instruction.REQUIRE_ACTOR_TURN,
+                ActorCriticalStateMirV3.Instruction.ACQUIRE_WRITE,
+                ActorCriticalStateMirV3.Instruction.LOAD_STATE_I64,
+                ActorCriticalStateMirV3.Instruction.LOAD_MAIL_I64,
+                ActorCriticalStateMirV3.Instruction.CHECKED_ADD_I64,
+                ActorCriticalStateMirV3.Instruction.STORE_STATE_I64,
+                ActorCriticalStateMirV3.Instruction.RELEASE_WRITE,
+                ActorCriticalStateMirV3.Instruction.ACQUIRE_READ,
+                ActorCriticalStateMirV3.Instruction.COPY_STATE_I64,
+                ActorCriticalStateMirV3.Instruction.RELEASE_READ,
+                ActorCriticalStateMirV3.Instruction.MAILBOX_SEND_COPY_I64,
+                ActorCriticalStateMirV3.Instruction.CHECK_STOP,
+                ActorCriticalStateMirV3.Instruction.RETURN_VOID),
+                plan.instructions());
+        var loans = plan.loans();
+        assertEquals(4, loans.size());
+        assertTrue(loans.get(0).authorizes_release(loans.get(1)));
+        assertTrue(loans.get(2).authorizes_release(loans.get(3)));
+        assertFalse(loans.get(0).authorizes_release(loans.get(3)));
+        assertEquals(StateRegionLoanReceipt.Kind.WRITE, loans.get(0).kind());
+        assertEquals(StateRegionLoanReceipt.Kind.READ, loans.get(2).kind());
+        assertEquals(StateRegionLoanReceipt.Action.RELEASE, loans.get(3).action());
+        assertTrue(loans.stream().allMatch(StateRegionLoanReceipt.Requirement::generation_fence));
+        assertTrue(loans.stream().allMatch(StateRegionLoanReceipt.Requirement::current_logical_execution));
+        assertEquals("self.total", loans.get(0).place());
+        assertEquals(loans.get(0).region_binding(), loans.get(2).region_binding());
+        assertThrows(UnsupportedOperationException.class,
+                () -> plan.instructions().add(ActorCriticalStateMirV3.Instruction.RETURN_VOID));
+    }
+
+    @Test
+    void checkedMirCannotGrantExecutionOrAdmitInLoanSend() throws Exception {
+        var build = physicalBuild();
+        assertNotNull(build.auditCriticalStateMirV3());
+        var executable = assertThrows(IllegalArgumentException.class,
+                build::compileStatelessActorGuestV1);
+        assertTrue(executable.getMessage().contains("sealed state/critical loans"),
+                executable.getMessage());
+
+        var receive = root.resolve("src/counter/receive.atto");
+        String original = Files.readString(receive);
+        Files.writeString(receive, original.replace(
+                "self.send(snapshot);",
+                "self.send(s.total);"));
+        var denied = assertThrows(IllegalArgumentException.class,
+                build::auditCriticalStateMirV3);
+        assertFalse(denied.getMessage().isBlank());
     }
 
     @Test

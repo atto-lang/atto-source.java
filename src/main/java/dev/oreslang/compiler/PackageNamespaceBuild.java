@@ -204,6 +204,19 @@ public final class PackageNamespaceBuild {
     }
 
     /**
+     * Build authenticated, symbolic critical-state MIR from ONE complete
+     * manifest snapshot. The returned plan is compile-time data only:
+     * production execution remains blocked until actor-turn identity,
+     * protected region admission, unwind and codegen are implemented.
+     */
+    public synchronized ActorCriticalStateMirV3.Plan auditCriticalStateMirV3()
+            throws IOException {
+        SourceSnapshot source = snapshot();
+        ActorAudit audit = auditSnapshot(source);
+        return ActorCriticalStateMirV3.lower(audit, packageIdentity);
+    }
+
+    /**
      * Experimental native guest entrypoint for one STATELESS declared actor.
      *
      * The canonical source set and static witness are derived from the same
