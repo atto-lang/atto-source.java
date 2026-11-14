@@ -93,6 +93,23 @@ final class DeclaredActorContractWitnessTest {
     }
 
     @Test
+    void physicalFourFileStateRequirementCorpusHasOneStaticWitness() throws IOException {
+        var units = new LinkedHashMap<String, Ast.Program>();
+        for (String file : new String[] {
+                "actor.atto", "contract.atto", "method.atto", "state.atto"}) {
+            var contents = Files.readString(
+                    Path.of("contracts", "declared-actor-state-witness-v2", file));
+            units.put("src/foo/" + file, Parser.parse(contents));
+        }
+        var receipt = ActorContractWitness.linkSourceSet("demo@1.0.0", units);
+        assertEquals(1, receipt.actors().size());
+        var proof = receipt.actors().values().iterator().next();
+        assertEquals("src/foo/state.atto", proof.stateUnit());
+        assertEquals(1, proof.methods().size());
+        assertEquals(1, receipt.boundMethods().size());
+    }
+
+    @Test
     void missingRequiredMethodFailsClosed() {
         reject(DECL, CONTRACT,
                 NS + "pub mtd (Foo f) other(int x): int { return x; }",
