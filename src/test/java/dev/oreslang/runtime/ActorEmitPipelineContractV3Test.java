@@ -71,7 +71,7 @@ final class ActorEmitPipelineContractV3Test {
         assertThrows(IllegalArgumentException.class,
                 () -> actor("bad\0id", "Parse", "int", "int"));
         assertThrows(IllegalArgumentException.class,
-                () -> actor("a", "\ud800", "int", "int"));
+                () -> actor("a", new String(new char[]{(char) 0xD800}), "int", "int"));
         assertThrows(IllegalArgumentException.class,
                 () -> actor("x".repeat(257), "Parse", "int", "int"));
         assertThrows(IllegalArgumentException.class,
