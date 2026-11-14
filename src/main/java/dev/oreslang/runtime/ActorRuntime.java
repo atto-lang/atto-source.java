@@ -2226,6 +2226,13 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public interface ActorOwnedGuestState {
         ActorId ownerActorId();
+
+        /**
+         * Compiler-supplied metadata, never a guest-controlled state field.
+         * True gates DATA receive invocations, NOT unrelated receiver methods.
+         * Legacy host code executors default to non-serial declarations.
+         */
+        default boolean serialReceive() { return false; }
     }
 
     /**
@@ -2974,6 +2981,7 @@ public final class ActorRuntime implements AutoCloseable {
                         ? -1L : cell.activeMail.sequence();
                 cell.sourceReceiveSuspended = false;
                 cell.activeMail = null;
+                cell.releaseReceivePermitLocked();
                 cell.lifecycleLock.notifyAll();
             }
             if (failure != null) {
@@ -8883,6 +8891,10 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
+        /** Receive-only permit persists across logical source suspension. */
+        private ActorReceiveAdmission receiveAdmission;
+        /** One live permit in the currently single-writer physical scheduler. */
+        private ActorReceiveAdmission.Permit activeReceivePermit;
         /**
          * Separate actor-owned receipts: the currently RUNNING callback may
          * coexist with a fully reserved continuation mailbox.
@@ -8974,6 +8986,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             this.ref = ref;
             this.kind = kind;
+            // Conservative physical stage: even ordinary actors have a
+            // single active receive until parallel stack/state lowering is
+            // independently proven. The serial qualifier is retained below.
+            this.receiveAdmission = ActorReceiveAdmission.concurrent(ref.generation(), 1);
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
             this.policy = policy;
@@ -9544,6 +9560,11 @@ public final class ActorRuntime implements AutoCloseable {
                 recordFinalizationFailure(failure);
             }
             staticSelectCursors.clear();
+            // STOP has already joined physical SourceTask cleanup at this
+            // finalization point. Only now retire the outstanding receive
+            // permit and seal its incarnation-scoped admission gate.
+            releaseReceivePermitLocked();
+            receiveAdmission.close();
             // A compiler-lowered sealed region may only be reclaimed after
             // source tasks and their cleanup reached physical quiescence above.
             // Do not release live state on the first STOP request: closing
@@ -10027,6 +10048,13 @@ public final class ActorRuntime implements AutoCloseable {
                                             + " does not match actor "
                                             + ref.id());
                         }
+                        // A serial source declaration must be preserved at
+                        // runtime; numeric 1/1 admission settings alone are
+                        // not a substitute for its receive-only semantics.
+                        if (created.serialReceive()) {
+                            receiveAdmission.close();
+                            receiveAdmission = ActorReceiveAdmission.serial(ref.generation());
+                        }
                         codeActorState = created;
                     } else {
                         Behavior<M> created = Objects.requireNonNull(
@@ -10109,7 +10137,20 @@ public final class ActorRuntime implements AutoCloseable {
                                     Optional.ofNullable(activeEnvelope.sender()),
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
-                            activeMail = mail;
+                            synchronized (lifecycleLock) {
+                                if (activeReceivePermit != null) {
+                                    throw new IllegalStateException(
+                                            "actor receive permit retained across fresh DATA dispatch");
+                                }
+                                ActorReceiveAdmission.Permit permit =
+                                        receiveAdmission.tryEnter(ref.generation());
+                                if (permit == null) {
+                                    throw new IllegalStateException(
+                                            "actor receive admission exhausted during DATA dispatch");
+                                }
+                                activeReceivePermit = permit;
+                                activeMail = mail;
+                            }
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -10132,7 +10173,12 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
-                                if (!sourceReceiveSuspended) activeMail = null;
+                                synchronized (lifecycleLock) {
+                                    if (!sourceReceiveSuspended) {
+                                        activeMail = null;
+                                        releaseReceivePermitLocked();
+                                    }
+                                }
                             }
                         }
                         if (codeExecutor == null
@@ -10200,6 +10246,17 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 // scheduled/finalization/rescheduling belong to runBatch(),
                 // after TurnExecutor.execute(...) has returned.
+            }
+        }
+
+        /**
+         * Lifecycle-monitor-only release. Await/cooperate NEVER returns the
+         * permit: a suspended DATA receive still owns its logical stack.
+         */
+        private void releaseReceivePermitLocked() {
+            if (activeReceivePermit != null) {
+                activeReceivePermit.close();
+                activeReceivePermit = null;
             }
         }
 
