@@ -272,9 +272,11 @@ final class TaskBorrowBoundaryV2Test {
                 """, "moved", "capture", "used");
     }
 
+    // Mutex<T> is confined to its creating actor/execution domain: the runtime
+    // rejects any use of a moved Mutex in a task, so the checker rejects the move.
     @Test
-    void uniquelyOwnedMutexMayMoveWhenPayloadIsSend() {
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+    void mutexStaysInItsCreatingDomainEvenWhenUniquelyOwned() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
                   let Mutex<int> mutex = Mutex.new(41);
                   let Future<void> child = task {
@@ -345,13 +347,30 @@ final class TaskBorrowBoundaryV2Test {
     void sendSafeCapabilityMayMoveThroughOwnedClass() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(BOX + """
                 define class SendWrapper as
+                  pub let Box lock;
+                  constructor(Box lock) { self.lock = lock; }
+                end
+                pub async fnc main(): void {
+                  let SendWrapper wrapper = new SendWrapper(new Box());
+                  let Future<int> child = task {
+                    let SendWrapper moved = wrapper;
+                    return 1;
+                  };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """));
+
+        // The same wrapper holding an actor-local Mutex must not move.
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(BOX + """
+                define class MutexWrapper as
                   pub let Mutex<Box> lock;
                   constructor(Mutex<Box> lock) { self.lock = lock; }
                 end
                 pub async fnc main(): void {
-                  let SendWrapper wrapper = new SendWrapper(Mutex.new(new Box()));
+                  let MutexWrapper wrapper = new MutexWrapper(Mutex.new(new Box()));
                   let Future<int> child = task {
-                    let SendWrapper moved = wrapper;
+                    let MutexWrapper moved = wrapper;
                     return 1;
                   };
                   stdio.stdout.write(await child);
@@ -411,7 +430,8 @@ final class TaskBorrowBoundaryV2Test {
 
         assertFalse((Boolean) gate.invoke(checker, one.apply("Box")));
         assertFalse((Boolean) gate.invoke(checker, one.apply("RefCell")));
-        assertFalse((Boolean) gate.invoke(checker, one.apply("Mutex")));
+        assertTrue((Boolean) gate.invoke(checker, one.apply("Mutex")),
+                "Mutex<T> is confined to its creating actor/execution domain");
         assertFalse((Boolean) gate.invoke(checker, one.apply("RwLock")));
         assertFalse((Boolean) gate.invoke(checker, one.apply("Arc")));
         assertFalse((Boolean) gate.invoke(checker, one.apply("Weak")));
