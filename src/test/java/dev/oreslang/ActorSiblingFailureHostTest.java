@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.IsolatePolicy;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -47,6 +48,12 @@ final class ActorSiblingFailureHostTest {
                     faulting.failure().orElseThrow().getMessage());
             assertThrows(ActorRuntime.ActorTerminatedException.class,
                     () -> faulting.send(100));
+            // Physical failure completion must be exceptional, not an
+            // apparently successful actor DONE. This also fences teardown
+            // before admitting the healthy sibling's next message.
+            var doneFailure = assertThrows(ExecutionException.class,
+                    () -> faulting.getDone().get(2, TimeUnit.SECONDS));
+            assertSame(faulting.failure().orElseThrow(), doneFailure.getCause());
 
             witness.send(2);
             assertTrue(secondReply.await(2, TimeUnit.SECONDS),
@@ -56,6 +63,8 @@ final class ActorSiblingFailureHostTest {
                     "witness mailbox deliveries were lost or replayed");
             witness.stop();
             assertTrue(witness.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.privateMemoryBytes(),
+                    "both private actor memory charges must retire after physical done");
         }
     }
 }
