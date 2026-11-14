@@ -1,0 +1,61 @@
+name: Borrow checker guarded match false-edge ownership
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/types/OwnershipChecker.java"
+      - "src/test/java/dev/oreslang/GuardedMatchOwnershipFlowTest.java"
+      - "src/test/java/dev/oreslang/MatchGuardGuestFixtureV1Test.java"
+      - "tests/fixtures/ownership-match-guard-v1/**"
+      - ".github/workflows/borrow-match-guard-ownership.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guarded-match-junit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify commit, tree, and two changed file blobs
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          mkdir -p target/borrow-guard-evidence
+          printf 'head=%s\ntree=%s\n' "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')" > target/borrow-guard-evidence/identity.txt
+          for path in src/main/java/dev/oreslang/types/OwnershipChecker.java src/test/java/dev/oreslang/GuardedMatchOwnershipFlowTest.java src/test/java/dev/oreslang/MatchGuardGuestFixtureV1Test.java tests/fixtures/ownership-match-guard-v1/*.atto; do
+            test "$(git rev-parse "HEAD:$path")" = "$(git hash-object --no-filters "$path")"
+            git rev-parse "HEAD:$path" >> target/borrow-guard-evidence/identity.txt
+          done
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Execute compiler guard flow regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version 2>&1 | tee target/borrow-guard-evidence/java-version.txt
+          mvn -B -ntp -Dtest=GuardedMatchOwnershipFlowTest,MatchGuardGuestFixtureV1Test -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test | tee target/borrow-guard-evidence/maven.log
+          for suite in GuardedMatchOwnershipFlowTest MatchGuardGuestFixtureV1Test; do
+            report="target/surefire-reports/TEST-dev.oreslang.$suite.xml"
+            test -s "$report"
+            sha256sum "$report" >> target/borrow-guard-evidence/report.sha256
+            cp "$report" target/borrow-guard-evidence/
+          done
+      - name: Retain exact-head source and test receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: guarded-match-ownership-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/borrow-guard-evidence/
+          if-no-files-found: error
+          retention-days: 7
