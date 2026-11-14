@@ -9670,10 +9670,25 @@ public final class ActorRuntime implements AutoCloseable {
                                     // Defense in depth: actor-owned state and
                                     // recipient must belong to this live actor
                                     // incarnation before entering guest code.
-                                    ActorSourceLifecycleGate.ReceiveLease receiveLease =
-                                            sourceLifecycleGate.enterReceive(
-                                                    ref.id(), codeActorType,
-                                                    codeActorState, sourceMail);
+                                    ActorSourceLifecycleGate.ReceiveLease receiveLease;
+                                    synchronized (lifecycleLock) {
+                                        // The earlier STOP check only covered
+                                        // dequeue, not source callback admission.
+                                        // Seal and receive-lease minting must
+                                        // linearize under the SAME runtime lock;
+                                        // otherwise STOP can win between the
+                                        // first check and enterReceive(), turning
+                                        // normal shutdown into a guest failure.
+                                        if (stopped.get() || finalized || forceKillFenced) {
+                                            // The envelope still closes in its
+                                            // outer try-with-resources. No
+                                            // callback or new lease was admitted.
+                                            continue;
+                                        }
+                                        receiveLease = sourceLifecycleGate.enterReceive(
+                                                ref.id(), codeActorType,
+                                                codeActorState, sourceMail);
+                                    }
                                     try {
                                         codeExecutor.receiveActor(
                                                 codeActorType,
