@@ -4138,7 +4138,8 @@ public final class Parser {
 
     private Ast.Expr parseCondition() {
         Ast.Expr expression = normalizeLegacyConditionPipe(parseLogicalOr());
-        // Legacy condition-only comma means logical AND. Prefer && in new code.
+        // Condition-only comma means logical AND and bare '|' means OR (spec ch.16).
+        // Prefer && and || in new code.
         while (match(COMMA)) {
             expression = new Ast.BinaryExpr(
                     "&&",
@@ -4799,8 +4800,11 @@ public final class Parser {
 
     private Ast.Expr parseLogicalXor() {
         Ast.Expr expr = parseLogicalAnd();
-        if (matchAdjacentPair(CARET)) throw error(previous(),
-                "'^^' is reserved and is not AttoLang source syntax; use Xor(a, b)");
+        // Canonical boolean XOR: both operands are evaluated once, left to right.
+        // Only an adjacent double caret is recognized; single '^' stays reserved.
+        while (matchAdjacentPair(CARET)) {
+            expr = new Ast.BinaryExpr("^^", expr, parseLogicalAnd());
+        }
         return expr;
     }
 
