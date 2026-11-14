@@ -136,16 +136,31 @@ final class ActorSourceTearDownTest {
             executor.releaseStartup = new CountDownLatch(1);
             var ref = runtime.spawnCodeActor(
                     ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            assertTrue(executor.startupEntered.await(3, TimeUnit.SECONDS),
+                    "initializer never entered");
+            // The public host stop() is a synchronous finalization barrier.
+            // Never call it on the thread that must release the initializer:
+            // that would make the test deadlock independently of the runtime.
+            AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+            Thread stopper = Thread.ofVirtual().start(() -> {
+                try {
+                    ref.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
             try {
-                assertTrue(executor.startupEntered.await(3, TimeUnit.SECONDS),
-                        "initializer never entered");
-                // STOP wins *before* initializeActor can publish its state.
-                // The source gate must reject the late commit, but that is
-                // lifecycle cancellation, not a new actor execution error.
-                ref.stop();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (ref.isAlive() && System.nanoTime() < deadline) {
+                    Thread.yield();
+                }
+                assertFalse(ref.isAlive(), "host STOP must seal initialization");
             } finally {
                 executor.releaseStartup.countDown();
             }
+            stopper.join(5_000);
+            assertFalse(stopper.isAlive(), "stopper must finish physical finalization");
+            assertNull(stopFailure.get(), () -> "host stop failed: " + stopFailure.get());
             ref.done().get(5, TimeUnit.SECONDS);
             assertThrows(CompletionException.class, () -> ref.ready().join());
             assertTrue(ref.failure().isEmpty(),
