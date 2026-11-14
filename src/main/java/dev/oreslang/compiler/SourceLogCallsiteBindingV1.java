@@ -86,7 +86,8 @@ public final class SourceLogCallsiteBindingV1 {
                 exactCallableCount++;
                 if (fn.async() || fn.suspends() || fn.generator()
                         || fn.actorKind() != Ast.ActorKind.NONE
-                        || !fn.genericParameters().isEmpty()) {
+                        || !fn.genericParameters().isEmpty()
+                        || fn.parameters().stream().anyMatch(p -> "log".equals(p.name()))) {
                     throw new IllegalArgumentException(
                             "log-site tracing across suspension/actor turns requires proven continuation cleanup");
                 }
@@ -146,6 +147,10 @@ public final class SourceLogCallsiteBindingV1 {
             IdentityHashMap<Ast.CallExpr, SourceIdentityV1.Site> result) {
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.UsingTelemetrySpanStmt scope) {
+                if ("log".equals(scope.binding())) {
+                    throw new IllegalArgumentException(
+                            "telemetry span alias must not shadow reserved log intrinsic");
+                }
                 if (!(scope.name() instanceof Ast.LiteralExpr value)
                         || !(value.value() instanceof String)) {
                     throw new IllegalArgumentException(
