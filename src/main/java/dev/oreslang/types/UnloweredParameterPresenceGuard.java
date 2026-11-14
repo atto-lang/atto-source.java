@@ -33,8 +33,13 @@ public final class UnloweredParameterPresenceGuard {
     public static void check(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules())
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn)
-                    checkParameters(fn.parameters(), "function " + fn.name());
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    // Only this rigorously bounded scalar/Option<int> subset
+                    // has explicit checked type/ownership/runtime materialization.
+                    if (!CheckedScalarFormalPolicy.admitted(fn)) {
+                        checkParameters(fn.parameters(), "function " + fn.name());
+                    }
+                }
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
                 else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
             }
