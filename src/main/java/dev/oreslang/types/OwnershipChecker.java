@@ -235,6 +235,10 @@ public final class OwnershipChecker {
     }
 
     private Ast.ClassDecl initializingClass;
+    // The exact receiver owner while checking a method. Unqualified names
+    // can be ambiguous when sibling modules both declare actor Worker;
+    // method/field ownership checks must use this AST identity instead.
+    private Ast.ClassDecl currentReceiverClass;
     // A deliberately conservative one-write constructor ledger. A later CFG
     // refinement may permit mutually exclusive writes, but this checker must
     // never permit a fixed slot to be assigned twice along a path.
@@ -369,8 +373,14 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            Ast.ClassDecl previousReceiverClass = currentReceiverClass;
+            currentReceiverClass = klass;
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentReceiverClass = previousReceiverClass;
+                scope.close();
+            }
         }
     }
 
@@ -1357,7 +1367,7 @@ public final class OwnershipChecker {
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
                     requireUsable(receiverState, receiverName.name(), false);
                     Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
-                    Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+                    Ast.ClassDecl klass = classForReceiver(member.receiver(), concreteReceiver);
                     if (klass != null) {
                         ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                         if (target != null) {
@@ -1414,7 +1424,7 @@ public final class OwnershipChecker {
                         "ActorOutputStream", List.of(Ast.TypeRef.inferred()), false);
                 return new ValueInfo(outputStream, ValueKind.MOVE_ONLY, null);
             }
-            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            Ast.ClassDecl klass = classForReceiver(member.receiver(), concreteReceiver);
             if (klass != null) {
                 ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                 if (target != null) {
@@ -2184,7 +2194,7 @@ public final class OwnershipChecker {
                         isCopyType(mapValue) ? ValueKind.COPY : ValueKind.MOVE_ONLY,
                         null);
             }
-            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            Ast.ClassDecl klass = classForReceiver(member.receiver(), concreteReceiver);
             ResolvedMethod target = klass == null ? null
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (target != null) {
@@ -3992,9 +4002,16 @@ public final class OwnershipChecker {
         return type;
     }
 
-    private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
-        Ast.TypeRef type = receiverType(receiver, scope);
+    private Ast.ClassDecl classForReceiver(Ast.Expr receiver, Ast.TypeRef type) {
+        if (receiver instanceof Ast.NameExpr name && name.name().equals("self")
+                && currentReceiverClass != null) {
+            return currentReceiverClass;
+        }
         return type == null ? null : findClass(type.name());
+    }
+
+    private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
+        return classForReceiver(receiver, receiverType(receiver, scope));
     }
 
     private Map<String, Ast.TypeRef> genericBindings(List<String> names, List<Ast.TypeRef> arguments) {
