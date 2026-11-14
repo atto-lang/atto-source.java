@@ -14,7 +14,7 @@ These snippets are **target syntax**, not evidence that both compilers accept th
 | `time.set_timer(duration, callback) -> TimerHandle` | Canonical one-shot callback timer. Enqueues callback on its owning task/actor scheduler, never executes guest code on clock thread. |
 | `time.set_timeout(duration, callback) -> TimerHandle` | Compatibility alias for `time.set_timer` (do not expose conflicting semantics). |
 | `time.set_interval(period, callback) -> TimerHandle` | Repeats after the previous callback is finished (fixed delay, never overlaps itself). |
-| `time.timeout(duration, future) -> Future<T>` | Races a monotonic deadline against an awaited operation, settles exactly once. |
+| `time.timeout(duration, future) -> Future<T>` | Independent observer racing a monotonic deadline against a Future, settling exactly once without implicitly cancelling a shared producer. |
 | `timer.cancel() -> bool` | Idempotently revokes a timer callback that has not started; returns whether this call won. |
 | `timer.get_done() -> Future<void>` | Observe callback completion, cancellation, or propagated callback failure without blocking a carrier. |
 
@@ -23,6 +23,42 @@ implement their parser/type checker and canonical formatter consistently before
 advertising these examples as runnable. Negative durations are invalid; an
 interval period must be strictly positive. Zero-delay one-shot timers are
 allowed and still resume on a **later** scheduler turn.
+
+## No explicit Task required for timer waits
+
+`await time.sleep(250ms)`, `await time.after(1s)`, `await interval.next()`
+and `await time.timeout(2s, existing_future)` do not spawn a new source
+`Task<T>`. An existing async callable or actor continuation owns the
+suspension frame, and the timer/observer merely supplies readiness. The
+runtime may have an implicit task/scheduler context; **no extra scheduled
+task is required just to wait**. The compiler must reject bare `await`
+outside a suspendable context unless the root entry point has a defined
+async frame. `time.sleep` creates a Future, not a child Task.
+
+An unawaited one-shot timer also needs no explicit Task. Its owner is the
+actor/context; `time.set_timer` registers a callback capability. When it
+fires, guest callback execution is serialized through the actual owner
+scheduler/actor mailbox. It is never executed by the timer clock. The
+current Java host callback substrate uses a scheduler task for dispatch;
+this is an implementation detail, **not** an implicit guest Task exposed
+by every timer.
+
+`time.timeout(duration, future)` has **observer-only cancellation**:
+- Deadline first: fail the returned Future with `TimeoutError`, revoke
+  the timer and detach the observer; leave the input producer running.
+- Input result first: preserve its value, failure or cancellation exactly;
+  revoke the deadline and detach the observer.
+- Cancel the returned observer: revoke its timer and detach its listener;
+  never cancel a shared input producer.
+- To cancel *owned work* on a deadline, require an explicit Task/TaskScope
+  cancellation capability. A logical timeout is **not** physical producer
+  retirement; reclamation must await the producer's `get_done()` or equivalent
+  retirement receipt. No unsafe implicit ownership transfer is allowed.
+
+The public `TimeoutError` name is normative for the guest contract but
+its guest Error subclass and bindings are not yet implemented. The Java
+host-only `timeoutNanos` currently carries `java.util.concurrent.TimeoutException`;
+do not interpret that as exported guest error parity.
 
 ## Canonical one-shot callback timer
 
@@ -125,7 +161,7 @@ both backend select lowering paths are supported.
 2. A clock/broker callback only **settles a Future or marks a token ready**. It cannot run guest code, borrow an actor heap, bypass an actor's execution lease, or directly resume an actor.
 3. The producer may be on a different host thread; `await` always reschedules the continuation onto its original owning scheduler. Even already-completed timers resume on a later logical turn.
 4. Close/context shutdown/actor teardown cancels registered timers and detaches pending continuations. Physical frame reclamation waits for any race-losing callbacks to quiesce.
-5. Bound pending timer count, registrations, timeout notifications and interval backlog. Reject excess admissions with a typed resource error. Do not silently create a thread, actor, or queued closure per tick.
+5. Bound pending timer count, registrations, timeout notifications, **idle interval capabilities across all owners**, and interval backlog. Reject excess admissions with a typed resource error. Do not silently create a thread, actor, or queued closure per tick.
 6. An interval's `next()` has **one outstanding consumer**. No timer runs until `next()` is requested; missed periods are not accumulated. This is **fixed delay**, not a fixed-rate catch-up stream. Callback intervals rearm only after the prior callback finishes.
 7. Cancellation vs expiration vs shutdown has one linearization winner. A stale timer identifier, actor generation or scheduler domain must never wake a replacement continuation. Cancellation is not permission to reclaim a still-running guest frame.
 8. A timer is a context/actor-owned capability, not an actor-sendable raw closure. Cross-actor subscription uses an explicit mailbox/message or channel; no implicit shared mutable state.
@@ -134,7 +170,7 @@ both backend select lowering paths are supported.
 
 ## Actual implementation status
 
-- **Java/GraalVM:** `OresTimers.afterNanos/sleepNanos` create cancellable `OresFuture<Void>` values. `Interval.next()` provides demand-driven ticks and a cancellable, single-consumer contract. Timer admissions are bounded per owner (4,096) and globally (16,384); live intervals are also bounded (4,096 per owner). Explicit owner `close()` revokes both pending timers and idle/pending interval capabilities. Existing `OresScheduler` turns can await the futures. **The OresVM/context and actor lifecycle do not automatically own/close this helper yet**. This is a runtime foundation, **not the exported `time.*` language module**.
+- **Java/GraalVM:** `OresTimers.afterNanos/sleepNanos` create cancellable `OresFuture<Void>` values. The host-only `timeoutNanos` composes an observer Future with an independently revocable deadline without cancelling the input producer; the guest `time.timeout` binding remains unimplemented. `Interval.next()` provides demand-driven ticks and a cancellable, single-consumer contract. Timer admissions are bounded per owner (4,096) and globally (16,384); live intervals are also bounded (4,096 per owner **and 16,384 globally, including idle intervals**), with exact-once slot release on cancellation or owner close. Explicit owner `close()` revokes both pending timers and idle/pending interval capabilities. Existing `OresScheduler` turns can await the futures. **The OresVM/context and actor lifecycle do not automatically own/close this helper yet**. This is a runtime foundation, **not the exported `time.*` language module**.
 - **LLVM:** `NativeTimerQueue` provides bounded monotonic deadline registration, deterministic due polling, cancellation and owner-domain fencing. A poll atomically moves a timer into an in-flight, still-capacity-charged delivery registry; a scheduler must exactly-once `claim_delivery` or `discard_delivery`, checking actor generation and executor authority before dispatch. Owner close revokes both scheduled and unclaimed-polled tokens. A successful claim is **not** a guest-continuation or lifetime lease. General typed Future/await lowering remains incomplete.
 - **Not complete:** source-level Duration literals, builtins/stdlib bindings, compiler effect checking for `sleep_blocking`, LLVM `Future<T>`/await continuation frames, `set_timer` / `set_timeout` / `set_interval` guest callback admission, `TimerHandle` callback-completion/cancellation arbitration, unified `select` timeout lowering, and compiler-generated lifecycle deregistration.
 
