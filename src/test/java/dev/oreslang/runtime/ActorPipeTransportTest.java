@@ -88,6 +88,41 @@ final class ActorPipeTransportTest {
         }
     }
 
+    /**
+     * Shared three-backend host-transport contract: graceful close admits no
+     * new DATA, cancels blocked writers, and retains only previously admitted
+     * FIFO payloads for the consuming stage. This is not source actor lowering.
+     */
+    @Test
+    void closePreservesAcceptedFifoAndCancelsPendingOrLateSends() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var pipe = ActorPipeTransport.open(runtime, runtime.rootSupervisor(),
+                    stages(), List.of(String.class, String.class), 2);
+            var writer = pipe.writer(0, String.class);
+            var reader = pipe.reader(0, String.class);
+            assertTrue(writer.tryWrite("accepted-1"));
+            assertTrue(writer.tryWrite("accepted-2"));
+            var backpressured = writer.writeAsync("must-not-commit");
+            assertFalse(backpressured.isDone(),
+                    "full bounded edge must not treat pending admission as delivery");
+
+            pipe.close();
+            pipe.close(); // repeated close must not duplicate or resurrect payloads
+            assertTrue(pipe.closed());
+            assertThrows(ExecutionException.class,
+                    () -> backpressured.get(5, TimeUnit.SECONDS));
+            assertFalse(writer.tryWrite("too-late"));
+            assertThrows(ExecutionException.class,
+                    () -> writer.writeAsync("also-too-late").get(5, TimeUnit.SECONDS));
+            assertEquals("accepted-1", reader.readAsync().get(5, TimeUnit.SECONDS));
+            assertEquals("accepted-2", reader.readAsync().get(5, TimeUnit.SECONDS));
+            assertTrue(reader.tryRead().isEmpty());
+            assertThrows(ExecutionException.class,
+                    () -> reader.readAsync().get(5, TimeUnit.SECONDS),
+                    "closed and empty edge must not wait forever");
+        }
+    }
+
     @Test
     void rejectsWrongTypeAndForeignSupervisorBeforePublishingAnything() {
         try (ActorRuntime runtime = new ActorRuntime();
