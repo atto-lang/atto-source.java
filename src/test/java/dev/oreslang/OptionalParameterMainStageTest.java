@@ -178,12 +178,12 @@ final class OptionalParameterMainStageTest {
     }
 
     @Test
-    void nameFirstOmissionIsRejectedByTypeAndOwnershipUntilAbiIsLowered() {
+    void nameFirstClosedScalarOmissionsNeedVerifiedTypeThenOwnership() {
         Ast.Program program = parse("x: int, y?: int = 10, z?: int?");
+        Ast.Program checked = assertDoesNotThrow(() -> TypeChecker.checkTypes(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(checked));
         assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.checkTypes(program));
-        assertThrows(IllegalArgumentException.class,
-                () -> OwnershipChecker.check(program));
+                () -> TypeChecker.checkTypes(parse("x?: string = side_effect()")));
     }
 
     @Test

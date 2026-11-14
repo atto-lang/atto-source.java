@@ -108,9 +108,8 @@ final class NamedScalarExecutableStageTest {
     }
 
     @Test
-    void namedArgumentsDoNotImplicitlyAdmitOptionalOrOptionAbi() {
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
+    void checkedClosedScalarOmissionNowAdmittedButRuntimeDefaultsRemainBounded() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                         fnc calculate(x: int, y?: int = 10, z?: int?): int {
                           return x + y;
                         }
@@ -118,10 +117,12 @@ final class NamedScalarExecutableStageTest {
                         """)));
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        fnc read(x: int?): int { return 42; }
-                        pub fnc main(): int { return read(x: None); }
+                        fnc unsafe(x: int, y?: int = effect()): int {
+                          return x;
+                        }
+                        pub fnc main(): int { return unsafe(x: 20); }
                         """)),
-                "required Option<T> calls are outside the initial int-only named ABI");
+                "runtime-dependent defaults cannot escape the constant-only ABI");
     }
 
     @Test

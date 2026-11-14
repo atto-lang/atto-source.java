@@ -90,3 +90,26 @@ materialization, typed None, named methods, constructors, imports, dynamic
 callables, or broad generic named calls. `calculate(x:20,y:22)` with an
 optional `z?` still fails closed. The JUnit execution tests have not yet
 run on a working JDK25/Graal runner, so no verified guest result is claimed.
+
+## Checked executable scalar omission/default stage
+
+Added a restricted `CheckedScalarFormalPolicy` used by admission,
+TypeChecker, OwnershipChecker, and the synchronous/suspendable JVM
+invocation paths. Only top-level, synchronous, non-generic free functions
+with plain `int` results and `int`/`Option<int>` formals are admitted;
+omittable `int` requires a literal signed `Long` default and omittable
+`Option<int>` permits only implicit or explicit `None`. No arbitrary
+default evaluation or host null coercion is allowed.
+
+The call binder evaluates input expressions in original lexical order,
+then reorders the evaluated values to formal ABI positions and fills
+omitted int/default/Option None slots. No omitted slot may execute
+a caller expression. Overlapping optional-arity overload candidates
+fail closed. A dedicated JUnit guest suite targets both parameter orders,
+nontrailing default slots and the exact `calculate(x:20,y:22)` case.
+This is scoped to direct functions; methods, constructors, generics,
+lambda default parameters and other backends remain unsupported.
+
+**All tests are AUTHORED / NOT_EXECUTED** pending a working JDK25
+GraalVM runner. Typechecking/ownership and guest correctness are
+hypotheses until that stepful run succeeds; do not merge on this basis.
