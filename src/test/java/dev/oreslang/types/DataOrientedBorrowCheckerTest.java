@@ -127,6 +127,52 @@ final class DataOrientedBorrowCheckerTest {
         assertDoesNotThrow(() ->
                 new DataOrientedBorrowChecker.Place(SOA, "\u00a0", null, null, null, null, 0));
     }
+    @Test
+    void conflictingLoansInsideOneWorksetCannotBeAdmittedAgainstEmptyPeer() {
+        var region = place(SOA, "moving", "Position", "x", null);
+        var reader = loan(region, READ);
+        var writer = loan(region, WRITE);
+        var conflicting = List.of(reader, writer);
+
+        assertThrows(IllegalArgumentException.class, () ->
+                DataOrientedBorrowChecker.canRunConcurrently(conflicting, List.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                DataOrientedBorrowChecker.canRunConcurrently(List.of(), conflicting));
+
+        // Valid independent readers remain admitted even in the same workset.
+        assertTrue(DataOrientedBorrowChecker.canRunConcurrently(
+                List.of(reader, reader), List.of()));
+    }
+
+    @Test
+    void malformedHierarchyCannotFabricateIndependentProjectedLoans() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new DataOrientedBorrowChecker.Place(
+                        SOA, "world", null, "Position", "x", null, 7));
+        assertDoesNotThrow(() ->
+                new DataOrientedBorrowChecker.Place(
+                        SOA, "world", null, null, null, null, 7));
+    }
+
+    @Test
+    void oversizedValidReadWorksetFailsAdmissionBeforeQuadraticPairScan() {
+        var region = place(AOS, "moving", "Position", "x", null);
+        var read = loan(region, READ);
+        var excessive = java.util.Collections.nCopies(
+                DataOrientedBorrowChecker.MAX_LOANS_PER_WORKSET + 1, read);
+        var error = assertThrows(IllegalArgumentException.class, () ->
+                DataOrientedBorrowChecker.canRunConcurrently(excessive, List.of()));
+        assertTrue(error.getMessage().contains("admission budget"));
+        assertThrows(IllegalArgumentException.class, () ->
+                DataOrientedBorrowChecker.canRunConcurrently(List.of(), excessive));
+        assertThrows(IllegalArgumentException.class, () ->
+                DataOrientedBorrowChecker.requireInternallyValid(excessive));
+
+        var bounded = java.util.Collections.nCopies(
+                DataOrientedBorrowChecker.MAX_LOANS_PER_WORKSET, read);
+        assertTrue(DataOrientedBorrowChecker.canRunConcurrently(
+                bounded, List.of()));
+    }
 
     @Test
     void unrootedCollectionProjectionsCannotForgeDisjointPlaces() {

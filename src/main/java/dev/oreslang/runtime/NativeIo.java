@@ -521,6 +521,37 @@ public final class NativeIo {
         return uri.getHost().toLowerCase(java.util.Locale.ROOT) + ":" + port;
     }
 
+    /**
+     * Open (creating if absent) a regular binary file for append and
+     * positional reads. Requires READ and WRITE on both the lexical and the
+     * canonical path, and refuses symlinks, like the text file operations.
+     * Runs on the native I/O worker only.
+     */
+    public static NativeBinaryFile openBinaryFile(OresContext context, String rawPath) {
+        String operation = "fs.open_binary_async";
+        Path lexical = lexicalPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ, lexical.toString(), operation);
+        context.requirePermission(RuntimePermissions.Permission.WRITE, lexical.toString(), operation);
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException(operation + " refuses symlink: " + lexical);
+        }
+        Path path = canonicalWritePath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), operation);
+        context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), operation);
+        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)
+                && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException(operation + " requires a regular file: " + path);
+        }
+        try {
+            java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(path,
+                    StandardOpenOption.READ, StandardOpenOption.WRITE,
+                    StandardOpenOption.CREATE, LinkOption.NOFOLLOW_LINKS);
+            return new NativeBinaryFile(path, channel);
+        } catch (IOException failure) {
+            throw ioFailure("open", path, failure);
+        }
+    }
+
     private static Path canonicalIfExisting(String rawPath) {
         Path lexical = lexicalPath(rawPath);
         if (!Files.exists(lexical, LinkOption.NOFOLLOW_LINKS)) return lexical;
