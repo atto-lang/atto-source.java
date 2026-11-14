@@ -3347,7 +3347,16 @@ public final class TypeChecker {
                 // as the internal unary form, without nesting loan wrappers.
                 case "borrow" -> operand instanceof Borrow existing
                         ? new Borrow(existing.target(), false) : new Borrow(operand, false);
-                case "copy", "take", "share" -> operand;
+                case "take" -> operand;
+                case "copy", "share" -> {
+                    if (containsUnprovenAtomicCell(operand, 0)) {
+                        throw new IllegalArgumentException(
+                                "rt " + runtime.operation()
+                                        + " cannot duplicate or share Atomic<int> before "
+                                        + "shared-domain ownership and lifetime lowering");
+                    }
+                    yield operand;
+                }
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + runtime.operation() + "'");
             };
@@ -9033,6 +9042,36 @@ public final class TypeChecker {
             };
             default -> null;
         };
+    }
+
+    /**
+     * Atomic cells have identity and no validated share/copy transport yet.
+     * Reject nested cells too (Option/Result/List/tuple/struct), rather than
+     * treating a container as an ownership-laundering escape hatch.
+     */
+    private static boolean containsUnprovenAtomicCell(Type type, int depth) {
+        if (depth > 64) return true; // fail closed on maliciously nested types
+        if (type instanceof Borrow borrow)
+            return containsUnprovenAtomicCell(borrow.target(), depth + 1);
+        if (type instanceof SelfType selfType)
+            return containsUnprovenAtomicCell(selfType.bound(), depth + 1);
+        if (type instanceof Named named) {
+            if (named.name().equals("Atomic")) return true;
+            return named.arguments().stream()
+                    .anyMatch(t -> containsUnprovenAtomicCell(t, depth + 1));
+        }
+        if (type instanceof ListType list)
+            return containsUnprovenAtomicCell(list.element(), depth + 1);
+        if (type instanceof Tuple tuple)
+            return tuple.elements().stream().anyMatch(
+                    t -> containsUnprovenAtomicCell(t, depth + 1));
+        if (type instanceof Record record)
+            return record.members().values().stream().anyMatch(
+                    t -> containsUnprovenAtomicCell(t, depth + 1));
+        if (type instanceof Union union)
+            return union.options().stream().anyMatch(
+                    t -> containsUnprovenAtomicCell(t, depth + 1));
+        return false;
     }
 
     private Type builtinAtomicMember(Type receiver, String member) {
