@@ -261,6 +261,65 @@ final class ActorForwardNamespaceReceiverTest {
     }
 
     @Test
+    void actorForwardKindAndVisibilitySurviveTypeFirstCompletion() {
+        var program = Parser.parse("""
+                use namespace workers;
+                declare pub actor PublicWorker;
+                declare isoactor PrivateWorker;
+                pub mtd (PublicWorker self) status(): int { return 41; }
+                mtd (PrivateWorker self) status(): int { return 42; }
+                """);
+        var actors = program.modules().getFirst().declarations();
+        assertEquals(2, actors.size());
+        var shared = assertInstanceOf(Ast.ClassDecl.class, actors.get(0));
+        var isolated = assertInstanceOf(Ast.ClassDecl.class, actors.get(1));
+        assertEquals("PublicWorker", shared.name());
+        assertEquals(Ast.ActorKind.SHARED, shared.actorKind());
+        assertEquals(Ast.Visibility.PUBLIC, shared.visibility());
+        assertEquals("PrivateWorker", isolated.name());
+        assertEquals(Ast.ActorKind.PRIVATE, isolated.actorKind());
+        assertEquals(Ast.Visibility.PRIVATE, isolated.visibility());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void actorMethodMutabilityCannotCreateDistinctOverloadSlot() {
+        reject("""
+                declare actor Foo1;
+                mtd (Foo1 self) foo(int x): int { return x; }
+                mtd (Foo1 mut self) foo(int x): int { return x + 1; }
+                """, "duplicate receiver method");
+        reject("""
+                declare actor Foo1;
+                declare actor Foo1;
+                mtd (Foo1 self) foo(): int { return 42; }
+                """, "duplicate actor forward");
+    }
+
+    @Test
+    void manyActorsWithSameMethodNameStaySeparate() {
+        var source = new StringBuilder("use namespace workers;\n");
+        for (int i = 0; i < 24; i++) {
+            source.append("declare actor Worker").append(i).append(";\n");
+        }
+        for (int i = 23; i >= 0; i--) {
+            source.append("mtd (Worker").append(i)
+                    .append(" self) foo(): int { return ")
+                    .append(i).append("; }\n");
+        }
+        var program = Parser.parse(source.toString());
+        var actors = program.modules().getFirst().declarations();
+        assertEquals(24, actors.size());
+        for (int i = 0; i < 24; i++) {
+            var actor = assertInstanceOf(Ast.ClassDecl.class, actors.get(i));
+            assertEquals("Worker" + i, actor.name());
+            assertEquals(1, actor.methods().size());
+            assertEquals("foo", actor.methods().getFirst().name());
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
     void declarationOnlyActorsBindTypeFirstMethodsWithSameName() {
         Ast.Program program = Parser.parse("""
                 use namespace workers;
