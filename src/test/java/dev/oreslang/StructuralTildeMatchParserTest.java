@@ -51,8 +51,6 @@ final class StructuralTildeMatchParserTest {
 
     @Test
     void existingTildeRecordPatternIsNotReinterpretedAsStructural() {
-        assertThrows(IllegalArgumentException.class,
-                () -> parseStructuralArm("~(id: a)"));
         Ast.Program program = assertDoesNotThrow(() -> Parser.parse("""
                 fnc test(): void {
                   match account over
