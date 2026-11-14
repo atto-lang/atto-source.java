@@ -2945,6 +2945,15 @@ public final class TypeChecker {
             Type right = typeOfTernaryArm(conditional.whenFalse(), env, generics, self);
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
+            // Conditional *expressions* have a value contract. Never admit
+            // void-typed arms and let an interpreter/JIT backend accidentally
+            // treat an effect-only conditional as a value. Statement if is
+            // the appropriate spelling for conditional effects.
+            if (left == Primitive.VOID || right == Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "conditional expression requires a value in every arm; use statement if for void effects");
+            }
+
             env.mergeInitialization(List.of(leftExit, rightExit));
             Type joined;
             // An empty literal has no independent element type. Preserve the
