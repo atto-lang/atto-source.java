@@ -139,8 +139,9 @@ public final class FixedBufferPoolV1 implements AutoCloseable {
         if (retiring || lease.escrow || slot.writer || slot.readers == Integer.MAX_VALUE) {
             throw new IllegalStateException("read loan forbidden");
         }
+        Loan loan = new Loan(this, lease, false);
         ++slot.readers;
-        return new Loan(this, lease, false);
+        return loan;
     }
 
     public synchronized Loan borrow_write(Lease lease, Owner caller) {
@@ -148,8 +149,9 @@ public final class FixedBufferPoolV1 implements AutoCloseable {
         if (retiring || lease.escrow || slot.writer || slot.readers != 0) {
             throw new IllegalStateException("mutable loan requires exclusivity");
         }
+        Loan loan = new Loan(this, lease, true);
         slot.writer = true;
-        return new Loan(this, lease, true);
+        return loan;
     }
 
     private synchronized void endLoan(Loan loan) {
@@ -203,8 +205,9 @@ public final class FixedBufferPoolV1 implements AutoCloseable {
         if (retiring || lease.escrow || slot.readers != 0 || slot.writer) {
             throw new IllegalStateException("buffer transfer admission denied");
         }
+        Escrow escrow = new Escrow(this, lease);
         lease.escrow = true;
-        return new Escrow(this, lease);
+        return escrow;
     }
 
     private Slot checkEscrow(Escrow escrow) {
