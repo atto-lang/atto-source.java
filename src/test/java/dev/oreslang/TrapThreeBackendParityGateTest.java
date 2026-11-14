@@ -13,17 +13,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Real Java/Graal guest oracle; not evidence of LLVM or .NET parity. */
 final class TrapThreeBackendParityGateTest {
-    private static String fixture() throws Exception {
+    private static String fixture(String name) throws Exception {
         try (InputStream input = TrapThreeBackendParityGateTest.class.getResourceAsStream(
-                "/trap-result-option/three-backend-boundary.atto")) {
-            assertNotNull(input, "parity guest fixture must be packaged");
+                "/trap-result-option/" + name)) {
+            assertNotNull(input, "parity guest fixture must be packaged: " + name);
             return new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
 
     @Test
-    void callerTrapPreservesResultAndCatchesOnlyOrdinaryGuestFailure() throws Exception {
-        String source = fixture();
+    void callerTrapPreservesResultDataWithoutFlattening() throws Exception {
+        String source = fixture("three-backend-boundary.atto");
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
         Source guest = Source.newBuilder(OresLanguage.ID, source, "three-backend-boundary.atto")
                 .mimeType(OresLanguage.MIME_TYPE).build();
@@ -32,7 +32,23 @@ final class TrapThreeBackendParityGateTest {
             Value result = context.eval(guest);
             assertTrue(result.fitsInLong(), "guest main() must return int");
             assertEquals(7L, result.asLong(),
-                    "trap must add Option, preserve Result Err, and catch ordinary cast failure");
+                    "trap must add Option and preserve Result.Err without flattening");
+        }
+    }
+
+
+    @Test
+    void ordinaryCheckedCastFailureIsOuterNone() throws Exception {
+        String source = fixture("ordinary-cast-failure.atto");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        Source guest = Source.newBuilder(OresLanguage.ID, source, "ordinary-cast-failure.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            Value result = context.eval(guest);
+            assertTrue(result.fitsInLong(), "guest main() must return int");
+            assertEquals(7L, result.asLong(),
+                    "only ordinary recoverable checked-cast failure is caught as None");
         }
     }
 
