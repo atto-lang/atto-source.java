@@ -3244,6 +3244,21 @@ public final class TypeChecker {
                         requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
                                 Primitive.STRING, "Bytes.from_string argument");
                     }
+                    case "from_u8", "from_u16_be", "from_i16_be", "from_u32_be", "from_i32_be",
+                            "from_i64_be", "from_uvarint", "from_zigzag_varint" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("Bytes." + bytesCall.member() + " expects one int");
+                        }
+                        requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                                Primitive.INT, "Bytes." + bytesCall.member() + " argument");
+                    }
+                    case "join" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("Bytes.join expects one List<Bytes>");
+                        }
+                        requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                                new ListType(new Named("Bytes", List.of())), "Bytes.join argument");
+                    }
                     default -> throw new IllegalArgumentException(
                             "unknown Bytes constructor " + bytesCall.member()
                                     + "; use Bytes.empty(), Bytes.from_list(List<int>) or Bytes.from_string(string)");
@@ -6221,6 +6236,12 @@ public final class TypeChecker {
                 case "equals" -> new Function(
                         List.of(new Named("Bytes", List.of())), Primitive.BOOL);
                 case "copy" -> new Function(List.of(), new Named("Bytes", List.of()));
+                case "read_u16_be", "read_i16_be", "read_u32_be", "read_i32_be", "read_i64_be" ->
+                        new Function(List.of(Primitive.INT), Primitive.INT);
+                case "read_uvarint", "read_zigzag_varint" -> new Function(List.of(Primitive.INT),
+                        new Tuple(List.of(Primitive.INT, Primitive.INT), TupleKind.TUPLE));
+                case "crc32c", "crc32" ->
+                        new Function(List.of(Primitive.INT, Primitive.INT), Primitive.INT);
                 case "to_list" -> new Function(List.of(), new ListType(Primitive.INT));
                 case "to_utf8" -> new Function(
                         List.of(), new Named("Option", List.of(Primitive.STRING)));

@@ -144,6 +144,223 @@ public final class OresBytes implements AutoCloseable {
         }
     }
 
+    // ---- Bytes v1.1 binary codec helpers (spec chapter 26) ----------------
+    // Protocol framing stays in AttoLang; these are memchr/memcpy-class
+    // primitives so per-byte interpretation does not dominate binary codecs.
+
+    private byte[] window(int offset, int width, String what) {
+        synchronized (storage) {
+            checkLive();
+            byte[] data = storage.value;
+            if (offset < 0 || width < 0 || offset > data.length - width) {
+                throw new IndexOutOfBoundsException(
+                        "Bytes." + what + " at " + offset + " needs " + width
+                                + " bytes within 0.." + data.length);
+            }
+            return data;
+        }
+    }
+
+    /** Unsigned 16-bit big-endian value at offset. */
+    public long readU16Be(int offset) {
+        byte[] d = window(offset, 2, "read_u16_be");
+        return ((d[offset] & 0xffL) << 8) | (d[offset + 1] & 0xffL);
+    }
+
+    /** Signed 16-bit big-endian value at offset. */
+    public long readI16Be(int offset) {
+        return (short) readU16Be(offset);
+    }
+
+    /** Unsigned 32-bit big-endian value at offset. */
+    public long readU32Be(int offset) {
+        byte[] d = window(offset, 4, "read_u32_be");
+        return ((d[offset] & 0xffL) << 24) | ((d[offset + 1] & 0xffL) << 16)
+                | ((d[offset + 2] & 0xffL) << 8) | (d[offset + 3] & 0xffL);
+    }
+
+    /** Signed 32-bit big-endian value at offset. */
+    public long readI32Be(int offset) {
+        return (int) readU32Be(offset);
+    }
+
+    /** Signed 64-bit big-endian value at offset. */
+    public long readI64Be(int offset) {
+        byte[] d = window(offset, 8, "read_i64_be");
+        long v = 0;
+        for (int i = 0; i < 8; i++) v = (v << 8) | (d[offset + i] & 0xffL);
+        return v;
+    }
+
+    /**
+     * Unsigned LEB128 varint at offset: {value, next offset}. At most 10
+     * bytes; values above 2^63-1 and truncated encodings fail.
+     */
+    public long[] readUvarint(int offset) {
+        synchronized (storage) {
+            checkLive();
+            byte[] d = storage.value;
+            if (offset < 0 || offset > d.length) {
+                throw new IndexOutOfBoundsException("Bytes.read_uvarint offset " + offset);
+            }
+            long value = 0;
+            for (int i = 0; i < 10; i++) {
+                if (offset + i >= d.length) {
+                    throw new IllegalArgumentException("Bytes.read_uvarint truncated");
+                }
+                int b = d[offset + i] & 0xff;
+                if (i == 9 && b > 0) {
+                    throw new IllegalArgumentException("Bytes.read_uvarint overflows 63 bits");
+                }
+                value |= (long) (b & 0x7f) << (7 * i);
+                if ((b & 0x80) == 0) {
+                    if (value < 0) throw new IllegalArgumentException("Bytes.read_uvarint overflows 63 bits");
+                    return new long[] {value, offset + i + 1};
+                }
+            }
+            throw new IllegalArgumentException("Bytes.read_uvarint longer than 10 bytes");
+        }
+    }
+
+    /** Zigzag-encoded signed varint (Kafka/protobuf): {value, next offset}. */
+    public long[] readZigzagVarint(int offset) {
+        synchronized (storage) {
+            checkLive();
+            byte[] d = storage.value;
+            if (offset < 0 || offset > d.length) {
+                throw new IndexOutOfBoundsException("Bytes.read_zigzag_varint offset " + offset);
+            }
+            long raw = 0;
+            for (int i = 0; i < 10; i++) {
+                if (offset + i >= d.length) {
+                    throw new IllegalArgumentException("Bytes.read_zigzag_varint truncated");
+                }
+                int b = d[offset + i] & 0xff;
+                raw |= (long) (b & 0x7f) << (7 * i);
+                if ((b & 0x80) == 0) {
+                    return new long[] {(raw >>> 1) ^ -(raw & 1), offset + i + 1};
+                }
+            }
+            throw new IllegalArgumentException("Bytes.read_zigzag_varint longer than 10 bytes");
+        }
+    }
+
+    /** CRC-32C (Castagnoli, as used by Kafka record batches) of [start, end). */
+    public long crc32c(int start, int end) {
+        synchronized (storage) {
+            checkLive();
+            byte[] d = storage.value;
+            if (start < 0 || end < start || end > d.length) {
+                throw new IndexOutOfBoundsException("Bytes.crc32c(" + start + ", " + end + ")");
+            }
+            java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
+            crc.update(d, start, end - start);
+            return crc.getValue();
+        }
+    }
+
+    /** CRC-32 (IEEE) of [start, end). */
+    public long crc32(int start, int end) {
+        synchronized (storage) {
+            checkLive();
+            byte[] d = storage.value;
+            if (start < 0 || end < start || end > d.length) {
+                throw new IndexOutOfBoundsException("Bytes.crc32(" + start + ", " + end + ")");
+            }
+            java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+            crc.update(d, start, end - start);
+            return crc.getValue();
+        }
+    }
+
+    private static long checkedRange(long value, long min, long max, String what) {
+        if (value < min || value > max) {
+            throw new IllegalArgumentException("Bytes." + what + " value " + value
+                    + " outside " + min + ".." + max);
+        }
+        return value;
+    }
+
+    public static OresBytes fromU8(long value) {
+        return fromDetached(new byte[] {(byte) checkedRange(value, 0, 0xff, "from_u8")});
+    }
+
+    public static OresBytes fromU16Be(long value) {
+        long v = checkedRange(value, 0, 0xffff, "from_u16_be");
+        return fromDetached(new byte[] {(byte) (v >>> 8), (byte) v});
+    }
+
+    public static OresBytes fromI16Be(long value) {
+        long v = checkedRange(value, Short.MIN_VALUE, Short.MAX_VALUE, "from_i16_be");
+        return fromDetached(new byte[] {(byte) (v >>> 8), (byte) v});
+    }
+
+    public static OresBytes fromU32Be(long value) {
+        long v = checkedRange(value, 0, 0xffffffffL, "from_u32_be");
+        return fromDetached(new byte[] {(byte) (v >>> 24), (byte) (v >>> 16), (byte) (v >>> 8), (byte) v});
+    }
+
+    public static OresBytes fromI32Be(long value) {
+        long v = checkedRange(value, Integer.MIN_VALUE, Integer.MAX_VALUE, "from_i32_be");
+        return fromDetached(new byte[] {(byte) (v >>> 24), (byte) (v >>> 16), (byte) (v >>> 8), (byte) v});
+    }
+
+    public static OresBytes fromI64Be(long value) {
+        byte[] out = new byte[8];
+        for (int i = 7; i >= 0; i--) {
+            out[i] = (byte) value;
+            value >>>= 8;
+        }
+        return fromDetached(out);
+    }
+
+    public static OresBytes fromUvarint(long value) {
+        if (value < 0) throw new IllegalArgumentException("Bytes.from_uvarint needs a non-negative value");
+        byte[] buf = new byte[10];
+        int n = 0;
+        while ((value & ~0x7fL) != 0) {
+            buf[n++] = (byte) ((value & 0x7f) | 0x80);
+            value >>>= 7;
+        }
+        buf[n++] = (byte) value;
+        return fromDetached(java.util.Arrays.copyOf(buf, n));
+    }
+
+    public static OresBytes fromZigzagVarint(long value) {
+        long raw = (value << 1) ^ (value >> 63);
+        byte[] buf = new byte[10];
+        int n = 0;
+        while ((raw & ~0x7fL) != 0) {
+            buf[n++] = (byte) ((raw & 0x7f) | 0x80);
+            raw >>>= 7;
+        }
+        buf[n++] = (byte) raw;
+        return fromDetached(java.util.Arrays.copyOf(buf, n));
+    }
+
+    /** Concatenate many values in one pass (no quadratic re-copying). */
+    public static OresBytes join(java.util.List<?> parts) {
+        Objects.requireNonNull(parts, "parts");
+        long total = 0;
+        java.util.ArrayList<byte[]> arrays = new java.util.ArrayList<>(parts.size());
+        for (Object part : parts) {
+            if (!(part instanceof OresBytes bytes)) {
+                throw new IllegalArgumentException("Bytes.join requires List<Bytes>");
+            }
+            byte[] copy = bytes.toArrayCopy();
+            total += copy.length;
+            if (total > MAX_LENGTH) throw new IllegalArgumentException("OresBytes exceeds bounded payload budget");
+            arrays.add(copy);
+        }
+        byte[] out = new byte[(int) total];
+        int at = 0;
+        for (byte[] a : arrays) {
+            System.arraycopy(a, 0, out, at, a.length);
+            at += a.length;
+        }
+        return fromDetached(out);
+    }
+
     /** New value holding this followed by other. Neither input is consumed. */
     public OresBytes concat(OresBytes other) {
         Objects.requireNonNull(other, "other");
