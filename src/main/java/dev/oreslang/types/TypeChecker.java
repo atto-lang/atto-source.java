@@ -5278,7 +5278,14 @@ public final class TypeChecker {
                     ? null : resolve(lambda.declaredReturnType(), generics, self);
             try {
                 if (lambda.expressionBody() != null) {
-                    result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                    Type actual = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                    if (declaredLambdaResult != null) {
+                        requireReadonlyCapabilityPreserved(actual, declaredLambdaResult,
+                                "typed expression lambda result");
+                        requireAssignable(actual, declaredLambdaResult,
+                                "typed expression lambda result");
+                    }
+                    result = declaredLambdaResult == null ? actual : declaredLambdaResult;
                 } else if (declaredLambdaResult != null) {
                     checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, declaredLambdaResult, self);
                     if (declaredLambdaResult != Primitive.VOID
@@ -5300,8 +5307,11 @@ public final class TypeChecker {
                         checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, inferredReturn, self);
                         result = inferredReturn;
                     } else {
-                        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
-                        result = Unknown.INSTANCE;
+                        Type inferred = inferLinearLambdaTailResult(
+                                lambda.blockBody(), lambdaEnv, generics, self);
+                        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics,
+                                inferred == null ? Unknown.INSTANCE : inferred, self);
+                        result = inferred == null ? Unknown.INSTANCE : inferred;
                     }
                 }
             } finally {
@@ -6147,6 +6157,31 @@ public final class TypeChecker {
      * a FixedArray or an implicit multi-value function return. Exact arity and
      * slot types are checked before the lambda can be invoked.
      */
+    /**
+     * Inferred inline comma lambdas lower to an ordered block containing
+     * lexical bindings/effects and a terminal ReturnStmt. Infer its return
+     * type in an isolated probe environment so declarations are available
+     * to the final expression, then run the full block/type/ownership check.
+     * General branches and arbitrary multi-return blocks are not inferred.
+     */
+    private Type inferLinearLambdaTailResult(List<Ast.Stmt> statements,
+            Env parent, Set<String> generics, Type self) {
+        if (statements == null || statements.isEmpty()
+                || !(statements.getLast() instanceof Ast.ReturnStmt last)
+                || last.value() == null) {
+            return null;
+        }
+        Env scoped = new Env(parent);
+        for (int i = 0; i < statements.size() - 1; i++) {
+            Ast.Stmt item = statements.get(i);
+            if (!(item instanceof Ast.BindingStmt || item instanceof Ast.ExprStmt)) {
+                return null;
+            }
+            checkStatement(item, scoped, generics, Unknown.INSTANCE, self);
+        }
+        return typeOf(last.value(), scoped, generics, self);
+    }
+
     private Type inferValuePipelineLambda(
             Ast.LambdaExpr lambda, Type upstream,
             Env parent, Set<String> generics, Type self) {
@@ -6207,7 +6242,14 @@ public final class TypeChecker {
                     ? null : resolve(lambda.declaredReturnType(), generics, self);
             Type result;
             if (lambda.expressionBody() != null) {
-                result = typeOf(lambda.expressionBody(), bodyEnv, generics, self);
+                Type actual = typeOf(lambda.expressionBody(), bodyEnv, generics, self);
+                if (declaredResult != null) {
+                    requireReadonlyCapabilityPreserved(actual, declaredResult,
+                            "typed pipeline expression lambda result");
+                    requireAssignable(actual, declaredResult,
+                            "typed pipeline expression lambda result");
+                }
+                result = declaredResult == null ? actual : declaredResult;
             } else if (declaredResult != null) {
                 checkCallableBlock(lambda.blockBody(), bodyEnv, generics, declaredResult, self);
                 if (declaredResult != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
@@ -6221,8 +6263,14 @@ public final class TypeChecker {
                 result = typeOf(returned.value(), bodyEnv, generics, self);
                 checkCallableBlock(lambda.blockBody(), bodyEnv, generics, result, self);
             } else {
-                throw new IllegalArgumentException(
-                        "pipeline block lambda needs an explicit result type or a single return expression");
+                Type inferred = inferLinearLambdaTailResult(
+                        lambda.blockBody(), bodyEnv, generics, self);
+                if (inferred == null) {
+                    throw new IllegalArgumentException(
+                            "pipeline block lambda needs a declared type or a linear terminal result");
+                }
+                checkCallableBlock(lambda.blockBody(), bodyEnv, generics, inferred, self);
+                result = inferred;
             }
             if (declaredResult != null) {
                 requireReadonlyCapabilityPreserved(result, declaredResult, "pipeline lambda result");
