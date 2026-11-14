@@ -1,0 +1,4 @@
+fnc read(): void {
+    const empty = ~<T>();
+    return;
+}

@@ -1,0 +1,19 @@
+import class Affine2Tape from '../src/affine2_grad';
+import fnc prediction, squared_loss, vjp_weight0, vjp_weight1, vjp_bias, vjp_input0, vjp_input1, jvp_loss from '../src/affine2_grad';
+
+pub routine main(): void {
+  val Affine2Tape tape = new Affine2Tape(2.0, 3.0, 4.0, 5.0, 1.0, 20.0);
+  // Predicted=24, residual=4, loss=16.
+  if prediction(&tape) != 24.0; do rt fail("affine output"); fi
+  if squared_loss(&tape) != 16.0; do rt fail("loss"); fi
+  if vjp_weight0(&tape) != 16.0; do rt fail("w0 gradient"); fi
+  if vjp_weight1(&tape) != 24.0; do rt fail("w1 gradient"); fi
+  if vjp_bias(&tape) != 8.0; do rt fail("bias gradient"); fi
+  if vjp_input0(&tape) != 32.0; do rt fail("x0 gradient"); fi
+  if vjp_input1(&tape) != 40.0; do rt fail("x1 gradient"); fi
+  if jvp_loss(&tape, 0.0, 0.0, 1.0, 0.0, 0.0) != 16.0; do
+    rt fail("JVP directional derivative");
+  fi
+  stdio.stdout.println("ORES-AFFINE2-AUTOGRAD-NATIVE-PASS");
+  return;
+}
