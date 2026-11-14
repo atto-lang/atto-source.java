@@ -8310,6 +8310,10 @@ public final class OresEvalRootNode extends RootNode {
             typed.acquireRead();
             try {
                 String kind = typed.kind().toLowerCase(java.util.Locale.ROOT);
+                if (kind.equals("vector") && findClass("Vector") != null) {
+                    throw new IllegalArgumentException(
+                            "core Vector combinator is ambiguous with a source-defined Vector class");
+                }
                 Ast.FunctionDecl nativeFunction =
                         NativeAttoCollectionModule.function(operation + "_" + kind);
                 ArrayList<Object> inputs = new ArrayList<>(1 + count);
