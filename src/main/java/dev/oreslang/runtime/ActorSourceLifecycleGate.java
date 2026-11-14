@@ -19,6 +19,11 @@ final class ActorSourceLifecycleGate {
     private final ActorRuntime.ActorId owner;
     private final String actorType;
     private Phase phase = Phase.NEW;
+    // Protected by this gate's monitor. Each accepted guest receive must
+    // acquire a lease and release it on every synchronous exit path.
+    // Suspended source tasks have a separate physical-quiescence fence in
+    // ActorRuntime; this count must never be used as a substitute for it.
+    private int activeReceives;
 
     ActorSourceLifecycleGate(ActorRuntime.ActorId owner, String actorType) {
         this.owner = Objects.requireNonNull(owner, "source actor owner");
@@ -29,6 +34,28 @@ final class ActorSourceLifecycleGate {
     }
 
     synchronized Phase phase() { return phase; }
+
+    synchronized int activeReceives() { return activeReceives; }
+
+    /**
+     * An unforgeable, single-release admission receipt for one guest receive.
+     * A STOP arriving after admission can seal new mail but cannot revoke a
+     * still-executing callback's ownership of its receiver frame.
+     */
+    static final class ReceiveLease implements AutoCloseable {
+        private final ActorSourceLifecycleGate gate;
+        private final java.util.concurrent.atomic.AtomicBoolean closed =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        private ReceiveLease(ActorSourceLifecycleGate gate) {
+            this.gate = gate;
+        }
+
+        @Override
+        public void close() {
+            if (closed.compareAndSet(false, true)) gate.leaveReceive();
+        }
+    }
 
     synchronized void beginInit(ActorRuntime.ActorId caller, String type) {
         requireOwner(caller, type);
@@ -85,11 +112,37 @@ final class ActorSourceLifecycleGate {
         }
     }
 
+    synchronized ReceiveLease enterReceive(
+            ActorRuntime.ActorId caller, String type,
+            ActorRuntime.ActorOwnedGuestState state,
+            ActorRuntime.ActorInboxMail<?> mail) {
+        // Validation and receipt admission must be ONE atomic operation with
+        // respect to STOP. Calling requireReceive() alone is not a lease.
+        requireReceive(caller, type, state, mail);
+        if (activeReceives == Integer.MAX_VALUE) {
+            throw new IllegalStateException("source actor receive lease accounting overflow");
+        }
+        activeReceives++;
+        return new ReceiveLease(this);
+    }
+
+    private synchronized void leaveReceive() {
+        if (activeReceives <= 0) {
+            throw new IllegalStateException("source actor receive lease accounting underflow");
+        }
+        activeReceives--;
+        notifyAll();
+    }
+
     synchronized void beginTeardown(
             ActorRuntime.ActorId caller, String type,
             ActorRuntime.ActorOwnedGuestState state) {
         requireOwner(caller, type);
         require(Phase.STOPPING_GRACEFUL, "tear down source actor");
+        if (activeReceives != 0) {
+            throw new IllegalStateException(
+                    "source actor tear_down requires all receive invocations to quiesce");
+        }
         if (state == null || !owner.equals(state.ownerActorId())) {
             throw new SecurityException(
                     "source actor teardown does not own active incarnation state");
@@ -98,6 +151,10 @@ final class ActorSourceLifecycleGate {
     }
 
     synchronized void close() {
+        if (activeReceives != 0) {
+            throw new IllegalStateException(
+                    "source actor physical retirement with active receive invocations");
+        }
         phase = Phase.CLOSED;
     }
 
