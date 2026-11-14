@@ -10707,6 +10707,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
             if (pattern instanceof Ast.SequencePattern sequence) {
+                // Reject any unproved named tail before even inspecting an input.
+                // A forged unchecked AST must never bypass loan admission by
+                // picking a nonmatching arm or empty byte buffer.
+                if (sequence.tail() != null && !sequence.tail().equals("_")) {
+                    throw new IllegalArgumentException(
+                            "named byte/bit tail requires checked loan and guard-failure cleanup");
+                }
                 if (!(value instanceof dev.oreslang.runtime.OresBytes bytes)) return false;
                 final int size = bytes.size();
                 final long sourceUnits = sequence.unit() == Ast.SequenceUnit.BYTE
@@ -10717,7 +10724,10 @@ public final class OresEvalRootNode extends RootNode {
 
                 // Compare before publishing captures: a truncated or unequal
                 // branch must never initialize user-visible partial bindings.
-                java.util.LinkedHashMap<String, Object> captures = new java.util.LinkedHashMap<>();
+                // The common literal-only/ignored-tail fast path performs no
+                // guest heap allocation. Allocate a temporary capture record
+                // only when the source pattern actually binds scalar names.
+                java.util.LinkedHashMap<String, Object> captures = null;
                 for (int i = 0; i < prefix; i++) {
                     Ast.SequenceElement element = sequence.elements().get(i);
                     int unit = sequence.unit() == Ast.SequenceUnit.BYTE
@@ -10725,20 +10735,18 @@ public final class OresEvalRootNode extends RootNode {
                             : ((bytes.byteAt(i >>> 3) >>> (7 - (i & 7))) & 1);
                     if (element.literal() != null && element.literal() != unit) return false;
                     if (element.binding() != null && !element.binding().equals("_")) {
+                        if (captures == null) captures = new java.util.LinkedHashMap<>();
                         captures.put(element.binding(), sequence.unit() == Ast.SequenceUnit.BYTE
                                 ? (Object) (long) unit : (Object) (unit != 0));
                     }
                 }
-                if (sequence.tail() != null && !sequence.tail().equals("_")) {
-                    // Defense in depth for forged AST or unchecked evaluator
-                    // entry points: no unproven borrowed or copied handles.
-                    throw new IllegalArgumentException(
-                            "named byte/bit tail requires checked loan and guard-failure cleanup");
+                if (captures != null) {
+                    for (String name : captures.keySet())
+                        if (bindings.containsKey(name))
+                            throw new IllegalStateException(
+                                    "duplicate sequence pattern capture: " + name);
+                    bindings.putAll(captures);
                 }
-                for (String name : captures.keySet())
-                    if (bindings.containsKey(name))
-                        throw new IllegalStateException("duplicate sequence pattern capture: " + name);
-                bindings.putAll(captures);
                 return true;
             }
             if (pattern instanceof Ast.WildcardPattern) return true;
