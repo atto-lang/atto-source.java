@@ -8,6 +8,8 @@ Previously `ActorSourceLifecycleGate.close()` ran only during eventual physical 
 
 This branch introduces `sealStop(allowGracefulTeardown)`, called under the same ActorCell lifecycle monitor immediately after the winning STOP CAS. It records `STOPPING_TERMINAL` for NEW/INITIALIZING or non-graceful stop, and `STOPPING_GRACEFUL` for a fully initialized actor whose runtime-approved cooperative teardown is pending. `commitInit` and `requireReceive` only accept their previous `INITIALIZING` / `READY` phases, so no late READY or post-STOP guest receive can pass the inner gate. `beginTeardown` now requires the graceful sealed state, and remains once-only and owner-checked. `close()` still represents final physical retirement; revoking source ingress is not confused with proof of resource quiescence.
 
+**Remaining READY-observer race:** This fix serializes STOP against the **source state gate's** init commit, not against the separate `ActorRef.readyFuture` publication callback. If initialization already committed before STOP, the runtime's independent readyFuture settlement and terminal observer-drain logic must still be reconciled with the outstanding READY-publication race fixes (including Java #2089). Do not treat this gate alone as complete linearizability proof for READY observers.
+
 This introduces no public source method, no additional actor carrier, no background executor or callback under a lifecycle lock. It leaves mailbox accounting, task cleanup, child STOP and physical I/O retirement with the existing ActorRuntime.
 
 ## Compiler behavior
