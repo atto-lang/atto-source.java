@@ -132,42 +132,51 @@ final class AdaptiveTraceCodeV1<T> {
                 || sequence == Long.MAX_VALUE) {
             throw new IllegalStateException("JIT authorization, epoch or quota denied");
         }
-        if (probeMask == 0 || (probeMask & ~TraceInstrumentationControlV1.ALL) != 0
-                || (probeMask & ~policy.activeMask()) != 0) {
-            throw new IllegalArgumentException("probes not authorized by current policy");
+        // Serialize the policy snapshot with the supervisor's configure().
+        // No compiler work or guest callback executes while either lock is held.
+        synchronized (policy) {
+            if (probeMask == 0 || (probeMask & ~TraceInstrumentationControlV1.ALL) != 0
+                    || (probeMask & ~policy.activeMask()) != 0) {
+                throw new IllegalArgumentException("probes not authorized by current policy");
+            }
+            prune();
+            if (generations.size() >= maxLiveGenerations) {
+                throw new IllegalStateException("live code-generation quota exceeded");
+            }
+            // Budget includes aborted or rejected compiler attempts.
+            requestedCompilations++;
+            pending = new Ticket(this, epoch, ++sequence, probeMask, policy.version());
+            return pending;
         }
-        prune();
-        if (generations.size() >= maxLiveGenerations) {
-            throw new IllegalStateException("live code-generation quota exceeded");
-        }
-        requestedCompilations++; // Includes failed/aborted compiles to prevent DoS.
-        pending = new Ticket(this, epoch, ++sequence, probeMask, policy.version());
-        return pending;
     }
 
     /** Publish only an independently verified trusted-compiler artifact. */
     synchronized long publish(Ticket ticket, Candidate<T> artifact) {
         verifyTicket(ticket);
         Objects.requireNonNull(artifact, "compiled artifact");
-        if (!identity.equals(artifact.identity) || ticket.probeMask != artifact.probeMask
-                || ticket.policyVersion != policy.version()
-                || (ticket.probeMask & ~policy.activeMask()) != 0) {
-            throw new SecurityException("changed IR, ABI, effects, ownership or trace policy");
+        // Configure and publication have one policy linearization boundary.
+        // A revoked-then-restored mask still fails because its version changed.
+        synchronized (policy) {
+            if (!identity.equals(artifact.identity) || ticket.probeMask != artifact.probeMask
+                    || ticket.policyVersion != policy.version()
+                    || (ticket.probeMask & ~policy.activeMask()) != 0) {
+                throw new SecurityException("changed IR, ABI, effects, ownership or trace policy");
+            }
+            prune();
+            if (generations.size() >= maxLiveGenerations) {
+                throw new IllegalStateException("live code-generation quota exceeded");
+            }
+            // Publication changes only the next invocation's dispatch target.
+            Generation<T> replacement = new Generation<>(ticket.sequence, ticket.probeMask,
+                    artifact.executable);
+            generations.add(replacement);
+            active = replacement;
+            ticket.consumed = true;
+            ticket.owner = null;
+            pending = null;
+            prune();
+            return replacement.id;
         }
-        prune();
-        if (generations.size() >= maxLiveGenerations) {
-            throw new IllegalStateException("live code-generation quota exceeded");
-        }
-        // Publication changes only the next invocation's dispatch target.
-        Generation<T> replacement = new Generation<>(ticket.sequence, ticket.probeMask,
-                artifact.executable);
-        generations.add(replacement);
-        active = replacement;
-        ticket.consumed = true;
-        ticket.owner = null;
-        pending = null;
-        prune();
-        return replacement.id;
     }
 
     synchronized void abort(Ticket ticket) {
