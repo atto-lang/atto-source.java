@@ -2772,6 +2772,37 @@ public final class Parser {
         return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms, procedural);
     }
 
+    // Canonical named enum-case projection:
+    //   on Run { job_id, payload } as r -> ...
+    // The AST retains the source field names and the independent whole-case
+    // alias. Never reinterpret named fields as positional record arguments.
+    private Ast.ConstructorPattern parseNamedEnumFields(String constructor) {
+        consume(LBRACE, "expected '{' after enum case");
+        List<String> fields = new ArrayList<>();
+        java.util.Set<String> unique = new java.util.HashSet<>();
+        if (!check(RBRACE)) {
+            do {
+                Token field = consume(IDENT, "expected declared enum payload field name");
+                if (!unique.add(field.lexeme())) {
+                    throw error(field, "duplicate enum pattern field '" + field.lexeme() + "'");
+                }
+                fields.add(field.lexeme());
+                if (match(AS)) {
+                    throw error(previous(),
+                            "field-level renaming is not supported; use whole-variant 'as name'");
+                }
+            } while (match(COMMA) && !check(RBRACE));
+        }
+        consume(RBRACE, "expected '}' after enum pattern fields");
+        String alias = match(AS)
+                ? consume(IDENT, "expected whole-variant alias name").lexeme()
+                : null;
+        if (alias != null && unique.contains(alias)) {
+            throw error(previous(), "whole-variant alias collides with field binding '" + alias + "'");
+        }
+        return new Ast.ConstructorPattern(constructor, List.of(), alias, fields);
+    }
+
     private Ast.Pattern parsePattern() {
         if (match(STRUCTURAL) || matchContextualIdentifier("structural")) {
             Ast.TypeRef target = parseTypeRef();
@@ -2835,6 +2866,7 @@ public final class Parser {
                 variant.append('.').append(consume(IDENT,
                         "expected variant member after '.'").lexeme());
             } while (check(DOT));
+            if (check(LBRACE)) return parseNamedEnumFields(variant.toString());
             if (match(AS)) {
                 if (match(LPAREN)) {
                     // Legacy positional payload bindings remain distinct from
@@ -2857,6 +2889,12 @@ public final class Parser {
 
         if (check(IDENT)) {
             String name = advance().lexeme();
+            if (check(LBRACE)) {
+                if (name.isEmpty() || !Character.isUpperCase(name.charAt(0))) {
+                    throw error(peek(), "enum variant patterns must start with a case name");
+                }
+                return parseNamedEnumFields(name);
+            }
             if (match(LPAREN)) {
                 List<Ast.Pattern> args = new ArrayList<>();
                 if (!check(RPAREN)) {
