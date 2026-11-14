@@ -144,8 +144,10 @@ final class ActorSourceLifecycleGateTest {
         assertThrows(IllegalStateException.class, gate::close,
                 "physical reclamation requires STOP even when no guest work ran");
         gate.sealStop(false);
-        gate.close();
         assertThrows(ActorSourceLifecycleGate.InitializationStopped.class,
+                () -> gate.beginInit(owner, TYPE));
+        gate.close();
+        assertThrows(IllegalStateException.class,
                 () -> gate.beginInit(owner, TYPE));
     }
 
@@ -162,7 +164,7 @@ final class ActorSourceLifecycleGateTest {
         assertFalse(gate.initializationActive());
         gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
-        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
+        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
     }
 
     @Test
