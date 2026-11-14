@@ -9,6 +9,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorCodeImageContinuationV1.java'
       - 'src/main/java/dev/oreslang/runtime/HttpGenerationDrainV1.java'
       - 'src/test/java/dev/oreslang/runtime/ActorCodeImageContinuationV1Test.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorContinuationTerminalResourceFailureTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorContinuationLedgerTest.java'
       - 'src/test/java/dev/oreslang/runtime/HotCodeGenerationRetentionV1Test.java'
       - 'pom.xml'
@@ -60,13 +61,14 @@ jobs:
       - name: Run real host JUnit receipts on the full source tree
         run: |
           mvn -B -ntp \
-            -Dtest=ActorCodeImageContinuationV1Test,ActorContinuationLedgerTest,HotCodeGenerationRetentionV1Test,HttpGenerationDrainV1Test \
+            -Dtest=ActorCodeImageContinuationV1Test,ActorContinuationTerminalResourceFailureTest,ActorContinuationLedgerTest,HotCodeGenerationRetentionV1Test,HttpGenerationDrainV1Test \
             -DfailIfNoTests=true test
       - name: Fail on missing, skipped, or red JUnit results
         run: |
           set -euo pipefail
           for name in \
             ActorCodeImageContinuationV1Test \
+            ActorContinuationTerminalResourceFailureTest \
             ActorContinuationLedgerTest \
             HotCodeGenerationRetentionV1Test \
             HttpGenerationDrainV1Test
