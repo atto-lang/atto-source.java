@@ -2789,6 +2789,12 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.ActorStateReadExpr read) {
+            throw new IllegalArgumentException(
+                    "ACTOR_CRITICAL_STATE_MIR_UNSUPPORTED: detached critical-read "
+                    + read.viewName() + "." + read.fieldName()
+                    + " requires authenticated lifetime-checked actor MIR");
+        }
         if (expr instanceof Ast.LocalAggregateConstructExpr construct) {
             throw new IllegalArgumentException(
                     "local aggregate constructor '" + construct.typeName()

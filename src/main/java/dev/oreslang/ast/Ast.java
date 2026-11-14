@@ -1332,7 +1332,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
+    public sealed interface Expr permits ActorStateReadExpr, LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr { }
@@ -1357,6 +1357,23 @@ public final class Ast {
                 if (!names.add(field.name())) {
                     throw new IllegalArgumentException("duplicate aggregate constructor field '" + field.name() + "'");
                 }
+            }
+        }
+    }
+
+    /**
+     * Compiler-only detached Copy scalar from a critical-read state loan.
+     * Not a guest-callable method or closure: the authenticated state view
+     * never escapes this expression. Executable MIR lowering remains gated.
+     */
+    public record ActorStateReadExpr(String viewName, String fieldName) implements Expr {
+        public ActorStateReadExpr {
+            if (viewName == null || viewName.isBlank() || viewName.equals("_")
+                    || viewName.equals("self") || viewName.equals("handle_state")
+                    || fieldName == null || fieldName.isBlank()
+                    || fieldName.equals("_")) {
+                throw new IllegalArgumentException(
+                        "critical-read Copy result requires a named private view and field");
             }
         }
     }

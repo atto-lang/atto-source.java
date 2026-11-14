@@ -26,13 +26,12 @@ final class ActorCriticalStateSyntaxV2Test {
 
     private static final String NS = "namespace counter;\n";
     private static final String STATEFUL_METHOD = NS + """
-            mtd (Counter c) receive(ActorMail<int> mail): void {
+            external mtd (Counter c) receive(ActorMail<int> mail): void {
                 self.handle_state(critical-write |s| -> {
                     s.total = s.total + mail.value;
                 });
-                self.handle_state(critical-read |view| -> {
-                    self.send(view.total);
-                });
+                val int snapshot = self.handle_state(critical-read |view| -> view.total);
+                self.send(snapshot);
                 return;
             }
             """;
@@ -54,17 +53,23 @@ final class ActorCriticalStateSyntaxV2Test {
     @Test
     void statefulMethodKeepsDistinctWriterAndReaderScopes() {
         var body = method(STATEFUL_METHOD).body();
-        assertEquals(3, body.size());
+        assertEquals(4, body.size());
         var write = scope(body.get(0), Ast.CriticalStateMode.WRITE);
-        var read = scope(body.get(1), Ast.CriticalStateMode.READ);
         assertEquals("s", write.viewName());
-        assertEquals("view", read.viewName());
         var assignment = assertInstanceOf(Ast.ExprStmt.class,
                 write.body().getFirst());
         assertInstanceOf(Ast.AssignExpr.class, assignment.expression());
-        assertInstanceOf(Ast.CallExpr.class, assertInstanceOf(Ast.ExprStmt.class,
-                read.body().getFirst()).expression());
-        assertInstanceOf(Ast.ReturnStmt.class, body.get(2));
+
+        var copy = assertInstanceOf(Ast.BindingStmt.class, body.get(1));
+        assertEquals(Ast.BindingKind.VAL, copy.kind());
+        assertEquals("int", copy.declaredType().name());
+        assertEquals("snapshot", copy.name());
+        var read = assertInstanceOf(Ast.ActorStateReadExpr.class, copy.initializer());
+        assertEquals("view", read.viewName());
+        assertEquals("total", read.fieldName());
+        assertInstanceOf(Ast.CallExpr.class,
+                assertInstanceOf(Ast.ExprStmt.class, body.get(2)).expression());
+        assertInstanceOf(Ast.ReturnStmt.class, body.get(3));
     }
 
     @Test
@@ -167,10 +172,11 @@ final class ActorCriticalStateSyntaxV2Test {
         var build = physicalBuild();
         Path path = root.resolve("src/counter/receive.atto");
         Files.writeString(path, Files.readString(path).replace(
-                "self.send(s.total);", "s.total = 99;"));
+                "val int snapshot", "let int snapshot"));
         var failure = assertThrows(IllegalArgumentException.class,
                 build::auditDeclaredActors);
-        assertTrue(failure.getMessage().contains("critical-read permits only"),
+        assertTrue(failure.getMessage().contains(
+                "detached critical-read requires val int Copy"),
                 failure.getMessage());
     }
 
@@ -194,6 +200,62 @@ final class ActorCriticalStateSyntaxV2Test {
                 build::auditDeclaredActors);
         assertTrue(foreign.getMessage().contains("undeclared state field"),
                 foreign.getMessage());
+    }
+
+    @Test
+    void detachedReadCannotSendBorrowedViewOrSuspendBeforePublish() throws Exception {
+        var build = physicalBuild();
+        Path path = root.resolve("src/counter/receive.atto");
+        String original = Files.readString(path);
+        for (String replacement : new String[] {
+                "self.send(s.total);",
+                "self.send(mail.value);",
+                "await self.send(snapshot);",
+                "self.send(snapshot); self.send(snapshot);"
+        }) {
+            Files.writeString(path, original.replace(
+                    "self.send(snapshot);", replacement));
+            var failure = assertThrows(IllegalArgumentException.class,
+                    build::auditDeclaredActors, replacement);
+            assertFalse(failure.getMessage().isBlank(), replacement);
+        }
+        Files.writeString(path, original.replace(
+                "-> s.total)", "-> s.foreign)"));
+        var unknown = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(unknown.getMessage().contains("declared scalar int field"),
+                unknown.getMessage());
+    }
+
+    @Test
+    void inLoanMailboxSendIsNoLongerAnAuthorizedReadScope() throws Exception {
+        var build = physicalBuild();
+        Path path = root.resolve("src/counter/receive.atto");
+        String original = Files.readString(path);
+        Files.writeString(path, original.replace(
+                "val int snapshot = self.handle_state(critical-read |s| -> s.total);\n"
+                + "  self.send(snapshot);",
+                "self.handle_state(critical-read |s| -> { self.send(s.total); });"));
+        var denied = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(denied.getMessage().contains(
+                "critical-read mailbox send inside borrowed scope"),
+                denied.getMessage());
+    }
+
+    @Test
+    void detachedCriticalReadIsNotExecutableWithoutAuthenticatedMir() {
+        String source = NS + """
+                pub fnc state_entry(): void {
+                    val int snapshot = self.handle_state(critical-read |s| -> s.total);
+                    return;
+                }
+                """;
+        var program = Parser.parse(source);
+        var blocked = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(program));
+        assertTrue(blocked.getMessage().contains("ACTOR_CRITICAL_STATE_MIR_UNSUPPORTED"),
+                blocked.getMessage());
     }
 
     @Test

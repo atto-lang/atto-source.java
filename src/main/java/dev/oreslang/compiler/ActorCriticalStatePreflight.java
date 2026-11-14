@@ -16,9 +16,11 @@ import java.util.TreeMap;
  * Closed-world, manifest-owned state-loan preflight. This is a typed
  * SCHEMA/AST witness, NOT executable critical-loan MIR or an authority token.
  *
- * V2 deliberately admits one checked scalar increment in a WRITE loan or a
- * copy-only scalar send in a READ loan. It rejects nested callbacks, alias
- * export, state member spoofing, suspension and arbitrary guest side effects.
+ * V2 admits one checked scalar increment in a WRITE loan, followed by
+ * a detached Copy i64 expression in a READ loan. Mailbox send is only
+ * admitted after that critical-read loan ends. This is a source/typed
+ * witness, not permission to lower authenticated actor state into machine
+ * code. Old in-loan sends and borrowed view escape are rejected.
  * A subsequent MIR pass must still prove generation fencing, effect admission
  * and correct runtime loan release on every exit.
  */
@@ -66,18 +68,62 @@ public final class ActorCriticalStatePreflight {
                         if (!(declaration instanceof Ast.ExternalActorMethodDecl method)
                                 || !method.actorName().equals(key.actor())) continue;
                         var aliases = new HashSet<String>();
+                        var readSnapshots = new HashSet<String>();
                         for (var statement : method.body()) {
-                            if (statement instanceof Ast.ActorStateAccessStmt access) {
+                            if (statement instanceof Ast.ActorStateAccessStmt access)
                                 aliases.add(access.viewName());
+                            if (statement instanceof Ast.BindingStmt bind
+                                    && bind.initializer() instanceof Ast.ActorStateReadExpr read)
+                                aliases.add(read.viewName());
+                        }
+                        String pendingSnapshot = null;
+                        for (var statement : method.body()) {
+                            if (pendingSnapshot != null) {
+                                verifyDetachedSend(statement, pendingSnapshot);
+                                // The closed v2 profile consumes a detached Copy
+                                // exactly once; no second use, rebind or escape.
+                                aliases.add(pendingSnapshot);
+                                pendingSnapshot = null;
+                            } else if (statement instanceof Ast.ActorStateAccessStmt access) {
                                 operations.add(validateScope(
                                         unit.getKey(), key, method, access, fields));
-                            }
-                        }
-                        for (var statement : method.body()) {
-                            if (!(statement instanceof Ast.ActorStateAccessStmt)) {
+                            } else if (statement instanceof Ast.BindingStmt bind
+                                    && bind.initializer() instanceof Ast.ActorStateReadExpr read) {
+                                if (bind.kind() != Ast.BindingKind.VAL
+                                        || bind.declaredType() == null
+                                        || !bind.declaredType().name().equals("int")
+                                        || !bind.declaredType().arguments().isEmpty()
+                                        || bind.declaredType().inferArguments()) {
+                                    throw deny("detached critical-read requires val int Copy binding");
+                                }
+                                if (bind.name().equals("self")
+                                        || bind.name().equals("handle_state")
+                                        || bind.name().equals(read.viewName())
+                                        || bind.name().equals(method.receiverName())
+                                        || readSnapshots.contains(bind.name())
+                                        || fields.containsKey(bind.name())
+                                        || method.parameters().stream().anyMatch(
+                                                p -> p.name().equals(bind.name())
+                                                        || p.name().equals(read.viewName()))) {
+                                    throw deny("detached state Copy binding shadows source authority");
+                                }
+                                var field = fields.get(read.fieldName());
+                                if (field == null || !field.type().name().equals("int")
+                                        || !field.type().arguments().isEmpty()) {
+                                    throw deny("detached critical-read requires declared scalar int field");
+                                }
+                                readSnapshots.add(bind.name());
+                                operations.add(new CriticalOperation(
+                                        unit.getKey(), key.namespace(), key.actor(),
+                                        method.name(), Ast.CriticalStateMode.READ,
+                                        read.fieldName(), "int"));
+                                pendingSnapshot = bind.name();
+                            } else {
                                 verifyOutside(statement, aliases, fields.keySet());
                             }
                         }
+                        if (pendingSnapshot != null)
+                            throw deny("detached critical-read must be followed by self.send(Copy)");
                     }
                 }
             }
@@ -117,24 +163,31 @@ public final class ActorCriticalStatePreflight {
                 throw deny("critical-write requires 'view.field = view.field + int_message'");
             }
         } else {
-            if (!(expr instanceof Ast.CallExpr call)
-                    || call.typeArgumentsPresent() || call.arguments().size() != 1
-                    || !(call.callee() instanceof Ast.MemberExpr send)
-                    || !send.member().equals("send")
-                    || !(send.receiver() instanceof Ast.NameExpr owner)
-                    || !owner.name().equals("self")) {
-                throw deny("critical-read permits only a copy-only self.send(view.field)");
-            }
-            fieldName = viewField(call.arguments().getFirst(), access.viewName());
-            var field = fields.get(fieldName);
-            if (field == null) throw deny("critical-read names undeclared state field");
-            if (!field.type().name().equals("int")) {
-                throw deny("v2 critical-read permits only copied int fields");
-            }
+            // Never send while a critical-read view is held. The only allowed
+            // source form is a detached Copy scalar expression followed by
+            // self.send(snapshot) after the authenticated loan ends.
+            throw deny("critical-read mailbox send inside borrowed scope forbidden; "
+                    + "use val int snapshot = self.handle_state(critical-read |s| -> s.field)");
         }
         return new CriticalOperation(
                 sourceUnit, key.namespace(), key.actor(), method.name(),
                 access.mode(), fieldName, "int");
+    }
+
+    private static void verifyDetachedSend(Ast.Stmt statement, String copied) {
+        if (!(statement instanceof Ast.ExprStmt expression)
+                || !(expression.expression() instanceof Ast.CallExpr call)
+                || call.typeArgumentsPresent()
+                || call.arguments().size() != 1
+                || !(call.arguments().getFirst() instanceof Ast.NameExpr value)
+                || !value.name().equals(copied)
+                || !(call.callee() instanceof Ast.MemberExpr send)
+                || !send.member().equals("send")
+                || !(send.receiver() instanceof Ast.NameExpr receiver)
+                || !receiver.name().equals("self")) {
+            throw deny("detached critical-read must be followed by self.send(Copy) "
+                    + "outside the critical loan");
+        }
     }
 
     private static boolean validScalarMessage(

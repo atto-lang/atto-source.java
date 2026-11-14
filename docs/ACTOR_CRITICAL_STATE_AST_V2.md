@@ -14,17 +14,20 @@ identical-source Java/LLVM release gate.
 
 ## Typed syntax milestone (NOT runtime execution)
 
-Java's lexer/parser now recognizes *only actor-local statement syntax*:
+Java now recognizes the canonical **detached Copy scalar** expression:
 
 ```atto
 self.handle_state(critical-write |s| -> { s.total = s.total + mail.value; });
-self.handle_state(critical-read |s| -> { self.send(s.total); });
+val int snapshot = self.handle_state(critical-read |s| -> s.total);
+self.send(snapshot);
 ```
 
-The parser emits a dedicated `Ast.ActorStateAccessStmt` with a distinct
-`CriticalStateMode.READ/WRITE`, a named scoped view and the body AST.
-It cannot fall through to `CallExpr` or be represented as a
-guest-authored `handle_state` method. Neither non-adjacent
+The parser emits `Ast.ActorStateAccessStmt` for scoped writes and a
+distinct `Ast.ActorStateReadExpr` for scalar reads. The read view never
+becomes an ordinary closure or `CallExpr`; the manifest witness requires
+an immutable-identity `val int` binding and exact `self.send(snapshot)`
+**after** the reader loan ends. An old `self.send(s.total)` within a
+`critical-read` block now fails semantic preflight. Neither non-adjacent
 `critical -write` nor arbitrary mode spellings receive permissions.
 
 **Executable typechecking and both evaluation paths remain explicitly
@@ -65,8 +68,12 @@ The present intentionally **narrow** operation subset is:
 - `critical-write`: exactly `view.int_field = view.int_field + int_mail.value`
   or a signed-i64 literal increment, requiring a mutable `let int` field
   in the verified attached state schema.
-- `critical-read`: exactly `self.send(view.int_field)` of a copied
-  scalar field with a verified declaration and type.
+- `critical-read`: exactly `val int snapshot =
+  self.handle_state(critical-read |view| -> view.int_field);` where
+  `int_field` is a verified scalar state field and the only immediate
+  following operation is `self.send(snapshot);`. The lexical loan is
+  released before mailbox publication; a direct send inside the borrowed
+  scope or mutable/aliased snapshot is never admitted.
 - No view escaping into ordinary sends, direct `self.field` state access,
   nested critical scopes, reader writes, unknown fields, immutable writes,
   callback returns, suspension or arbitrary unverified effects.
@@ -76,3 +83,11 @@ LLVM/Java typed state MIR or scheduler-issued state loans. All execution
 paths are still blocked until the remainder of the stated release gates
 pass. The raw `TypeChecker.check` and standalone compile(Map) entrypoints
 do not gain authority from a caller-supplied preflight result.
+
+## Canonical source identity
+
+The seven units in the Java Counter V2 fixture are to be byte-identical
+with `actor-counter-identical-source-v1` in the Java/LLVM/.NET parity
+contract (including `external mtd receive`). This patch reconciles the
+receive source with the canonical detached Copy form. Native execution is
+still deliberately **NOT_EXECUTED** until manifest-bound MIR is implemented.
