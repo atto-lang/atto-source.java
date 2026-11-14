@@ -3,13 +3,13 @@ define enum WorkerMsg {
     Stop
 }
 
-fnc bad_escape(WorkerMsg msg): &Bytes {
+fnc bad_escape(WorkerMsg msg, &Bytes fallback): &Bytes {
     do match msg over
         on Run { job_id, payload } as r -> {
             return r.payload;
         }
         on Stop -> {
-            return rt borrow msg;
+            return fallback;
         }
     end
 }
