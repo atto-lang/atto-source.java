@@ -28,10 +28,20 @@ public final class SourceLogCallsiteBindingV1 {
                             String message) { }
     private record RoutineSelector(String module, String function, int arity) { }
 
+    /**
+     * Requires the separate, exact-function-identity routine binding returned
+     * by SourceRoutineBindingV1.bind for this very same parsed Program.
+     * Site entries alone never authorize a routine ID or an executable probe.
+     */
     public static Map<Ast.CallExpr, SourceIdentityV1.Site> bind(
-            Ast.Program program, List<Entry> entries) {
+            Ast.Program program, List<Entry> entries,
+            Map<Ast.FunctionDecl, SourceIdentityV1.Id> checkedRoutines) {
         Objects.requireNonNull(program, "checked native Java frontend AST");
         Objects.requireNonNull(entries, "checked source registry");
+        Objects.requireNonNull(checkedRoutines, "independently verified routine IDs");
+        if (checkedRoutines.isEmpty() || checkedRoutines.size() > 4096) {
+            throw new IllegalArgumentException("exact verified function table required");
+        }
         if (entries.size() > 4096) {
             throw new IllegalArgumentException("source log-site budget exceeded");
         }
@@ -73,11 +83,25 @@ public final class SourceLogCallsiteBindingV1 {
                     throw new IllegalArgumentException("Java literal log v1 supports scalar functions only");
                 }
                 if (fn.async() || fn.suspends() || fn.generator()
-                        || fn.actorKind() != Ast.ActorKind.NONE) {
+                        || fn.actorKind() != Ast.ActorKind.NONE
+                        || !fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "log-site tracing across suspension/actor turns requires proven continuation cleanup");
                 }
-                visit(fn.body(), module.name(), fn, bySelector, bindings);
+                // Exact AST object identity, NOT record structural equality.
+                // This prevents a structurally equivalent foreign AST node
+                // from being passed as authority for this compilation unit.
+                SourceIdentityV1.Id checkedId = null;
+                for (var candidate : checkedRoutines.entrySet()) {
+                    if (candidate.getKey() == fn) {
+                        checkedId = candidate.getValue();
+                        break;
+                    }
+                }
+                if (checkedId == null || checkedId.kind() != SourceIdentityV1.Kind.ROUTINE) {
+                    throw new IllegalArgumentException("missing exact independently checked function identity");
+                }
+                visit(fn.body(), module.name(), fn, checkedId, bySelector, bindings);
             }
         }
         if (!bySelector.isEmpty() || bindings.size() != entries.size()) {
@@ -110,6 +134,7 @@ public final class SourceLogCallsiteBindingV1 {
 
     private static void visit(
             List<Ast.Stmt> statements, String module, Ast.FunctionDecl fn,
+            SourceIdentityV1.Id checkedRoutine,
             Map<Selector, SourceIdentityV1.Site> remaining,
             IdentityHashMap<Ast.CallExpr, SourceIdentityV1.Site> result) {
         for (Ast.Stmt stmt : statements) {
@@ -119,9 +144,9 @@ public final class SourceLogCallsiteBindingV1 {
                     throw new IllegalArgumentException(
                             "native log v1 scoped tracing needs a literal span name");
                 }
-                visit(scope.body(), module, fn, remaining, result);
+                visit(scope.body(), module, fn, checkedRoutine, remaining, result);
             } else if (stmt instanceof Ast.BlockStmt block) {
-                visit(block.body(), module, fn, remaining, result);
+                visit(block.body(), module, fn, checkedRoutine, remaining, result);
             } else if (stmt instanceof Ast.ExprStmt expression) {
                 if (!(expression.expression() instanceof Ast.CallExpr call)) {
                     throw new IllegalArgumentException(
@@ -141,15 +166,25 @@ public final class SourceLogCallsiteBindingV1 {
                     requireLiteral(message);
                     var site = remaining.remove(new Selector(
                             module, fn.name(), fn.parameters().size(), message));
-                    if (site == null || result.put(call, site) != null) {
+                    if (site == null || !site.routineId().equals(checkedRoutine)
+                            || result.put(call, site) != null) {
                         throw new IllegalArgumentException(
-                                "log site missing or duplicated in checked source registry");
+                                "log site missing, forged routine, or duplicate in checked source registry");
                     }
                 } else {
                     throw new IllegalArgumentException(
                             "unverified guest statement in strict literal log v1");
                 }
-            } else if (!(stmt instanceof Ast.ReturnStmt)) {
+            } else if (stmt instanceof Ast.ReturnStmt returned) {
+                // Do not overlook a log.info(...) in a nested return expression
+                // where there is no checked static site descriptor.
+                if (returned.value() != null
+                        && !(returned.value() instanceof Ast.LiteralExpr)
+                        && !(returned.value() instanceof Ast.NameExpr)) {
+                    throw new IllegalArgumentException(
+                            "unchecked return expression tree in strict log v1");
+                }
+            } else {
                 throw new IllegalArgumentException(
                         "unsupported Java guest statement in strict literal log v1");
             }
