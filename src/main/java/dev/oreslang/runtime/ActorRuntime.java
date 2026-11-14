@@ -566,6 +566,130 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     /** Stable *runtime-local* WAL actor slot, never a persistent database identity. */
     private final AtomicLong nextStorageActorOrdinal = new AtomicLong(1);
+    // Observation is host-only, runtime-local and metadata-only. Object identity
+    // grants cannot be forged by supplying an ActorRef or a serialized ID.
+    private long observationGeneration = 1;
+    private final Object observationLock = new Object();
+    private final LinkedHashMap<ActorId, ActorObservation> observationRetired = new LinkedHashMap<>();
+    public record ActorObservation(String id, String supervisorId, String spawnedBy,
+            String kind, String status, long generation, String observedAt,
+            int mailboxDepth, int inFlightRequests) { }
+    public record SupervisorObservation(String id, String parentId, String status,
+            long generation, String observedAt) { }
+    public record RuntimeObservation(long generation, boolean partial,
+            List<SupervisorObservation> supervisors, List<ActorObservation> actors) { }
+    public final class ObservationGrant {
+        private final ActorSupervisor root;
+        private final long generation;
+        private final long deadline;
+        private volatile boolean revoked;
+        private ObservationGrant(ActorSupervisor root, long ttlMillis) {
+            this.root = root;
+            this.generation = observationGeneration;
+            this.deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(ttlMillis);
+        }
+        public void revoke() { revoked = true; }
+    }
+    public ObservationGrant grantObservation(ActorSupervisor root, long ttlMillis) {
+        requireSupervisorContext("grant runtime observation");
+        requireCallerRuntimeAffinity("grant runtime observation");
+        if (root == null || closed.get() || supervisors.get(root.id) != root || ttlMillis < 1 || ttlMillis > 60000)
+            throw new SecurityException("observation denied");
+        synchronized (observationLock) { return new ObservationGrant(root, ttlMillis); }
+    }
+    public void advanceObservationGeneration() {
+        requireSupervisorContext("advance observation incarnation");
+        synchronized (observationLock) { observationGeneration = Math.addExact(observationGeneration, 1); observationRetired.clear(); }
+    }
+    private boolean withinObservationScope(ActorSupervisor node, ActorSupervisor root) {
+        for (ActorSupervisor cursor = node; cursor != null; cursor = cursor.parent)
+            if (cursor == root) return true;
+        return false;
+    }
+    private ActorSupervisor observationSupervisor(ActorCell<?> cell) {
+        ActorGroupId groupId = cell.managedByGroup.get();
+        ActorGroup group = groupId == null ? null : actorGroups.get(groupId);
+        return group == null ? rootSupervisor : group.supervisor;
+    }
+    private ActorObservation observeCell(ActorCell<?> cell, boolean retired) {
+        ActorSupervisor owner = observationSupervisor(cell);
+        synchronized (cell.lifecycleLock) {
+            synchronized (cell.mailboxAccountingLock) {
+                return new ActorObservation(cell.ref.id().toString(), owner.id.toString(),
+                    cell.parent == null ? null : cell.parent.ref.id().toString(),
+                    cell.managedByGroup.get() == null ? "unmanaged-supervision-unknown" : cell.kind.name(),
+                    retired ? "terminated" : cell.stopped.get() ? "stopping" :
+                        cell.behavior == null && cell.codeActorState == null ? "starting" : "running",
+                    cell.ref.generation(), java.time.Instant.now().toString(), cell.queuedUserMessages,
+                    cell.activeMail == null ? 0 : 1);
+            }
+        }
+    }
+    public RuntimeObservation observe(ObservationGrant grant, int maxNodes) {
+        requireSupervisorContext("observe runtime");
+        if (grant == null || maxNodes < 1 || maxNodes > 10000)
+            throw new SecurityException("observation denied");
+        synchronized (observationLock) {
+            // Non-static inner capabilities still need an explicit runtime-owner check.
+            if (grant.revoked || grant.generation != observationGeneration ||
+                supervisors.get(grant.root.id) != grant.root || closed.get() ||
+                System.nanoTime() - grant.deadline >= 0) throw new SecurityException("observation denied");
+        }
+        List<SupervisorObservation> ss = new ArrayList<>();
+        List<ActorObservation> aa = new ArrayList<>();
+        boolean partial = false;
+        for (ActorSupervisor supervisor : supervisors.values().stream().sorted(
+                java.util.Comparator.comparingInt(x -> { int d = 0; for (ActorSupervisor n = x; n.parent != null; n = n.parent) d++; return d; })).toList()) {
+            if (!withinObservationScope(supervisor, grant.root)) continue;
+            if (ss.size() + aa.size() >= maxNodes) { partial = true; continue; }
+            ss.add(new SupervisorObservation(supervisor.id.toString(), supervisor == grant.root ? null :
+                supervisor.parent.id.toString(), "observed", grant.generation, java.time.Instant.now().toString()));
+        }
+        // Weakly consistent registry: local records are atomic, the whole report is not.
+        for (ActorCell<?> cell : List.copyOf(actors.values())) {
+            ActorObservation record = observeCell(cell, false);
+            ActorSupervisor owner = supervisors.values().stream()
+                .filter(x -> x.id.toString().equals(record.supervisorId)).findFirst().orElse(null);
+            if (owner == null || !withinObservationScope(owner, grant.root)) continue;
+            if (ss.stream().noneMatch(x -> x.id.equals(record.supervisorId)) || ss.size() + aa.size() >= maxNodes) {
+                partial = true; continue;
+            }
+            aa.add(record);
+        }
+        synchronized (observationLock) {
+            for (ActorObservation a : observationRetired.values()) {
+                ActorSupervisor owner = supervisors.values().stream()
+                    .filter(x -> x.id.toString().equals(a.supervisorId)).findFirst().orElse(null);
+                if (owner == null || ss.stream().noneMatch(x -> x.id.equals(owner.id.toString())) || !withinObservationScope(owner, grant.root) ||
+                    aa.stream().anyMatch(x -> x.id.equals(a.id))) continue;
+                if (ss.size() + aa.size() >= maxNodes) { partial = true; continue; }
+                aa.add(a);
+            }
+            if (grant.revoked || grant.generation != observationGeneration || closed.get() ||
+                    System.nanoTime() - grant.deadline >= 0) throw new SecurityException("observation denied");
+        }
+        // Ancestry is not authority. A parent outside this observation must not
+        // leak through an otherwise correctly scoped child record.
+        Set<String> visible = new java.util.HashSet<>();
+        aa.forEach(a -> visible.add(a.id));
+        List<ActorObservation> scoped = new ArrayList<>();
+        for (ActorObservation a : aa) {
+            if (a.spawnedBy != null && !visible.contains(a.spawnedBy)) {
+                partial = true;
+                a = new ActorObservation(a.id, a.supervisorId, null, a.kind, a.status,
+                    a.generation, a.observedAt, a.mailboxDepth, a.inFlightRequests);
+            }
+            scoped.add(a);
+        }
+        // Recheck after projection too. Concurrent revocation/epoch advance
+        // linearizes against this final disclosure fence.
+        synchronized (observationLock) {
+            if (grant.revoked || grant.generation != observationGeneration || closed.get() ||
+                    System.nanoTime() - grant.deadline >= 0) throw new SecurityException("observation denied");
+        }
+        return new RuntimeObservation(grant.generation, partial, List.copyOf(ss), List.copyOf(scoped));
+    }
+
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     // Bound ancestor traversal and descendant lifecycle work in adversarial trees.
@@ -574,6 +698,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final ActorSupervisor rootSupervisor = new ActorSupervisor(SupervisorId.create(), null);
     private final Map<SupervisorId, ActorSupervisor> supervisors =
             new ConcurrentHashMap<>(Map.of(rootSupervisor.id(), rootSupervisor));
+    /** Partition-exclusive supervisor authorities; guarded by runtimeLifecycleLock. */
+    private final Map<String, SupervisorStorageEpochAuthority> storageEpochAuthorities =
+            new java.util.HashMap<>();
     /**
      * Reverse cooperation-membership index. All mutations to this map AND an
      * ActorGroup.members set are serialized on groupMembershipLock. This is
@@ -3264,6 +3391,36 @@ public final class ActorRuntime implements AutoCloseable {
         public SupervisorId id() { return id; }
 
         /**
+         * Register one durable partition under this actual runtime supervisor.
+         * No other supervisor in the same runtime can claim the same partition.
+         * Called only by a trusted host during bootstrap; activation itself
+         * requires an independently fsynced durable-generation store.
+         *
+         * This does not expose partition I/O or an ACK method to guest code.
+         */
+        public SupervisorStorageEpochAuthority registerStoragePartition(
+                String partitionId,
+                SupervisorStorageEpochAuthority.DurableGenerationStore durableStore) {
+            requireStorageEpochHostContext(this);
+            Objects.requireNonNull(partitionId, "partitionId");
+            Objects.requireNonNull(durableStore, "durableStore");
+            if (partitionId.isEmpty() || partitionId.length() > 128
+                    || !partitionId.matches("[A-Za-z0-9][A-Za-z0-9_.:/-]*")) {
+                throw new IllegalArgumentException("invalid canonical durable partition id");
+            }
+            synchronized (runtimeLifecycleLock) {
+                if (closed.get() || supervisors.get(id) != this)
+                    throw new IllegalStateException("supervisor no longer registered");
+                if (storageEpochAuthorities.containsKey(partitionId))
+                    throw new IllegalStateException("durable partition already has a supervisor");
+                SupervisorStorageEpochAuthority gate = new SupervisorStorageEpochAuthority(
+                        ActorRuntime.this, this, partitionId, durableStore);
+                storageEpochAuthorities.put(partitionId, gate);
+                return gate;
+            }
+        }
+
+        /**
          * Associate exactly one owner CONTROL code slot with this stable
          * supervisor. Source-level guest policy loading remains compiler-gated.
          */
@@ -3324,6 +3481,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void retireCodeFromRuntime() {
+            // Physical runtime teardown revokes all supervisor-issued storage
+            // tickets before code policy reclamation. No guest callback here.
+            for (SupervisorStorageEpochAuthority gate : storageEpochAuthorities.values()) {
+                if (gate.supervisorId().equals(id)) gate.retireFromRuntime();
+            }
             SupervisorCodeSlot<?> slot = codeSlot;
             if (slot != null) slot.close();
         }
@@ -4995,6 +5157,17 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Host-only admission boundary for a registered supervisor storage gate. */
+    void requireStorageEpochHostContext(ActorSupervisor owner) {
+        requireSupervisorContext("issue a durable supervisor generation");
+        requireCallerRuntimeAffinity("issue a durable supervisor generation");
+        requireBlockingHostContext("issue a durable supervisor generation");
+        if (closed.get() || owner == null || supervisors.get(owner.id()) != owner)
+            throw new IllegalStateException("stale or foreign supervisor runtime");
+    }
+
+    boolean storageEpochRuntimeClosed() { return closed.get(); }
+
     private void requireBlockingHostContext(String operation) {
         if (inActorExecution()
                 || inActorGroupMailmanExecution()
@@ -5973,6 +6146,12 @@ public final class ActorRuntime implements AutoCloseable {
                     deregistrationFailure.addSuppressed(failure);
                 }
             }
+        }
+        ActorObservation retiredObservation = observeCell(cell, true);
+        synchronized (observationLock) {
+            observationRetired.put(cell.ref.id(), retiredObservation);
+            while (observationRetired.size() > 512)
+                observationRetired.remove(observationRetired.keySet().iterator().next());
         }
         if (actors.remove(cell.ref.id(), cell)) {
             int remaining = actorCount.decrementAndGet();
@@ -7130,6 +7309,8 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability) return;
         if (value instanceof ChannelRuntime.Channel<?>
+                || value instanceof ChannelRuntime.ReadChannel<?>
+                || value instanceof ChannelRuntime.WriteChannel<?>
                 || value instanceof ChannelRuntime.SelectCase
                 || value instanceof ChannelRuntime.SelectSet
                 || value instanceof ChannelRuntime.SelectPlan
@@ -7486,6 +7667,10 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
+        if (value instanceof OresEnumSymbol) {
+            // A nominal declaration is data, not tenant-scoped export authority.
+            throw new SecurityException("enum Symbol has no untrusted export authorization");
+        }
         if (value instanceof OresSymbol symbol && !symbol.publicToUntrustedCoreV1()) {
             // Check every nested key and value before admitting untrusted mailbox data.
             throw new SecurityException("Symbol is not visible to untrusted actor");
@@ -7543,7 +7728,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
                 || value instanceof ActorRuntime.ContinuationTarget
-                || value instanceof ChannelRuntime.Channel<?>) {
+                || value instanceof ChannelRuntime.Channel<?>
+                || value instanceof ChannelRuntime.ReadChannel<?>
+                || value instanceof ChannelRuntime.WriteChannel<?>) {
             throw new SecurityException(
                     "execution-domain local capabilities cannot be wrapped as Shared");
         }
@@ -7617,7 +7804,9 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException(
                     "runtime coordination handles are execution-domain local and cannot cross actor mailboxes");
         }
-        if (value instanceof ChannelRuntime.Channel<?>) {
+        if (value instanceof ChannelRuntime.Channel<?>
+                || value instanceof ChannelRuntime.ReadChannel<?>
+                || value instanceof ChannelRuntime.WriteChannel<?>) {
             throw new IllegalArgumentException(
                     "channel capability is execution-domain local and cannot cross actor mailboxes");
         }
@@ -8082,9 +8271,17 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof OresSymbol symbol) return 56L + symbol.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (value instanceof OresEnumSymbol symbol) return enumSymbolLogicalBytes(symbol);
         if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         return -1L;
+    }
+
+    private static long enumSymbolLogicalBytes(OresEnumSymbol symbol) {
+        // Charge the entire closed declaration graph per mail, not just the
+        // selected case. Reused immutable schema memory does not grant free
+        // mailbox retention, and cached accounting stays O(1) per send.
+        return symbol.declaration().transportLogicalBytes();
     }
 
     private static long containerBase(long header, long perEntry, int count) {
@@ -8134,6 +8331,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof OresSymbol symbol) return 56L + symbol.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (value instanceof OresEnumSymbol symbol) return enumSymbolLogicalBytes(symbol);
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
@@ -8179,6 +8377,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private static boolean isScalar(Object value) {
         return value == null || value instanceof String || value instanceof OresSymbol
+                || value instanceof OresEnumSymbol
                 || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal

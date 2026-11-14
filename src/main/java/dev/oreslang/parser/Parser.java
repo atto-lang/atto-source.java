@@ -1350,6 +1350,22 @@ public final class Parser {
                 memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
             }
 
+            // A module contract may require the presence of a public nominal
+            // actor type. This is a type requirement, not a callable or a
+            // second actor declaration. It must not confer state authority.
+            if (moduleContract && match(ACTOR)) {
+                validateNoModifiers(memberModifiers, "module contract actor requirements");
+                if (!memberAnnotations.isEmpty()) {
+                    throw error(previous(), "contract actor requirements do not accept annotations");
+                }
+                String actorName = consumeTypeDeclarationName("expected actor type name in module contract");
+                consumeMemberTerminator(terminator, "contract actor requirement should end with ';'");
+                members.add(new Ast.InterfaceActorDecl(actorName));
+                continue;
+            }
+            if (!moduleContract && check(ACTOR)) {
+                throw error(peek(), "actor requirements belong only in module contracts");
+            }
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
             }
@@ -2806,6 +2822,15 @@ public final class Parser {
             match(SEMICOLON);
             List<Ast.Stmt> body = parseLoopBody();
             if (head.binding() == null) {
+                if (dev.oreslang.ast.ConditionCaptures.contains(head.predicate())
+                        || head.predicate() instanceof Ast.PatternTestExpr
+                        || head.predicate() instanceof Ast.BinaryExpr binary
+                            && binary.left() instanceof Ast.PatternTestExpr) {
+                    // Use an if's condition/branch scope afresh on every test.
+                    return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null,
+                            List.of(new Ast.IfStmt(List.of(new Ast.IfBranch(
+                                    head.predicate(), body)), List.of(new Ast.BreakStmt()))));
+                }
                 return new Ast.ForStmt(null, head.predicate(), null, body);
             }
             // Re-enter the binding scope on every test, including after continue.
@@ -3826,19 +3851,19 @@ public final class Parser {
         bindings.add(head.binding());
         Ast.Expr condition = head.predicate();
 
-        // Brace form still obeys the universal Oreslang invariant: every if closes with fi.
-        // Braces delimit branch bodies; they never replace the structural terminator.
+        // '{' is the braced spelling of 'then'. Intermediate branches close
+        // with '} elif/else'; fi closes the final branch and the whole chain.
         if (check(LBRACE)) {
-            branches.add(new Ast.IfBranch(condition, parseBlock()));
+            branches.add(new Ast.IfBranch(condition, parseConditionalBraceBody()));
             while (matchConditionalBranch()) {
                 head = parseConditionHead(false);
                 bindings.add(head.binding());
                 condition = head.predicate();
-                branches.add(new Ast.IfBranch(condition, parseBlock()));
+                branches.add(new Ast.IfBranch(condition, parseConditionalBraceBody()));
             }
 
             List<Ast.Stmt> elseBody = List.of();
-            if (match(ELSE)) elseBody = parseBlock();
+            if (match(ELSE)) elseBody = parseConditionalBraceBody();
             consume(FI, "expected 'fi' to close if");
             return lowerConditionBindings(branches, bindings, elseBody);
         }
@@ -3874,6 +3899,19 @@ public final class Parser {
         return lowerConditionBindings(branches, bindings, elseBody);
     }
 
+    private List<Ast.Stmt> parseConditionalBraceBody() {
+        consume(LBRACE, "expected '{' before conditional branch");
+        List<Ast.Stmt> body = parseUntil(RBRACE, FI);
+        if (match(RBRACE) && check(FI)) {
+            Token redundant = previous();
+            warnings.add(new SyntaxWarning(redundant.line(), redundant.column(),
+                    "redundant '}' before 'fi'; fi closes the final conditional branch"));
+        }
+        // The caller consumes the branch separator or the final fi. Retain
+        // the historical '} fi' spelling with a migration diagnostic.
+        return body;
+    }
+
     private void consumeConditionalThen(String branch) {
         if (match(THEN)) return;
         if (match(DO)) {
@@ -3905,8 +3943,22 @@ public final class Parser {
     private record ConditionHead(Ast.BindingStmt binding, Ast.Expr predicate) { }
 
     private ConditionHead parseConditionHead(boolean whileHead) {
-        boolean wrapped = check(LPAREN) && ((whileHead && wholeConditionParentheses()) || hasParenthesizedConditionBinding());
+        boolean wrapped = check(LPAREN) && (checkNext(LET)
+                || (whileHead && wholeConditionParentheses()) || hasParenthesizedConditionBinding());
         if (wrapped) advance();
+        if (match(LET)) {
+            Ast.Pattern pattern = parsePattern();
+            if (pattern instanceof Ast.BindingPattern || pattern instanceof Ast.WildcardPattern) {
+                throw error(previous(), "if/while let requires a refutable pattern, such as Some(value); use an as let capture for ordinary values");
+            }
+            consume(EQUAL, "conditional pattern requires '=' before its value");
+            Ast.Expr predicate = new Ast.PatternTestExpr(parseBitwiseOr(), pattern);
+            if (matchAdjacentPair(AMP)) {
+                predicate = new Ast.BinaryExpr("&&", predicate, parseCondition());
+            }
+            if (wrapped) consume(RPAREN, "expected ')' after conditional pattern");
+            return new ConditionHead(null, predicate);
+        }
         Ast.Expr value = parseLogicalOr();
         Ast.BindingStmt binding = null;
         Ast.Expr predicate;
@@ -3955,7 +4007,8 @@ public final class Parser {
             if (type == LBRACE || type == LBRACKET) nestedValues++;
             if (type == RBRACE || type == RBRACKET) nestedValues--;
             if (depth == 1 && nestedValues == 0 && type == AS
-                    && tokens.get(i + 1).type() == LET) return true;
+                    && tokens.get(i + 1).type() == LET && i + 3 < tokens.size()
+                    && tokens.get(i + 3).lexeme().equals("when")) return true;
         }
         return false;
     }
@@ -4707,7 +4760,17 @@ public final class Parser {
             }
             // In a condition head, `as let name when ...` ends the value.
             // Other `as T` uses retain ordinary checked-cast precedence.
-            if (check(AS) && checkNext(LET)) break;
+            if (check(AS) && checkNext(LET)) {
+                // Keep the earlier whole-head `as let name when predicate`
+                // spelling; otherwise this is a value-preserving capture.
+                if (current + 3 < tokens.size()
+                        && tokens.get(current + 3).lexeme().equals("when")) break;
+                advance();
+                advance();
+                String name = consume(IDENT, "capture requires a binding name").lexeme();
+                expr = new Ast.CaptureExpr(expr, name);
+                continue;
+            }
             if (!suppressRefinementOperators && match(AS)) {
                 boolean optional = match(QUESTION);
                 expr = new Ast.CastExpr(expr, parseTypeRef(),
@@ -5802,6 +5865,9 @@ public final class Parser {
         }
         if (expression instanceof Ast.PatternTestExpr patternTest) {
             return containsExpressionBodyLambda(patternTest.value());
+        }
+        if (expression instanceof Ast.CaptureExpr capture) {
+            return containsExpressionBodyLambda(capture.value());
         }
         if (expression instanceof Ast.CastExpr cast) {
             return containsExpressionBodyLambda(cast.value());

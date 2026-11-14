@@ -642,6 +642,29 @@ public final class TypeChecker {
         }
 
         for (Ast.InterfaceMember member : contract.members()) {
+            if (member instanceof Ast.InterfaceActorDecl actorRequirement) {
+                Ast.ClassDecl matching = null;
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.ClassDecl klass
+                            && klass.name().equals(actorRequirement.name())) {
+                        matching = klass;
+                        break;
+                    }
+                }
+                if (matching == null || matching.actorKind() == Ast.ActorKind.NONE
+                        || matching.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "module '" + module.name() + "' is missing required public actor '"
+                                    + contract.name() + "." + actorRequirement.name() + "'");
+                }
+                if (!matching.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "module '" + module.name() + "' generic actor '" + matching.name()
+                                    + "' cannot satisfy non-generic contract actor requirement '"
+                                    + contract.name() + "." + actorRequirement.name() + "'");
+                }
+                continue;
+            }
             if (!(member instanceof Ast.InterfaceFieldDecl required)) continue;
             Ast.FieldDecl actual = actualFields.get(required.name());
             if (actual == null) {
@@ -737,6 +760,21 @@ public final class TypeChecker {
         collectInterfaceFieldNames(iface, interfaceFieldNames, new LinkedHashSet<>());
         Set<String> interfaceMethodNames = new LinkedHashSet<>();
         collectInterfaceMethodNames(iface, interfaceMethodNames, new LinkedHashSet<>());
+        // Actors occupy the module's nominal type and runtime value namespaces.
+        // A contract cannot require both actor A and fnc/field A, even when
+        // one of those obligations came from an inherited module contract.
+        if (iface.moduleContract()) {
+            Set<String> actorNames = new LinkedHashSet<>();
+            collectModuleContractActorNames(iface, actorNames, new LinkedHashSet<>());
+            for (String actorName : actorNames) {
+                if (interfaceFieldNames.contains(actorName)
+                        || interfaceMethodNames.contains(actorName)) {
+                    throw new IllegalArgumentException(
+                            "module contract actor requirement '" + iface.name() + "." + actorName
+                                    + "' conflicts with a required field or callable");
+                }
+            }
+        }
         for (String name : interfaceFieldNames) {
             if (interfaceMethodNames.contains(name)) {
                 throw new IllegalArgumentException(
@@ -766,6 +804,19 @@ public final class TypeChecker {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
+            } else if (member instanceof Ast.InterfaceActorDecl actor) {
+                if (!iface.moduleContract()) {
+                    throw new IllegalArgumentException("nominal interfaces cannot require actor declarations");
+                }
+                if (generics.contains(actor.name())) {
+                    throw new IllegalArgumentException(
+                            "module contract actor requirement '" + iface.name() + "." + actor.name()
+                                    + "' cannot reuse a generic type-parameter name");
+                }
+                if (!memberKeys.add("actor:" + actor.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate contract actor requirement '" + iface.name() + "." + actor.name() + "'");
+                }
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
@@ -2354,9 +2405,12 @@ public final class TypeChecker {
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
             for (Ast.IfBranch branch : conditional.branches()) {
                 env.restoreInitialization(before);
-                requireAssignable(typeOfCondition(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
-                Env branchEnv = new Env(env);
-                defineConditionBindings(branch.condition(), branchEnv, env, generics, self);
+                dev.oreslang.ast.ConditionCaptures.validate(branch.condition());
+                Env conditionEnv = new Env(env);
+                conditionEnv.conditionCaptures = true;
+                requireAssignable(typeOfCondition(branch.condition(), conditionEnv, generics, self), Primitive.BOOL, "if condition");
+                Env branchEnv = new Env(conditionEnv);
+                defineConditionBindings(branch.condition(), branchEnv, conditionEnv, generics, self);
                 checkBlock(branch.body(), branchEnv, generics, expectedReturn, self);
                 exits.add(env.initializationSnapshot());
             }
@@ -2870,6 +2924,18 @@ public final class TypeChecker {
             Type subject = deref(typeOf(test.value(), env, generics, self));
             checkPattern(test.pattern(), subject, new Env(env), generics, self);
             return Primitive.BOOL;
+        }
+        if (expr instanceof Ast.CaptureExpr capture) {
+            if (!env.conditionCaptures) {
+                throw new IllegalArgumentException("as let captures are only allowed on unconditional evaluation paths in if/while conditions");
+            }
+            Type ready = env.captureTypes.get(capture);
+            if (ready != null) return ready;
+            Type value = typeOf(capture.value(), env, generics, self);
+            if (value == Primitive.VOID) throw new IllegalArgumentException("cannot capture a void expression");
+            env.define(capture.name(), value, Ast.BindingKind.LET);
+            env.captureTypes.put(capture, value);
+            return value;
         }
         if (expr instanceof Ast.CastExpr cast) {
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
@@ -7404,33 +7470,10 @@ public final class TypeChecker {
      */
     private boolean literalPatternRuntimeEquals(Object left, Object right) {
         if (left instanceof Number a && right instanceof Number b) {
-            if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
-                    || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
-                try {
-                    return new java.math.BigDecimal(a.toString())
-                            .compareTo(new java.math.BigDecimal(b.toString())) == 0;
-                } catch (NumberFormatException ignored) {
-                    return a.doubleValue() == b.doubleValue();
-                }
-            }
-            boolean integralA = isRuntimeIntegralNumber(a);
-            boolean integralB = isRuntimeIntegralNumber(b);
-            if (integralA && integralB) return a.longValue() == b.longValue();
-            if (integralA != integralB) {
-                Number integer = integralA ? a : b;
-                Number floating = integralA ? b : a;
-                if (!Double.isFinite(floating.doubleValue())) return false;
-                return java.math.BigDecimal.valueOf(integer.longValue())
-                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
-            }
-            return a.doubleValue() == b.doubleValue();
+            // Keep static arm reachability aligned with guest ADT payload equality.
+            return NumericValueEquality.equals(a, b);
         }
         return java.util.Objects.equals(left, right);
-    }
-
-    private boolean isRuntimeIntegralNumber(Number value) {
-        return value instanceof Byte || value instanceof Short
-                || value instanceof Integer || value instanceof Long;
     }
 
     private boolean patternSubsumes(
@@ -9274,6 +9317,24 @@ public final class TypeChecker {
         seen.remove(klass);
     }
 
+    /** Collect nominal actor requirements from this contract and its parents. */
+    private void collectModuleContractActorNames(
+            Ast.InterfaceDecl iface,
+            Set<String> names,
+            Set<Ast.InterfaceDecl> seen) {
+        if (!seen.add(iface)) return;
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (member instanceof Ast.InterfaceActorDecl actor) names.add(actor.name());
+        }
+        for (Ast.TypeRef parentRef : iface.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent != null && parent.moduleContract()) {
+                collectModuleContractActorNames(parent, names, seen);
+            }
+        }
+        seen.remove(iface);
+    }
+
     private void collectInterfaceFieldNames(
             Ast.InterfaceDecl iface,
             Set<String> names,
@@ -9716,6 +9777,8 @@ public final class TypeChecker {
         } else if (expression instanceof Ast.PatternTestExpr test) {
             rejectStaticClassGenericReferences(test.value(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(test.pattern(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.CaptureExpr capture) {
+            rejectStaticClassGenericReferences(capture.value(), classGenerics, klass, method);
         } else if (expression instanceof Ast.CastExpr cast) {
             rejectStaticClassGenericReferences(cast.value(), classGenerics, klass, method);
             rejectStaticClassGenericReference(cast.targetType(), classGenerics, klass, method);
@@ -11260,6 +11323,8 @@ public final class TypeChecker {
 
     private static final class Env {
         private final Env parent;
+        private boolean conditionCaptures;
+        private final IdentityHashMap<Ast.CaptureExpr, Type> captureTypes = new IdentityHashMap<>();
         private final boolean descendantsNonLexical;
         private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();

@@ -33,6 +33,7 @@ import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
 import dev.oreslang.runtime.Utf8StringAbi;
+import dev.oreslang.types.NumericValueEquality;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -2222,6 +2223,9 @@ public final class OresEvalRootNode extends RootNode {
                 return expressionContainsPotentialSuspension(
                         test.value(), seen);
             }
+            if (expr instanceof Ast.CaptureExpr capture) {
+                return expressionContainsPotentialSuspension(capture.value(), seen);
+            }
             if (expr instanceof Ast.CastExpr cast) {
                 return expressionContainsPotentialSuspension(
                         cast.value(), seen);
@@ -3026,13 +3030,14 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.IfBranch branch = conditional.branches().get(index);
+            Env conditionEnv = new Env(env);
             evalSuspendableCondition(
                     task,
                     branch.condition(),
-                    env,
+                    conditionEnv,
                     (t, condition) -> {
                         if (condition.matched()) {
-                            Env branchEnv = new Env(env);
+                            Env branchEnv = new Env(conditionEnv);
                             condition.bindings().forEach(
                                     (name, value) ->
                                             branchEnv.define(
@@ -4369,6 +4374,15 @@ public final class OresEvalRootNode extends RootNode {
                                                 new LinkedHashMap<>()),
                                         null);
                             });
+                    return;
+                }
+
+                if (expr instanceof Ast.CaptureExpr capture) {
+                    evalSuspendableExpr(task, capture.value(), env, (t, value, failure) -> {
+                        if (failure != null) { continuation.accept(t, null, failure); return; }
+                        env.define(capture.name(), value, Ast.BindingKind.LET);
+                        continuation.accept(t, value, null);
+                    });
                     return;
                 }
 
@@ -6570,9 +6584,10 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.ContinueStmt) throw new ContinueSignal();
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
-                    ConditionResult condition = evalCondition(branch.condition(), env);
+                    Env conditionEnv = new Env(env);
+                    ConditionResult condition = evalCondition(branch.condition(), conditionEnv);
                     if (condition.matched()) {
-                        Env branchEnv = new Env(env);
+                        Env branchEnv = new Env(conditionEnv);
                         condition.bindings().forEach((name, value) ->
                                 branchEnv.define(name, value, Ast.BindingKind.VAL));
                         executeBlock(
@@ -7850,6 +7865,11 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.PatternTestExpr test) {
                 Object value = eval(test.value(), env);
                 return patternMatches(test.pattern(), value, new LinkedHashMap<>());
+            }
+            if (expr instanceof Ast.CaptureExpr capture) {
+                Object value = eval(capture.value(), env);
+                env.define(capture.name(), value, Ast.BindingKind.LET);
+                return value;
             }
             if (expr instanceof Ast.CastExpr cast) {
                 Object value = eval(cast.value(), env);
@@ -10878,7 +10898,15 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
-            if (left == right) return true;
+            // Keep the normal identity fast-path for class and scalar values,
+            // but recursively compare sums and generator steps even when the
+            // two references are identical. Some(NaN) and Ok(NaN) must not
+            // become equal merely because the outer wrapper is reused.
+            if (left == right) {
+                if (left instanceof Number n) return NumericValueEquality.equals(n, n);
+                if (!(left instanceof OptionValue || left instanceof ResultValue
+                        || left instanceof GeneratorRuntime.Step<?>)) return true;
+            }
             if (left == null || right == null) return false;
 
             if (left instanceof dev.oreslang.runtime.OresSymbol
@@ -10971,29 +10999,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean numericValueEquals(Number left, Number right) {
-            if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal
-                    || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger) {
-                try {
-                    return new java.math.BigDecimal(left.toString())
-                            .compareTo(new java.math.BigDecimal(right.toString())) == 0;
-                } catch (NumberFormatException ignored) {
-                    return left.doubleValue() == right.doubleValue();
-                }
-            }
-            boolean integralLeft = isIntegral(left);
-            boolean integralRight = isIntegral(right);
-            if (integralLeft && integralRight) return left.longValue() == right.longValue();
-            if (integralLeft != integralRight) {
-                // Converting a long above 2^53 to double silently merges
-                // distinct numeric values. Compare exact finite decimal
-                // representations instead, matching static subsumption.
-                Number integer = integralLeft ? left : right;
-                Number floating = integralLeft ? right : left;
-                if (!Double.isFinite(floating.doubleValue())) return false;
-                return java.math.BigDecimal.valueOf(integer.longValue())
-                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
-            }
-            return left.doubleValue() == right.doubleValue();
+            // The static ADT subsumption checker uses this same exact rule.
+            return NumericValueEquality.equals(left, right);
         }
 
         private boolean isScalarEqualityCarrier(Object value) {
