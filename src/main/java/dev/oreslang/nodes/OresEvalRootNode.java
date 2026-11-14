@@ -6477,6 +6477,17 @@ public final class OresEvalRootNode extends RootNode {
                             variant.name(), variant.tag(), payload);
                 };
             }
+            if (receiver instanceof EnumValue caseValue) {
+                // A case alias retains the exact authenticated enum value.
+                // Static type checking only admits case-field projection from
+                // a narrowed alias; no reflection or payload copy is needed.
+                if (!validNominalEnum(caseValue)
+                        || !(caseValue.payload() instanceof ReadonlyRecordValue payload)
+                        || !payload.containsKey(name)) {
+                    throw new IllegalArgumentException("unknown or unverified enum case field '" + name + "'");
+                }
+                return payload.get(name);
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -8081,6 +8092,28 @@ public final class OresEvalRootNode extends RootNode {
                     // relative spelling only for an authenticated EnumValue.
                     if (!(name.equals(expected) || name.equals(variant.variantName()))
                             || !validNominalEnum(variant)) return false;
+                    if (constructor.namedFields() != null) {
+                        if (!(variant.payload() instanceof ReadonlyRecordValue payload)
+                                || !constructor.arguments().isEmpty()) return false;
+                        // Validate all projections *before* installing the
+                        // arm's tentative bindings; a failed arm cannot leak
+                        // partial names into a later guard or match branch.
+                        for (String field : constructor.namedFields()) {
+                            if (!payload.containsKey(field)) return false;
+                        }
+                        for (String field : constructor.namedFields()) {
+                            if (bindings.putIfAbsent(field, payload.get(field)) != null) {
+                                throw new IllegalStateException(
+                                        "duplicate enum case field binding " + field);
+                            }
+                        }
+                        if (constructor.wholeAlias() != null
+                                && bindings.putIfAbsent(constructor.wholeAlias(), variant) != null) {
+                            throw new IllegalStateException(
+                                    "duplicate whole-variant alias " + constructor.wholeAlias());
+                        }
+                        return true;
+                    }
                     if (variant.payload() == null) {
                         if (!constructor.arguments().isEmpty()) return false;
                         if (constructor.wholeAlias() != null
@@ -8090,11 +8123,19 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return true;
                     }
-                    // The type and ownership passes must not admit a mutable
-                    // or owned payload as an unproved whole-value alias.
                     if (constructor.wholeAlias() != null) {
-                        throw new IllegalStateException(
-                                "payload whole-variant alias reached runtime without borrow proof");
+                        if (!constructor.arguments().isEmpty()) {
+                            throw new IllegalStateException(
+                                    "whole-case alias cannot also bind positional payload");
+                        }
+                        // Type and ownership passes require the *entire* enum
+                        // to be Copy-safe. This keeps the same authenticated
+                        // case value, never cloning or serializing a payload.
+                        if (bindings.putIfAbsent(constructor.wholeAlias(), variant) != null) {
+                            throw new IllegalStateException(
+                                    "duplicate whole-variant alias " + constructor.wholeAlias());
+                        }
+                        return true;
                     }
                     return constructor.arguments().size() == 1
                             && patternMatches(constructor.arguments().getFirst(), variant.payload(), bindings);
