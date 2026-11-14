@@ -3004,7 +3004,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 // Only a successful terminal completion releases the permit.
                 // A failure holds it until fail-stop physical retirement.
-                cell.releaseReceivePermitLocked();
+                cell.completeReceivePermitLocked();
             }
         })) {
             boolean failActor = false;
@@ -10212,7 +10212,7 @@ public final class ActorRuntime implements AutoCloseable {
                             // DATA admission only after successful accounting and
                             // all synchronous drain notifications. An exception
                             // leaves this permit owned by fail-stop cleanup.
-                            releaseReceivePermitLocked();
+                            completeReceivePermitLocked();
                         }
                     }
                     processed++;
@@ -10265,6 +10265,23 @@ public final class ActorRuntime implements AutoCloseable {
                 // scheduled/finalization/rescheduling belong to runBatch(),
                 // after TurnExecutor.execute(...) has returned.
             }
+        }
+
+        /**
+         * Successful DATA completion must retire exactly one LIVE receive.
+         * Never treat an absent/already-retired permit as success: doing so
+         * could admit overlapping serial receives or silently conceal a stale
+         * continuation replay. Actor finalization uses the distinct optional
+         * cleanup release below, only after physical quiescence.
+         * Caller holds lifecycleLock.
+         */
+        private void completeReceivePermitLocked() {
+            if (activeReceivePermit == null || activeReceivePermit.isRetired()) {
+                throw new IllegalStateException(
+                        "actor receive completed without a live admission permit for "
+                                + ref.id());
+            }
+            releaseReceivePermitLocked();
         }
 
         /**
