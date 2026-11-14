@@ -1354,7 +1354,8 @@ public final class Parser {
         }
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency,
+                        prefix.serial()));
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
