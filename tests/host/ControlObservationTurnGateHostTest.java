@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -38,7 +39,9 @@ public final class ControlObservationTurnGateHostTest {
                 try { go.await(); dropped.set(gate.abandonIfQueued()); }
                 catch (InterruptedException interrupted) { errors.incrementAndGet(); }
             });
-            worker.start(); failed.start(); ready.await(); go.countDown();
+            worker.start(); failed.start();
+            check(ready.await(10, TimeUnit.SECONDS), "test workers never started");
+            go.countDown();
             worker.join(10000); failed.join(10000);
             check(!worker.isAlive() && !failed.isAlive(), "deadlock in start/abandon race");
             check(errors.get() == 0, "interrupted test workers");
