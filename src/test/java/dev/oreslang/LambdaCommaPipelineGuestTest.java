@@ -32,9 +32,9 @@ final class LambdaCommaPipelineGuestTest {
     void typedInlineReturnAnnotationCannotBeConfusedWithValueBody() {
         Ast.Program program = Parser.parse("""
                 fnc main(): void {
-                    val typed = || -> int => 5 + 3;
+                    val typed = || => int -> 5 + 3;
                     val inferred = || -> 5 + 3;
-                    val typed_fnc = fnc(x: int) -> int => x + 1;
+                    val typed_fnc = fnc(x: int) => int -> x + 1;
                     return;
                 }
                 """);
@@ -55,11 +55,33 @@ final class LambdaCommaPipelineGuestTest {
     }
 
     @Test
+    void typedInlineAnnotationAliasAndReversedOrderAreDistinguished() {
+        Ast.Program parsed = Parser.parse("""
+                fnc main(): void {
+                    val compact = || => int -> 5;
+                    val grouped = || (=> int) -> 5;
+                    val with_param = |n: int| (=> int) -> n + 1;
+                    return;
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+        for (String invalid : new String[] {
+                "|| -> int => 5",
+                "|| -> void => stdio.println(5)",
+                "|n: int| -> int => n + 1",
+                "|| => int 5"
+        }) {
+            String source = "fnc main(): void { val callback = " + invalid + "; return; }";
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), invalid);
+        }
+    }
+
+    @Test
     void bothTypedAndInferredSameLineCommaLocalsExecute() throws Exception {
         assertEquals("8:8:42", execute("""
                 pub fnc main(): void {
                     val inferred = || -> val int x = 5, x + 3;
-                    val explicit = || -> int => val int x = 5, x + 3;
+                    val explicit = || => int -> val int x = 5, x + 3;
                     val scoped = || -> int ::
                         int x = 40,
                         x + 2
@@ -87,7 +109,7 @@ final class LambdaCommaPipelineGuestTest {
                     val comma = || -> void ::
                         5 |> foo |> |x, y| -> stdio.stdout.write(x + y)
                     end;
-                    val inline = || -> void => 5 |> foo |> |x, y| -> stdio.stdout.write(x + y);
+                    val inline = || => void -> 5 |> foo |> |x, y| -> stdio.stdout.write(x + y);
                     with_return();
                     stdio.stdout.write(":");
                     comma();
@@ -109,7 +131,7 @@ final class LambdaCommaPipelineGuestTest {
                     val comma = || -> void ::
                         5 |> foo |> |x, y| -> stdio.println(x, y)
                     end;
-                    val inline = || -> void =>
+                    val inline = || => void ->
                         5 |> foo |> |x, y| -> stdio.println(x, y);
                     braces();
                     comma();
@@ -131,7 +153,7 @@ final class LambdaCommaPipelineGuestTest {
                 fnc increment(int n): int { return n + 1; }
                 pub fnc main(): void {
                     stdio.stdout.write(4
-                        |> |n| -> int => val int x = n + 1, x * 2
+                        |> |n| => int -> val int x = n + 1, x * 2
                         |> increment);
                     stdio.stdout.write(":");
                     stdio.stdout.write(20
@@ -144,11 +166,11 @@ final class LambdaCommaPipelineGuestTest {
     @Test
     void typedLambdaReturnTypesAreEnforcedInAllBodyStyles() {
         for (String lambda : new String[] {
-                "|| -> int => true",
-                "|| -> bool => 5",
-                "|| -> int => val int x = 5, true",
+                "|| => int -> true",
+                "|| => bool -> 5",
+                "|| => int -> val int x = 5, true",
                 "|| -> int :: bool value = true, value end",
-                "|n| -> bool => n + 1"
+                "|n| => bool -> n + 1"
         }) {
             String guest = lambda.startsWith("|n|")
                     ? "fnc main(): int { return 5 |> " + lambda + "; }"
@@ -162,12 +184,12 @@ final class LambdaCommaPipelineGuestTest {
     void twoParameterPipelineLambdaRequiresTypedTupleNotScalar() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc main(): int {
-                    return 5 |> |x, y| -> int => x + y;
+                    return 5 |> |x, y| => int -> x + y;
                 }
                 """)));
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc main(): int {
-                    return tuple(5, 7) |> |x, y| -> int => x + y;
+                    return tuple(5, 7) |> |x, y| => int -> x + y;
                 }
                 """)));
     }
@@ -182,8 +204,8 @@ final class LambdaCommaPipelineGuestTest {
                 }
                 """)));
         for (String lambda : new String[] {
-                "|| -> int => val int x = 5,",
-                "|| -> int => val int x = 5,, x",
+                "|| => int -> val int x = 5,",
+                "|| => int -> val int x = 5,, x",
                 "|| -> int :: int x = 5, end",
                 "|| -> int :: , 5 end",
                 "|| -> int",
