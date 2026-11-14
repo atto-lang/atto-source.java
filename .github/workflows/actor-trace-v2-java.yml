@@ -35,7 +35,16 @@ jobs:
           set -euo pipefail
           mvn -B -ntp -Dtest=ActorTraceContractIntegrationTest test
           test -s target/actor-trace-graal-v2.json
-          python3 scripts/check_actor_trace_v2.py target/actor-trace-graal-v2.json
+          python3 scripts/check_actor_trace_v2.py \
+            --require-backend java --require-subject runtime_host \
+            --require-emission reconstructed_after_quiescence \
+            --min-admitted 24 target/actor-trace-graal-v2.json
+          if python3 scripts/check_actor_trace_v2.py \
+            --require-subject compiled_atto_guest target/actor-trace-graal-v2.json; then
+            echo 'HOST_RECEIPT_WAS_PROMOTED_TO_GUEST_PROOF' >&2
+            exit 1
+          fi
+          echo 'HOST_ONLY_PROVENANCE_FENCE=PASS'
           python3 -c "import json; t=json.load(open('target/actor-trace-graal-v2.json')); assert len(t['events'])==75; assert t['producer']['subject']=='runtime_host'"
           echo 'JVM_ACTOR_HOST_TRACE_V2=PASS'
           echo 'COMPILED_ATTO_GUEST=NOT_EXECUTED'
