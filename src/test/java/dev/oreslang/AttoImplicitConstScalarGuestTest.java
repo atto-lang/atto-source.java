@@ -67,6 +67,39 @@ final class AttoImplicitConstScalarGuestTest {
                 "pub fnc main(): int { const int x = 40; x = 42; return x; }")));
     }
 
+    @Test void exactSharedSourcesHaveIdenticalCompilerBehavior() throws Exception {
+        // All eight blobs are independently checked against LLVM and .NET.
+        for (String name : new String[] {
+                "literal-equivalence", "const-arithmetic", "bool-local", "runtime-val-let"
+        }) {
+            Path fixture = Path.of("contracts/implicit-const-scalar-v1/" + name + ".atto");
+            assertTrue(Files.isRegularFile(fixture), name);
+            var compiled = LinkedProgramRunner.validate(fixture);
+            assertNotNull(compiled);
+            var result = LinkedProgramRunner.runWithExitStatus(
+                    fixture, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                    new ByteArrayOutputStream(), new ByteArrayOutputStream());
+            assertEquals(42, result.exitStatus(), name);
+        }
+        for (String name : new String[] {
+                "implicit-nonconst", "explicit-nonconst",
+                "const-mut-scalar", "const-overflow"
+        }) {
+            Path fixture = Path.of("contracts/implicit-const-scalar-v1/" + name + ".atto");
+            assertTrue(Files.isRegularFile(fixture), name);
+            RuntimeException error = assertThrows(RuntimeException.class,
+                    () -> LinkedProgramRunner.validate(fixture), name);
+            String expected = switch (name) {
+                case "implicit-nonconst", "explicit-nonconst" -> "E_NON_CONST_INITIALIZER";
+                case "const-mut-scalar" -> "E_CONST_MUT_UNSUPPORTED";
+                case "const-overflow" -> "E_CONST_OVERFLOW";
+                default -> throw new AssertionError("unrecognized fixture");
+            };
+            assertTrue(error.getMessage().contains(expected),
+                    name + ": unexpected diagnostic: " + error.getMessage());
+        }
+    }
+
     @Test void realAttoSourceRunsThroughLinkedJavaGuest() throws Exception {
         Path entry = temp.resolve("implicit-const.atto");
         Files.writeString(entry, """
