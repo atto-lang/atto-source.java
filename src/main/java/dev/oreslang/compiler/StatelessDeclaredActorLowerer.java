@@ -13,8 +13,10 @@ import java.util.Objects;
  * Explicitly opt-in, tightly constrained first executable lowering for a
  * canonical standalone actor in ONE source compilation unit.
  *
- * <p>Only stateless actors with an inert `external init(): void { return; }`
- * and one `external receive(ActorMail<T>): void` are admitted. The transform
+ * <p>Only stateless actors with an optional inert `external init(): void { return; }`
+ * and one required `external receive(ActorMail<T>): void` are admitted.
+ * The missing init uses a compiler-generated no-op; it is never an
+ * exported guest callable hook or a state-builder capability. The transform
  * occurs before normal type/ownership checking and uses the production
  * ClassDecl actor dispatcher, but never fabricates an executable class for an
  * unbound or incomplete nominal declaration. No state access or cross-file
@@ -91,14 +93,14 @@ public final class StatelessDeclaredActorLowerer {
                                 "STATELESS_ACTOR_UNVERIFIED_METHOD: " + method.name());
                     }
                 }
-                if (init == null || receive == null) {
+                if (receive == null) {
                     throw new IllegalArgumentException(
-                            "STATELESS_ACTOR_INCOMPLETE: runtime actor requires external init and receive");
+                            "STATELESS_ACTOR_INCOMPLETE: mailbox actor requires external receive");
                 }
-                if (!init.parameters().isEmpty()
+                if (init != null && (!init.parameters().isEmpty()
                         || init.body().size() != 1
                         || !(init.body().getFirst() instanceof Ast.ReturnStmt ret)
-                        || ret.value() != null) {
+                        || ret.value() != null)) {
                     throw new IllegalArgumentException(
                             "STATELESS_ACTOR_INIT_NOT_INERT: only zero-argument 'return;' is admitted; "
                                     + "stateful init requires checked state builder and atomic publication");
@@ -106,8 +108,13 @@ public final class StatelessDeclaredActorLowerer {
                 // Preserve the validated receive payload type and source body.
                 // Never expose the declared receiver alias as a capability:
                 // the executable actor receives only its compiler-owned self.
-                Ast.MethodDecl onStart = method(
-                        "on_start", init.parameters(), init.returnType(), init.body());
+                // A no-init declared actor must still pass the same runtime
+                // initialization/READY barrier. Synthesize only the inert
+                // source-level start method, never a raw actor/state return.
+                Ast.MethodDecl onStart = init == null
+                        ? method("on_start", List.of(), Ast.TypeRef.simple("void"),
+                                List.of(new Ast.ReturnStmt(null)))
+                        : method("on_start", init.parameters(), init.returnType(), init.body());
                 Ast.MethodDecl onReceive = method(
                         "receive", receive.parameters(), receive.returnType(), receive.body());
                 lowered.add(new Ast.ClassDecl(
