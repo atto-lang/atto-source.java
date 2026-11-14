@@ -98,6 +98,17 @@ class SourceLogCallsiteBindingV1Test {
         assertThrows(NullPointerException.class,
                 () -> SourceLogCallsiteBindingV1.bind(
                         first.ast(), entries(first.module()), null));
+        var foreign = new java.util.IdentityHashMap<Ast.FunctionDecl,
+                dev.oreslang.runtime.SourceIdentityV1.Id>(checked);
+        var another = second.ast().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .findFirst().orElseThrow();
+        foreign.put(another, checked.values().iterator().next());
+        assertThrows(IllegalArgumentException.class,
+                () -> SourceLogCallsiteBindingV1.bind(
+                        first.ast(), entries(first.module()), foreign));
     }
 
     @Test
