@@ -138,11 +138,15 @@ final class ActorSourceLifecycleGateTest {
     }
 
     @Test
-    void closingBeforeInitializationIsTerminal() {
+    void closingBeforeInitializationRequiresStopSeal() {
         var owner = ActorRuntime.ActorId.create();
         var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        assertThrows(IllegalStateException.class, gate::close,
+                "physical reclamation requires STOP even when no guest work ran");
+        gate.sealStop(false);
         gate.close();
-        assertThrows(IllegalStateException.class, () -> gate.beginInit(owner, TYPE));
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class,
+                () -> gate.beginInit(owner, TYPE));
     }
 
     @Test
@@ -150,8 +154,13 @@ final class ActorSourceLifecycleGateTest {
         var owner = ActorRuntime.ActorId.create();
         var gate = new ActorSourceLifecycleGate(owner, TYPE);
         gate.beginInit(owner, TYPE);
-        gate.close();
+        gate.sealStop(false);
+        assertTrue(gate.initializationActive());
+        assertThrows(IllegalStateException.class, gate::close,
+                "STOP cannot retire an initializer still physically executing");
         gate.failInit();
+        assertFalse(gate.initializationActive());
+        gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
         assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
     }
@@ -162,6 +171,8 @@ final class ActorSourceLifecycleGateTest {
         var gate = new ActorSourceLifecycleGate(owner, TYPE);
         gate.beginInit(owner, TYPE);
         gate.commitInit(state(owner));
+        assertThrows(IllegalStateException.class, gate::close);
+        gate.sealStop(false);
         gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
         assertThrows(IllegalStateException.class,
@@ -225,8 +236,11 @@ final class ActorSourceLifecycleGateTest {
         gate.beginInit(owner, TYPE);
         gate.sealStop(false);
         assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
+        assertTrue(gate.initializationActive());
         assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
+        assertThrows(IllegalStateException.class, gate::close);
         gate.failInit();
+        assertFalse(gate.initializationActive());
         assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
         assertThrows(IllegalStateException.class,
                 () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
@@ -254,6 +268,8 @@ final class ActorSourceLifecycleGateTest {
         gate.beginInit(owner, TYPE);
         gate.commitInit(state(owner));
         gate.sealStop(true);
+        assertThrows(IllegalStateException.class, gate::close,
+                "graceful STOP must run the approved teardown before closing the gate");
         assertThrows(IllegalStateException.class,
                 () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
         assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
