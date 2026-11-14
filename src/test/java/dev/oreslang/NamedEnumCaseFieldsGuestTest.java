@@ -66,7 +66,7 @@ final class NamedEnumCaseFieldsGuestTest {
     }
 
     @Test
-    void nonCopyBytesCaseIsRejectedPriorToGuestExecution() throws Exception {
+    void nonCopyBytesCannotBeTakenThroughBorrowedCaseView() throws Exception {
         String source = fixture("reject-unsafe-bytes-case-alias");
         assertThrows(IllegalArgumentException.class,
                 () -> OwnershipChecker.check(TypeChecker.check(Parser.parse(source))));
