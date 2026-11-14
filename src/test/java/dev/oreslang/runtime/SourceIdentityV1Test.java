@@ -40,6 +40,14 @@ class SourceIdentityV1Test {
     }
 
     @Test
+    void rejectsForgedAllZeroIdEvenWhenConstructedDirectly() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new SourceIdentityV1.Id(SourceIdentityV1.Kind.ROUTINE, 0L, 0L));
+        assertThrows(NullPointerException.class, () ->
+                new SourceIdentityV1.Id(null, 1L, 2L));
+    }
+
+    @Test
     void rejectsDuplicateSiteAndDescriptorIndex() {
         var routine = SourceIdentityV1.parse(
                 "rid_d5f8e146ba97430dac6bf17430477e2a", SourceIdentityV1.Kind.ROUTINE);
