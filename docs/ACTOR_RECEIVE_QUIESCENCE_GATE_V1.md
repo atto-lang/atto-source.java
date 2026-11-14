@@ -200,3 +200,33 @@ STOP/admission races plus 500 deliberately blocked owner-accessor cases
 (250 initialization, 250 receive). No compiler/JUnit stub can substitute
 for the new full-runtime `ActorSourceTearDownTest` regression or a real
 compiled `.atto` guest. Those remain **NOT_EXECUTED**.
+
+## Graceful teardown admission failure cannot deadlock STOP (2026-11-14)
+
+A further runtime-path audit found a liveness violation: if
+`runGracefulTeardownIfNeeded()` reserved the lifecycle lane but
+`beginTeardown()` failed (for example, an executor-provided
+`ActorOwnedGuestState.ownerActorId()` accessor threw), the gate remained
+`STOPPING_GRACEFUL`. The outer runtime reset
+`gracefulTeardownPending=false`, leaving no task able to claim the hook,
+while `readyForRetirement()` rejected physical finalization forever.
+The original failure could be recorded without `get_done()` settling.
+
+The runtime now throws an explicit invariant failure for a reserved lane
+without initialized state; on an error from hook admission or hook
+execution, it seals the source lifecycle gate **terminally** via
+`sourceLifecycleGate.sealStop(false)` and rethrows the original exception.
+This revokes only a still-unclaimed graceful permit; it cannot remove a
+`TEARING_DOWN` hook's physical pin. The normal outer finalization path
+retains the exception as DONE/supervisor evidence. The added real-runtime
+`failedTeardownOwnershipAdmissionDoesNotStrandActorFinalization` JUnit case
+asserts a completed host STOP, exceptional DONE with the original state
+accessor failure, and **zero guest teardown callbacks**. A matching
+source-gate JUnit test covers the fail-closed phase transition.
+
+The byte-exact gate blob
+`a4f9f3d45254bde716af3d3089bcebd5dc10aa42` was independently
+compiled with JDK 21 `--release 21 -Xlint:all -Werror`; an isolated test
+exercised 1,000 additional failed hook-admission/terminal-revocation
+cycles and passed. Full `ActorRuntime` JUnit, GraalVM 25 and compiled
+`.atto` remain **NOT_EXECUTED** pending authorized runner admission.
