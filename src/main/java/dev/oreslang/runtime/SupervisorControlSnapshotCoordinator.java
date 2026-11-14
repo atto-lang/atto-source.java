@@ -35,7 +35,7 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         private final Thread callerThread;
         private final CompletableFuture<SupervisorRegistryObservation.Snapshot> result =
                 new CompletableFuture<>();
-        private final AtomicBoolean started = new AtomicBoolean();
+        private final ControlObservationTurnGate physicalTurn = new ControlObservationTurnGate();
         private final AtomicBoolean released = new AtomicBoolean();
         private Request(SupervisorRegistryObservation.Grant grant, Thread callerThread) {
             this.grant = grant;
@@ -115,7 +115,9 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
                             expectedGeneration, maxNodes, maxDepth, timeoutNanos));
         } catch (RuntimeException | Error error) {
             request.result.completeExceptionally(new SnapshotFailure("CONTROL_UNAVAILABLE"));
-            release(request);
+            // A dispatch implementation may throw after enqueueing. Claim
+            // cancellation against physical start before releasing its slot.
+            if (request.physicalTurn.abandonIfQueued()) release(request);
             return request.result.minimalCompletionStage();
         }
         try {
@@ -125,12 +127,12 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
                         new SnapshotFailure("CONTROL_DISPATCH_FAILED"));
                 // The dispatcher claims non-execution on failure. If a task
                 // began anyway, only its physical finally may free the slot.
-                if (!request.started.get()) release(request);
+                if (request.physicalTurn.abandonIfQueued()) release(request);
             });
         } catch (RuntimeException | Error error) {
             request.result.completeExceptionally(
                     new SnapshotFailure("CONTROL_DISPATCH_FAILED"));
-            if (!request.started.get()) release(request);
+            if (request.physicalTurn.abandonIfQueued()) release(request);
         }
         return request.result.minimalCompletionStage();
     }
@@ -138,9 +140,9 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
     private void execute(Request request, Object session, String tenantId,
                          long generation, int maxNodes, int maxDepth,
                          long timeoutNanos) {
-        if (!request.started.compareAndSet(false, true)) {
+        if (!request.physicalTurn.tryStart()) {
             request.result.completeExceptionally(new SnapshotFailure("CONTROL_DUPLICATE_TURN"));
-            return; // the first physical execution retains release ownership
+            return; // Running turn owns release, or a failed dispatch already abandoned.
         }
         try {
             if (Thread.currentThread() == request.callerThread) {
