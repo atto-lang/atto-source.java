@@ -18,13 +18,13 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class ByteBitSequencePatternGuestTest {
     @Test
-    void bytePrefixMatchesAndCopiesOwnedTail() throws Exception {
-        assertEquals("33", run("""
+    void bytePrefixMatchesWithIgnoredTailWithoutAllocating() throws Exception {
+        assertEquals("42", run("""
                 pub routine main(): void {
                   val data = Bytes.from_list([71, 69, 84, 33]);
                   match data over
-                    on bytes[71, 69, 84 | rest] -> {
-                      stdio.stdout.write(rest.byte_at(0));
+                    on bytes[71, 69, 84 | _] -> {
+                      stdio.stdout.write(42);
                     }
                     on _ -> { stdio.stdout.write(0); }
                   end
@@ -39,7 +39,7 @@ final class ByteBitSequencePatternGuestTest {
                 pub routine main(): void {
                   val data = Bytes.from_list([71, 69, 84, 33]);
                   match data over
-                    on bytes[80, 69, 84 | rest] -> { stdio.stdout.write(0); }
+                    on bytes[80, 69, 84 | _] -> { stdio.stdout.write(0); }
                     on bytes[71, 69, 84 | _] -> { stdio.stdout.write(42); }
                     on _ -> { stdio.stdout.write(1); }
                   end
@@ -166,6 +166,22 @@ final class ByteBitSequencePatternGuestTest {
                     Parser.parse("pub routine main(): void { match data over on "
                             + pattern + " -> {} on _ -> {} end return; }"), pattern);
         }
+    }
+
+    @Test
+    void namedByteTailFailsClosedBeforeIrUntilCleanupProof() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          val data = Bytes.from_list([71, 69, 84, 33]);
+                          match data over
+                            on bytes[71, 69, 84 | rest] -> {}
+                            on _ -> {}
+                          end
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("ByteView"), failure::getMessage);
     }
 
     @Test
