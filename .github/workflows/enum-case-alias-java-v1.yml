@@ -1,0 +1,52 @@
+name: Atto nominal enum pattern alias v1 JVM guest
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/*Enum*GuestTest.java'
+      - 'src/test/resources/atto/enum-pattern-alias-v1/**'
+      - '.github/workflows/enum-case-alias-java-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  focused-jvm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Require exact immutable source revision
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          echo "ENUM_ALIAS_JAVA_HEAD=$(git rev-parse HEAD)"
+          echo "ENUM_ALIAS_JAVA_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute real Java/Graal .atto guest tests and diagnostics
+        run: >-
+          mvn -B -ntp
+          -Dtest=CanonicalEnumDeclarationGuestTest,BareEnumPatternGuestTest,NullaryEnumCaseAliasGuestTest
+          -DfailIfNoTests=true test
+      - name: Preserve executed Surefire receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-enum-case-alias-java-v1-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn
