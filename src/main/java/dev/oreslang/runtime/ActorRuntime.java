@@ -2979,9 +2979,12 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 completedSequence = cell.activeMail == null
                         ? -1L : cell.activeMail.sequence();
+                // Waking a suspended receive does NOT retire its logical
+                // invocation. Completion accounting and all synchronous
+                // observer notifications must finish before the DATA permit
+                // becomes available to another serial receive.
                 cell.sourceReceiveSuspended = false;
                 cell.activeMail = null;
-                cell.releaseReceivePermitLocked();
                 cell.lifecycleLock.notifyAll();
             }
             if (failure != null) {
@@ -2998,6 +3001,11 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("source receive lost pending mail sequence");
             }
             cell.markMessageProcessed(completedSequence);
+            synchronized (cell.lifecycleLock) {
+                // Only a successful terminal completion releases the permit.
+                // A failure holds it until fail-stop physical retirement.
+                cell.releaseReceivePermitLocked();
+            }
         })) {
             boolean failActor = false;
             synchronized (cell.lifecycleLock) {
