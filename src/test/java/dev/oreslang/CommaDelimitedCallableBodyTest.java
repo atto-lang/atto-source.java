@@ -63,7 +63,10 @@ final class CommaDelimitedCallableBodyTest {
                     method.name());
         }
         assertFalse(calculator.methods().getFirst().isStatic());
-        assertNotNull(calculator.methods().get(1).receiverType());
+        assertFalse(calculator.methods().get(1).isStatic());
+        assertEquals(1, calculator.methods().get(1).parameters().size(),
+                "explicit mut self is a hidden receiver, not a user argument");
+        assertEquals("n", calculator.methods().get(1).parameters().getFirst().name());
         assertTrue(calculator.methods().get(2).isStatic());
         assertDoesNotThrow(() -> TypeChecker.check(program));
     }
