@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
@@ -50,10 +51,12 @@ final class ControlObservationTurnGateTest {
                     Thread.currentThread().interrupt();
                 }
             });
-            ready.await();
+            assertTrue(ready.await(2, TimeUnit.SECONDS), "test workers never started");
             race.countDown();
-            worker.join();
-            failure.join();
+            worker.join(2000);
+            failure.join(2000);
+            assertFalse(worker.isAlive(), "worker was never released");
+            assertFalse(failure.isAlive(), "failure observer never completed");
             assertTrue(started.get() != abandoned.get(),
                     "neither/both dispatch and physical turn acquired ownership");
             assertFalse(gate.tryStart());
