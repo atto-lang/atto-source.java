@@ -93,10 +93,17 @@ public final class SourceLogCallsiteBindingV1 {
         }
         for (int i = 0; i < message.length(); ++i) {
             char c = message.charAt(i);
-            if (Character.isISOControl(c)
-                    || Character.isSurrogate(c)) {
-                throw new IllegalArgumentException(
-                        "log.info literal contains control or unsupported surrogate characters");
+            if (Character.isISOControl(c)) {
+                throw new IllegalArgumentException("log.info literal contains control character");
+            }
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 >= message.length()
+                        || !Character.isLowSurrogate(message.charAt(i + 1))) {
+                    throw new IllegalArgumentException("log.info literal has invalid UTF-16 pair");
+                }
+                ++i;
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException("log.info literal has unpaired surrogate");
             }
         }
     }
