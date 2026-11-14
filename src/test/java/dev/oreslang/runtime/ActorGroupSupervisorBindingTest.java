@@ -152,4 +152,38 @@ final class ActorGroupSupervisorBindingTest {
             assertEquals(Set.of(), runtime.rootSupervisor().childSupervisorIds());
         }
     }
+
+    @Test
+    void recursivelyNestedSupervisorsHaveBoundedDepthAndFailBeforePublication() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorSupervisor root = runtime.rootSupervisor();
+            ActorRuntime.ActorSupervisor parent = root;
+
+            // The root counts as depth zero. All 64 nested supervisor levels
+            // must retain exact direct-parent linkage and root ancestry.
+            for (int depth = 1; depth <= 64; depth++) {
+                ActorRuntime.ActorSupervisor created = runtime.createChildSupervisor(parent);
+                assertEquals(java.util.Optional.of(parent.id()), created.parentId());
+                assertEquals(Set.of(created.id()), parent.childSupervisorIds());
+                parent = created;
+            }
+            ActorRuntime.ActorSupervisor leaf = parent;
+            assertTrue(leaf.childSupervisorIds().isEmpty());
+            IllegalStateException denied = assertThrows(IllegalStateException.class,
+                    () -> runtime.createChildSupervisor(leaf));
+            assertTrue(denied.getMessage().contains("hierarchy depth limit"),
+                    denied::getMessage);
+            assertTrue(leaf.childSupervisorIds().isEmpty(),
+                    "depth denial must not publish an orphaned supervisor");
+
+            // A denied deeper child cannot damage the valid existing tree or
+            // transfer the leaf's direct ActorGroup ownership to an ancestor.
+            ActorRuntime.ActorGroup group = runtime.createActorGroup(leaf);
+            assertEquals(Set.of(group.id()), leaf.advisedGroupIds());
+            assertEquals(Set.of(group.id()), root.subtreeGroupIds());
+            assertTrue(root.advisedGroupIds().isEmpty());
+            group.close();
+            assertTrue(root.subtreeGroupIds().isEmpty());
+        }
+    }
 }

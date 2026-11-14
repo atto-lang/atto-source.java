@@ -1,0 +1,5 @@
+pub async fnc main(): void {
+  let Future<int> worker = task { return 42; };
+  stdio.stdout.write(await worker);
+  return;
+}

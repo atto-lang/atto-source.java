@@ -51,7 +51,7 @@ final class GraalI64RuntimeCharacterizationTest {
                 fnc subtract(int a, int b): int { return a - b; }
                 fnc multiply(int a, int b): int { return a * b; }
                 fnc negate(int a): int { return -a; }
-                fnc remainder(int a, int b): int { return a %% b; }
+                fnc remainder(int a, int b): int { return Integer.rem(a, b); }
                 pub fnc main(): int { return %s; }
                 """.formatted(expression);
     }
