@@ -4836,6 +4836,15 @@ public final class OwnershipChecker {
             return new AutoTraitRules.Capabilities(send, sync, share);
         }
 
+        if (type.isRecordType()) {
+            // A readonly structural RECORD is a view. Field-wise Send only
+            // proves its elements are transferable; it does not prove the
+            // backing allocation is owned, frozen, or independent of actor
+            // state. A proven owned struct can still move below, but records
+            // need explicit snapshot/region provenance before Task transfer.
+            return none;
+        }
+
         if (type.isClosedAggregateType()) {
             boolean send = true;
             for (Ast.TypeRef member : type.aggregateMembers().values()) {
