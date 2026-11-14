@@ -9556,31 +9556,29 @@ public final class ActorRuntime implements AutoCloseable {
                         @SuppressWarnings("unchecked")
                         ActorContext<Object> sourceContext =
                                 (ActorContext<Object>) (ActorContext<?>) context;
-                        sourceLifecycleGate.beginInit(ref.id(), codeActorType);
                         ActorOwnedGuestState created;
                         try {
+                            // Admission and commit both use the same typed
+                            // STOP result. The initial !stopped check above
+                            // is not atomic with beginInit(): STOP can seal
+                            // after it but before this runtime reservation.
+                            sourceLifecycleGate.beginInit(ref.id(), codeActorType);
                             created = Objects.requireNonNull(
                                     codeExecutor.initializeActor(
                                             codeActorType,
                                             sourceContext),
                                     "source actor executor returned null state");
-                            // The source image is executable shared code;
-                            // state ownership is minted only on this actor turn.
-                            // STOP can win while initializeActor() runs. That
-                            // expected late-commit refusal is a cancellation
-                            // of source startup, not a new guest exception.
-                            // Invalid owner/type or genuine init failure must
-                            // still fail the actor even when STOP races it.
-                            try {
-                                sourceLifecycleGate.commitInit(created);
-                            } catch (ActorSourceLifecycleGate.InitializationStopped stoppedInit) {
-                                // Only the gate can mint this exact STOP result.
-                                // An arbitrary IllegalStateException from a
-                                // guest-owned state accessor must still fail
-                                // closed, even if STOP races with that error.
-                                throw new ActorCancellationSignal(
-                                        "source actor initialization stopped before state commit");
-                            }
+                            // The shared code image never owns actor state.
+                            // STOP is allowed to reject a late commit, but
+                            // invalid guest state must still fail closed.
+                            sourceLifecycleGate.commitInit(created);
+                        } catch (ActorSourceLifecycleGate.InitializationStopped stoppedInit) {
+                            // Release the physical initializer pin even if
+                            // STOP arrived after callback entry but before
+                            // its state could be published.
+                            sourceLifecycleGate.failInit();
+                            throw new ActorCancellationSignal(
+                                    "source actor initialization stopped before READY");
                         } catch (Exception | Error startupFailure) {
                             sourceLifecycleGate.failInit();
                             throw startupFailure;
