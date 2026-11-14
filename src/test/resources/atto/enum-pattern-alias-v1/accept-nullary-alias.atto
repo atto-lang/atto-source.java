@@ -1,0 +1,25 @@
+// Narrow nullary Copy-case alias, not payload ownership or actor mail.
+define enum Status {
+    Ready,
+    Stop
+}
+
+fnc identity(Status status): Status {
+    return match status over {
+        on Ready as r { return r; }
+        on Stop as s { return s; }
+    };
+}
+
+fnc code(Status status): int {
+    do match status over
+        on Ready as r -> { return 7; }
+        on Stop as s -> { return 9; }
+    end
+}
+
+pub fnc main(): void {
+    stdio.println(code(identity(Status.Ready())));
+    stdio.println(code(identity(Status.Stop())));
+    return;
+}
