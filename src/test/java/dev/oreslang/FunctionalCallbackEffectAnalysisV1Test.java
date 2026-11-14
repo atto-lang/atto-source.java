@@ -145,8 +145,8 @@ final class FunctionalCallbackEffectAnalysisV1Test {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(guest);
         }
-        assertEquals("42\\n0", output.toString(StandardCharsets.UTF_8)
-                .strip().replace("\\r", ""));
+        assertEquals("42\n0", output.toString(StandardCharsets.UTF_8)
+                .strip().replace("\r", ""));
     }
 
     @Test
