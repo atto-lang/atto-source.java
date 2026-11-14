@@ -2556,7 +2556,7 @@ public final class OwnershipChecker {
                     throw error("named enum fields require a declared record payload");
                 }
                 Map<String, Ast.TypeRef> fields = argTypes.getFirst().recordMembers();
-                if (!fields.values().stream().allMatch(this::isCopyType)) {
+                if (!fields.values().stream().allMatch(this::isCopySafeEnumScalar)) {
                     throw error("named enum fields require Copy-safe payload; Bytes borrow lowering is pending");
                 }
                 for (String field : constructor.namedFields()) {
@@ -2593,7 +2593,7 @@ public final class OwnershipChecker {
                         || (member.payload() != null && (argTypes.size() != 1
                                 || !argTypes.getFirst().isRecordType()
                                 || !argTypes.getFirst().recordMembers().values().stream()
-                                    .allMatch(this::isCopyType)))) {
+                                    .allMatch(this::isCopySafeEnumScalar)))) {
                     throw error("whole-variant alias of non-Copy payload requires checked borrow lowering");
                 }
                 defineRefinementAlias(constructor.wholeAlias(), subjectType, source, destination);
@@ -3528,6 +3528,20 @@ public final class OwnershipChecker {
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
     }
 
+    private boolean isCopySafeEnumScalar(Ast.TypeRef type) {
+        // Match TypeChecker's narrow canonical enum payload admission: no
+        // recursive nominal types, containers, pointers, actor refs or Bytes.
+        // Avoid recursive isCopyType() on enum payloads, which could otherwise
+        // recurse indefinitely on self-referential enum declarations.
+        if (type == null || type.isBorrow() || !type.arguments().isEmpty()) return false;
+        return switch (type.name()) {
+            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                 "int", "uint", "f32", "f64", "float", "bool", "Bool",
+                 "string", "String" -> true;
+            default -> false;
+        };
+    }
+
     private boolean isCopyType(Ast.TypeRef type) {
         if (type == null || type.isBorrow()) return false;
         if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
@@ -3551,7 +3565,7 @@ public final class OwnershipChecker {
                 yield declarationEnum != null
                         && declarationEnum.variants().stream().allMatch(variant ->
                             variant.payload() == null || variant.payload().recordMembers()
-                                    .values().stream().allMatch(this::isCopyType));
+                                    .values().stream().allMatch(this::isCopySafeEnumScalar));
             }
         };
     }
