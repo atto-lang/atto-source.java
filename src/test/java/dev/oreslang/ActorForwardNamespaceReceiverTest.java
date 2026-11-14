@@ -302,6 +302,42 @@ final class ActorForwardNamespaceReceiverTest {
     }
 
     @Test
+    void immutableExternalActorReceiverCannotCallMutableMethod() {
+        Ast.Program program = Parser.parse("""
+                declare actor Foo1;
+                mtd (Foo1 mut self) exclusive(): void { return; }
+                mtd (Foo1 self) readonly(): void {
+                  self.exclusive();
+                  return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(program),
+                "a read-only receiver cannot acquire an exclusive actor loan");
+    }
+
+    @Test
+    void explicitMailboxHandlerCannotSilentlyUpgradeReadonlyReceiver() {
+        reject("""
+                declare actor Foo1;
+                mtd (Foo1 self) receive(ActorMail<String> mail): void {
+                  self.end();
+                  return;
+                }
+                """, "exclusive mailbox-turn receiver");
+        var program = Parser.parse("""
+                declare actor Foo1;
+                mtd (Foo1 self) foo(): int { return 42; }
+                mtd (Foo1 mut self) receive(ActorMail<String> mail): void {
+                  self.send(self.foo());
+                  self.end();
+                  return;
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
     void declarationOnlyActorsExecuteSharedNamedMethods() throws Exception {
         String source;
         try (var stream = getClass().getResourceAsStream(
