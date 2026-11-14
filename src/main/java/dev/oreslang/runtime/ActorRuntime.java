@@ -9573,14 +9573,13 @@ public final class ActorRuntime implements AutoCloseable {
                             // still fail the actor even when STOP races it.
                             try {
                                 sourceLifecycleGate.commitInit(created);
-                            } catch (IllegalStateException rejected) {
-                                if (stopped.get()
-                                        && sourceLifecycleGate.phase()
-                                                == ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL) {
-                                    throw new ActorCancellationSignal(
-                                            "source actor initialization stopped before state commit");
-                                }
-                                throw rejected;
+                            } catch (ActorSourceLifecycleGate.InitializationStopped stoppedInit) {
+                                // Only the gate can mint this exact STOP result.
+                                // An arbitrary IllegalStateException from a
+                                // guest-owned state accessor must still fail
+                                // closed, even if STOP races with that error.
+                                throw new ActorCancellationSignal(
+                                        "source actor initialization stopped before state commit");
                             }
                         } catch (Exception | Error startupFailure) {
                             sourceLifecycleGate.failInit();
