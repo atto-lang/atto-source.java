@@ -102,6 +102,7 @@ public final class Parser {
      * from the filename: existing .ores and .atto legacy callers remain intact.
      * Fail before AST lowering on C-style equality or opaque template payloads,
      * which would otherwise be reparsed outside the selected source profile.
+     */
     public static Ast.Program parseStrictAtto(String source) {
         List<Token> scanned = new Lexer(source).scan();
         for (Token token : scanned) {
@@ -114,9 +115,12 @@ public final class Parser {
                         + token.line() + ":" + token.column()
                         + ": template interpolation requires profile-preserving typed lowering");
             }
+        }
         return new Parser(scanned).parseProgram();
+    }
 
 
+    /**
      * Parse one entire interpolation as an expression, never a statement.
      * Nested cpu/gpu domains cannot bypass the compilation-unit preflight.
      */

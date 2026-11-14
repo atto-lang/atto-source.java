@@ -3253,6 +3253,7 @@ public final class TypeChecker {
                 // invalid operations and corrupt downstream pipeline typing.
                 Type upstream = typeOf(call.arguments().getFirst(), env, generics, self);
                 return inferValuePipelineLambda(inlineLambda, upstream, env, generics, self);
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
