@@ -16,6 +16,16 @@ final class ActorSourceLifecycleGate {
         TEARING_DOWN, FAILED, CLOSED
     }
 
+    /** Only the runtime STOP/initializer race may be control cancellation.
+     * Other IllegalStateExceptions (including guest state accessors) must
+     * retain their original failure identity and not be swallowed by STOP.
+     */
+    static final class InitializationStopped extends IllegalStateException {
+        private InitializationStopped() {
+            super("source actor initialization commit rejected by STOP");
+        }
+    }
+
     private final ActorRuntime.ActorId owner;
     private final String actorType;
     private Phase phase = Phase.NEW;
@@ -73,6 +83,12 @@ final class ActorSourceLifecycleGate {
     }
 
     synchronized void commitInit(ActorRuntime.ActorOwnedGuestState created) {
+        // Use a typed STOP outcome instead of relying on caller observation of
+        // phase after an arbitrary IllegalStateException. A malicious or
+        // malformed state accessor may throw that very same exception type.
+        if (phase == Phase.STOPPING_TERMINAL) {
+            throw new InitializationStopped();
+        }
         require(Phase.INITIALIZING, "publish initialized state");
         if (created == null || !owner.equals(created.ownerActorId())) {
             phase = Phase.FAILED;
