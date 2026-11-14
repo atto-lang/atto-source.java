@@ -24,7 +24,9 @@ final class CheckedMetadataTransferInvariantTest {
                 .collect(Collectors.toUnmodifiableSet());
 
         assertEquals(
-                declaredTables,
+                java.util.stream.Stream.concat(
+                        declaredTables.stream(), java.util.stream.Stream.of("CheckedCallPlan"))
+                        .collect(Collectors.toUnmodifiableSet()),
                 Ast.checkedMetadataTransferPolicy(),
                 "every identity-bound Checked* side table with copy() needs an explicit transfer policy");
     }

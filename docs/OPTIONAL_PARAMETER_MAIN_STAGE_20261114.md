@@ -17,3 +17,18 @@ Call-site omission, checked constant-default evaluation, generic/inherited/const
 The JUnit source tests assert parser metadata, nested Option types, illegal defaults and direct/linked preflight denial. They are **authored, not tested on a stepful JDK 25 build**. Source-org GitHub Actions frequently fail with no runner job steps; that failure must not be called a source compilation failure or a green pass. No private compiler code is mirrored without a reviewed authorization.
 
 To enable omission safely, implement one checked plan that preserves source-call-item and evaluated-expression indices independently of formal slots, evaluates supplied expressions exactly once in source order, admits deterministic typed defaults only when absent, guards overload interval ambiguity, and binds fully declared ABI arity in JVM, Graal Native Image, LLVM and .NET Native AOT. Then execute the canonical .atto positive and rejection fixtures in attolang-language-spec.md PR #51 on real runners.
+
+## Reused checked argument binder (staged)
+
+The main-compatible `CheckedCallPlan` from the older Java named-argument draft
+is now available as a **shape-only** reusable binder. It binds canonical
+`Ast.Param.omittable()` metadata, retains lexical input indices separately
+from formal ABI slots, and never treats a required `T?` as omittable.
+
+The binder checks missing required parameters, duplicate/unknown labels,
+nontrailing omission, prohibited positional-after-named ordering, source
+provenance including dense raw call-item indices, and spread projections.
+Identity-bound call plans can be invalidated on recheck; the AST metadata
+transfer policy recognizes them while refusing unsafe rewrites. An 8,192-case
+JUnit exhaustive matrix is authored. This is **not** compiler call lowering,
+real named invocation or passing CI evidence.

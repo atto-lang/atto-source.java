@@ -1743,6 +1743,11 @@ public final class Ast {
             @Override void copy(Expr source, Expr target) {
                 CheckedStructuralFieldDomain.copy(source, target);
             }
+        },
+        CALL_PLAN("CheckedCallPlan") {
+            @Override void copy(Expr source, Expr target) {
+                dev.oreslang.types.CheckedCallPlan.copyCheckedMetadata(source, target);
+            }
         };
 
         private final String tableName;
