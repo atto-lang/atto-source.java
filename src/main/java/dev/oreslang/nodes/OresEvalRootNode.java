@@ -5977,7 +5977,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (created.type().name().equals("Array")
                     || created.type().name().equals("List")
-                    || created.type().name().equals("Vector")) {
+                    || (created.type().name().equals("Vector")
+                    && findClass("Vector") == null)) {
                 if (!args.isEmpty()) {
                     throw new IllegalArgumentException(
                             created.type().name()
@@ -8039,7 +8040,8 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (created.type().name().equals("Array")
                         || created.type().name().equals("List")
-                        || created.type().name().equals("Vector")) {
+                        || (created.type().name().equals("Vector")
+                    && findClass("Vector") == null)) {
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException(
                                 created.type().name()
