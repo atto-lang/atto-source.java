@@ -7548,6 +7548,33 @@ public final class TypeChecker {
             bindings.define(binding.name(), subject, Ast.BindingKind.VAL);
             return;
         }
+        if (pattern instanceof Ast.SequencePattern sequence) {
+            if (!isBuiltinBytes(subject)) {
+                throw new IllegalArgumentException(
+                        "bytes[]/bits[] patterns require a built-in immutable Bytes subject, got " + subject);
+            }
+            // The AST revalidates ranges, duplicate bindings and arity even if
+            // a generated producer bypasses the source lexer.
+            for (Ast.SequenceElement element : sequence.elements()) {
+                if (element.binding() != null && !element.binding().equals("_")) {
+                    bindings.define(element.binding(),
+                            sequence.unit() == Ast.SequenceUnit.BYTE
+                                    ? Primitive.INT : Primitive.BOOL, Ast.BindingKind.VAL);
+                }
+            }
+            if (sequence.tail() != null && !sequence.tail().equals("_")) {
+                if (sequence.unit() == Ast.SequenceUnit.BIT) {
+                    // Bit tails may begin mid-byte. Do not fake this with Bytes,
+                    // round its cursor, or manufacture an escaping unproven loan.
+                    throw new IllegalArgumentException(
+                            "bits[] named tail requires checked BitView lifetime lowering (not yet admitted)");
+                }
+                // Byte tails are an owned Bytes.slice() copy in this initial
+                // Java execution slice, never an untracked borrowed pointer.
+                bindings.define(sequence.tail(), new Named("Bytes", List.of()), Ast.BindingKind.VAL);
+            }
+            return;
+        }
         if (pattern instanceof Ast.LiteralPattern literal) {
             Type literalType = typeOf(new Ast.LiteralExpr(literal.value()), bindings, generics, self);
             if (!assignable(literalType, subject) && !assignable(subject, literalType)) {
