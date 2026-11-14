@@ -9051,6 +9051,12 @@ public final class ActorRuntime implements AutoCloseable {
                     || pendingChildStopDispatches != 0
                     || pendingCleanupFutures != 0
                     || activeTurns != 0
+                    // The source incarnation cannot retire while any actual
+                    // guest receive still owns its admission lease. This
+                    // independently protects future concurrent lowering;
+                    // source-scheduler pins remain a separate required gate.
+                    || (sourceLifecycleGate != null
+                            && sourceLifecycleGate.activeReceives() != 0)
                     || scheduled.get()
                     || carrierActive
                     || activeAsyncSendAdmissions != 0
@@ -9657,14 +9663,16 @@ public final class ActorRuntime implements AutoCloseable {
                                     // Defense in depth: actor-owned state and
                                     // recipient must belong to this live actor
                                     // incarnation before entering guest code.
-                                    sourceLifecycleGate.requireReceive(
-                                            ref.id(), codeActorType,
-                                            codeActorState, sourceMail);
-                                    codeExecutor.receiveActor(
-                                            codeActorType,
-                                            codeActorState,
-                                            sourceMail,
-                                            sourceContext);
+                                    try (ActorSourceLifecycleGate.ReceiveLease receiveLease =
+                                            sourceLifecycleGate.enterReceive(
+                                                    ref.id(), codeActorType,
+                                                    codeActorState, sourceMail)) {
+                                        codeExecutor.receiveActor(
+                                                codeActorType,
+                                                codeActorState,
+                                                sourceMail,
+                                                sourceContext);
+                                    }
                                 } else {
                                     behavior.onMessage(mail.value(), context);
                                 }
