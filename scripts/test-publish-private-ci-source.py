@@ -41,6 +41,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.incident_guard = patch.object(pub, "require_resolved_blocking_incidents")
         self.incident_mock = self.incident_guard.start()
         self.addCleanup(self.incident_guard.stop)
+        self.incident_comments_guard = patch.object(
+            pub, "gh_api_list", side_effect=self.incident_comments_api()
+        )
+        self.incident_comments_guard.start()
+        self.addCleanup(self.incident_comments_guard.stop)
         # Existing isolated transfer/FS tests model the downstream publisher;
         # protected-source provenance gets independent real-guard tests below.
         self.origin_guard = patch.object(pub, "verify_protected_origin")
@@ -55,11 +60,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def incident_api(self, states=None, repository_id=None, issue_ids=None):
         states = states or {
-            22: ("closed", "completed"),
-            77: ("closed", "completed"),
-            127: ("closed", "completed"),
-            171: ("closed", "completed"),
-            172: ("closed", "completed"),
+            number: ("closed", "completed")
+            for number in pub.BLOCKING_INCIDENTS
         }
         repository_id = (
             pub.BLOCKING_INCIDENT_REPOSITORY_ID
@@ -98,9 +100,109 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     ),
                     "state": state,
                     "state_reason": reason,
+                    "closed_at": (
+                        "2026-10-30T04:00:00Z"
+                        if state == "closed" else None
+                    ),
                 }
             raise AssertionError((method, route))
         return api
+
+    def incident_comments_api(
+            self, reviewer_id=None, reviewer_login=None,
+            missing=None, body_overrides=None, full_page=None,
+            timestamp_overrides=None, later_bodies=None,
+            page_two=None, saturated=None):
+        reviewer_id = (
+            pub.INCIDENT_DISPOSITION_REVIEWER_ID
+            if reviewer_id is None else reviewer_id
+        )
+        reviewer_login = (
+            pub.INCIDENT_DISPOSITION_REVIEWER
+            if reviewer_login is None else reviewer_login
+        )
+        missing = set() if missing is None else set(missing)
+        body_overrides = {} if body_overrides is None else dict(body_overrides)
+        full_page = set() if full_page is None else set(full_page)
+        timestamp_overrides = (
+            {} if timestamp_overrides is None else dict(timestamp_overrides)
+        )
+        later_bodies = {} if later_bodies is None else dict(later_bodies)
+        page_two = {} if page_two is None else dict(page_two)
+        saturated = set() if saturated is None else set(saturated)
+
+        def api(route):
+            prefix = (
+                "repos/" + pub.BLOCKING_INCIDENT_REPO + "/issues/"
+            )
+            suffix = "/comments?per_page=100&page="
+            if not route.startswith(prefix) or suffix not in route:
+                raise AssertionError(route)
+            issue_key, page_number = route[len(prefix):].split(suffix, 1)
+            if not page_number.isdecimal() or int(page_number) < 1:
+                raise AssertionError(route)
+            number = int(issue_key)
+            page = int(page_number)
+            if number in missing:
+                return []
+            marker = (
+                pub.INCIDENT_DISPOSITION_MARKER
+                + " issue=#" + str(number)
+            )
+            body = body_overrides.get(number, marker)
+            created_at, updated_at = timestamp_overrides.get(
+                number,
+                ("2026-10-30T04:05:00Z", "2026-10-30T04:05:00Z"),
+            )
+            comment = {
+                "id": number * 1000 + 1,
+                "user": {
+                    "id": reviewer_id,
+                    "login": reviewer_login,
+                },
+                "body": body,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            if page > 1:
+                if number in saturated:
+                    return [dict(comment, id=number * 100000 + page * 1000 + index)
+                            for index in range(100)]
+                return [dict(item) for item in page_two.get(number, [])]
+            if number in full_page:
+                return [dict(comment, id=number * 1000 + index)
+                        for index in range(100)]
+            comments = [comment]
+            if number in later_bodies:
+                comments.append({
+                    "id": number * 1000 + 2,
+                    "user": {
+                        "id": reviewer_id,
+                        "login": reviewer_login,
+                    },
+                    "body": later_bodies[number],
+                    "created_at": "2026-10-30T04:06:00Z",
+                    "updated_at": "2026-10-30T04:06:00Z",
+                })
+            return comments
+        return api
+
+    def test_github_timestamp_accepts_canonical_utc_and_rejects_invalid(self):
+        # A valid GitHub timestamp must be accepted before incident closure
+        # is evaluated. An escaped literal \\d breaks every real disposition.
+        parsed = pub.github_timestamp(
+            "2026-10-30T04:05:00Z", "invalid test timestamp"
+        )
+        self.assertEqual(parsed.isoformat(), "2026-10-30T04:05:00+00:00")
+        for candidate in (
+            "2026-10-30T04:05:00+00:00",
+            "2026-02-30T04:05:00Z",
+            "2026-10-30T04:05:00",
+            "not a timestamp",
+        ):
+            with self.subTest(candidate=candidate):
+                with self.assertRaisesRegex(pub.Denied, "invalid test timestamp"):
+                    pub.github_timestamp(candidate, "invalid test timestamp")
 
     def test_blocking_p0_incidents_accept_only_completed_closure(self):
         with patch.object(pub, "gh_api", side_effect=self.incident_api()):
@@ -162,6 +264,258 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(pub.Denied, "repository identity/state"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_author_marker_without_independent_reviewer(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    reviewer_id=2148448,
+                    reviewer_login="the1mills",
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "lacks independent security disposition"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_missing_exact_disposition_marker(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    body_overrides={22: "review complete but no marker"}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "#22 latest independent security disposition"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_marker_embedded_in_prose(self):
+        marker = pub.INCIDENT_DISPOSITION_MARKER + " issue=#22"
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    body_overrides={22: "reviewed\n" + marker}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "latest independent security disposition"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_latest_reviewer_comment_can_revoke(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    later_bodies={22: "PRIVATE_CI_INCIDENT_DISPOSITION_REVOKED"}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "absent or revoked"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_edited_old_approval_cannot_override_newer_revocation(self):
+        # A reviewer edited the older approval after publishing a newer
+        # revocation. The latest *created* reviewer comment must win.
+        comments_api = self.incident_comments_api(
+            later_bodies={22: "PRIVATE_CI_INCIDENT_DISPOSITION_REVOKED"}
+        )
+
+        def edited_old_approval(route):
+            comments = comments_api(route)
+            if route.endswith("/issues/22/comments?per_page=100&page=1"):
+                comments[0]["updated_at"] = "2026-10-30T04:07:00Z"
+            return comments
+
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(pub, "gh_api_list", side_effect=edited_old_approval),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "absent or revoked"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_whitespace_around_marker(self):
+        marker = pub.INCIDENT_DISPOSITION_MARKER + " issue=#22"
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    body_overrides={22: marker + "\n"}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "absent or revoked"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_disposition_before_current_closure(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    timestamp_overrides={
+                        22: (
+                            "2026-10-30T03:59:00Z",
+                            "2026-10-30T03:59:00Z",
+                        )
+                    }
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "disposition predates current closure"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_old_comment_edited_after_closure(self):
+        # updated_at alone cannot prove a reviewer posted a fresh disposition.
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    timestamp_overrides={
+                        22: (
+                            "2026-10-30T03:59:00Z",
+                            "2026-10-30T04:07:00Z",
+                        )
+                    }
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "disposition predates current closure"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_comment_created_at_exact_closure(self):
+        # Second-resolution timestamps cannot establish strict after-closure.
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    timestamp_overrides={
+                        22: (
+                            "2026-10-30T04:00:00Z",
+                            "2026-10-30T04:02:00Z",
+                        )
+                    }
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "disposition predates current closure"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_accept_fresh_comment_edited_after_closure(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    timestamp_overrides={
+                        22: (
+                            "2026-10-30T04:05:00Z",
+                            "2026-10-30T04:07:00Z",
+                        )
+                    }
+                ),
+            ),
+        ):
+            ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_reviewer_identity_drift(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    reviewer_id=pub.INCIDENT_DISPOSITION_REVIEWER_ID + 1
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "lacks independent security disposition"
+            ):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_incident_accepts_complete_pagination_after_full_first_page(self):
+        # Exactly 100 comments is not a proof that all pages were retrieved.
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(full_page={22}),
+            ),
+        ):
+            ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_incident_second_page_can_revoke_earlier_approval(self):
+        revocation = {
+            "id": 229999,
+            "user": {
+                "id": pub.INCIDENT_DISPOSITION_REVIEWER_ID,
+                "login": pub.INCIDENT_DISPOSITION_REVIEWER,
+            },
+            "body": "PRIVATE_CI_INCIDENT_DISPOSITION_REVOKED",
+            "created_at": "2026-10-30T04:06:00Z",
+            "updated_at": "2026-10-30T04:06:00Z",
+        }
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    full_page={22}, page_two={22: [revocation]}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "absent or revoked"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_incident_later_comment_page_failure_stays_closed(self):
+        comments_api = self.incident_comments_api(full_page={22})
+        def api(route):
+            if route.endswith("/issues/22/comments?per_page=100&page=2"):
+                raise pub.Denied("page two unavailable")
+            return comments_api(route)
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(pub, "gh_api_list", side_effect=api),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "page two unavailable"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_incident_denies_unbounded_saturated_comment_pages(self):
+        with (
+            patch.object(pub, "gh_api", side_effect=self.incident_api()),
+            patch.object(
+                pub, "gh_api_list",
+                side_effect=self.incident_comments_api(
+                    full_page={22}, saturated={22}
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pub.Denied, "comments exceed bounded audit pages"
+            ):
                 ORIGINAL_REQUIRE_RESOLVED()
 
     def test_quarantined_repository_id_rejected_even_after_slug_rename(self):
@@ -262,6 +616,76 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
             with self.assertRaisesRegex(pub.Denied, "#172 remains unresolved"):
                 ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_open_issue_252(self):
+        states = {
+            number: ("closed", "completed")
+            for number in pub.BLOCKING_INCIDENTS
+        }
+        states[252] = ("open", None)
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#252 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_252_identity_drift(self):
+        ids = dict(pub.BLOCKING_INCIDENT_IDS)
+        ids[252] += 1
+        with patch.object(
+            pub, "gh_api", side_effect=self.incident_api(issue_ids=ids),
+        ):
+            with self.assertRaisesRegex(pub.Denied, "incident identity"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_blocking_p0_incidents_reject_issue_252_not_planned(self):
+        states = {
+            number: ("closed", "completed")
+            for number in pub.BLOCKING_INCIDENTS
+        }
+        states[252] = ("closed", "not_planned")
+        with patch.object(pub, "gh_api", side_effect=self.incident_api(states)):
+            with self.assertRaisesRegex(pub.Denied, "#252 remains unresolved"):
+                ORIGINAL_REQUIRE_RESOLVED()
+
+    def test_quarantined_hnpt_e2e_rejected_before_any_source_access(self):
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                ORIGINAL_REQUIRE_PREFLIGHT(
+                    "honeypot-r-us-test/hnpt-e2e", self.root,
+                )
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
+
+    def test_quarantined_ores_llm_carrier_denied_before_source_or_network(self):
+        # This is metadata-only admission coverage for external incident #29.
+        # A mixed-case spelling must not bypass source-free preflight denial.
+        with (
+            patch.object(pub, "require_resolved_blocking_incidents") as incidents,
+            patch.object(pub, "checked_policy_approval") as policy,
+            patch.object(pub, "checked_repo") as identity,
+            patch.object(pub, "collect_source") as collect,
+            patch.object(pub, "gh_api") as api,
+        ):
+            for slug in (
+                "ores-llm/ores-llm-ml-conformance-tests",
+                "ORES-LLM/ORES-LLM-ML-CONFORMANCE-TESTS",
+            ):
+                with self.subTest(slug=slug):
+                    with self.assertRaisesRegex(pub.Denied, "quarantined"):
+                        ORIGINAL_REQUIRE_PREFLIGHT(slug, self.root)
+            incidents.assert_not_called()
+            policy.assert_not_called()
+            identity.assert_not_called()
+            collect.assert_not_called()
+            api.assert_not_called()
 
     def test_quarantined_recovery_carrier_rejected_before_any_source_access(self):
         with (
@@ -1341,6 +1765,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             172: 6042602777,
             198: 6070465058,
             200: 6071264936,
+            252: 6129229261,
         }
         self.assertEqual(pub.BLOCKING_INCIDENT_IDS, expected)
         self.assertEqual(pub.BLOCKING_INCIDENTS, tuple(expected))
@@ -1353,6 +1778,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             1370782550,
             1324139596,
             1350751074,
+            1346492776,
+            1441272675,
         }
         self.assertEqual(set(pub.QUARANTINED_DESTINATION_IDS), expected_ids)
         for repository_id in sorted(expected_ids):
@@ -1383,6 +1810,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "agent-pontifex-test/agent-pontifex-e2e-tests",
             "led-dynamo/leddy-e2e",
             "claimgraph-test/claimgraph-e2e",
+            "honeypot-r-us-test/hnpt-e2e",
+            "ores-llm/ores-llm-ml-conformance-tests",
         }
         self.assertEqual(
             {item.casefold() for item in pub.QUARANTINED_DESTINATIONS},

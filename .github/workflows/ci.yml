@@ -293,3 +293,14 @@ jobs:
         run: |
           timeout 180s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/strict-root-await.ores" | tee /tmp/ores-strict-root-await.out
           grep -x "42" /tmp/ores-strict-root-await.out
+      - name: Reject JVM JIT mode inside the native polyglot isolate
+        shell: bash
+        run: |
+          set -euo pipefail
+          # NativeBuildMode must fail closed rather than silently downgrade JIT to hybrid.
+          # Require the specific policy denial, not merely a nonzero Maven exit.
+          if timeout 90s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=jit --platform=linux examples/together.ores" >/tmp/ores-strict-denied-jit.out 2>&1; then
+            echo "SECURITY FAILURE: native isolate unexpectedly accepted --mode=jit" >&2
+            exit 1
+          fi
+          grep -F "Native hybrid executables accept --mode=hybrid or --mode=aot, not JVM --mode=jit" /tmp/ores-strict-denied-jit.out

@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.parser.Parser;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -58,7 +59,8 @@ final class ImportGraph {
                 ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
                 : Path.of(raw).normalize();
         String candidate = normalizeUnitId(candidatePath.toString());
-        if (!available.contains(candidate) && !candidate.endsWith(".atto") && !candidate.endsWith(".ores") && !candidate.endsWith(".java")) {
+        if (!available.contains(candidate) && !candidate.endsWith(".atto")
+                && !candidate.endsWith(".ores") && !candidate.endsWith(".java")) {
             if (available.contains(candidate + ".atto")) candidate += ".atto";
             else if (available.contains(candidate + ".ores")) candidate += ".ores";
             else if (available.contains(candidate + ".java")) candidate += ".java";
@@ -130,7 +132,7 @@ final class ImportGraph {
         int matches = 0;
         for (Ast.ModuleDecl module : program.modules()) {
             if (kind == Ast.ImportKind.MODULE) {
-                if (module.name().equals(name)) matches++;
+                if (!module.name().equals(Parser.ROOT_MODULE) && module.name().equals(name)) matches++;
                 continue;
             }
 

@@ -639,10 +639,40 @@ def require_source_pr_independent_review(source_pr, source_commit, author):
         raise Denied("source PR security owner approval is stale or revoked")
 
 
-def verify_source_pr(source_pr, source_commit):
+def require_source_contains_authority(source_commit, authority_sha):
+    """Require the exact source head to contain the current protected main."""
+    source_commit = valid_sha(source_commit, "invalid source commit")
+    authority_sha = valid_sha(
+        authority_sha, "invalid protected source main authority"
+    )
+    comparison = legacy.gh_api(
+        f"repos/{legacy.SOURCE_REPO}/compare/{authority_sha}...{source_commit}"
+    )
+    if not isinstance(comparison, dict):
+        raise Denied("source PR protected-main ancestry response invalid")
+
+    status = comparison.get("status")
+    ahead = comparison.get("ahead_by")
+    behind = comparison.get("behind_by")
+    base_commit = comparison.get("base_commit")
+    merge_base = comparison.get("merge_base_commit")
+    if (status not in ("ahead", "identical")
+            or type(ahead) is not int or ahead < 0
+            or type(behind) is not int or behind != 0
+            or not isinstance(base_commit, dict)
+            or base_commit.get("sha") != authority_sha
+            or not isinstance(merge_base, dict)
+            or merge_base.get("sha") != authority_sha):
+        raise Denied("source PR head does not contain protected main")
+
+
+def verify_source_pr(source_pr, source_commit, authority_sha):
     if (type(source_pr) is not int or source_pr <= 0):
         raise Denied("invalid source PR number")
     source_commit = valid_sha(source_commit, "invalid source commit")
+    authority_sha = valid_sha(
+        authority_sha, "invalid protected source main authority"
+    )
 
     origin = legacy.gh_api(f"repos/{legacy.SOURCE_REPO}")
     repo_id = origin.get("id")
@@ -667,11 +697,15 @@ def verify_source_pr(source_pr, source_commit):
             or head.get("sha") != source_commit
             or not isinstance(head.get("repo"), dict)
             or head["repo"].get("full_name") != legacy.SOURCE_REPO
+            or head["repo"].get("id") != SOURCE_REPOSITORY_ID
             or not isinstance(base, dict)
             or not isinstance(base.get("repo"), dict)
             or base["repo"].get("full_name") != legacy.SOURCE_REPO
+            or base["repo"].get("id") != SOURCE_REPOSITORY_ID
             or base.get("ref") != legacy.SOURCE_PROTECTED_BRANCH):
         raise Denied("source commit is not the exact open PR head against main")
+
+    require_source_contains_authority(source_commit, authority_sha)
 
     require_source_pr_independent_review(source_pr, source_commit, author)
     return repo_id
@@ -884,7 +918,7 @@ def authorize_write(
     if (branch.get("name") != "main"
             or branch.get("commit", {}).get("sha") != contract["base_sha"]):
         raise Denied("carrier main changed during source-bearing write")
-    if verify_source_pr(source_pr, source_commit) != source_repo_id:
+    if verify_source_pr(source_pr, source_commit, authority_sha) != source_repo_id:
         raise Denied("source PR authorization changed during transfer")
     revalidate_source_governance(
         root, repository, approved_policy, contract,
@@ -1060,7 +1094,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         raise Denied(
             "carrier contract repository ID differs from independently reviewed approval"
         )
-    source_repo_id = verify_source_pr(source_pr, source_commit)
+    source_repo_id = verify_source_pr(source_pr, source_commit, authority_sha)
     destination, base_tree, plan_bytes = checked_destination(repository, contract)
     plan_meta = validate_test_plan(plan_bytes, source_pr)
 
@@ -1212,7 +1246,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
         contract["test_plan_path"], authority_sha
     )
     checked_destination(repository, contract)
-    if verify_source_pr(source_pr, source_commit) != source_repo_id:
+    if verify_source_pr(source_pr, source_commit, authority_sha) != source_repo_id:
         raise Denied("source repository identity changed before publication")
 
     # Create the source-bearing branch first. The carrier workflow fails closed
@@ -1251,7 +1285,7 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
 
         # Revalidate the exact open PR head last, immediately before making the
         # carrier executable.
-        if verify_source_pr(source_pr, source_commit) != source_repo_id:
+        if verify_source_pr(source_pr, source_commit, authority_sha) != source_repo_id:
             raise Denied("source repository identity changed before authorization")
 
         auth()
