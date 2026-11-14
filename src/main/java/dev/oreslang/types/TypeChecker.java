@@ -5108,43 +5108,41 @@ public final class TypeChecker {
             if (args == null) {
                 throw new IllegalArgumentException("constructor " + constructor.constructor() + " is not valid for " + subject);
             }
-            Map<String, Type> safeCaseFields = null;
+            Map<String, Type> caseFields = null;
             if (nominalEnum != null && args.size() == 1
                     && args.getFirst() instanceof Record record) {
-                // Named field bindings and whole-case aliases are admitted
-                // only if every field in the selected payload is an immutable
-                // Copy scalar. Otherwise a non-Copy field could be implicitly
-                // extracted or the whole alias could escape its receive turn.
-                if (record.members().values().stream().allMatch(this::copySafeEnumField)) {
-                    safeCaseFields = record.members();
-                }
+                caseFields = record.members();
             }
+            boolean entireEnumCopy = nominalEnum != null
+                    && nominalEnum.variants().stream().allMatch(variant ->
+                        variant.payload() == null || variant.payload().recordMembers()
+                            .values().stream().allMatch(field ->
+                                copySafeEnumField(resolve(field, generics, self))));
             if (constructor.namedFields() != null) {
-                if (nominalEnum == null || args.size() != 1 || safeCaseFields == null) {
+                if (nominalEnum == null || caseFields == null) {
                     throw new IllegalArgumentException(
-                            "named enum field patterns require a Copy-safe nominal payload; "
-                                    + "borrow-aware Bytes payload matching is not implemented");
+                            "named enum fields require a nominal case with a record payload");
                 }
                 java.util.Set<String> usedFields = new java.util.HashSet<>();
                 for (String field : constructor.namedFields()) {
                     if (!usedFields.add(field)) {
                         throw new IllegalArgumentException("duplicate enum pattern field '" + field + "'");
                     }
-                    Type resolvedField = safeCaseFields.get(field);
-                    if (resolvedField == null) {
+                    Type declared = caseFields.get(field);
+                    if (declared == null) {
                         throw new IllegalArgumentException(
                                 "unknown enum payload field '" + field + "' in " + constructor.constructor());
                     }
-                    bindings.define(field, resolvedField, Ast.BindingKind.VAL);
+                    // Non-Copy payload fields are immutable loans, NOT
+                    // implicitly owned values or copied transport payloads.
+                    Type projected = copySafeEnumField(declared)
+                            ? declared : new Borrow(declared, false);
+                    bindings.define(field, projected, Ast.BindingKind.VAL);
                 }
             } else {
-                boolean wholeCopyCase = constructor.wholeAlias() != null
+                boolean wholeCase = constructor.wholeAlias() != null
                         && args.size() == 1 && constructor.arguments().isEmpty();
-                if (wholeCopyCase && safeCaseFields == null) {
-                    throw new IllegalArgumentException(
-                            "whole-variant alias with non-Copy payload requires case-borrow lowering");
-                }
-                if (!wholeCopyCase && args.size() != constructor.arguments().size()) {
+                if (!wholeCase && args.size() != constructor.arguments().size()) {
                     throw new IllegalArgumentException("constructor pattern " + constructor.constructor()
                             + " expects " + args.size() + " argument(s), got " + constructor.arguments().size());
                 }
@@ -5153,19 +5151,21 @@ public final class TypeChecker {
                 }
             }
             if (constructor.wholeAlias() != null) {
-                if (nominalEnum == null || (args.size() == 1 && safeCaseFields == null)
-                        || !nominalEnum.variants().stream().allMatch(variant ->
-                                variant.payload() == null || variant.payload().recordMembers()
-                                        .values().stream().allMatch(field ->
-                                            copySafeEnumField(resolve(field, generics, self))))) {
+                if (nominalEnum == null || args.size() > 1) {
                     throw new IllegalArgumentException(
-                            "whole-variant alias with non-Copy payload requires case-borrow lowering");
+                            "whole-variant alias requires a nominal enum case");
                 }
-                if (args.size() > 1) throw new IllegalArgumentException(
-                        "unsupported enum alias payload representation");
+                Map<String, Type> projections = new LinkedHashMap<>();
+                if (caseFields != null) {
+                    for (Map.Entry<String, Type> field : caseFields.entrySet()) {
+                        projections.put(field.getKey(), copySafeEnumField(field.getValue())
+                                ? field.getValue() : new Borrow(field.getValue(), false));
+                    }
+                }
                 bindings.defineCaseAlias(constructor.wholeAlias(),
-                        overlayReadonlyCapabilities(subject, subject),
-                        safeCaseFields == null ? Map.of() : safeCaseFields);
+                        entireEnumCopy ? overlayReadonlyCapabilities(subject, subject)
+                                : new Borrow(overlayReadonlyCapabilities(subject, subject), false),
+                        projections);
             }
             return;
         }
