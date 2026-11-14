@@ -666,8 +666,23 @@ public final class Ast {
         }
     }
 
-    public record ConstructorPattern(String constructor, List<Pattern> arguments) implements Pattern {
-        public ConstructorPattern { arguments = List.copyOf(arguments); }
+    /**
+     * A whole-variant alias is an immutable, arm-local view of the nominal
+     * case, not an extra payload argument. V1 admits this binding only for
+     * closed, nullary, Copy cases; payload-case borrowing requires a separate
+     * ownership/typed projection implementation before admission.
+     */
+    public record ConstructorPattern(String constructor, List<Pattern> arguments,
+                                     String wholeAlias) implements Pattern {
+        public ConstructorPattern {
+            arguments = List.copyOf(arguments);
+            if (wholeAlias != null && (wholeAlias.isBlank() || wholeAlias.equals("_"))) {
+                throw new IllegalArgumentException("enum whole-variant alias requires a name");
+            }
+        }
+        public ConstructorPattern(String constructor, List<Pattern> arguments) {
+            this(constructor, arguments, null);
+        }
     }
 
     public record MatchArm(Pattern pattern, Expr guard, List<Stmt> body) {
