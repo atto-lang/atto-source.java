@@ -1,0 +1,61 @@
+name: Atto native collection methods - exact guest execution
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/main/resources/dev/oreslang/core/collections.atto'
+      - 'src/test/java/dev/oreslang/runtime/*Collection*Test.java'
+      - '.github/workflows/atto-native-collections-guest.yml'
+  push:
+    branches: [feat/atto-native-collection-combinators-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  java-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 pinned
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify the exact source tree and core source blob
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          test "$(git hash-object src/main/resources/dev/oreslang/core/collections.atto)" = "c5d6659dda078736cb170d5c1d59fc04e700d023"
+          echo "EXACT_HEAD=$EXPECTED_HEAD"
+          echo "EXACT_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1 pinned
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute actual compiled guest and negative tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java --version
+          mvn -B -ntp -Dtest=AttoCollectionsCoreGuestTest,NativeAttoCollectionCombinatorsTest,NativeAttoCollectionMemberMethodTest,CanonicalCoreLibraryTest test
+      - name: Record immutable successful JVM guest receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f target/surefire-reports/TEST-dev.oreslang.runtime.AttoCollectionsCoreGuestTest.xml
+          test -f target/surefire-reports/TEST-dev.oreslang.runtime.NativeAttoCollectionMemberMethodTest.xml
+          echo "GUEST_TEST_SUITE_EXECUTED=true"
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "TREE=$(git rev-parse 'HEAD^{tree}')"
+          echo "CORE_BLOB=$(git hash-object src/main/resources/dev/oreslang/core/collections.atto)"
