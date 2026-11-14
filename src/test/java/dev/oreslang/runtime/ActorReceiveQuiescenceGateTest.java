@@ -96,8 +96,9 @@ final class ActorReceiveQuiescenceGateTest {
             CountDownLatch release,
             CountDownLatch ended,
             AtomicReference<Throwable> failure) {
-        try (ActorSourceLifecycleGate.ReceiveLease ignored =
-                     gate.enterReceive(id, TYPE, state, mail(id))) {
+        ActorSourceLifecycleGate.ReceiveLease lease = null;
+        try {
+            lease = gate.enterReceive(id, TYPE, state, mail(id));
             ready.countDown();
             if (!release.await(10, TimeUnit.SECONDS)) {
                 throw new AssertionError("test did not release receive");
@@ -105,7 +106,11 @@ final class ActorReceiveQuiescenceGateTest {
         } catch (Throwable problem) {
             failure.compareAndSet(null, problem);
         } finally {
-            ended.countDown();
+            try {
+                if (lease != null) lease.close();
+            } finally {
+                ended.countDown();
+            }
         }
     }
 
@@ -117,8 +122,10 @@ final class ActorReceiveQuiescenceGateTest {
         var lease = gate.enterReceive(id, TYPE, state, mail(id));
         assertEquals(1, gate.activeReceives());
         assertThrows(IllegalArgumentException.class, () -> {
-            try (lease) {
+            try {
                 throw new IllegalArgumentException("guest failure");
+            } finally {
+                lease.close();
             }
         });
         assertEquals(0, gate.activeReceives());
