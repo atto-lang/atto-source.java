@@ -5310,6 +5310,19 @@ public final class OwnershipChecker {
             return sequenceDestructureBindingType(iterableShape, index, rest);
         }
 
+        // Source spelling Tuple[T0, T1, ...] carries its elements in one
+        // $shape$ argument. Bind each element at ITS type, so a scalar element
+        // stays Copy even when a sibling element (e.g. Bytes) is move-only.
+        if (concrete.name().equals("Tuple") && findClass("Tuple") == null
+                && concrete.arguments().size() == 1
+                && concrete.arguments().getFirst().isSequenceShape()) {
+            List<Ast.TypeRef> fields = concrete.arguments().getFirst().arguments();
+            if (fields.stream().anyMatch(field -> field.isRepeatExact() || field.isRepeatMany())) {
+                return Ast.TypeRef.inferred();
+            }
+            return sequenceDestructureBindingType(Ast.TypeRef.tupleType(fields), index, rest);
+        }
+
         if (concrete.isTupleType()) {
             if (rest) {
                 if (index > concrete.arguments().size()) return Ast.TypeRef.inferred();
