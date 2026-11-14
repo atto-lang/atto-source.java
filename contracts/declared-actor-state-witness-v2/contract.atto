@@ -1,0 +1,6 @@
+namespace foo;
+define pub contract ActorXYZ for actor as
+  let int x;
+  val bool ready;
+  mtd bar(int delta): int;
+end
