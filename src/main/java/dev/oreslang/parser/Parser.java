@@ -6123,6 +6123,10 @@ public final class Parser {
 
     private void consumeExpressionStatementTerminator(Ast.Expr expression, String message) {
         if (containsExpressionBodyLambda(expression)) {
+            // A comma-body COMMA or END token is the explicit boundary for
+            // its final pipeline-lambda stage; require ';' in ordinary braces
+            // and argument expressions as before.
+            if (commaCallableBody && (check(COMMA) || check(END))) return;
             consume(SEMICOLON, "expression-bodied lambda statements require an explicit ';'");
             return;
         }
