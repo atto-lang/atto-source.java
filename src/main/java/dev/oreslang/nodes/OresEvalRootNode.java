@@ -8081,7 +8081,21 @@ public final class OresEvalRootNode extends RootNode {
                     // relative spelling only for an authenticated EnumValue.
                     if (!(name.equals(expected) || name.equals(variant.variantName()))
                             || !validNominalEnum(variant)) return false;
-                    if (variant.payload() == null) return constructor.arguments().isEmpty();
+                    if (variant.payload() == null) {
+                        if (!constructor.arguments().isEmpty()) return false;
+                        if (constructor.wholeAlias() != null
+                                && bindings.putIfAbsent(constructor.wholeAlias(), variant) != null) {
+                            throw new IllegalStateException(
+                                    "duplicate whole-variant alias " + constructor.wholeAlias());
+                        }
+                        return true;
+                    }
+                    // The type and ownership passes must not admit a mutable
+                    // or owned payload as an unproved whole-value alias.
+                    if (constructor.wholeAlias() != null) {
+                        throw new IllegalStateException(
+                                "payload whole-variant alias reached runtime without borrow proof");
+                    }
                     return constructor.arguments().size() == 1
                             && patternMatches(constructor.arguments().getFirst(), variant.payload(), bindings);
                 }
