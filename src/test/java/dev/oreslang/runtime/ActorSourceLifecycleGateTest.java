@@ -175,6 +175,8 @@ final class ActorSourceLifecycleGateTest {
         var gate = new ActorSourceLifecycleGate(owner, TYPE);
         gate.beginInit(owner, TYPE);
         gate.commitInit(state(owner));
+        gate.sealStop(true);
+        assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_GRACEFUL, gate.phase());
         gate.beginTeardown(owner, TYPE, state(owner));
         assertEquals(ActorSourceLifecycleGate.Phase.TEARING_DOWN, gate.phase());
         assertThrows(IllegalStateException.class,
@@ -208,6 +210,115 @@ final class ActorSourceLifecycleGateTest {
         gate.failInit();
         assertThrows(IllegalStateException.class,
                 () -> gate.beginTeardown(owner, TYPE, state(owner)));
+    }
+
+
+    @Test
+    void stopDuringInitializationRejectsLateStateCommitAndAllReceive() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.sealStop(false);
+        assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
+        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        gate.failInit();
+        assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
+        assertThrows(IllegalStateException.class,
+                () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
+        assertThrows(IllegalStateException.class,
+                () -> gate.beginTeardown(owner, TYPE, state(owner)));
+        assertThrows(IllegalStateException.class, () -> gate.beginInit(owner, TYPE));
+    }
+
+    @Test
+    void stopBeforeInitializationDoesNotAllocateAnActor() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.sealStop(true); // graceful cannot initialize a never-started actor
+        assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
+        assertThrows(IllegalStateException.class, () -> gate.beginInit(owner, TYPE));
+        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        gate.close();
+        assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
+    }
+
+    @Test
+    void gracefulStopImmediatelySealsMailboxAndGrantsOneTeardown() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        gate.sealStop(true);
+        assertThrows(IllegalStateException.class,
+                () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
+        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        gate.beginTeardown(owner, TYPE, state(owner));
+        assertThrows(IllegalStateException.class,
+                () -> gate.beginTeardown(owner, TYPE, state(owner)));
+        gate.close();
+        assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
+    }
+
+    @Test
+    void panicCancelOrForceStopCannotStartCooperativeTeardown() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        gate.sealStop(false);
+        assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
+        gate.sealStop(true); // retry cannot upgrade a terminal stop to graceful
+        assertThrows(IllegalStateException.class,
+                () -> gate.beginTeardown(owner, TYPE, state(owner)));
+        assertThrows(IllegalStateException.class,
+                () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
+    }
+
+    @Test
+    void gracefulStopCanBeRevokedWithoutResurrectingMail() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        gate.sealStop(true);
+        gate.sealStop(false);
+        assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
+        assertThrows(IllegalStateException.class,
+                () -> gate.beginTeardown(owner, TYPE, state(owner)));
+        assertThrows(IllegalStateException.class,
+                () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
+    }
+
+    @Test
+    void concurrentStopWinsBeforeBlockedInitializerCommits() throws Exception {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        var began = new java.util.concurrent.CountDownLatch(1);
+        var proceed = new java.util.concurrent.CountDownLatch(1);
+        var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread worker = Thread.ofVirtual().start(() -> {
+            try {
+                gate.beginInit(owner, TYPE);
+                began.countDown();
+                if (!proceed.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new AssertionError("initializer release timed out");
+                }
+                assertThrows(IllegalStateException.class,
+                        () -> gate.commitInit(state(owner)));
+            } catch (Throwable failure) {
+                workerFailure.set(failure);
+            }
+        });
+        try {
+            assertTrue(began.await(10, java.util.concurrent.TimeUnit.SECONDS));
+            gate.sealStop(false);
+        } finally {
+            proceed.countDown();
+        }
+        worker.join(10_000);
+        assertFalse(worker.isAlive(), "initializer must terminate");
+        assertNull(workerFailure.get(), () -> "unexpected worker failure: " + workerFailure.get());
+        assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
     }
 
     @Test
