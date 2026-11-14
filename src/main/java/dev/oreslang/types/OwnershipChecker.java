@@ -587,14 +587,25 @@ public final class OwnershipChecker {
             VarState source = matched.subject() instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            Map<VarState, StateSnapshot> nextArm = base;
             for (Ast.MatchArm arm : matched.arms()) {
-                restoreState(base);
+                // A failed pattern skips the guard, but a matching pattern
+                // with a false guard has still evaluated every guard effect.
+                // Later arms must conservatively inherit either false path.
+                restoreState(nextArm);
                 Scope armScope = new Scope(scope);
                 definePatternAliases(arm.pattern(), subject.type, source, armScope);
-                if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+                Map<VarState, StateSnapshot> afterGuard = nextArm;
+                if (arm.guard() != null) {
+                    checkExpr(arm.guard(), armScope, false);
+                    afterGuard = stateSnapshot(scope);
+                }
                 checkBlock(arm.body(), armScope, returnType);
                 armScope.close();
                 if (!definitelyReturns(arm.body())) exits.add(stateSnapshot(scope));
+                if (arm.guard() != null) {
+                    nextArm = joinGuardFalsePathMoves(nextArm, afterGuard);
+                }
             }
             mergeBranchState(base, exits);
             return;
@@ -1006,13 +1017,18 @@ public final class OwnershipChecker {
                     ? scope.lookup(name.name()) : null;
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            Map<VarState, StateSnapshot> nextArm = base;
             ValueInfo result = null;
             for (Ast.MatchValueArm arm : match.arms()) {
-                restoreState(base);
+                restoreState(nextArm);
                 Scope armScope = new Scope(scope);
+                Map<VarState, StateSnapshot> afterGuard = nextArm;
                 try {
                     definePatternAliases(arm.pattern(), subject.type, source, armScope);
-                    if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+                    if (arm.guard() != null) {
+                        checkExpr(arm.guard(), armScope, false);
+                        afterGuard = stateSnapshot(scope);
+                    }
 
                     int previousLoopDepth = loopDepth;
                     loopDepth = 0;
@@ -1038,6 +1054,9 @@ public final class OwnershipChecker {
                     armScope.close();
                 }
                 exits.add(stateSnapshot(scope));
+                if (arm.guard() != null) {
+                    nextArm = joinGuardFalsePathMoves(nextArm, afterGuard);
+                }
             }
             mergeBranchState(base, exits);
             return result;
@@ -4362,6 +4381,30 @@ public final class OwnershipChecker {
             }
             state.moved = movedOnAnyPath;
         }
+    }
+
+    /**
+     * Pattern matching can skip a guard entirely, or execute that guard and
+     * proceed when it is false. In the latter case a by-value call or rt take
+     * has already consumed an owner. Join the possible MOVE effects, but do
+     * not extend pattern-local temporary borrow leases to later arms.
+     *
+     * This is a conservative ownership join, not a full path-sensitive CFG
+     * fixed-point/region proof.
+     */
+    private Map<VarState, StateSnapshot> joinGuardFalsePathMoves(
+            Map<VarState, StateSnapshot> skipped,
+            Map<VarState, StateSnapshot> executed) {
+        Map<VarState, StateSnapshot> merged = new IdentityHashMap<>(skipped);
+        for (Map.Entry<VarState, StateSnapshot> entry : skipped.entrySet()) {
+            StateSnapshot original = entry.getValue();
+            StateSnapshot evaluated = executed.get(entry.getKey());
+            if (evaluated != null && evaluated.moved() && !original.moved()) {
+                merged.put(entry.getKey(), new StateSnapshot(
+                        true, original.immutableBorrows(), original.mutableBorrowed()));
+            }
+        }
+        return merged;
     }
 
     private Map<VarState,Boolean> movedSnapshot(Scope scope) {
