@@ -2223,6 +2223,9 @@ public final class OresEvalRootNode extends RootNode {
                 return expressionContainsPotentialSuspension(
                         test.value(), seen);
             }
+            if (expr instanceof Ast.CaptureExpr capture) {
+                return expressionContainsPotentialSuspension(capture.value(), seen);
+            }
             if (expr instanceof Ast.CastExpr cast) {
                 return expressionContainsPotentialSuspension(
                         cast.value(), seen);
@@ -3027,13 +3030,14 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.IfBranch branch = conditional.branches().get(index);
+            Env conditionEnv = new Env(env);
             evalSuspendableCondition(
                     task,
                     branch.condition(),
-                    env,
+                    conditionEnv,
                     (t, condition) -> {
                         if (condition.matched()) {
-                            Env branchEnv = new Env(env);
+                            Env branchEnv = new Env(conditionEnv);
                             condition.bindings().forEach(
                                     (name, value) ->
                                             branchEnv.define(
@@ -4370,6 +4374,15 @@ public final class OresEvalRootNode extends RootNode {
                                                 new LinkedHashMap<>()),
                                         null);
                             });
+                    return;
+                }
+
+                if (expr instanceof Ast.CaptureExpr capture) {
+                    evalSuspendableExpr(task, capture.value(), env, (t, value, failure) -> {
+                        if (failure != null) { continuation.accept(t, null, failure); return; }
+                        env.define(capture.name(), value, Ast.BindingKind.LET);
+                        continuation.accept(t, value, null);
+                    });
                     return;
                 }
 
@@ -6571,9 +6584,10 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.ContinueStmt) throw new ContinueSignal();
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
-                    ConditionResult condition = evalCondition(branch.condition(), env);
+                    Env conditionEnv = new Env(env);
+                    ConditionResult condition = evalCondition(branch.condition(), conditionEnv);
                     if (condition.matched()) {
-                        Env branchEnv = new Env(env);
+                        Env branchEnv = new Env(conditionEnv);
                         condition.bindings().forEach((name, value) ->
                                 branchEnv.define(name, value, Ast.BindingKind.VAL));
                         executeBlock(
@@ -7851,6 +7865,11 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.PatternTestExpr test) {
                 Object value = eval(test.value(), env);
                 return patternMatches(test.pattern(), value, new LinkedHashMap<>());
+            }
+            if (expr instanceof Ast.CaptureExpr capture) {
+                Object value = eval(capture.value(), env);
+                env.define(capture.name(), value, Ast.BindingKind.LET);
+                return value;
             }
             if (expr instanceof Ast.CastExpr cast) {
                 Object value = eval(cast.value(), env);

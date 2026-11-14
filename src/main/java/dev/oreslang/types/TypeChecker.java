@@ -2354,9 +2354,12 @@ public final class TypeChecker {
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
             for (Ast.IfBranch branch : conditional.branches()) {
                 env.restoreInitialization(before);
-                requireAssignable(typeOfCondition(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
-                Env branchEnv = new Env(env);
-                defineConditionBindings(branch.condition(), branchEnv, env, generics, self);
+                dev.oreslang.ast.ConditionCaptures.validate(branch.condition());
+                Env conditionEnv = new Env(env);
+                conditionEnv.conditionCaptures = true;
+                requireAssignable(typeOfCondition(branch.condition(), conditionEnv, generics, self), Primitive.BOOL, "if condition");
+                Env branchEnv = new Env(conditionEnv);
+                defineConditionBindings(branch.condition(), branchEnv, conditionEnv, generics, self);
                 checkBlock(branch.body(), branchEnv, generics, expectedReturn, self);
                 exits.add(env.initializationSnapshot());
             }
@@ -2870,6 +2873,18 @@ public final class TypeChecker {
             Type subject = deref(typeOf(test.value(), env, generics, self));
             checkPattern(test.pattern(), subject, new Env(env), generics, self);
             return Primitive.BOOL;
+        }
+        if (expr instanceof Ast.CaptureExpr capture) {
+            if (!env.conditionCaptures) {
+                throw new IllegalArgumentException("as let captures are only allowed on unconditional evaluation paths in if/while conditions");
+            }
+            Type ready = env.captureTypes.get(capture);
+            if (ready != null) return ready;
+            Type value = typeOf(capture.value(), env, generics, self);
+            if (value == Primitive.VOID) throw new IllegalArgumentException("cannot capture a void expression");
+            env.define(capture.name(), value, Ast.BindingKind.LET);
+            env.captureTypes.put(capture, value);
+            return value;
         }
         if (expr instanceof Ast.CastExpr cast) {
             requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
@@ -9693,6 +9708,8 @@ public final class TypeChecker {
         } else if (expression instanceof Ast.PatternTestExpr test) {
             rejectStaticClassGenericReferences(test.value(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(test.pattern(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.CaptureExpr capture) {
+            rejectStaticClassGenericReferences(capture.value(), classGenerics, klass, method);
         } else if (expression instanceof Ast.CastExpr cast) {
             rejectStaticClassGenericReferences(cast.value(), classGenerics, klass, method);
             rejectStaticClassGenericReference(cast.targetType(), classGenerics, klass, method);
@@ -11237,6 +11254,8 @@ public final class TypeChecker {
 
     private static final class Env {
         private final Env parent;
+        private boolean conditionCaptures;
+        private final IdentityHashMap<Ast.CaptureExpr, Type> captureTypes = new IdentityHashMap<>();
         private final boolean descendantsNonLexical;
         private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();

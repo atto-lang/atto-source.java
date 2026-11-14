@@ -558,25 +558,37 @@ public final class OwnershipChecker {
         if (stmt instanceof Ast.IfStmt conditional) {
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            Map<VarState, StateSnapshot> falsePath = base;
 
             for (Ast.IfBranch branch : conditional.branches()) {
-                restoreState(base);
-                checkExpr(branch.condition(), scope, false);
-                Scope branchScope = new Scope(scope);
-                defineConditionAliases(branch.condition(), branchScope, scope);
+                restoreState(falsePath);
+                Scope conditionScope = new Scope(scope);
+                checkExpr(branch.condition(), conditionScope, false);
+                Map<VarState, StateSnapshot> afterCondition = stateSnapshot(scope);
+                Map<VarState, StateSnapshot> nextFalsePath = new IdentityHashMap<>();
+                // The condition ran on both paths; local loans expire on the false
+                // edge, but moves persist into the following elif/else.
+                for (VarState state : falsePath.keySet()) {
+                    StateSnapshot previous = falsePath.get(state);
+                    nextFalsePath.put(state, new StateSnapshot(afterCondition.get(state).moved(),
+                            previous.immutableBorrows(), previous.mutableBorrowed()));
+                }
+                Scope branchScope = new Scope(conditionScope);
+                defineConditionAliases(branch.condition(), branchScope, conditionScope);
                 checkBlock(branch.body(), branchScope, returnType);
                 branchScope.close();
-                // A branch that always returns never reaches the code after
-                // this statement, so its moves must not poison later uses.
+                conditionScope.close();
+                // Current main excludes definitely-returning arms from the join.
                 if (!definitelyReturns(branch.body())) exits.add(stateSnapshot(scope));
+                falsePath = nextFalsePath;
             }
 
-            restoreState(base);
+            restoreState(falsePath);
             if (!conditional.elseBody().isEmpty()) {
                 checkBlock(conditional.elseBody(), scope, returnType);
                 if (!definitelyReturns(conditional.elseBody())) exits.add(stateSnapshot(scope));
             } else {
-                exits.add(base); // condition may be false with no else
+                exits.add(falsePath); // condition may be false with no else
             }
 
             mergeBranchState(base, exits);
@@ -1267,6 +1279,14 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.PatternTestExpr test) {
             checkExpr(test.value(), scope, false);
             return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+        }
+        if (expr instanceof Ast.CaptureExpr capture) {
+            if (!scope.captureBindings.containsKey(capture)) {
+                checkBinding(new Ast.BindingStmt(Ast.BindingKind.LET, null,
+                        capture.name(), capture.value(), false), scope);
+                scope.captureBindings.put(capture, Boolean.TRUE);
+            }
+            return checkExpr(new Ast.NameExpr(capture.name()), scope, consuming);
         }
         if (expr instanceof Ast.CastExpr cast) {
             ValueInfo source = checkExpr(cast.value(), scope, consuming);
@@ -2813,6 +2833,10 @@ public final class OwnershipChecker {
     }
 
     private VarState invocationLoanRoot(Ast.Expr expression, Scope scope) {
+        if (expression instanceof Ast.CaptureExpr capture) {
+            checkExpr(capture, scope, false);
+            return invocationLoanRoot(new Ast.NameExpr(capture.name()), scope);
+        }
         Ast.Expr place = null;
         if (expression instanceof Ast.UnaryExpr unary
                 && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
@@ -2843,6 +2867,10 @@ public final class OwnershipChecker {
             Scope scope,
             String callable,
             int position) {
+        if (param.type().isBorrow() && arg instanceof Ast.CaptureExpr capture) {
+            checkExpr(capture, scope, false);
+            arg = new Ast.NameExpr(capture.name());
+        }
         if (arg instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("borrow")
                 && runtime.arguments().size() == 1) {
             arg = new Ast.UnaryExpr("&", runtime.arguments().getFirst());
@@ -3029,6 +3057,10 @@ public final class OwnershipChecker {
      * as strict as a precise projected loan. Linked layouts keep every rule.
      */
     private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope, boolean wholeOwnerForUnlinked) {
+        if (operand instanceof Ast.CaptureExpr capture) {
+            checkExpr(capture, scope, false);
+            return borrowPlace(new Ast.NameExpr(capture.name()), scope, wholeOwnerForUnlinked);
+        }
         if (operand instanceof Ast.NameExpr name) {
             VarState owner = borrowOwner(operand, scope);
             return new BorrowPlace(owner, owner.type);
@@ -3375,13 +3407,13 @@ public final class OwnershipChecker {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
+                    Set<String> branchLocals = new HashSet<>(blockLocals);
                     scanConditionExpr(
                             b.condition(),
-                            blockLocals,
+                            branchLocals,
                             outer,
                             recursiveBinding,
                             captures);
-                    Set<String> branchLocals = new HashSet<>(blockLocals);
                     collectConditionBindingNames(b.condition(), branchLocals);
                     scanStatements(b.body(), branchLocals, outer, recursiveBinding, captures);
                 }
@@ -3559,6 +3591,9 @@ public final class OwnershipChecker {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.PatternTestExpr e) {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.CaptureExpr e) {
+            scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
+            locals.add(e.name());
         } else if (expr instanceof Ast.CastExpr e) {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.BinaryExpr e) {
@@ -3663,12 +3698,14 @@ public final class OwnershipChecker {
 
     private void defineConditionAliases(Ast.Expr condition, Scope destination, Scope source) {
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
-            VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name()) : null;
+            VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name())
+                    : test.value() instanceof Ast.CaptureExpr capture ? source.lookup(capture.name()) : null;
             defineRefinementAlias(test.binding(), test.targetType(), original, destination);
             return;
         }
         if (condition instanceof Ast.PatternTestExpr test) {
-            VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name()) : null;
+            VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name())
+                    : test.value() instanceof Ast.CaptureExpr capture ? source.lookup(capture.name()) : null;
             Ast.TypeRef type = original == null ? Ast.TypeRef.inferred() : original.type;
             definePatternAliases(test.pattern(), type, original, destination);
             return;
@@ -3915,6 +3952,9 @@ public final class OwnershipChecker {
         if (receiver instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             if (state != null) type = state.type;
+        } else if (receiver instanceof Ast.CaptureExpr capture) {
+            VarState state = scope.lookup(capture.name());
+            type = state == null ? syntacticType(capture.value(), scope) : state.type;
         } else if (receiver instanceof Ast.NewExpr created) type = created.type();
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
@@ -4083,6 +4123,7 @@ public final class OwnershipChecker {
     }
 
     private Ast.TypeRef syntacticType(Ast.Expr expr, Scope scope) {
+        if (expr instanceof Ast.CaptureExpr capture) return syntacticType(capture.value(), scope);
         if (expr instanceof Ast.LiteralExpr literal) return inferLiteralType(literal.value());
         if (expr instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
@@ -5449,6 +5490,7 @@ public final class OwnershipChecker {
         private final Scope parent;
         private final boolean descendantsNonLexical;
         private final Map<String,VarState> locals = new LinkedHashMap<>();
+        private final java.util.IdentityHashMap<Ast.CaptureExpr, Boolean> captureBindings = new java.util.IdentityHashMap<>();
         private final Map<String,Ast.TypeRef> inferredTypes = new LinkedHashMap<>();
         private void defineInferredType(String name, Ast.TypeRef type) {
             if (lookupInferredType(name) != null || inferredTypes.putIfAbsent(name, type) != null) {
