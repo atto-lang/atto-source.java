@@ -92,6 +92,7 @@ public final class OwnershipChecker {
     /** Called only after TypeChecker has proved which short forms create aliases. */
     public static Ast.Program check(
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        UnloweredParameterPresenceGuard.check(program);
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
         checker.publishTaskAdmissions();
@@ -110,10 +111,12 @@ public final class OwnershipChecker {
         if (linkedClasses == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
+        UnloweredParameterPresenceGuard.check(program);
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
+            if (declaration != null) UnloweredParameterPresenceGuard.checkClass(declaration);
             if (name == null || declaration == null
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked ownership class: " + name);
@@ -3384,6 +3387,7 @@ public final class OwnershipChecker {
             boolean allowActorSelfCapture,
             boolean deferredCleanup,
             boolean immediatePipelineStage) {
+        UnloweredParameterPresenceGuard.checkParameters(lambda.parameters(), "lambda");
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);

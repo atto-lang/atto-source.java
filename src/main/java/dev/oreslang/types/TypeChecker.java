@@ -234,10 +234,12 @@ public final class TypeChecker {
      */
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program, boolean strictAttoEquality) {
         rejectUnloweredCheckedEffects(program);
+        UnloweredParameterPresenceGuard.check(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredCheckedEffects(program);
+        UnloweredParameterPresenceGuard.check(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
@@ -293,16 +295,20 @@ public final class TypeChecker {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
         rejectUnloweredCheckedEffects(program);
+        UnloweredParameterPresenceGuard.check(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
             rejectUnloweredCheckedClassEffects(linked);
+            UnloweredParameterPresenceGuard.checkClass(linked);
         }
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
             rejectUnloweredCheckedInterfaceEffects(linked);
+            UnloweredParameterPresenceGuard.checkInterface(linked);
         }
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredCheckedEffects(program);
+        UnloweredParameterPresenceGuard.check(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
@@ -5256,6 +5262,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("unknown anonymous aggregate kind " + object.kind());
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
+            UnloweredParameterPresenceGuard.checkParameters(lambda.parameters(), "lambda");
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical, !nonLexical);
             List<Type> parameters = new ArrayList<>();
@@ -6249,6 +6256,7 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+        UnloweredParameterPresenceGuard.checkParameters(lambda.parameters(), "lambda");
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }

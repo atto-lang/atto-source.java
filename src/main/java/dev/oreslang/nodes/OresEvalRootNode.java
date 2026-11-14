@@ -76,6 +76,7 @@ public final class OresEvalRootNode extends RootNode {
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
         super(language);
+        dev.oreslang.types.UnloweredParameterPresenceGuard.check(program);
         this.program = Objects.requireNonNull(program, "checked Oreslang program");
         this.codeUnitId = codeUnitId;
         this.taskAdmissionEpoch =
