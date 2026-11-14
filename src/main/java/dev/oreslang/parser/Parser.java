@@ -1689,7 +1689,8 @@ public final class Parser {
         }
         consume(RPAREN, "expected ')' after typed receiver");
         String name = parseMethodName();
-        if (name.equals("new") || name.equals("constructor") || name.equals("on_start")) {
+        if (name.equals("new") || name.equals("constructor")
+                || name.equals("init") || name.equals("on_start")) {
             throw error(previous(), "external mtd cannot declare constructors, factories or lifecycle hooks");
         }
         List<String> generics = parseGenericParameters();
