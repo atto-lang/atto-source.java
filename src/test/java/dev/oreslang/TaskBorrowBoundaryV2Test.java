@@ -272,9 +272,11 @@ final class TaskBorrowBoundaryV2Test {
                 """, "moved", "capture", "used");
     }
 
+    // Mutex<T> is confined to its creating actor/execution domain: the runtime
+    // rejects any use of a moved Mutex in a task, so the checker rejects the move.
     @Test
-    void uniquelyOwnedMutexMayMoveWhenPayloadIsSend() {
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+    void mutexStaysInItsCreatingDomainEvenWhenUniquelyOwned() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 pub async fnc main(): void {
                   let Mutex<int> mutex = Mutex.new(41);
                   let Future<void> child = task {
@@ -345,13 +347,30 @@ final class TaskBorrowBoundaryV2Test {
     void sendSafeCapabilityMayMoveThroughOwnedClass() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(BOX + """
                 define class SendWrapper as
+                  pub let Box lock;
+                  constructor(Box lock) { self.lock = lock; }
+                end
+                pub async fnc main(): void {
+                  let SendWrapper wrapper = new SendWrapper(new Box());
+                  let Future<int> child = task {
+                    let SendWrapper moved = wrapper;
+                    return 1;
+                  };
+                  stdio.stdout.write(await child);
+                  return;
+                }
+                """));
+
+        // The same wrapper holding an actor-local Mutex must not move.
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(BOX + """
+                define class MutexWrapper as
                   pub let Mutex<Box> lock;
                   constructor(Mutex<Box> lock) { self.lock = lock; }
                 end
                 pub async fnc main(): void {
-                  let SendWrapper wrapper = new SendWrapper(Mutex.new(new Box()));
+                  let MutexWrapper wrapper = new MutexWrapper(Mutex.new(new Box()));
                   let Future<int> child = task {
-                    let SendWrapper moved = wrapper;
+                    let MutexWrapper moved = wrapper;
                     return 1;
                   };
                   stdio.stdout.write(await child);
@@ -411,7 +430,8 @@ final class TaskBorrowBoundaryV2Test {
 
         assertFalse((Boolean) gate.invoke(checker, one.apply("Box")));
         assertFalse((Boolean) gate.invoke(checker, one.apply("RefCell")));
-        assertFalse((Boolean) gate.invoke(checker, one.apply("Mutex")));
+        assertTrue((Boolean) gate.invoke(checker, one.apply("Mutex")),
+                "Mutex<T> is confined to its creating actor/execution domain");
         assertFalse((Boolean) gate.invoke(checker, one.apply("RwLock")));
         assertFalse((Boolean) gate.invoke(checker, one.apply("Arc")));
         assertFalse((Boolean) gate.invoke(checker, one.apply("Weak")));
@@ -760,5 +780,94 @@ final class TaskBorrowBoundaryV2Test {
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void independentTaskSharesOneSendProofBudgetAcrossAllCaptures()
+            throws Exception {
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var checkerConstructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        checkerConstructor.setAccessible(true);
+        var checker = checkerConstructor.newInstance(program, java.util.Map.of());
+
+        // Exercise the exact internal per-task proof budget used by the
+        // real TaskExpr path. It must NOT be reset for each captured type.
+        Class<?> budgetClass = java.util.Arrays.stream(
+                        OwnershipChecker.class.getDeclaredClasses())
+                .filter(type -> type.getSimpleName().equals("TaskCaptureProofBudget"))
+                .findFirst().orElseThrow();
+        var budgetConstructor = budgetClass.getDeclaredConstructor();
+        budgetConstructor.setAccessible(true);
+        var budget = budgetConstructor.newInstance();
+        var exhausted = budgetClass.getDeclaredField("exhausted");
+        exhausted.setAccessible(true);
+        var forbidden = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability",
+                dev.oreslang.ast.Ast.TypeRef.class, budgetClass);
+        forbidden.setAccessible(true);
+        assertFalse(exhausted.getBoolean(budget));
+
+        var scalar = dev.oreslang.ast.Ast.TypeRef.simple("int");
+        for (int i = 0; i < 4096; i++) {
+            assertFalse((Boolean) forbidden.invoke(checker, scalar, budget),
+                    "simple scalar remains Send through the shared visit budget: " + i);
+        }
+        assertFalse(exhausted.getBoolean(budget),
+                "successful proof visits must not report exhaustion");
+        assertTrue((Boolean) forbidden.invoke(checker, scalar, budget),
+                "the next independent capture must fail closed after exhaustion");
+        assertTrue(exhausted.getBoolean(budget),
+                "the compiler must distinguish exhausted proof from non-Send");
+
+        // A fresh Task gets its own proof budget; another Task's exhausted
+        // traversal must never mutate global Send/Sync/Share decisions.
+        var fresh = budgetConstructor.newInstance();
+        assertFalse((Boolean) forbidden.invoke(checker, scalar, fresh));
+        assertFalse(exhausted.getBoolean(fresh));
+    }
+
+    @Test
+    void independentlyScheduledTaskCaptureProofHasGlobalTypeRefDepthAndNodeBudget()
+            throws Exception {
+        var program = Parser.parse("pub fnc main(): void { return; }");
+        var constructor = OwnershipChecker.class.getDeclaredConstructor(
+                dev.oreslang.ast.Ast.Program.class, java.util.Map.class);
+        constructor.setAccessible(true);
+        var checker = constructor.newInstance(program, java.util.Map.of());
+        var forbidden = OwnershipChecker.class.getDeclaredMethod(
+                "forbiddenTaskCapability", dev.oreslang.ast.Ast.TypeRef.class);
+        forbidden.setAccessible(true);
+
+        var intType = dev.oreslang.ast.Ast.TypeRef.simple("int");
+        assertFalse((Boolean) forbidden.invoke(checker, intType),
+                "ordinary int remains Send for capture");
+
+        // This is not a deeply recursive Java object constructor: the
+        // compiler's TypeRef traversal itself must reject without overflowing.
+        var deeplyNested = intType;
+        for (int i = 0; i < 10_000; i++) {
+            deeplyNested = new dev.oreslang.ast.Ast.TypeRef(
+                    "Option", java.util.List.of(deeplyNested), false);
+        }
+        assertTrue((Boolean) forbidden.invoke(checker, deeplyNested),
+                "10,000 nested Option wrappers cannot exhaust the compiler stack");
+
+        var ordinary = intType;
+        for (int i = 0; i < 16; i++) {
+            ordinary = new dev.oreslang.ast.Ast.TypeRef(
+                    "Option", java.util.List.of(ordinary), false);
+        }
+        assertFalse((Boolean) forbidden.invoke(checker, ordinary),
+                "ordinary nested Send-safe capture is not needlessly rejected");
+
+        var wide = dev.oreslang.ast.Ast.TypeRef.tupleType(
+                java.util.Collections.nCopies(5000, intType));
+        assertTrue((Boolean) forbidden.invoke(checker, wide),
+                "nominal and tuple children must share one proof-visit budget");
+        var small = dev.oreslang.ast.Ast.TypeRef.tupleType(
+                java.util.Collections.nCopies(16, intType));
+        assertFalse((Boolean) forbidden.invoke(checker, small),
+                "small fully checked tuple is Send");
     }
 }

@@ -101,7 +101,7 @@ public final class MixedSourceUnit {
         PrimaryLanguage primary;
         if (lower.endsWith(".atto") || lower.endsWith(".ores")) primary = PrimaryLanguage.ORES;
         else if (lower.endsWith(".java")) primary = PrimaryLanguage.JAVA;
-        else throw new IllegalArgumentException("mixed source must use .atto, .ores, or .java: " + fileName);
+        else throw new IllegalArgumentException("mixed source must use .atto, .ores or .java: " + fileName);
 
         if (primary == PrimaryLanguage.ORES) {
             return parseOresPrimary(unitId, raw);
