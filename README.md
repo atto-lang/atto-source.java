@@ -54,6 +54,12 @@ The first implementation is developed on a feature branch and will land with an 
 
 Native inbound HTTP capabilities and actor-owned request transfer are documented in [docs/HTTP_SERVER.md](docs/HTTP_SERVER.md).
 
+The [Java/.NET host import, native AOT and actor-memory acceptance contract](docs/JAVA_DOTNET_AOT_ACTOR_HEAPS_V0.md)
+distinguishes existing trusted Java library imports, the bounded experimental
+`import dotnet` path, true native binaries, per-actor unsigned-32 offsets,
+guest borrow checking, and measurable near-zero-GC goals. Native Image host
+AOT and Epsilon host-only tests are **not** full guest AOT or GC-free proofs.
+
 The implemented actor scheduling guarantees, native descriptor-transfer experiment,
 and remaining physical-isolation work are tracked in
 [Actor physical boundaries](docs/runtime/actor-physical-boundaries.md).
