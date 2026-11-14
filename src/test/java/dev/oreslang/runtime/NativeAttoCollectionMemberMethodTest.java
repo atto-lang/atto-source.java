@@ -179,7 +179,7 @@ final class NativeAttoCollectionMemberMethodTest {
                   return;
                 }
                 """;
-        assertEquals("4\\n5\\n10", run(source, "nested-read-loan.atto"));
+        assertEquals("4\n5\n10", run(source, "nested-read-loan.atto"));
     }
 
     @Test
