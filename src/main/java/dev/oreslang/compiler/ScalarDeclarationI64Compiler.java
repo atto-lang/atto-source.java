@@ -55,8 +55,17 @@ public final class ScalarDeclarationI64Compiler {
             return new LocalVirtualActorI64(domain, name, identities, mailboxCapacity,
                     ignored -> {
                         var state = new ScalarStateContainer(initial, 1);
-                        return message -> state.tryAddChecked(message).orElseThrow(
-                                () -> new IllegalStateException("actor state access unavailable"));
+                        return new LocalVirtualActorI64.Turn() {
+                            @Override public void on_message(long message) {
+                                state.tryAddChecked(message).orElseThrow(
+                                        () -> new IllegalStateException("actor state access unavailable"));
+                            }
+                            @Override public void close() {
+                                state.close();
+                                if (!state.readyForReclamation())
+                                    throw new IllegalStateException("actor state lease not quiescent");
+                            }
+                        };
                     }, control);
         }
     }
@@ -77,7 +86,8 @@ public final class ScalarDeclarationI64Compiler {
         }
         Token word(String spelling) {
             Token token = current();
-            if (!token.lexeme().equals(spelling)) throw invalid("expected '" + spelling + "'");
+            if (token.type() != Token.Type.IDENT || !token.lexeme().equals(spelling))
+                throw invalid("expected contextual keyword '" + spelling + "'");
             cursor++;
             return token;
         }
@@ -100,7 +110,7 @@ public final class ScalarDeclarationI64Compiler {
 
     public static Declaration compile(String source) {
         Objects.requireNonNull(source, "source");
-        if (source.getBytes(StandardCharsets.UTF_8).length > 8192)
+        if (source.length() > 8192 || source.getBytes(StandardCharsets.UTF_8).length > 8192)
             throw new IllegalArgumentException("SCALAR_DECLARATION_UNSUPPORTED: source budget exceeded");
         List<Token> tokens = new Lexer(source).scan();
         if (tokens.size() > 256)
