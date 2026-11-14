@@ -3168,8 +3168,10 @@ public final class Parser {
         bindings.add(head.binding());
         Ast.Expr condition = head.predicate();
 
-        // Brace form still obeys the universal Oreslang invariant: every if closes with fi.
-        // Braces delimit branch bodies; they never replace the structural terminator.
+        // Braces close braced if/elif/else arms. No 'fi' follows a braced if.
+        // Keyword-delimited 'then' arms below require a single final 'fi'.
+        // Do not optionally consume FI here: that would steal the closing FI
+        // from an enclosing keyword-delimited conditional.
         if (check(LBRACE)) {
             branches.add(new Ast.IfBranch(condition, parseBlock()));
             while (matchConditionalBranch()) {
@@ -3181,7 +3183,6 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseBlock();
-            consume(FI, "expected 'fi' to close if");
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 

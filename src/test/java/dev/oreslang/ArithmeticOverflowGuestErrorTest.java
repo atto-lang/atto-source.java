@@ -46,7 +46,7 @@ final class ArithmeticOverflowGuestErrorTest {
                       return 42;
                     } else {
                       return 1;
-                    } fi
+                    }
                   } finally {
                   }
                 }
@@ -81,10 +81,10 @@ final class ArithmeticOverflowGuestErrorTest {
                                 return 42;
                               } else {
                                 return 2;
-                              } fi
+                              }
                             } else {
                               return 1;
-                            } fi
+                            }
                           } finally {
                           }
                         }
@@ -124,7 +124,7 @@ final class ArithmeticOverflowGuestErrorTest {
                       return 42;
                     } else {
                       return 1;
-                    } fi
+                    }
                   } finally {
                   }
                 }
@@ -157,7 +157,7 @@ final class ArithmeticOverflowGuestErrorTest {
                           return 42;
                         } else {
                           return 1;
-                        } fi
+                        }
                       } finally {
                       }
                     }
@@ -196,10 +196,10 @@ final class ArithmeticOverflowGuestErrorTest {
                             return 42;
                           } else {
                             return 2;
-                          } fi
+                          }
                         } else {
                           return 1;
-                        } fi
+                        }
                       } finally {
                       }
                     }
@@ -256,7 +256,7 @@ final class ArithmeticOverflowGuestErrorTest {
                       return safe_tail(-40);
                     } else {
                       return 1;
-                    } fi
+                    }
                   } finally {
                   }
                 }

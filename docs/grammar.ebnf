@@ -228,9 +228,8 @@ if_stmt         = "if" condition_head
                     [ "else" block ]
                   | [ ";" ] ( "then" | deprecated_if_do ) { statement }
                     { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement } }
-                    [ "else" { statement } ]
-                  )
-                  "fi" ;
+                    [ "else" { statement } ] "fi"
+                  ) ;
 conditional_branch
                 = "elif"
                 | "elseif"                 (* accepted alias *)
