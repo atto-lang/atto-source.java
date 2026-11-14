@@ -135,3 +135,38 @@ mvn -Dtest=ActorSourceTearDownTest,ActorSourceLifecycleGateTest,ActorReceiveQuie
 Running this command requires the actual source checkout, its JDK/GraalVM
 dependencies and a functioning local/approved CI runner. Host-only
 receiver-gate tests alone are not proof of compiled `.atto` concurrency.
+
+## Additional STOP/init/quiescence audit (2026-11-14)
+
+Source startup has **two** STOP races: STOP can win between the outer
+`!stopped` check and `beginInit`, or while the initialized state is
+being produced before `commitInit`. Both now return the dedicated runtime
+`ActorSourceLifecycleGate.InitializationStopped` result, mapped to
+`ActorCancellationSignal` only at the trusted source startup boundary.
+No arbitrary guest `IllegalStateException` is reinterpreted as STOP.
+Non-STOP failures, including a guest state ownership accessor that throws
+`IllegalStateException`, retain their failure classification.
+
+A separate `initializationActive` pin survives STOP until the source
+initializer physically returns or throws and the runtime invokes
+`failInit()`. The gate refuses physical `close()` before the trusted
+STOP seal, while initialization is still active, or while an approved
+graceful `tear_down()` has not finished. `readyForRetirement()` exposes
+these combined invariants to `ActorRuntime.finalizeStopLocked()` **before**
+the runtime publishes `finalized=true`. Receive and teardown pins
+remain separately required.
+
+Tests have been updated for the stronger lifecycle phases, including
+STOP-before-begin, STOP-during-init, malformed ownership state, duplicate
+commit, premature teardown, and finalizer readiness. These full project
+JUnit tests remain **NOT_EXECUTED** until the JDK25 runner or an approved
+local source checkout is available.
+
+An isolated JDK21 `--release 21 -Xlint:all -Werror` smoke copied the
+**byte-exact current gate blob** `6d5cb47674877f1ae22de3b35c26359c0d91b406`,
+verified with `git hash-object`. The local executable harness passed
+1,000 two-virtual-carrier STOP races, 1,000 STOP-during-initializer
+cases, and 1,000 malformed state-accessor failures. These are gate
+tests using minimal external `ActorRuntime` stubs; they do **not**
+constitute compiled `.atto` actor execution, full Maven JUnit, or
+five-backend parity.
