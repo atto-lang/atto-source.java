@@ -121,6 +121,13 @@ public final class NativeHttp implements AutoCloseable {
     static int operationFailureStatus(Throwable failure, boolean requestBodyRead) {
         if ("body too large".equals(failure.getMessage())) return 413;
         if (requestBodyRead && failure instanceof IOException) return 400;
+        // Strict UTF-8 decoding in bodyText() wraps CharacterCodingException.
+        // This is malformed client payload, not an internal server error.
+        // Both the request-body boundary and the decoder's typed cause must
+        // match, so unrelated handler failures cannot masquerade as HTTP 400.
+        if (requestBodyRead && failure instanceof IllegalArgumentException
+                && "invalid UTF-8".equals(failure.getMessage())
+                && failure.getCause() instanceof CharacterCodingException) return 400;
         return 500;
     }
 

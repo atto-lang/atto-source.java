@@ -172,6 +172,18 @@ final class NativeHttpFramingAdmissionTest {
                 "response-side I/O failures must not be disguised as client framing errors");
         assertEquals(413, NativeHttp.operationFailureStatus(
                 new IllegalArgumentException("body too large"), true));
+        IllegalArgumentException invalidUtf8 = new IllegalArgumentException(
+                "invalid UTF-8", new java.nio.charset.MalformedInputException(1));
+        assertEquals(400, NativeHttp.operationFailureStatus(invalidUtf8, true),
+                "strict UTF-8 failure from request-body decoding is a client error");
+        assertEquals(500, NativeHttp.operationFailureStatus(invalidUtf8, false),
+                "response-side failures cannot be reclassified as request errors");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException("invalid UTF-8"), true),
+                "a matching message without a typed decoder cause is not enough");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException("invalid UTF-8",
+                        new IllegalStateException("unrelated")), true));
         assertEquals(500, NativeHttp.operationFailureStatus(
                 new IllegalStateException("handler failure"), true));
     }
