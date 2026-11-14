@@ -9865,6 +9865,15 @@ public final class ActorRuntime implements AutoCloseable {
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
                 sealing = true;
+                // Runtime-only source ingress is revoked at the same STOP
+                // linearization point as mailbox admission, not at eventual
+                // physical finalization. A blocked initializer cannot commit
+                // READY after STOP wins; only an already-initialized graceful
+                // path retains the single teardown permit.
+                if (sourceLifecycleGate != null) {
+                    sourceLifecycleGate.sealStop(gracefulTeardownPending
+                            && !gracefulTeardownRevoked);
+                }
                 // STOP invalidates ordinary wake receipts before draining the
                 // queue; already-admitted SourceTask cleanup retains authority.
                 continuationLedger.sealOrdinary();
