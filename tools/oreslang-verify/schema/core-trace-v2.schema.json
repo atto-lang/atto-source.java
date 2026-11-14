@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oreslang.dev/analysis/core-trace-v2.schema.json",
+  "title": "Oreslang runtime core event safety trace v2 (proposed protocol)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "complete",
+    "capacity",
+    "events"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2.0.0"
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "capacity": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "spawn"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "terminate"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "io_complete"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor",
+              "message_id"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "admit"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              },
+              "message_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor",
+              "message_id"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "receive"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              },
+              "message_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor",
+              "message_id"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "discard"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              },
+              "message_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor",
+              "target",
+              "message_id"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "send"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              },
+              "target": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              },
+              "message_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor",
+              "worker"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "acquire"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              },
+              "worker": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor",
+              "worker"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "release"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              },
+              "worker": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor",
+              "worker"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "suspend"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              },
+              "worker": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "seq",
+              "kind",
+              "actor",
+              "worker"
+            ],
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "const": "resume"
+              },
+              "actor": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              },
+              "worker": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,80}$"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

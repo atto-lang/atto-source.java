@@ -4,7 +4,11 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 ## Files, modules, and imports
 
-A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+A source file may begin with an optional, flat, compile-time `namespace name;` declaration. The source namespace identifies the source unit for compiler metadata and ABI invalidation; it is **not** a runtime value, a type-only declaration container, an import alias, or a replacement for the physical source-unit identity. It does not grant access to private declarations, and cross-file imports still require explicit paths and selectors. Dotted/nested source namespaces are not part of the current syntax.
+
+A source file may contain multiple named modules. A module owns declarations and is itself a runtime-qualified value scope: exported members are accessed through the module name, such as `math.add(1, 2)`. Modules may expose functions, classes, bindings, and module state; type names and value names are checked in their respective declaration namespaces. Modules are flat and cannot contain other modules. The implementation-reserved name `__root__` represents file-root declarations and cannot be declared or imported as a module.
+
+A source namespace does **not** imply that all backend implementations can link or execute it. In particular, the native LLVM backend currently fails closed on runtime namespace use and on linked namespace/type identities; Java/Graal support must not be advertised as cross-backend parity.
 
 ```ores
 define module math
@@ -104,6 +108,43 @@ specific sequencing relationship *between* two init hooks in the same cycle,
 that relationship should be made explicit in application code rather than
 inferred from the import edges.
 
+## Compile-time-only forward type declarations (v1 admission slice)
+
+`declare` is contextual at the start of a file-root or module declaration.
+Only `type`, `trait`, and `interface` support forward signatures:
+
+```ores
+declare type UserId;
+define type UserId = int;
+
+declare pub trait Printable<T>;
+define pub trait Printable<T> as
+  fnc print(T value) => void;
+end
+
+declare pub interface Named;
+define pub interface Named as
+  name: String;
+end
+```
+
+These forward signatures **do not** create runtime values, constructors,
+reflection descriptors, or executable AST nodes. They merely authorize a
+same-file, **same-scope** reference to a definition that must also be present in
+the compilation unit. The parser rejects an unresolved forward, duplicate
+forward, mismatched type/trait/interface kind, visibility changes in either
+direction, generic parameter mismatches and a type declaration resolved to a
+class or other value declaration.
+
+Do not use `declare class`, `declare actor`, `declare enum`, `declare model`
+or arbitrary external declaration stubs. Cross-file unresolved forward
+declarations and ABI import/export signatures are **not supported** by this
+slice; a different source module does not complete a declaration. Existing
+concrete `define` forms and runtime type/value distinction remain unchanged.
+
+This is an initial **parser-enforced** capability. It is not proof of
+cross-backend compiler parity or first-class runtime type objects.
+
 ## Module contracts
 
 Module shape is described by a dedicated `contract`, not by a trait or ordinary type interface. Traits are for structs, classes, actors, and other types; contracts are for modules.
@@ -120,9 +161,22 @@ define module math conforms MathApi as
 end
 ```
 
-Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants as well as functions. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
+Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants, functions, and a public nominal actor declaration. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
 
-A module contract is not a class/struct interface and cannot be implemented by a class or actor.
+```atto
+define contract ActorApi as
+  actor Worker;
+end
+
+define module workers conforms ActorApi as
+  pub define actor Worker as
+  end
+end
+```
+
+The `actor Worker;` requirement is a **static type-presence requirement**, not an actor instance, runtime capability, synthesized handler, or permission to read actor-owned memory. A private, generic, or different-module actor, or an ordinary class named `Worker`, cannot satisfy it. The actor requirement's name also cannot collide with a required field or function, including inherited names. Contract inheritance retains this requirement, and exported ABI fingerprints include it.
+
+A module contract is not a class/struct interface and cannot be implemented by a class or actor. External receiver-method definitions (`mtd name(Actor a)(...)`), `define actor A as a;`, and required receiver method hooks are separately proposed and are **not enabled by this actor-type requirement**. See [actor/module contracts v1](ACTOR_MODULE_CONTRACTS_V1.md).
 
 ## Functions and returns
 
@@ -349,15 +403,35 @@ finite sequence shapes.
 
 ## Bindings
 
-Every local binding is declared as exactly one of:
+Every local binding is declared with a fixed/rebindable permission:
 
-- `const`: compile-time constant; cannot be reassigned.
-- `val`: runtime single-assignment binding; cannot be reassigned.
-- `let`: mutable binding and the only local binding kind that may be reassigned.
+- `const`: fixed readonly local binding; its checked initializer is evaluated
+  eagerly once in lexical order and the binding cannot be reassigned.
+- `val`: runtime single-assignment binding; it cannot be reassigned and keeps
+  its existing referent-mutation permission subject to ownership checks.
+- `let`: rebindable binding and the only local binding kind that may be
+  reassigned.
+
+A proven compile-time-constant value is optimization/type-check metadata, not
+the meaning of the `const` binding keyword. Contexts such as switch/case
+patterns that require a compile-time constant expression check that property
+explicitly.
+
+Primitive type-first locals are immutable by default:
+
+```ores
+int answer = compute();
+bool ready = check_ready();
+```
+
+For the supported scalar subset this has the same fixed readonly binding
+permission as `const int answer = compute();`. Use explicit `let` when
+rebinding is intended.
 
 ```ores
 const max = 10;
-val request_id = process.context_id;
+const request_id = process.context_id;
+val mutable_view = process.mutable_view;
 let retries = 0;
 retries = retries + 1;
 ```
@@ -382,7 +456,7 @@ A bare `_` is a sequence discard pattern: it consumes that array/tuple position 
 [_, _, const final] = (1, 2, 3);
 ```
 
-`_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding; unlike a standalone `const x = ...` declaration, the aggregate being destructured does not need to be a compile-time constant.
+`_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding, matching standalone local `const` binding semantics; neither spelling by itself requires the initializer value to be known at compile time.
 
 Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. If the returned type is a union, destructuring is allowed only when every union alternative supports the requested pattern; each extracted binding receives the union of the corresponding alternative member types. Function-parameter destructuring is intentionally not part of this syntax yet.
 
@@ -530,8 +604,61 @@ stdio.println(user.name);
 ```
 
 Whitespace before the initializer is optional: `infer struct {...}`.
-An inferred struct is permanently readonly: its field set and field values
-cannot be mutated through aliases or mutable bindings.
+
+The canonical anonymous record spelling is `record{...}`:
+
+```ores
+const position = record{x: 3.0, y: 4.0};
+```
+
+Records are closed, field-name-based **structural** values rather than dynamic
+maps. Their field set is statically known, field order does not define type
+identity, and record assignment may use structural row compatibility under the
+normal readonly-capability rules. Plain `record{...}` carries **no type-capture
+intent**: `const Row r = record{...}` requires `Row` to already exist.
+`infer record{...}` remains accepted as a compatibility spelling;
+`infer<T> record{...}` may capture a lexical structural alias, but it does not
+create nominal identity or a runtime type object.
+
+An inferred struct is deliberately different. `infer struct{...}` synthesizes a
+**concrete closed struct shape** from the initializer. Struct compatibility is
+exact-shape rather than record row-width compatibility, and a struct is not
+implicitly erased to a record (or vice versa). The generated type can be
+captured explicitly:
+
+```ores
+const Point p = infer<Point> struct{x: 3.0, y: 4.0};
+```
+
+or with the checked short form when `Point` is otherwise unbound:
+
+```ores
+const Point p = infer struct{x: 3.0, y: 4.0};
+```
+
+The alias is lexical and compile-time only. Existing types, imported names,
+builtins, generics, reserved forward declarations and conflicting definitions
+cannot be silently shadowed. The declaration that *creates* a captured alias is
+a `const` declaration so the type introduction itself is stable; this does not
+make every later value of that captured type immutable.
+
+`infer` determines where the struct type comes from; it is **not** a freeze
+operator. Binding/referent mutability remains independent. A `const` binding
+cannot mutate through the value, while a mutable-referent binding of the same
+captured struct type can:
+
+```ores
+fnc update(): float {
+    const Point seed = infer<Point> struct{x: 3.0, y: 4.0};
+    val Point current = infer struct{x: 5.0, y: 6.0};
+    current.x = 9.0;
+    return current.x;
+}
+```
+
+Host-side `SoaSnapshot` provides independently tested scalar row/column
+snapshots, but it is NOT an Oreslang guest `SoA<T>` or zero-copy GPU/native
+representation. AoS/SoA guest lowering and ownership still require verification.
 
 Static struct keys may be identifiers, reserved member keys such as
 `stop`/`do`/`done`, or strings written with either single or double
@@ -593,6 +720,75 @@ val sameShape: [int, string] = (1, "one");
 A tuple is a product value, not a growable array. Its `size` metadata is
 redundant by design but useful as an ABI/layout assertion; a mismatch with the
 declared positional arity is a compile-time error.
+
+### Computed access on fixed products
+
+Bracket access is also the computed-property form for fixed products. It does
+**not** turn a class, record, struct or tuple into a dynamic map.
+
+- Records and structs use a `string` field key: `value[key]`.
+- Class instances use a `string` key for **instance data fields only**.
+  Methods are never discoverable or callable through `[]`.
+- Tuples use an `int` positional index.
+- A two-slot positional pair is therefore a tuple. Key/value `Entry<K,V>`
+  values are named products with fields `key` and `value`, so their computed
+  access follows record rules rather than tuple rules.
+- A compile-time-fixed string key such as `const key = "x"` or
+  `const string key = "x"` keeps the exact selected field type; a scalar type
+  annotation does not erase the selector proof. CONST aliases of a proven
+  selector keep that precision as well. A literal integer or simple compile-time
+  integer constant such as `const int index = 0` keeps the exact selected tuple
+  slot type, including through CONST aliases.
+- A genuinely dynamic key/index has the union of every field/slot type it can
+  select. It cannot be assigned to a narrower type without an explicit,
+  type-checked narrowing operation.
+- Unknown runtime keys and out-of-range tuple indexes fail at runtime; `[]`
+  does not implicitly return `Option`.
+- Dynamic class access never bypasses visibility. If an arbitrary runtime key
+  could select an inaccessible field, the access is rejected rather than
+  creating a private-field side channel.
+- Class computed access is bounded by the receiver's **static class view**, not
+  by the most-derived runtime object. If a `Parent` reference holds a `Child`,
+  `parent[key]` may select only fields admitted by `Parent`; child-only fields
+  remain inaccessible through that view. The same rule applies to computed
+  writes and inherited parent methods executing on child instances.
+- Structural records are readonly, and tuples are immutable product values.
+  Indexed writes are therefore rejected for both.
+- Concrete structs may be written through `[]` only through a mutable
+  binding/exclusive authority. For a genuinely dynamic key, the assigned value
+  must be valid for **every** possible destination field.
+- Dynamic class writes likewise require every field selectable by the key to be
+  visible, mutable, and compatible with the assigned value.
+- Computed access participates in definite initialization. An exact indexed
+  write can initialize that declared explicit-struct field; a dynamic read is
+  rejected while any field in the closed shape remains uninitialized.
+- Projected borrows through computed aggregate/class/tuple indexes remain
+  fail-closed until path-exclusive loan tracking can prove the selected place.
+  Reading a value does not imply that a borrow of that computed place is safe.
+
+For example:
+
+```ores
+const Point seed = infer<Point> struct{x: 3.0, y: 4.0};
+const key = "x";
+const float x = seed[key];       // exact field type: float
+
+const row = record{x: 3.0, y: "boo"};
+const yKey = "y";
+const string y = row[yKey];      // exact field type: string
+
+fnc lookup({x: float, y: string} row, string key): float | string {
+    return row[key];             // dynamic key => float | string
+}
+
+const pair = tuple(3.0, 4.0);
+const int i = 0;
+const float first = pair[i];     // homogeneous tuple => float
+```
+
+The compiler does not reinterpret the value selected by the key. In particular,
+`row["y"]` above is `"boo"`; it is not `3.0`, and it cannot be assigned
+to `int`.
 
 ## Structural typing and interfaces
 
@@ -813,20 +1009,29 @@ fi
 
 Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
 
-Inline value binding is supported with an explicit boolean predicate:
+Inline captures preserve their initializer value and use ordinary `let` ownership:
 
 ```ores
-if some_call() as let value when value > 0 {
+if is_ready(some_call() as let value) {
   consume(value);
-} fi
-while some_call() as let value when value > 0 {
+fi
+if (some_call() as let value) > 0 then
+  consume(value);
+fi
+while is_ready(some_call() as let value) {
   consume(value);
 }
+if let Some(value) = maybe_call() then
+  consume(value);
+fi
 ```
 
-Each reached initializer is evaluated once. The `if` binding is scoped to its
-predicate and remaining branch chain; a `while` binding is recreated on every
-test, including after `continue`. See [the full contract](VALUE_BOUNDARIES.md).
+Each reached initializer evaluates once. Captures are scoped to that condition
+and matching body, and loops recreate them for every test. The condition is
+bool; capturing does not add truthiness or duplicate ownership. A consuming
+predicate moves its argument; explicitly borrow when the body needs the owner.
+The older `expr as let value when predicate` head remains supported with its
+original remaining-branch-chain scope. See [the full contract](VALUE_BOUNDARIES.md).
 
 ## Exceptions and defer
 
@@ -1186,13 +1391,26 @@ Top-level/module callables use the same **name + exact arity** overload rule. Sa
 
 ## Ternary expressions
 
-The ternary operator is right-associative and lazy in its selected branch:
+The ternary operator is the value-producing conditional form:
 
 ```ores
 fnc find(bool found): Option<int> {
   return found ? Some(42) : None;
 }
 ```
+
+Its condition must have static type `bool`; Oreslang has no integer, pointer,
+string, collection, or object truthiness conversion for ternary conditions.
+The condition is evaluated exactly once and only the selected value arm is
+evaluated at runtime. Both arms are still checked statically for type,
+ownership/borrow, capability, actor-isolation, and definite-initialization
+rules, and their post-states must admit the compiler's branch join.
+
+Ternary is right-associative, so `a ? b : c ? d : e` means
+`a ? b : (c ? d : e)`. Its precedence is below logical OR and above
+assignment. It is the conditional **expression** counterpart to
+statement-only `if ... then ... fi`; an `if` never substitutes for a
+ternary or yields a branch value.
 
 ## Standalone lexical blocks and conditional bodies
 
@@ -1231,6 +1449,20 @@ fi
 ```
 
 The older `do ... fi` spelling remains accepted for source compatibility, but `then ... fi` is canonical for keyword-delimited conditionals.
+
+`if` is a **statement-only** control-flow form. It never yields a value, and the final expression statement in a branch is never an implicit branch result or function return. Consequently, `const y = if ... fi`, `return if ... fi`, and passing an `if` directly as a call argument are syntax errors. Use the lazy `condition ? when_true : when_false` expression for direct value selection. When branch bodies require multiple statements, put the control flow in a callable and use explicit `return` statements; every path of a non-void callable must explicitly return.
+
+```ores
+fnc get_val(bool condition): int {
+  if condition then
+    return 1;
+  else
+    return 2;
+  fi
+}
+
+const y = condition ? a : b;
+```
 
 ## Loops, iterators, and scheduler safepoints
 
@@ -1299,7 +1531,7 @@ Iterator variables are declarations, so every `for ... of ...` header must expli
 
 Bare forms such as `for item of values` are rejected at compile time with `variable used before declared`. `val` is not accepted as a for-of binder; the iterator surface intentionally uses only `const` and `let`.
 
-`const` in a for-of header means that the compiler/runtime initializes a fresh immutable iteration slot on each turn. It does **not** claim that the element value is a compile-time constant; the ordinary compile-time-constant initializer rule for standalone `const` declarations does not apply to this compiler-initialized slot. `let` creates the same per-iteration slot but permits rebinding that local.
+`const` in a for-of header means that the compiler/runtime initializes a fresh immutable iteration slot on each turn, the same binding-level immutability used by standalone local `const`. It does **not** claim that the element value is a compile-time constant. `let` creates the same per-iteration slot but permits rebinding that local.
 
 Parentheses may fence the entire iterator header when that improves readability or avoids syntactic ambiguity:
 
@@ -1488,9 +1720,10 @@ The structural marker never weakens actor isolation or ownership rules. An actor
 method may carry structural callable metadata, but the actor itself remains a nominal,
 mailbox-mediated identity.
 
-`structural` remains contextual. Ordinary declarations such as a method named
-`structural()` remain legal because the parser consumes the word as a modifier only
-where the following syntax makes that interpretation unambiguous.
+`over` is a reserved match delimiter. `structural` remains contextual: ordinary
+declarations such as a method named `structural()` remain legal because the parser
+consumes the word as a modifier only where the following syntax makes that
+interpretation unambiguous. Match-arm words such as `on` and `when` remain contextual.
 
 ## Receiver identity and method calls
 
@@ -1822,7 +2055,10 @@ Oreslang keeps four related operations separate:
 - `match` performs proof-checked pattern partitioning, while `switch` is
   constant/equality case dispatch.
 
-Every `if` closes with `fi`, even when its branch bodies use braces.
+Every `if` closes with `fi`. In braced conditionals, `{` replaces `then`,
+`} elif` / `} else` separate branches, and `fi` closes the final branch; there
+is no final `}` before `fi`. The historical `} fi` is accepted with a migration
+diagnostic.
 Executable match/switch arms use `->`; `=>` remains type-level syntax.
 
 Plain `match` is exclusive-by-default. The checker proves every pair of
@@ -1857,3 +2093,20 @@ When explicit thread/task spawning is added, cross-thread transfer will require 
 `@FromJson("key")` is a compiler annotation for typed class fields. It expands before type/ownership checking into public typed getters/setters; no JVM reflection or guest-code macro execution is involved. The field must have an explicit type and mutable storage. The name-first shorthand `field_name: Type` is mutable only when annotated with `@FromJson`; otherwise it is an immutable `val` field.
 
 Generated setters still require a mutable owner at the call site. Duplicate/blank keys, immutable annotated fields, accessor collisions, annotations on module bindings/callables, and annotations on actor state all fail closed. JSON wire keys participate in incremental ABI fingerprints.
+
+## Incremental imported module-contract reconciliation (2026-10-20)
+
+An unqualified module-contract field requires readable exported access of the
+declared type. An explicit binding retains the current rebindability and
+referent-mutability requirements; equivalent capability spellings stay equivalent.
+
+Named, exported contract imports and aliases supply type-only linker metadata.
+They do not splice foreign declarations into runtime modules or exports.
+Inherited foreign contracts and foreign nominal member types without linked
+provenance remain rejected. Class-field imports, private alias provenance,
+short inferred type aliases and return-cleanup admission share the same
+type/ownership pipeline with these contract imports.
+
+Module conformance names, contract/interface identity and field capabilities
+participate in the incremental ABI. This snapshot needs exact-head Maven tests;
+conflict reconciliation alone is not test evidence.

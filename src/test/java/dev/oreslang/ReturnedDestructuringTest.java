@@ -104,7 +104,7 @@ final class ReturnedDestructuringTest {
     void recordReturnSupportsBothObjectDestructureSpellings() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc result(): {foo: int, bar: string} {
-                  return struct{foo: int, bar: string}{foo: 5, bar: "x"};
+                  return record{foo: 5, bar: "x"};
                 }
 
                 fnc prefixed(): void {
@@ -133,7 +133,7 @@ final class ReturnedDestructuringTest {
     void recordReturnsAndDestructuresRejectMissingOrWrongMembers() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc broken(): {foo: int, bar: string} {
-                  return struct{foo: int}{foo: 5};
+                  return record{foo: 5};
                 }
 
                 pub fnc main(): void { return; }
@@ -141,7 +141,7 @@ final class ReturnedDestructuringTest {
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc broken(): {foo: int, bar: string} {
-                  return struct{foo: string, bar: string}{foo: "wrong", bar: "x"};
+                  return record{foo: "wrong", bar: "x"};
                 }
 
                 pub fnc main(): void { return; }
@@ -149,7 +149,7 @@ final class ReturnedDestructuringTest {
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc result(): {foo: int, bar: string} {
-                  return struct{foo: int, bar: string}{foo: 5, bar: "x"};
+                  return record{foo: 5, bar: "x"};
                 }
 
                 pub fnc main(): void {
@@ -169,7 +169,7 @@ final class ReturnedDestructuringTest {
 
                 @Ret<{bar: string, foo: int}>
                 fnc object(): {foo: int, bar: string} {
-                  return struct{foo: int, bar: string}{foo: 5, bar: "x"};
+                  return record{foo: 5, bar: "x"};
                 }
 
                 pub fnc main(): void { return; }
@@ -184,7 +184,7 @@ final class ReturnedDestructuringTest {
                 }
 
                 fnc result(): {foo: int, bar: string} {
-                  return struct{foo: int, bar: string}{foo: 5, bar: "x"};
+                  return record{foo: 5, bar: "x"};
                 }
 
                 pub fnc main(): void {
@@ -222,9 +222,9 @@ final class ReturnedDestructuringTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc variant(bool flag): {foo: int, bar: string} | {foo: bool, bar: string} {
                   if flag; do
-                    return struct{foo: int, bar: string}{foo: 3, bar: "number"};
+                    return record{foo: 3, bar: "number"};
                   else
-                    return struct{foo: bool, bar: string}{foo: true, bar: "boolean"};
+                    return record{foo: true, bar: "boolean"};
                   fi
                 }
 
@@ -257,9 +257,9 @@ final class ReturnedDestructuringTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc variant(bool flag): {foo: int, bar: string} | {foo: bool} {
                   if flag; do
-                    return struct{foo: int, bar: string}{foo: 3, bar: "number"};
+                    return record{foo: 3, bar: "number"};
                   else
-                    return struct{foo: bool}{foo: true};
+                    return record{foo: true};
                   fi
                 }
 
@@ -274,7 +274,7 @@ final class ReturnedDestructuringTest {
     void bareDiscardIsRejectedInObjectPatterns() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc result(): {foo: int, bar: string} {
-                  return struct{foo: int, bar: string}{foo: 5, bar: "x"};
+                  return record{foo: 5, bar: "x"};
                 }
 
                 pub fnc main(): void {
@@ -343,7 +343,7 @@ final class ReturnedDestructuringTest {
                 }
 
                 fnc result(): NamedResult {
-                  return struct{foo: int, bar: string}{foo: 5, bar: "x"};
+                  return record{foo: 5, bar: "x"};
                 }
 
                 pub fnc main(): void {
@@ -424,7 +424,7 @@ final class ReturnedDestructuringTest {
                 type Row = {v: int, label: string, ok: bool};
 
                 fnc row(): Row {
-                  return struct{v: int, label: string, ok: bool}{v: 5, label: "x", ok: true};
+                  return record{v: 5, label: "x", ok: true};
                 }
 
                 fnc acceptsRest({label: string, ok: bool} value): void {
@@ -482,7 +482,7 @@ final class ReturnedDestructuringTest {
                 type Row = {v: int, label: string};
 
                 fnc row(): Row {
-                  return struct{v: int, label: string}{v: 5, label: "x"};
+                  return record{v: 5, label: "x"};
                 }
 
                 pub fnc main(): void {
@@ -505,7 +505,7 @@ final class ReturnedDestructuringTest {
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc value(): {v: int, label: string} {
-                  return struct{v: int, label: string}{v: 1, label: "x"};
+                  return record{v: 1, label: "x"};
                 }
                 pub fnc main(): void {
                   const {v, ...rest, label} = value();
@@ -534,7 +534,7 @@ final class ReturnedDestructuringTest {
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc value(): {active: bool, label: string} {
-                  return struct{active: bool, label: string}{active: true, label: "x"};
+                  return record{active: true, label: "x"};
                 }
                 pub fnc main(): void {
                   const {...rest, active} = value();
@@ -544,7 +544,7 @@ final class ReturnedDestructuringTest {
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc value(): {active: bool, label: string} {
-                  return struct{active: bool, label: string}{active: true, label: "x"};
+                  return record{active: true, label: "x"};
                 }
                 pub fnc main(): void {
                   {const ...rest, const active} = value();
@@ -618,7 +618,7 @@ final class ReturnedDestructuringTest {
                 }
 
                 fnc row(): {v: int, active: bool} {
-                  return struct{v: int, active: bool}{v: 5, active: true};
+                  return record{v: 5, active: true};
                 }
 
                 fnc acceptsAllInts(Array<int> values): void {
@@ -653,7 +653,7 @@ final class ReturnedDestructuringTest {
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                fnc row(): {v: int} { return struct{v: int}{v: 1}; }
+                fnc row(): {v: int} { return record{v: 1}; }
                 pub fnc main(): void {
                   const {..._} = row();
                   return;
@@ -673,7 +673,7 @@ final class ReturnedDestructuringTest {
                   return;
                 }
 
-                fnc inspect(&Holder holder): void {
+                fnc inspect(borrow Holder holder): void {
                   const [first, ...rest] = holder.values;
                   acceptsInts(rest);
                   stdio.println(first);
@@ -682,7 +682,7 @@ final class ReturnedDestructuringTest {
 
                 pub fnc main(): void {
                   val Holder holder = new Holder([1, 2, 3]);
-                  inspect(&holder);
+                  inspect(rt borrow holder);
                   return;
                 }
                 """)));
@@ -698,7 +698,7 @@ final class ReturnedDestructuringTest {
                 }
 
                 fnc row(): Row {
-                  return struct{v: int, label: string, ok: bool}{v: 5, label: "rest", ok: true};
+                  return record{v: 5, label: "rest", ok: true};
                 }
 
                 pub fnc main(): void {

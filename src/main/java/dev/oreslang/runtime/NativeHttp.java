@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -54,6 +55,185 @@ public final class NativeHttp implements AutoCloseable {
 
     // JDK HTTP server limits are JVM-wide and read on its first initialization.
     // Embedders that initialize it earlier must configure these themselves.
+    /** Validate the decoded HTTP header collection before a guest sees the request.
+     * JDK parser byte limits apply separately before this method is reached.
+     * This additional per-field limit rejects oversized-but-otherwise-valid
+     * requests that the JDK's aggregate 32 KiB maximum would permit.
+     */
+    static void validateHeadersForAdmission(
+            com.sun.net.httpserver.Headers headers, String protocol, int bodyLimit) {
+        List<String> hosts = headers.get("Host");
+        if (("HTTP/1.1".equalsIgnoreCase(protocol) && hosts == null)
+                || (hosts != null && (hosts.size() != 1 || !validHostValue(hosts.get(0))))) {
+            // Host is required for HTTP/1.1 and, whenever present, must not
+            // permit duplicate or ambiguous routing targets.
+            throw new IllegalArgumentException("invalid Host header");
+        }
+        List<String> lengths = headers.get("Content-Length");
+        List<String> transfers = headers.get("Transfer-Encoding");
+        if (lengths != null && (lengths.size() != 1 || lengths.get(0) == null
+                || !lengths.get(0).matches("[0-9]+"))) {
+            throw new IllegalArgumentException("ambiguous Content-Length");
+        }
+        if (transfers != null && (lengths != null || transfers.size() != 1
+                || transfers.get(0) == null
+                || !"chunked".equalsIgnoreCase(transfers.get(0).trim())
+                || !"HTTP/1.1".equalsIgnoreCase(protocol))) {
+            // Do not let different HTTP parsers disagree on body framing.
+            throw new IllegalArgumentException("ambiguous Transfer-Encoding");
+        }
+        int size = 0;
+        for (var entry : headers.entrySet()) {
+            String name = entry.getKey();
+            size += name.length();
+            for (String value : entry.getValue()) {
+                if (value == null || name.length() + value.length() > 8192) {
+                    throw new IllegalArgumentException("HTTP header field too large");
+                }
+                size += value.length();
+            }
+        }
+        if (size > 32768 || headers.size() > 100) {
+            throw new IllegalArgumentException("headers too large");
+        }
+        if (lengths != null) {
+            long parsed = Long.parseLong(lengths.get(0));
+            if (parsed > bodyLimit) throw new IllegalArgumentException("body too large");
+        }
+    }
+
+    /**
+     * A Host value is a single authority, not merely an ASCII string.
+     * Do not resolve DNS names or silently accept malformed ports, multiple
+     * colons, zones or request-target delimiters before guest dispatch.
+     */
+    private static boolean validHostValue(String host) {
+        if (host == null || host.isEmpty() || host.length() > 255) return false;
+        for (int i = 0; i < host.length(); i++) {
+            char c = host.charAt(i);
+            if (c <= 0x20 || c >= 0x7f || c == '/' || c == '\\'
+                    || c == '?' || c == '#' || c == '@' || c == ','
+                    || c == '%') return false;
+        }
+        String port = null;
+        if (host.charAt(0) == '[') {
+            int close = host.indexOf(']');
+            if (close < 2 || host.indexOf('[', 1) >= 0
+                    || host.indexOf(']', close + 1) >= 0
+                    || !validIpv6Literal(host.substring(1, close))) return false;
+            if (close + 1 < host.length()) {
+                if (host.charAt(close + 1) != ':') return false;
+                port = host.substring(close + 2);
+            }
+        } else {
+            if (host.indexOf('[') >= 0 || host.indexOf(']') >= 0) return false;
+            int colon = host.indexOf(':');
+            String name = host;
+            if (colon >= 0) {
+                if (host.indexOf(':', colon + 1) >= 0) return false;
+                name = host.substring(0, colon);
+                port = host.substring(colon + 1);
+            }
+            if (name.isEmpty() || name.startsWith(".") || name.contains("..")) return false;
+            // Conservative ASCII reg-name policy. Avoid ambiguity between
+            // downstream URI, proxy and JDK host parsers.
+            for (int i = 0; i < name.length(); i++) {
+                char c = name.charAt(i);
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                        || (c >= '0' && c <= '9') || c == '.' || c == '-'
+                        || c == '_' || c == '~')) return false;
+            }
+            // Numeric-only reg-names are ambiguous: some host resolvers
+            // interpret short, integer or octal IPv4 forms differently.
+            // Only a canonical four-octet decimal IPv4 literal is admitted.
+            boolean numericAddress = true;
+            for (int i = 0; i < name.length(); i++) {
+                char c = name.charAt(i);
+                if (c != '.' && (c < '0' || c > '9')) {
+                    numericAddress = false;
+                    break;
+                }
+            }
+            if (numericAddress && !validIpv4Tail(name)) return false;
+        }
+        if (port == null) return true;
+        if (port.isEmpty() || port.length() > 5) return false;
+        int number = 0;
+        for (int i = 0; i < port.length(); i++) {
+            char c = port.charAt(i);
+            if (c < '0' || c > '9') return false;
+            number = number * 10 + (c - '0');
+        }
+        return number <= 65535;
+    }
+
+    /** Validate an IPv6 address literal without DNS, I/O or zone identifiers. */
+    private static boolean validIpv6Literal(String value) {
+        if (value.isEmpty() || value.length() > 45 || !value.contains(":")
+                || value.contains(":::")) return false;
+        int compression = value.indexOf("::");
+        if (compression >= 0 && value.indexOf("::", compression + 2) >= 0) return false;
+        if (compression < 0 && (value.startsWith(":") || value.endsWith(":")))
+            return false;
+        String left = compression < 0 ? value : value.substring(0, compression);
+        String right = compression < 0 ? "" : value.substring(compression + 2);
+        if (compression >= 0 && (left.endsWith(":") || right.startsWith(":")))
+            return false;
+        String segments = compression < 0 ? value :
+                left.isEmpty() ? right : right.isEmpty() ? left : left + ":" + right;
+        String[] groups = segments.isEmpty() ? new String[0] : segments.split(":", -1);
+        int count = 0;
+        for (int i = 0; i < groups.length; i++) {
+            String group = groups[i];
+            if (group.indexOf('.') >= 0) {
+                if (i != groups.length - 1 || !validIpv4Tail(group)) return false;
+                count += 2;
+            } else {
+                if (group.isEmpty() || group.length() > 4) return false;
+                for (int j = 0; j < group.length(); j++) {
+                    char c = group.charAt(j);
+                    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+                            || (c >= 'A' && c <= 'F'))) return false;
+                }
+                count++;
+            }
+        }
+        return compression < 0 ? count == 8 : count < 8;
+    }
+
+    private static boolean validIpv4Tail(String value) {
+        String[] parts = value.split("\\.", -1);
+        if (parts.length != 4) return false;
+        for (String part : parts) {
+            if (part.isEmpty() || part.length() > 3
+                    || (part.length() > 1 && part.charAt(0) == '0')) return false;
+            int octet = 0;
+            for (int i = 0; i < part.length(); i++) {
+                char c = part.charAt(i);
+                if (c < '0' || c > '9') return false;
+                octet = octet * 10 + c - '0';
+            }
+            if (octet > 255) return false;
+        }
+        return true;
+    }
+
+    /** An invalid request-body framing stream is a client error, not HTTP 500.
+     * Keep response-side I/O failures as server errors, and preserve 413 limits.
+     */
+    static int operationFailureStatus(Throwable failure, boolean requestBodyRead) {
+        if ("body too large".equals(failure.getMessage())) return 413;
+        if (requestBodyRead && failure instanceof IOException) return 400;
+        // Strict UTF-8 decoding in bodyText() wraps CharacterCodingException.
+        // This is malformed client payload, not an internal server error.
+        // Both the request-body boundary and the decoder's typed cause must
+        // match, so unrelated handler failures cannot masquerade as HTTP 400.
+        if (requestBodyRead && failure instanceof IllegalArgumentException
+                && "invalid UTF-8".equals(failure.getMessage())
+                && failure.getCause() instanceof CharacterCodingException) return 400;
+        return 500;
+    }
+
     private static void configureTransportDefaults() {
         Map.of("jdk.httpserver.maxConnections", "1024",
                "sun.net.httpserver.maxReqHeaders", "100",
@@ -197,6 +377,7 @@ public final class NativeHttp implements AutoCloseable {
     public final class Server implements AutoCloseable {
         private final HttpServer transport;
         private final Semaphore admission;
+        private final HttpResponseBodyOpenGate bodyOpenGate;
         private final int bodyLimit, deadlineMillis;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
@@ -208,6 +389,10 @@ public final class NativeHttp implements AutoCloseable {
         private Server(HttpServer transport, int capacity, int bodyLimit, int deadlineMillis) {
             this.transport = transport; this.admission = new Semaphore(capacity);
             this.bodyLimit = bodyLimit; this.deadlineMillis = deadlineMillis;
+            // A timed-out host Supplier can ignore interrupts. Retain its
+            // opener slot until it *actually returns*, even after HTTP admission
+            // is released, so hostile suppliers cannot create unbounded tasks.
+            this.bodyOpenGate = new HttpResponseBodyOpenGate(Math.min(32, capacity), io);
             // Preserve the original executor when diagnostics are off. In
             // diagnostic mode, measure the JDK-to-virtual-thread handoff.
             if (CorePerf.enabled() || CoreDebug.enabled()) {
@@ -280,14 +465,7 @@ public final class NativeHttp implements AutoCloseable {
             String target = raw.getRequestURI().toASCIIString();
             if (target.length() > 8192) throw new IllegalArgumentException("request target too long");
             segments(raw.getRequestURI().getRawPath());
-            int size = 0;
-            for (var entry : raw.getRequestHeaders().entrySet()) {
-                size += entry.getKey().length();
-                for (String value : entry.getValue()) size += value.length();
-            }
-            if (size > 32768 || raw.getRequestHeaders().size() > 100) throw new IllegalArgumentException("headers too large");
-            String length = raw.getRequestHeaders().getFirst("Content-Length");
-            if (length != null && Long.parseLong(length) > bodyLimit) throw new IllegalArgumentException("body too large");
+            validateHeadersForAdmission(raw.getRequestHeaders(), raw.getProtocol(), bodyLimit);
         }
         public synchronized OresFuture<Object> shutdown(int graceMillis) {
             supervisor();
@@ -295,7 +473,9 @@ public final class NativeHttp implements AutoCloseable {
             if (drained != null) return drained;
             drained = new OresFuture<>(() -> false, () -> { });
             stopAccepting();
-            io.execute(() -> {
+            // Drain must still be driven if the I/O pool was concurrently shut
+            // down. A rejected task must not strand the drained Future.
+            HttpResponseCleanupDispatcher.dispatch(io, () -> {
                 try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
                 finally {
                     synchronized (this) { transportStopped = true; }
@@ -329,9 +509,13 @@ public final class NativeHttp implements AutoCloseable {
         long generation;
         long spawnNanos, readyNanos, movedNanos, claimedNanos;
         Object owner;
+        // Response ownership and terminal cancellation share the State lock
+        // with the first, irreversible HTTP header attempt.
+        final HttpResponseWirePhase wirePhase = new HttpResponseWirePhase();
         boolean busy, committed, bodyRead, streamingBody, suppressBody;
         int bodyBytes;
         volatile boolean terminal;
+        volatile InputStream activeResponseInput;
         boolean transportClosed;
         String ticket;
         final String requestId = UUID.randomUUID().toString();
@@ -347,12 +531,25 @@ public final class NativeHttp implements AutoCloseable {
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
+        // Linearize cancellation against success header emission. Never
+        // hold this monitor while performing blocking socket I/O.
+        boolean beginHeaders() {
+            synchronized (this) {
+                return wirePhase.begin(committed, terminal);
+            }
+        }
+        void noteHeadersSent() {
+            synchronized (this) { wirePhase.markSent(); }
+        }
         void abort(int status) { abort(status, true); }
         void abort(int status, boolean cancelOwner) {
             boolean send, alreadyClosed;
             synchronized (this) {
                 alreadyClosed = terminal;
-                send = !terminal && !committed && !busy;
+                // A reserved response that never reached the wire may still
+                // fail precommit. Once an emission attempt starts, never
+                // synthesize a second HTTP status.
+                send = wirePhase.maySendError(terminal, busy);
                 if (!terminal) responseStatus = send ? status : 0;
                 terminal = true;
             }
@@ -360,11 +557,32 @@ public final class NativeHttp implements AutoCloseable {
             if (alreadyClosed && poolWorker != null) { release(); return; }
             if (actor != null && cancelOwner) actor.cancel();
             if (alreadyClosed) { release(); return; }
-            try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) { release(); }
+            InputStream responseInput = activeResponseInput;
+            // A hostile InputStream.close() can block. Never wait for producer
+            // cleanup before closing the network exchange or releasing admission.
+            if (responseInput != null) {
+                HttpResponseCleanupDispatcher.dispatch(io, () -> {
+                    try { responseInput.close(); }
+                    catch (IOException ignored) { }
+                });
+            }
+            HttpResponseCleanupDispatcher.dispatch(io, () -> {
+                try {
+                    if (send) reject(raw, status); else raw.close();
+                } finally {
+                    synchronized (this) { transportClosed = true; }
+                    release();
+                }
+            });
         }
-        void finish() {
-            synchronized (this) { if (terminal) return; terminal = true; }
+        void finish() throws IOException {
+            synchronized (this) {
+                // An abort/deadline may win after the wire writer finishes.
+                // Do not resolve the actor's respond()/finish() Future as
+                // successful when the request has already been terminated.
+                HttpResponseWirePhase.requireLiveFinish(terminal);
+                terminal = true;
+            }
             try { raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); }
         }
         void release() {
@@ -474,10 +692,24 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (state) {
                 checkOwner();
                 if (state.committed || state.busy) throw new IllegalStateException("response already started");
-                if (!name.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+") || value.chars().anyMatch(c -> c < 32 || c == 127))
+                if (name == null || value == null
+                        || !name.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+                        || value.chars().anyMatch(c -> c < 32 || c == 127 || c > 255))
                     throw new IllegalArgumentException("invalid HTTP header");
-                if (Set.of("content-length", "transfer-encoding", "connection", "trailer", "upgrade").contains(name.toLowerCase(Locale.ROOT)))
+                if (Set.of("content-length", "transfer-encoding", "connection", "trailer", "upgrade",
+                        "te", "host", "keep-alive", "proxy-connection", "http2-settings",
+                        "proxy-authenticate", "proxy-authorization").contains(name.toLowerCase(Locale.ROOT)))
                     throw new IllegalArgumentException("transport-owned response header");
+                int fields = 1, bytes = name.length() + value.length() + 4;
+                for (Map.Entry<String, List<String>> existing : state.raw.getResponseHeaders().entrySet()) {
+                    if (existing.getKey().equalsIgnoreCase(name)) continue;
+                    for (String item : existing.getValue()) {
+                        fields++;
+                        bytes += existing.getKey().length() + item.length() + 4;
+                    }
+                }
+                if (fields > 100 || bytes > 32768)
+                    throw new IllegalArgumentException("response headers exceed configured bounds");
                 state.raw.getResponseHeaders().set(name, value);
             }
         }
@@ -488,7 +720,7 @@ public final class NativeHttp implements AutoCloseable {
                 if (state.bodyRead) throw new IllegalStateException("request body already consumed");
                 state.bodyRead = true;
             }
-            return operation(() -> {
+            return bodyOperation(() -> {
                 byte[] bytes = state.raw.getRequestBody().readNBytes(state.server.bodyLimit + 1);
                 if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("body too large");
                 return utf8(bytes);
@@ -502,7 +734,7 @@ public final class NativeHttp implements AutoCloseable {
                 if (state.bodyRead && !state.streamingBody) throw new IllegalStateException("request body already consumed");
                 state.streamingBody = true; state.bodyRead = true;
             }
-            return operation(() -> {
+            return bodyOperation(() -> {
                 byte[] bytes = state.raw.getRequestBody().readNBytes(Math.min(maximum, state.server.bodyLimit - state.bodyBytes + 1));
                 state.bodyBytes += bytes.length;
                 if (state.bodyBytes > state.server.bodyLimit) throw new IllegalArgumentException("body too large");
@@ -511,6 +743,40 @@ public final class NativeHttp implements AutoCloseable {
                 return owned;
             });
         }
+        /**
+         * Trusted host transport adapter for the planned unary HttpResponse result.
+         * Caller ownership is still enforced by operation(...). The response is
+         * consumed once and the stream runs on a virtual I/O worker. This does
+         * not expose HttpResponseDraft to Oreslang guest code.
+         */
+        public OresFuture<Object> respond(HttpResponseDraft draft) {
+            Objects.requireNonNull(draft, "response");
+            if (!draft.streaming() && draft.bufferedLength() > state.server.bodyLimit)
+                throw new IllegalArgumentException("buffered response exceeds configured limit");
+            return operation(() -> {
+                synchronized (state) {
+                    if (state.terminal) throw new IllegalStateException("HTTP request was cancelled before response commitment");
+                    if (state.committed) throw new IllegalStateException("response already started");
+                    // Preflight must be non-I/O, non-consuming, and serialized
+                    // with setHeader, cancellation and exchange ownership.
+                    draft.preflight(state.raw);
+                    draft.claim();
+                    state.committed = true;
+                    state.responseStatus = draft.status();
+                }
+                draft.writeClaimedTo(state.raw, () -> state.terminal,
+                        input -> state.activeResponseInput = input,
+                        () -> draft.streaming()
+                                ? state.server.bodyOpenGate.open(draft, () -> state.terminal,
+                                TimeUnit.MILLISECONDS.toNanos(state.server.deadlineMillis)
+                                        - (System.nanoTime() - state.admittedNanos))
+                                : draft.openBody(),
+                        state::beginHeaders, state::noteHeadersSent);
+                state.finish();
+                return null;
+            });
+        }
+
         public OresFuture<Object> respond(int status, String contentType, String body) {
             return respondBuffer(status, contentType, body.getBytes(StandardCharsets.UTF_8));
         }
@@ -529,7 +795,9 @@ public final class NativeHttp implements AutoCloseable {
                 boolean noBody = noBody(status);
                 if (state.raw.getRequestMethod().equals("HEAD") && status != 204 && status != 205)
                     state.raw.getResponseHeaders().set("Content-Length", Integer.toString(bytes.length));
+                if (!state.beginHeaders()) throw new IOException("HTTP request cancelled before response headers");
                 state.raw.sendResponseHeaders(status, noBody || bytes.length == 0 ? -1 : bytes.length);
+                state.noteHeadersSent();
                 if (!noBody && bytes.length != 0) state.raw.getResponseBody().write(bytes);
                 state.finish(); return null;
             });
@@ -543,7 +811,9 @@ public final class NativeHttp implements AutoCloseable {
                     state.responseStatus = status;
                 }
                 state.suppressBody = noBody(status);
+                if (!state.beginHeaders()) throw new IOException("HTTP request cancelled before response headers");
                 state.raw.sendResponseHeaders(status, state.suppressBody ? -1 : 0);
+                state.noteHeadersSent();
                 return null;
             });
         }
@@ -560,7 +830,13 @@ public final class NativeHttp implements AutoCloseable {
         public OresFuture<Object> finish() { return operation(() -> { if (!state.committed) throw new IllegalStateException("response not started"); state.finish(); return null; }); }
         public void abort() { synchronized (state) { checkOwner(); } state.abort(500); }
         private boolean noBody(int status) { return state.raw.getRequestMethod().equals("HEAD") || status == 204 || status == 205 || status == 304; }
+        private OresFuture<Object> bodyOperation(Callable<Object> operation) {
+            return operation(operation, true);
+        }
         private OresFuture<Object> operation(Callable<Object> operation) {
+            return operation(operation, false);
+        }
+        private OresFuture<Object> operation(Callable<Object> operation, boolean requestBodyRead) {
             synchronized (state) {
                 checkOwner();
                 if (state.busy) throw new IllegalStateException("await the pending HTTP operation first");
@@ -578,7 +854,7 @@ public final class NativeHttp implements AutoCloseable {
                         result.completeFromRuntime(value);
                     } catch (Throwable failure) {
                         synchronized (state) { state.busy = false; }
-                        state.abort("body too large".equals(failure.getMessage()) ? 413 : 500);
+                        state.abort(operationFailureStatus(failure, requestBodyRead));
                         SourceBoundaryTrace.record(failure, "native:http", state.requestId, "I/O");
                         result.failFromRuntime(failure);
                         if (failure instanceof VirtualMachineError fatal) throw fatal;
