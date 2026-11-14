@@ -7127,6 +7127,7 @@ public final class TypeChecker {
                 || named.name().equals("Weak") || named.name().equals("Rc")
                 || named.name().equals("RefCell") || named.name().equals("RwLock")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+                || named.name().equals("Atomic") || named.name().equals("AtomicCompareExchange")
                 || named.name().equals("ActorStream") || named.name().equals("StreamOperator")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectPlan")
