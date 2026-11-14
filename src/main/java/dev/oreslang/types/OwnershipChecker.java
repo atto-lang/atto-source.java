@@ -1908,6 +1908,20 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            // Actor control operations mutate mailbox/lifecycle ownership,
+            // even if the method body accesses no actor fields. Do not let
+            // an explicit read-only actor receiver acquire that authority.
+            if (member.receiver() instanceof Ast.NameExpr receiverName
+                    && receiverName.name().equals("self")
+                    && java.util.Set.of("send", "end", "endWithCleanup")
+                            .contains(member.member())) {
+                VarState actorSelf = scope.lookup("self");
+                if (actorSelf != null && isActorConfinedBorrow(actorSelf)
+                        && actorSelf.kind != ValueKind.MUT_BORROW) {
+                    throw error("actor control operation '" + member.member()
+                            + "' requires exclusive mutable actor self");
+                }
+            }
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
