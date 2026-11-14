@@ -8639,6 +8639,12 @@ public final class TypeChecker {
                         callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), false, false, generics, interfaceSelf),
                         "interface " + iface.name());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                if (iface.actorContract()) {
+                    // A declared actor's required sealed state is never a
+                    // structural/public interface member. Only the separate
+                    // package-authenticated state witness can discharge it.
+                    continue;
+                }
                 mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
             }
         }
