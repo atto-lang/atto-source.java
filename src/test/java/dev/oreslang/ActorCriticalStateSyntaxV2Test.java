@@ -242,6 +242,7 @@ final class ActorCriticalStateSyntaxV2Test {
         assertEquals("Counter", mir.actor());
         assertEquals("src/counter/state.atto", mir.stateSourceUnit());
         assertEquals("src/counter/receive.atto", mir.ingressSourceUnit());
+        assertEquals("src/counter/main.atto", mir.mainSourceUnit());
         assertEquals("total", mir.field());
         assertEquals("mail", mir.mailParameter());
         assertEquals(0L, mir.initialValue());
@@ -260,6 +261,53 @@ final class ActorCriticalStateSyntaxV2Test {
                 () -> mir.sourceSha256().put("src/spoof.atto", "forged"));
         var rejected = assertThrows(IllegalArgumentException.class, build::build);
         assertTrue(rejected.getMessage().contains("DECLARED_ACTOR_CODEGEN_UNSUPPORTED"));
+    }
+
+    @Test
+    void declaredMainIsManifestLinkedAndUnauthorizedSourceUnitsFailClosed() throws Exception {
+        var build = physicalBuild();
+        Path main = root.resolve("src/counter/main.atto");
+        String original = Files.readString(main);
+        assertEquals("src/counter/main.atto",
+                build.lowerCriticalStateMirV1().mainSourceUnit());
+        for (String changed : new String[] {
+                original.replace("pub async routine main(): void",
+                        "pub async routine main(): int"),
+                original.replace("pub async routine main(): void",
+                        "pub async routine main(int x): void"),
+                original.replace("pub async routine main(): void",
+                        "pub async routine launch(): void")
+        }) {
+            assertNotEquals(original, changed);
+            Files.writeString(main, changed);
+            var denied = assertThrows(IllegalArgumentException.class,
+                    build::lowerCriticalStateMirV1);
+            assertTrue(denied.getMessage().contains("ACTOR_DECLARED_MAIN_LINK_V1_UNSUPPORTED"),
+                    denied.getMessage());
+        }
+        Files.writeString(main, original);
+
+        Path extra = root.resolve("src/counter/extra.atto");
+        Files.writeString(extra, original);
+        var duplicate = assertThrows(IllegalArgumentException.class,
+                build::lowerCriticalStateMirV1);
+        assertTrue(duplicate.getMessage().contains("ACTOR_DECLARED_MAIN_LINK_V1_UNSUPPORTED"),
+                duplicate.getMessage());
+        Files.writeString(extra,
+                "namespace counter; pub fnc unauthorized(): int { return 1; }");
+        var helper = assertThrows(IllegalArgumentException.class,
+                build::lowerCriticalStateMirV1);
+        assertTrue(helper.getMessage().contains("ACTOR_DECLARED_MAIN_LINK_V1_UNSUPPORTED"),
+                helper.getMessage());
+        Files.writeString(extra,
+                "namespace other; pub fnc unauthorized(): int { return 1; }");
+        var foreign = assertThrows(IllegalArgumentException.class,
+                build::lowerCriticalStateMirV1);
+        assertTrue(foreign.getMessage().contains("ACTOR_DECLARED_MAIN_LINK_V1_UNSUPPORTED"),
+                foreign.getMessage());
+        Files.delete(extra);
+        assertEquals("src/counter/main.atto",
+                build.lowerCriticalStateMirV1().mainSourceUnit());
     }
 
     @Test
