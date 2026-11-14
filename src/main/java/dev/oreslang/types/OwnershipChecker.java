@@ -312,7 +312,14 @@ public final class OwnershipChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
-                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                if (klass.actorKind() != Ast.ActorKind.NONE
+                        && method.explicitReceiverType() == null) {
+                    // Legacy actor-body methods have an implicit mutable
+                    // mailbox-turn receiver. An explicitly declared actor
+                    // method MUST instead honor its declared loan mode:
+                    // '(Foo self)' is read-only and '(Foo mut self)' is
+                    // exclusive. Otherwise ordinary external mtd could
+                    // mutate actor-owned state through an immutable receiver.
                     scope.define("self", new VarState(
                             Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),
                             false,
