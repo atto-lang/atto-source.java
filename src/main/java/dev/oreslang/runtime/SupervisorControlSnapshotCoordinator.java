@@ -141,8 +141,11 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
                          long generation, int maxNodes, int maxDepth,
                          long timeoutNanos) {
         if (!request.physicalTurn.tryStart()) {
-            request.result.completeExceptionally(new SnapshotFailure("CONTROL_DUPLICATE_TURN"));
-            return; // Running turn owns release, or a failed dispatch already abandoned.
+            // This runnable either lost to an already running CONTROL turn
+            // or was abandoned by a failed dispatcher. Neither case owns
+            // the result or its physical accounting lease. In particular a
+            // duplicate must not fail the legitimate in-flight observation.
+            return;
         }
         try {
             if (Thread.currentThread() == request.callerThread) {
