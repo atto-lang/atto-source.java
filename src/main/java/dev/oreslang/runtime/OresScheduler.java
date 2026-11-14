@@ -833,6 +833,8 @@ public final class OresScheduler implements AutoCloseable {
 
         private final Task<T> task;
         private final ExecutionContext executionContext;
+        /** Immutable logical trace identity persists across await/cooperate turns. */
+        private volatile TraceContext traceContext;
         private final Runnable onQuiescent;
         // 0=unclaimed, 1=retirement callback executing, 2=retired,
         // 3=callback failed. The publication path cannot overtake state 1.
@@ -888,6 +890,8 @@ public final class OresScheduler implements AutoCloseable {
                     ? active.id().execution() : 0L;
             this.executionContext =
                     ExecutionContext.task(schedulerDomain, execution, parentExecution);
+            // Capture from the creating logical task, not its transient carrier identity.
+            this.traceContext = TraceContext.current();
             this.onQuiescent = onQuiescent;
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
@@ -1012,6 +1016,9 @@ public final class OresScheduler implements AutoCloseable {
             state.watchdogLease = lease;
             ExecutionContext priorExecutionContext = state.executionContext;
             state.executionContext = executionContext;
+            // Only this physical turn may observe the task's active span. The
+            // suspended owner retains the updated context after this turn exits.
+            TraceContext previousTraceContext = TraceContext.install(traceContext);
             try {
                 detachActiveAwaitRegistration();
                 Resume resume = pendingResume.getAndSet(null);
@@ -1105,6 +1112,11 @@ public final class OresScheduler implements AutoCloseable {
                 failTerminal(new IllegalStateException(
                         "unknown OresScheduler task step " + step.getClass().getName()));
             } finally {
+                // A compiler-inserted span may have started or ended inside
+                // task.resume(). Save that logical scope across suspension, then
+                // clear the carrier before any unrelated task can reuse it.
+                traceContext = TraceContext.current();
+                TraceContext.install(previousTraceContext);
                 state.watchdogLease = previousWatchdog;
                 state.executionContext = priorExecutionContext;
             }
