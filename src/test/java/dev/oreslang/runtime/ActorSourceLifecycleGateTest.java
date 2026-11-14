@@ -429,6 +429,107 @@ final class ActorSourceLifecycleGateTest {
     }
 
     @Test
+    void blockedInitializationOwnerAccessorCannotHoldStopMonitor() throws Exception {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        var accessorEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseAccessor = new java.util.concurrent.CountDownLatch(1);
+        var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        gate.beginInit(owner, TYPE);
+        Thread worker = Thread.ofVirtual().start(() -> {
+            try {
+                ActorRuntime.ActorOwnedGuestState blocked = () -> {
+                    accessorEntered.countDown();
+                    try {
+                        if (!releaseAccessor.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("state accessor never released");
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("state accessor interrupted", e);
+                    }
+                    return owner;
+                };
+                assertThrows(ActorSourceLifecycleGate.InitializationStopped.class,
+                        () -> gate.commitInit(blocked));
+            } catch (Throwable unexpected) {
+                workerFailure.set(unexpected);
+            } finally {
+                gate.failInit();
+            }
+        });
+        Thread stopper = null;
+        boolean sealedWithoutAccessorRelease = false;
+        try {
+            assertTrue(accessorEntered.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            stopper = Thread.ofVirtual().start(() -> gate.sealStop(false));
+            stopper.join(1_500);
+            sealedWithoutAccessorRelease = !stopper.isAlive();
+        } finally {
+            releaseAccessor.countDown();
+        }
+        if (stopper != null) stopper.join(5_000);
+        worker.join(5_000);
+        assertTrue(sealedWithoutAccessorRelease,
+                "STOP blocked behind host state accessor under lifecycle gate monitor");
+        assertFalse(worker.isAlive(), "initializer must release physical receipt");
+        assertNull(workerFailure.get(), () -> "unexpected initializer: " + workerFailure.get());
+        assertFalse(gate.initializationActive());
+        assertTrue(gate.readyForRetirement());
+        gate.close();
+    }
+
+    @Test
+    void blockedReceiveOwnerAccessorCannotHoldStopMonitor() throws Exception {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        var accessorEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseAccessor = new java.util.concurrent.CountDownLatch(1);
+        var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        ActorRuntime.ActorOwnedGuestState blocked = () -> {
+            accessorEntered.countDown();
+            try {
+                if (!releaseAccessor.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("receive accessor never released");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("receive accessor interrupted", e);
+            }
+            return owner;
+        };
+        Thread worker = Thread.ofVirtual().start(() -> {
+            try {
+                assertThrows(IllegalStateException.class,
+                        () -> gate.enterReceive(owner, TYPE, blocked, mail(owner)));
+            } catch (Throwable unexpected) {
+                workerFailure.set(unexpected);
+            }
+        });
+        Thread stopper = null;
+        boolean sealedWithoutAccessorRelease = false;
+        try {
+            assertTrue(accessorEntered.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            stopper = Thread.ofVirtual().start(() -> gate.sealStop(false));
+            stopper.join(1_500);
+            sealedWithoutAccessorRelease = !stopper.isAlive();
+        } finally {
+            releaseAccessor.countDown();
+        }
+        if (stopper != null) stopper.join(5_000);
+        worker.join(5_000);
+        assertTrue(sealedWithoutAccessorRelease,
+                "STOP blocked behind host receive owner accessor");
+        assertFalse(worker.isAlive());
+        assertNull(workerFailure.get(), () -> "unexpected receiver: " + workerFailure.get());
+        assertEquals(0, gate.activeReceives(), "failed late receive leaked a pin");
+        assertTrue(gate.readyForRetirement());
+        gate.close();
+    }
+
+    @Test
     void blankActorTypeCannotCreateGate() {
         var owner = ActorRuntime.ActorId.create();
         assertThrows(IllegalArgumentException.class,
