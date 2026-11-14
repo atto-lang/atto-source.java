@@ -41,6 +41,8 @@ final class ActorSourceTearDownTest {
         private volatile CountDownLatch releaseTeardown;
         private volatile CountDownLatch receiveEntered;
         private volatile CountDownLatch releaseReceive;
+        private volatile CountDownLatch startupEntered;
+        private volatile CountDownLatch releaseStartup;
 
         Executor(SharedCodeImageStore.CodeImage image, boolean teardownFails) {
             this.image = image;
@@ -54,8 +56,16 @@ final class ActorSourceTearDownTest {
 
         @Override
         public ActorRuntime.ActorOwnedGuestState initializeActor(
-                String actorName, ActorRuntime.ActorContext<Object> context) {
+                String actorName, ActorRuntime.ActorContext<Object> context)
+                throws Exception {
             assertEquals("Worker", actorName);
+            if (startupEntered != null) {
+                startupEntered.countDown();
+                if (releaseStartup == null
+                        || !releaseStartup.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test never released source initializer");
+                }
+            }
             return new State(context.self().id());
         }
 
@@ -114,6 +124,37 @@ final class ActorSourceTearDownTest {
     private static SharedCodeImageStore.CodeImage image(SharedCodeImageStore store) {
         Ast.Program program = Parser.parse("pub routine main(): void { return; }");
         return store.publish("teardown/source.ores", program);
+    }
+
+    @Test
+    void stopDuringSourceInitializationIsExpectedCancellationNotGuestFailure()
+            throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            executor.startupEntered = new CountDownLatch(1);
+            executor.releaseStartup = new CountDownLatch(1);
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            try {
+                assertTrue(executor.startupEntered.await(3, TimeUnit.SECONDS),
+                        "initializer never entered");
+                // STOP wins *before* initializeActor can publish its state.
+                // The source gate must reject the late commit, but that is
+                // lifecycle cancellation, not a new actor execution error.
+                ref.stop();
+            } finally {
+                executor.releaseStartup.countDown();
+            }
+            ref.done().get(5, TimeUnit.SECONDS);
+            assertThrows(CompletionException.class, () -> ref.ready().join());
+            assertTrue(ref.failure().isEmpty(),
+                    "normal stop during initialization must not poison actor DONE");
+            assertEquals(0, executor.receives.get());
+            assertEquals(0, executor.teardowns.get(),
+                    "an actor stopped before READY has no guest teardown authority");
+            assertFalse(ref.isAlive());
+        }
     }
 
     @Test
