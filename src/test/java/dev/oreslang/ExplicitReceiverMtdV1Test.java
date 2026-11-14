@@ -111,6 +111,25 @@ final class ExplicitReceiverMtdV1Test {
     }
 
     @Test
+    void attoFixturesReachRealParserAndTypeChecker() throws Exception {
+        String positive = readFixture("positive-local-class.atto");
+        String immutable = readFixture("negative-immutable-receiver.atto");
+        String actor = readFixture("negative-external-actor-receiver.atto");
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(positive)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(immutable)));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(actor));
+    }
+
+    private static String readFixture(String name) throws Exception {
+        String resource = "/atto/mtd-receiver-v1/" + name;
+        try (var stream = ExplicitReceiverMtdV1Test.class.getResourceAsStream(resource)) {
+            assertNotNull(stream, resource);
+            return new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test
     void immutableReceiverCannotModifyOwnerState() {
         Ast.Program program = Parser.parse("""
                 define class Point as
