@@ -7923,7 +7923,8 @@ public final class OresEvalRootNode extends RootNode {
                     return instantiateEvaluated(created, args, env);
                 }
                 if (created.type().name().equals("Array")
-                        || created.type().name().equals("List")) {
+                        || created.type().name().equals("List")
+                        || created.type().name().equals("Vector")) {
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException(
                                 created.type().name()
