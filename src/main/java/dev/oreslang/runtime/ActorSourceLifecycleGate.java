@@ -49,16 +49,20 @@ final class ActorSourceLifecycleGate {
      */
     static final class ReceiveLease implements AutoCloseable {
         private final ActorSourceLifecycleGate gate;
-        private final java.util.concurrent.atomic.AtomicBoolean closed =
-                new java.util.concurrent.atomic.AtomicBoolean();
+        // One synchronized receipt avoids a second JVM heap allocation for
+        // AtomicBoolean on every actor message. A receive lease may be closed
+        // on another carrier after a continuation resumes.
+        private boolean closed;
 
         private ReceiveLease(ActorSourceLifecycleGate gate) {
             this.gate = gate;
         }
 
         @Override
-        public void close() {
-            if (closed.compareAndSet(false, true)) gate.leaveReceive();
+        public synchronized void close() {
+            if (closed) return;
+            closed = true;
+            gate.leaveReceive();
         }
     }
 
@@ -127,8 +131,12 @@ final class ActorSourceLifecycleGate {
         if (activeReceives == Integer.MAX_VALUE) {
             throw new IllegalStateException("source actor receive lease accounting overflow");
         }
+        // Construct the only allocation BEFORE incrementing the count.
+        // OutOfMemoryError during receipt allocation must not strand a
+        // permanent outstanding receive and block native resource retirement.
+        ReceiveLease lease = new ReceiveLease(this);
         activeReceives++;
-        return new ReceiveLease(this);
+        return lease;
     }
 
     private synchronized void leaveReceive() {
