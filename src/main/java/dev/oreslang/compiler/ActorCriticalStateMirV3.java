@@ -49,18 +49,25 @@ public final class ActorCriticalStateMirV3 {
             String actor,
             String method,
             String stateField,
+            String mailBinding,
+            String detachedBinding,
+            long stopValue,
             String scalarType,
             List<Instruction> instructions,
             List<StateRegionLoanReceipt.Requirement> loans) {
         public Plan {
             for (var value : List.of(packageIdentity, sourceUnit, sourceSha256,
-                    namespace, actor, method, stateField, scalarType)) {
+                    namespace, actor, method, stateField, mailBinding,
+                    detachedBinding, scalarType)) {
                 if (value == null || value.isBlank())
                     throw new IllegalArgumentException("ACTOR_STATE_MIR_V3: empty source identity");
             }
             if (sourceSha256.length() != 64 || !sourceSha256.matches("[0-9a-f]{64}"))
                 throw new IllegalArgumentException("ACTOR_STATE_MIR_V3: source digest invalid");
-            if (!scalarType.equals("int") || !method.equals("receive"))
+            if (!scalarType.equals("int") || !method.equals("receive")
+                    || mailBinding.equals(detachedBinding)
+                    || detachedBinding.equals(stateField)
+                    || mailBinding.equals(stateField))
                 throw new IllegalArgumentException("ACTOR_STATE_MIR_V3: only typed scalar receive");
             instructions = List.copyOf(Objects.requireNonNull(instructions));
             if (!instructions.equals(RECEIVE))
@@ -84,7 +91,8 @@ public final class ActorCriticalStateMirV3 {
     }
 
     /** Package-private: caller must hold one verified manifest snapshot. */
-    static Plan lower(PackageNamespaceBuild.ActorAudit audit, String packageIdentity) {
+    static Plan lower(PackageNamespaceBuild.ActorAudit audit, String packageIdentity,
+                      Map<String, Ast.Program> parsed) {
         Objects.requireNonNull(audit, "manifest-bound audit");
         if (packageIdentity == null || packageIdentity.isBlank()
                 || audit.manifestSha256() == null
@@ -105,6 +113,7 @@ public final class ActorCriticalStateMirV3 {
                 || !write.scalarType().equals("int")
                 || !read.scalarType().equals("int"))
             throw reject("critical-state witness does not prove detached read after write");
+        var shape = verifyReceiveShape(parsed, write);
         String sourceDigest = audit.sourceSha256().get(write.sourceUnit());
         if (sourceDigest == null || sourceDigest.isBlank())
             throw reject("missing physical receive source identity");
@@ -126,9 +135,100 @@ public final class ActorCriticalStateMirV3 {
 
         return new Plan(packageIdentity, write.sourceUnit(), sourceDigest,
                 write.namespace(), write.actor(), write.method(), write.field(),
+                shape.mailBinding(), shape.detachedBinding(), shape.stopValue(),
                 write.scalarType(), RECEIVE, List.of(
                     writer, writer.release_requirement(),
                     reader, reader.release_requirement()));
+    }
+
+    private record ReceiveShape(
+            String mailBinding, String detachedBinding, long stopValue) { }
+
+    /**
+     * Verify the complete, ordered typed method body. Preflight proves
+     * individual writes/reads, but extra guest effects between them would
+     * make a fabricated linear MIR unsafe. This closed v3 lowering therefore
+     * allows exactly five source-level statements and no hidden branches.
+     */
+    private static ReceiveShape verifyReceiveShape(
+            Map<String, Ast.Program> parsed,
+            ActorCriticalStatePreflight.CriticalOperation write) {
+        if (parsed == null) throw reject("missing immutable source snapshot");
+        Ast.Program program = parsed.get(write.sourceUnit());
+        if (program == null || !write.namespace().equals(program.namespace()))
+            throw reject("physical receive source missing or in another namespace");
+
+        Ast.ExternalActorMethodDecl method = null;
+        for (var module : program.modules()) {
+            if (!module.name().equals(dev.oreslang.parser.Parser.ROOT_MODULE)) continue;
+            for (var declaration : module.declarations()) {
+                if (declaration instanceof Ast.ExternalActorMethodDecl candidate
+                        && candidate.actorName().equals(write.actor())
+                        && candidate.name().equals(write.method())) {
+                    if (method != null)
+                        throw reject("ambiguous external receive source declarations");
+                    method = candidate;
+                }
+            }
+        }
+        if (method == null || method.parameters().size() != 1
+                || !method.name().equals("receive")
+                || !method.returnType().name().equals("void")
+                || !method.returnType().arguments().isEmpty()
+                || method.body().size() != 5)
+            throw reject("receive method requires exact five-statement typed body");
+
+        String mail = method.parameters().getFirst().name();
+        var stmts = method.body();
+        if (!(stmts.get(0) instanceof Ast.ActorStateAccessStmt writer)
+                || writer.mode() != Ast.CriticalStateMode.WRITE
+                || !(stmts.get(1) instanceof Ast.BindingStmt copy)
+                || copy.kind() != Ast.BindingKind.VAL
+                || copy.declaredType() == null
+                || !copy.declaredType().name().equals("int")
+                || !copy.declaredType().arguments().isEmpty()
+                || !(copy.initializer() instanceof Ast.ActorStateReadExpr read)
+                || !read.fieldName().equals(write.field())
+                || !writer.viewName().equals(read.viewName())
+                || !(stmts.get(2) instanceof Ast.ExprStmt send)
+                || !(send.expression() instanceof Ast.CallExpr call)
+                || call.typeArgumentsPresent()
+                || call.arguments().size() != 1
+                || !(call.arguments().getFirst() instanceof Ast.NameExpr value)
+                || !value.name().equals(copy.name())
+                || !(call.callee() instanceof Ast.MemberExpr receiver)
+                || !receiver.member().equals("send")
+                || !(receiver.receiver() instanceof Ast.NameExpr self)
+                || !self.name().equals("self"))
+            throw reject("write, detached Copy and mailbox send must be in exact order");
+
+        if (!(stmts.get(3) instanceof Ast.IfStmt stop)
+                || stop.branches().size() != 1 || !stop.elseBody().isEmpty()
+                || stop.branches().getFirst().body().size() != 1)
+            throw reject("STOP must have one exact conditional shutdown branch");
+        var condition = stop.branches().getFirst().condition();
+        if (!(condition instanceof Ast.BinaryExpr equals)
+                || !equals.operator().equals("==")
+                || !(equals.left() instanceof Ast.MemberExpr mailValue)
+                || !mailValue.member().equals("value")
+                || !(mailValue.receiver() instanceof Ast.NameExpr owner)
+                || !owner.name().equals(mail)
+                || !(equals.right() instanceof Ast.LiteralExpr stopLiteral)
+                || !(stopLiteral.value() instanceof Long stopValue))
+            throw reject("STOP must compare authenticated ActorMail<int>.value");
+        var stopStmt = stop.branches().getFirst().body().getFirst();
+        if (!(stopStmt instanceof Ast.ExprStmt expr)
+                || !(expr.expression() instanceof Ast.CallExpr end)
+                || end.typeArgumentsPresent() || !end.arguments().isEmpty()
+                || !(end.callee() instanceof Ast.MemberExpr callee)
+                || !callee.member().equals("end")
+                || !(callee.receiver() instanceof Ast.NameExpr actor)
+                || !actor.name().equals("self")
+                || !(stmts.get(4) instanceof Ast.ReturnStmt terminal)
+                || terminal.value() != null)
+            throw reject("STOP must call self.end(), followed by void return");
+
+        return new ReceiveShape(mail, copy.name(), stopValue);
     }
 
     private static IllegalArgumentException reject(String reason) {

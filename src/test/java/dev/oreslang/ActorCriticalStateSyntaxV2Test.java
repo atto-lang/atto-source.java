@@ -138,6 +138,9 @@ final class ActorCriticalStateSyntaxV2Test {
         assertEquals("receive", plan.method());
         assertEquals("src/counter/receive.atto", plan.sourceUnit());
         assertEquals("total", plan.stateField());
+        assertEquals("mail", plan.mailBinding());
+        assertEquals("snapshot", plan.detachedBinding());
+        assertEquals(4L, plan.stopValue());
         assertEquals("int", plan.scalarType());
         assertEquals(64, plan.sourceSha256().length());
         assertEquals(java.util.List.of(
@@ -169,6 +172,31 @@ final class ActorCriticalStateSyntaxV2Test {
         assertEquals(loans.get(0).region_binding(), loans.get(2).region_binding());
         assertThrows(UnsupportedOperationException.class,
                 () -> plan.instructions().add(ActorCriticalStateMirV3.Instruction.RETURN_VOID));
+    }
+
+    @Test
+    void typedMirRejectsUnverifiedEffectsAndStopControlFlow() throws Exception {
+        var build = physicalBuild();
+        var receive = root.resolve("src/counter/receive.atto");
+        String original = Files.readString(receive);
+        String[] changes = {
+            original.replace("self.send(snapshot);",
+                    "self.send(snapshot); self.send(mail.value);"),
+            original.replace("self.send(snapshot);",
+                    "self.send(snapshot); stdio.stdout.write(5);"),
+            original.replace("if mail.value == 4; do",
+                    "if mail.value >= 4; do"),
+            original.replace("self.end();", "self.send(99);"),
+            original.replace("return;", "self.send(0); return;")
+        };
+        for (String candidate : changes) {
+            assertNotEquals(original, candidate, "negative fixture did not mutate");
+            Files.writeString(receive, candidate);
+            var denied = assertThrows(IllegalArgumentException.class,
+                    build::auditCriticalStateMirV3,
+                    "unverified effect was silently erased from typed MIR");
+            assertFalse(denied.getMessage().isBlank());
+        }
     }
 
     @Test

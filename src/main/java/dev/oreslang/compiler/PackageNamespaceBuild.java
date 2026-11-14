@@ -213,7 +213,7 @@ public final class PackageNamespaceBuild {
             throws IOException {
         SourceSnapshot source = snapshot();
         ActorAudit audit = auditSnapshot(source);
-        return ActorCriticalStateMirV3.lower(audit, packageIdentity);
+        return ActorCriticalStateMirV3.lower(audit, packageIdentity, source.parsed());
     }
 
     /**
