@@ -5435,7 +5435,13 @@ public final class TypeChecker {
                     if (!(pattern instanceof Ast.ConstructorPattern constructor)
                             || !(constructor.constructor().equals(patternName)
                                 || constructor.constructor().equals(variant.name()))) continue;
-                    if (variant.payload() == null && constructor.arguments().isEmpty()) {
+                    if (variant.payload() == null && constructor.arguments().isEmpty()
+                            && constructor.namedFields() == null) {
+                        variants.add(new Ast.WildcardPattern());
+                    } else if (variant.payload() != null && constructor.namedFields() != null) {
+                        // Named field patterns bind projections without a value
+                        // predicate: they cover every value of the given case,
+                        // as long as checkPattern validated its declared names.
                         variants.add(new Ast.WildcardPattern());
                     } else if (variant.payload() != null && constructor.arguments().size() == 1) {
                         variants.add(constructor.arguments().getFirst());
