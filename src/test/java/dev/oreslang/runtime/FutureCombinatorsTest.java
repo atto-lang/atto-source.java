@@ -353,8 +353,23 @@ public class FutureCombinatorsTest {
                         return nested;
                     });
             source.completeFromRuntime(1);
-            assertTrue(mapped.await(3, TimeUnit.SECONDS));
+            assertTrue(mapped.await(3, TimeUnit.SECONDS),
+                    "flatMap mapper did not begin");
+            // The mapper's latch fires before flatMap installs the inner
+            // cancellation watcher. Cancelling immediately is a test race:
+            // it can observe the Future before subscription and report a
+            // spurious failure. Wait for actual registration instead.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (nested.pendingRuntimeWaiterCount() == 0 &&
+                    System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(nested.pendingRuntimeWaiterCount() > 0,
+                    "flatMap did not subscribe to its inner Future");
             assertTrue(nested.cancel(false));
+            assertThrows(CancellationException.class,
+                    () -> result.get(3, TimeUnit.SECONDS),
+                    "authenticated inner cancellation must cancel the derived Task");
             assertTrue(result.isCancelled());
             assertEquals(0, nested.pendingRuntimeWaiterCount());
             assertFalse(source.isCancelled(), "flatMap never revokes shared source");

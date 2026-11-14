@@ -167,4 +167,28 @@ final class TaskCaptureNamesTest {
         assertEquals(Set.of("deviceBuffer"),
                 TaskCaptureNames.referencedIn(List.of(new Ast.ExprStmt(nested))));
     }
+
+    @Test
+    void valueMatchPrefixLocalShadowsParentForArmResult() {
+        Ast.MatchExpr matched = new Ast.MatchExpr(
+                new Ast.LiteralExpr(true),
+                List.of(new Ast.MatchValueArm(
+                        new Ast.WildcardPattern(),
+                        null,
+                        List.of(new Ast.BindingStmt(
+                                Ast.BindingKind.VAL,
+                                Ast.TypeRef.simple("int"),
+                                "shadowed",
+                                new Ast.LiteralExpr(41L))),
+                        new Ast.BinaryExpr(
+                                "+",
+                                new Ast.NameExpr("shadowed"),
+                                new Ast.NameExpr("actualParent")))));
+
+        assertEquals(
+                Set.of("actualParent"),
+                TaskCaptureNames.referencedIn(
+                        List.of(new Ast.ExprStmt(matched))));
+    }
+
 }
