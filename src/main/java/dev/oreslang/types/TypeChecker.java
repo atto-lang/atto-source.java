@@ -8553,7 +8553,8 @@ public final class TypeChecker {
         }
         Type accumulator = null;
         if (operation.equals("reduce")) {
-            accumulator = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+            accumulator = widenCollectionElement(
+                    deref(typeOf(call.arguments().getFirst(), env, generics, self)));
             if (!nativeCollectionCopyScalar(accumulator)) {
                 throw new IllegalArgumentException(
                         "collection.reduce requires a concrete Copy scalar accumulator");
@@ -8585,7 +8586,7 @@ public final class TypeChecker {
                     "collection.filter predicate result");
             return source;
         }
-        Type result = deref(callback.result());
+        Type result = widenCollectionElement(deref(callback.result()));
         if (!nativeCollectionCopyScalar(result)) {
             throw new IllegalArgumentException(
                     "collection.map requires a concrete Copy scalar result");
