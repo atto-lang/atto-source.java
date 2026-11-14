@@ -40,9 +40,11 @@ public final class OresCompiler {
                 checked.program(), checked.shortInferredAliases());
     }
 
+    /**
      * Explicit AttoLang strict-v1 *front-end* admission for AOT build pipelines.
      * It emits a checked AST, not native code or a guest-AOT proof. The caller
      * must still use an AOT backend and verify a program-specific executable.
+     */
     public static Ast.Program parseAndTypeCheckStrictAtto(String source) {
         Ast.Program program = Parser.parseStrictAtto(source);
         // Profile evidence must cover the complete compilation closure.
@@ -52,23 +54,29 @@ public final class OresCompiler {
             throw new IllegalArgumentException(
                     "ATTO_STRICT_IMPORT_GRAPH_UNVERIFIED: every imported unit must use the same source profile");
         }
+        TypeChecker.TypeCheckResult checked =
                 TypeChecker.checkTypesWithDiagnostics(program, true);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return checked.program();
+    }
 
+    /**
      * Validate a complete source graph under the strict profile. Every source
      * unit, including import targets, must be supplied and checked; unresolved
      * external imports fail closed. Returns linked checked AST units, not an
      * emitted native program or proof of AOT execution.
+     */
     public static IncrementalCompiler.BuildResult parseAndTypeCheckStrictAttoGraph(
             java.util.Map<String, String> sources,
             java.util.Map<String, java.util.Map<String, String>> importResolutions) {
         return new IncrementalCompiler().compileStrictAtto(sources, importResolutions);
+    }
 
     /** Strict source-profile front end for closed-world build optimization. */
     public static TreeShaker.Result compileForBuildStrictAtto(
             String source, BuildOptions options) {
         return TreeShaker.shake(parseAndTypeCheckStrictAtto(source), options);
+    }
 
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
