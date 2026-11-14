@@ -379,6 +379,9 @@ public final class OwnershipChecker {
                     }
                 }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (isBorrowValue(returned) && scope.hasScopedEnumCaseLoan()) {
+                    throw error("a borrowed enum case or field cannot escape its match arm via return");
+                }
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
@@ -1039,6 +1042,27 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr caseAliasName) {
+                VarState alias = scope.lookup(caseAliasName.name());
+                if (alias != null && alias.enumCaseFields != null) {
+                    requireUsable(alias, caseAliasName.name(), false);
+                    Ast.TypeRef field = alias.enumCaseFields.get(member.member());
+                    if (field == null) {
+                        throw error("unknown narrowed enum case field '" + member.member() + "'");
+                    }
+                    if (isCopySafeEnumScalar(field)) {
+                        return new ValueInfo(field, ValueKind.COPY, null);
+                    }
+                    if (!alias.scopedEnumCaseLoan || alias.borrowSource == null) {
+                        throw error("owned enum case field projection requires a scoped case borrow");
+                    }
+                    // Every non-Copy field remains a borrowed projection with
+                    // the SAME owner as the whole-case view, including when
+                    // used by rt take / return / actor send diagnostics.
+                    return new ValueInfo(Ast.TypeRef.borrowed(field, false),
+                            ValueKind.IMM_BORROW, ownershipRoot(alias.borrowSource));
+                }
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -2551,54 +2575,87 @@ public final class OwnershipChecker {
         }
         if (pattern instanceof Ast.ConstructorPattern constructor) {
             List<Ast.TypeRef> argTypes = constructorPatternTypes(constructor.constructor(), subjectType);
-            if (constructor.namedFields() != null) {
-                if (argTypes.size() != 1 || !argTypes.getFirst().isRecordType()) {
-                    throw error("named enum fields require a declared record payload");
+            Ast.EnumDecl declarationEnum = subjectType == null
+                    ? null : enumDeclaration(subjectType.name());
+            if (declarationEnum == null && (constructor.namedFields() != null
+                    || constructor.wholeAlias() != null)) {
+                throw error("named fields and whole-case aliases require a nominal enum");
+            }
+            String caseName = constructor.constructor();
+            int sep = caseName.lastIndexOf('.');
+            if (sep >= 0 && declarationEnum != null) {
+                if (!caseName.substring(0, sep).equals(declarationEnum.name())) {
+                    throw error("enum case has foreign nominal owner");
                 }
-                Map<String, Ast.TypeRef> fields = argTypes.getFirst().recordMembers();
-                if (!fields.values().stream().allMatch(this::isCopySafeEnumScalar)) {
-                    throw error("named enum fields require Copy-safe payload; Bytes borrow lowering is pending");
+                caseName = caseName.substring(sep + 1);
+            }
+            Ast.EnumVariant member = declarationEnum == null
+                    ? null : enumVariant(declarationEnum, caseName);
+            Map<String, Ast.TypeRef> fields = member == null || member.payload() == null
+                    ? Map.of() : member.payload().recordMembers();
+
+            if (constructor.namedFields() != null) {
+                if (member == null || member.payload() == null || argTypes.size() != 1) {
+                    throw error("named enum fields require a declared record payload");
                 }
                 for (String field : constructor.namedFields()) {
                     Ast.TypeRef fieldType = fields.get(field);
                     if (fieldType == null) {
                         throw error("unknown named enum payload field '" + field + "'");
                     }
-                    // A Copy-safe field is an independent immutable scalar,
-                    // not an ownership transfer from the message payload.
-                    defineRefinementAlias(field, fieldType, null, destination);
+                    if (isCopySafeEnumScalar(fieldType)) {
+                        defineRefinementAlias(field, fieldType, null, destination);
+                    } else {
+                        defineScopedEnumCaseLoan(field, fieldType, source, destination, Map.of());
+                    }
                 }
             } else {
-                for (int i = 0; i < constructor.arguments().size(); i++) {
-                    Ast.TypeRef argType = i < argTypes.size() ? argTypes.get(i) : Ast.TypeRef.inferred();
-                    definePatternAliases(constructor.arguments().get(i), argType, source, destination);
+                // A whole-case alias may omit positional payload arguments,
+                // but an ordinary constructor pattern cannot.
+                if (constructor.wholeAlias() == null
+                        || !constructor.arguments().isEmpty()) {
+                    for (int i = 0; i < constructor.arguments().size(); i++) {
+                        Ast.TypeRef argType = i < argTypes.size()
+                                ? argTypes.get(i) : Ast.TypeRef.inferred();
+                        definePatternAliases(constructor.arguments().get(i), argType, source, destination);
+                    }
                 }
             }
+
             if (constructor.wholeAlias() != null) {
-                Ast.EnumDecl declarationEnum = subjectType == null
-                        ? null : enumDeclaration(subjectType.name());
-                if (declarationEnum == null || !constructor.arguments().isEmpty()) {
-                    throw error("whole-variant alias requires a nominal enum case");
+                if (member == null || !constructor.arguments().isEmpty()) {
+                    throw error("whole-variant alias requires a nominal case without positional payload bindings");
                 }
-                String caseName = constructor.constructor();
-                int sep = caseName.lastIndexOf('.');
-                if (sep >= 0) {
-                    if (!caseName.substring(0, sep).equals(declarationEnum.name())) {
-                        throw error("whole-variant alias has foreign nominal enum owner");
-                    }
-                    caseName = caseName.substring(sep + 1);
+                if (isCopyType(subjectType)) {
+                    defineRefinementAlias(constructor.wholeAlias(), subjectType, source, destination);
+                    destination.lookup(constructor.wholeAlias()).enumCaseFields = Map.copyOf(fields);
+                } else {
+                    defineScopedEnumCaseLoan(constructor.wholeAlias(), subjectType,
+                            source, destination, fields);
                 }
-                Ast.EnumVariant member = enumVariant(declarationEnum, caseName);
-                if (!isCopyType(subjectType)
-                        || (member.payload() != null && (argTypes.size() != 1
-                                || !argTypes.getFirst().isRecordType()
-                                || !argTypes.getFirst().recordMembers().values().stream()
-                                    .allMatch(this::isCopySafeEnumScalar)))) {
-                    throw error("whole-variant alias of non-Copy payload requires checked borrow lowering");
-                }
-                defineRefinementAlias(constructor.wholeAlias(), subjectType, source, destination);
             }
         }
+    }
+
+    /** Create a lexical immutable loan pinned to the matched subject. No
+     *  non-Copy enum case is copied, serialized, moved or stored by matching. */
+    private void defineScopedEnumCaseLoan(
+            String name, Ast.TypeRef valueType, VarState source, Scope destination,
+            Map<String, Ast.TypeRef> caseFields) {
+        if (source == null) {
+            throw error("non-Copy enum pattern requires a named owned match subject for borrow provenance");
+        }
+        VarState root = ownershipRoot(source);
+        validateBorrow(root, false);
+        VarState alias = new VarState(
+                Ast.TypeRef.borrowed(valueType, false), false,
+                ValueKind.IMM_BORROW, Origin.LOCAL);
+        alias.borrowSource = root;
+        alias.borrowLease = true;
+        alias.scopedEnumCaseLoan = true;
+        alias.enumCaseFields = Map.copyOf(caseFields);
+        destination.define(name, alias);
+        beginPersistentBorrow(root, false);
     }
 
     private Ast.EnumDecl enumDeclaration(String name) {
@@ -3650,6 +3707,10 @@ public final class OwnershipChecker {
         private boolean mutableBorrowed;
         private VarState borrowSource;
         private boolean borrowLease;
+        /** Only created inside the chosen nominal enum match arm. */
+        private boolean scopedEnumCaseLoan;
+        /** Statistically validated narrowed case projection types, never dynamic reflection. */
+        private Map<String, Ast.TypeRef> enumCaseFields;
         /** Narrowing/pattern alias: ownership operations are forwarded to this root place. */
         private VarState aliasSource;
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
@@ -3714,6 +3775,11 @@ public final class OwnershipChecker {
                 if (!state.moved && containsAcquiredMutexGuardType(state.type)) return true;
             }
             return false;
+        }
+
+        private boolean hasScopedEnumCaseLoan() {
+            return visibleStates().stream()
+                    .anyMatch(state -> !state.moved && state.scopedEnumCaseLoan);
         }
 
         private boolean hasLiveBorrow() {
