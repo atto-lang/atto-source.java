@@ -275,7 +275,7 @@ public final class Parser {
         }
 
         rootDeclarations = attachExternalReceiverMethods(
-                rootDeclarations, rootReceiverMethods, "file root");
+                rootDeclarations, rootForwards, rootReceiverMethods, "file root");
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
@@ -405,13 +405,16 @@ public final class Parser {
                 if (declaration != null) declarations.add(declaration);
             }
             consume(END, "expected 'end' to close module " + name);
-            validateForwardTypes(forwards, declarations, "module " + name);
+            // Resolve stand-alone actor definitions and receiver methods
+            // before checking forward signatures against executable types.
         } finally {
             moduleForwards = enclosing;
             moduleReceiverMethods = enclosingReceiverMethods;
         }
-        return new Ast.ModuleDecl(name, annotations, contracts,
-                attachExternalReceiverMethods(declarations, receiverMethods, "module " + name));
+        declarations = attachExternalReceiverMethods(
+                declarations, forwards, receiverMethods, "module " + name);
+        validateForwardTypes(forwards, declarations, "module " + name);
+        return new Ast.ModuleDecl(name, annotations, contracts, declarations);
     }
 
     private void rejectUnsupportedAcceleratorSyntax() {
@@ -1681,10 +1684,21 @@ public final class Parser {
         }
         advance(); // contextual mtd
         consume(LPAREN, "expected '(' after external mtd");
-        boolean mutable = match(MUT);
-        consume(SELF, "receiver must start with self or mut self");
-        consume(COLON, "external receiver requires ': Type'");
-        Ast.TypeRef target = parseTypeRef();
+        // Canonical type-first spelling: mtd (Foo1 self) foo().
+        // Also accept the previously introduced self-first form for class
+        // migration: mtd (self: Foo1) foo().
+        boolean mutable;
+        Ast.TypeRef target;
+        if (check(SELF) || check(MUT)) {
+            mutable = match(MUT);
+            consume(SELF, "receiver requires self");
+            consume(COLON, "self-first receiver requires ': Type'");
+            target = parseTypeRef();
+        } else {
+            target = parseTypeRef();
+            mutable = match(MUT);
+            consume(SELF, "type-first receiver requires 'Type self' or 'Type mut self'");
+        }
         if (!target.arguments().isEmpty() || target.isBorrow() || target.name().equals("self")) {
             throw error(previous(), "external receiver must be a local nongeneric nominal class");
         }
@@ -1705,13 +1719,12 @@ public final class Parser {
     }
 
     private List<Ast.Decl> attachExternalReceiverMethods(
-            List<Ast.Decl> declarations,
+            List<Ast.Decl> declarations, List<ForwardType> forwards,
             List<ExternalReceiverMethod> externalMethods, String scope) {
         if (externalMethods.isEmpty()) return declarations;
 
-        // Index the current source scope once; never bind to imported classes
-        // or scan the whole declaration list for each method.
         java.util.Map<String, Integer> classSlots = new java.util.HashMap<>();
+        List<Ast.Decl> attached = new ArrayList<>(declarations);
         for (int i = 0; i < declarations.size(); i++) {
             if (declarations.get(i) instanceof Ast.ClassDecl klass
                     && classSlots.putIfAbsent(klass.name(), i) != null) {
@@ -1720,25 +1733,75 @@ public final class Parser {
             }
         }
 
-        // Stage additions first and rebuild each class once. Reconstructing a
-        // class for every method creates quadratic work for large source
-        // modules and obscures duplicates behind incremental AST mutation.
-        java.util.Map<String, List<Ast.MethodDecl>> additions = new java.util.LinkedHashMap<>();
-        java.util.Map<String, java.util.Set<Ast.MethodArity>> usedSlots = new java.util.HashMap<>();
+        // A bare 'declare actor Foo;' followed by local mtd definitions
+        // constructs a real, empty-state actor type. It does not silently
+        // attach methods to an independently defined actor whose sealed
+        // lexical state would otherwise become accessible to an extension.
+        java.util.Map<String, ForwardType> actorSignatures = new java.util.HashMap<>();
+        for (ForwardType forward : forwards) {
+            if (forward.kind() == ACTOR || forward.kind() == ISOACTOR) {
+                if (actorSignatures.putIfAbsent(forward.name(), forward) != null)
+                    throw error(externalMethods.getFirst().origin(),
+                            "duplicate actor forward '" + forward.name() + "' in " + scope);
+            }
+        }
+        java.util.Set<String> declarationOnlyActors = new java.util.HashSet<>();
         for (ExternalReceiverMethod external : externalMethods) {
-            Integer index = classSlots.get(external.owner());
-            if (index == null) {
+            if (classSlots.containsKey(external.owner())) continue;
+            ForwardType forward = actorSignatures.get(external.owner());
+            if (forward == null) {
                 throw error(external.origin(), "external mtd receiver '" + external.owner()
                         + "' must be declared in the same " + scope);
             }
-            Ast.ClassDecl klass = (Ast.ClassDecl) declarations.get(index);
-            if (klass.actorKind() != Ast.ActorKind.NONE || !klass.genericParameters().isEmpty()) {
+            if (!forward.generics().isEmpty()) {
                 throw error(external.origin(),
-                        "external mtd requires an ordinary nongeneric class; actor state is sealed");
+                        "external actor mtd requires nongeneric declared actor in v1");
+            }
+            Ast.ActorKind kind = forward.kind() == ISOACTOR
+                    ? Ast.ActorKind.PRIVATE : Ast.ActorKind.SHARED;
+            classSlots.put(forward.name(), attached.size());
+            declarationOnlyActors.add(forward.name());
+            attached.add(new Ast.ClassDecl(
+                    forward.name(), forward.visibility(), false, kind, List.of(),
+                    List.of(), List.of(), List.of(), null, List.of(),
+                    new Ast.ActorConcurrency(Ast.ActorTransport.GENERIC, 1, 1)));
+        }
+
+        java.util.Map<String, List<Ast.MethodDecl>> additions =
+                new java.util.LinkedHashMap<>();
+        java.util.Map<String, java.util.Set<Ast.MethodArity>> usedSlots =
+                new java.util.HashMap<>();
+        for (ExternalReceiverMethod external : externalMethods) {
+            Integer index = classSlots.get(external.owner());
+            if (index == null) {
+                throw error(external.origin(), "undeclared receiver '" + external.owner()
+                        + "' in " + scope);
+            }
+            Ast.ClassDecl klass = (Ast.ClassDecl) attached.get(index);
+            if (!klass.genericParameters().isEmpty()) {
+                throw error(external.origin(),
+                        "external mtd requires nongeneric nominal class or actor");
+            }
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                if (!declarationOnlyActors.contains(external.owner())) {
+                    throw error(external.origin(),
+                            "external mtd cannot extend a defined actor's sealed state; "
+                                    + "place methods inside the actor or use declaration-only actor methods");
+                }
+                String name = external.method().name();
+                if (name.equals("handle_state") || name.equals("send")
+                        || name.equals("end") || name.equals("endWithCleanup")
+                        || name.equals("on_panic") || name.equals("on_throw")
+                        || name.equals("on_raise") || name.equals("on_recover")
+                        || name.equals("tear_down")) {
+                    throw error(external.origin(),
+                            "actor method '" + name + "' is reserved for compiler-owned lifecycle/state authority");
+                }
             }
             java.util.Set<Ast.MethodArity> identities = usedSlots.computeIfAbsent(
                     external.owner(), key -> {
-                        java.util.Set<Ast.MethodArity> existing = new java.util.HashSet<>();
+                        java.util.Set<Ast.MethodArity> existing =
+                                new java.util.HashSet<>();
                         for (Ast.MethodDecl method : klass.methods()) {
                             existing.add(method.overloadIdentity());
                         }
@@ -1752,11 +1815,9 @@ public final class Parser {
             additions.computeIfAbsent(external.owner(), key -> new ArrayList<>())
                     .add(external.method());
         }
-
-        List<Ast.Decl> attached = new ArrayList<>(declarations);
         for (var addition : additions.entrySet()) {
             int index = classSlots.get(addition.getKey());
-            Ast.ClassDecl klass = (Ast.ClassDecl) declarations.get(index);
+            Ast.ClassDecl klass = (Ast.ClassDecl) attached.get(index);
             List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
             methods.addAll(addition.getValue());
             attached.set(index, new Ast.ClassDecl(
