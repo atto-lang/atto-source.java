@@ -1,0 +1,43 @@
+name: Atto actor receiver exact-head conformance
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/test/java/dev/oreslang/ActorForwardNamespaceReceiverTest.java'
+      - 'src/test/java/dev/oreslang/ExplicitReceiverMtdV1Test.java'
+      - 'src/test/resources/atto/mtd-receiver-v1/**'
+      - '.github/workflows/atto-actor-receiver-conformance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actor-receiver-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Print immutable compiler and fixture identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          git status --porcelain
+          git hash-object src/test/resources/atto/mtd-receiver-v1/declared-actors-type-first.atto
+          git hash-object src/test/resources/atto/mtd-receiver-v1/multi-actor-namespace.atto
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile Java frontend and run real Atto two-actor guests
+        run: |
+          mvn -B -ntp -Dtest=ActorForwardNamespaceReceiverTest,ExplicitReceiverMtdV1Test test
