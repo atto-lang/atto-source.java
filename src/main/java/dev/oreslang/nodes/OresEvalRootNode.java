@@ -1707,13 +1707,6 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceBlockTask(
                 Ast.TaskExpr taskExpr,
                 Env env) {
-            if (ActorRuntime.inActorExecution()) {
-                // The type checker also rejects this today. Keep a runtime gate
-                // for host-entered/untyped execution so actor self/state cannot
-                // silently cross into an independently scheduled task.
-                throw new IllegalStateException(
-                        "task blocks cannot capture actor state until explicit actor-task capture authority is lowered");
-            }
             if (env.hasLiveMutexGuards()) {
                 throw new IllegalStateException(
                         "cannot launch task while holding a live MutexGuard");
@@ -1770,16 +1763,26 @@ public final class OresEvalRootNode extends RootNode {
                             admitted,
                             launchAuthority.parentScopeEpoch());
             task.initialBlockEnv = transfer.environment();
-            OresScheduler current = OresScheduler.current();
-            OresScheduler scheduler =
-                    current != null ? current : context.vm().rootScheduler();
             try {
                 TaskScope structuredScope = env.structuredTaskScope();
-                // Both paths yield a TaskHandle so source code can cancel the
-                // task and await its physical-quiescence barrier (get_done).
-                TaskHandle<Object> handle = structuredScope != null
-                        ? structuredScope.startTask(task)
-                        : scheduler.startTracked(task);
+                // An actor Task must use the actor's mailbox-backed scheduler;
+                // selecting the VM root scheduler here would place ordinary
+                // guest work on the supervisor CONTROL workers.
+                TaskHandle<Object> handle;
+                if (ActorRuntime.inActorExecution()) {
+                    if (structuredScope != null) {
+                        throw new IllegalStateException(
+                                "actor task scopes require separate lifetime/quota admission");
+                    }
+                    handle = context.actors().startTrackedActorTask(task);
+                } else if (structuredScope != null) {
+                    handle = structuredScope.startTask(task);
+                } else {
+                    OresScheduler current = OresScheduler.current();
+                    handle = (current != null
+                            ? current
+                            : context.vm().rootScheduler()).startTracked(task);
+                }
                 OresFuture<Object> future = SourceTaskHandles.register(handle);
                 transfer.commit();
                 return future;
@@ -3677,19 +3680,36 @@ public final class OresEvalRootNode extends RootNode {
          * asynchronous; both await the SAME physical producer finalizer.
          */
         private final class SourceOwnedClose {
-            private final Runnable release;
+            private final java.util.function.Supplier<OresFuture<Void>> releaseAsync;
             private OresFuture<Void> closing;
 
             SourceOwnedClose(Runnable release) {
-                this.release = Objects.requireNonNull(release, "release");
+                Objects.requireNonNull(release, "release");
+                this.releaseAsync = () -> {
+                    try {
+                        return context.asyncRuntime().submit(() -> {
+                            release.run();
+                            return null;
+                        });
+                    } catch (RuntimeException | Error failure) {
+                        return OresFuture.failed(failure);
+                    }
+                };
+            }
+
+            SourceOwnedClose(java.util.function.Supplier<OresFuture<Void>> releaseAsync) {
+                this.releaseAsync = Objects.requireNonNull(releaseAsync, "releaseAsync");
             }
 
             synchronized OresFuture<Void> closeOnce() {
                 if (closing == null) {
-                    closing = context.asyncRuntime().submit(() -> {
-                        release.run();
-                        return null;
-                    });
+                    try {
+                        closing = Objects.requireNonNull(
+                                releaseAsync.get(),
+                                "async iterator close returned null Future");
+                    } catch (RuntimeException | Error failure) {
+                        closing = OresFuture.failed(failure);
+                    }
                 }
                 return closing;
             }
@@ -3699,7 +3719,8 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.Stmt> body, java.util.function.BiConsumer<Env, Object> bind,
                 SourceFlowCont continuation) {
             GeneratorRuntime.AsyncGenerator<?> generator = sourceAsyncGenerator(value, env);
-            SourceOwnedClose closer = new SourceOwnedClose(generator::close);
+            SourceOwnedClose closer = new SourceOwnedClose(
+                    (java.util.function.Supplier<OresFuture<Void>>) generator::closeAsync);
             SourceCleanupFrame registered = task.registerSourceCleanup(
                     (owner, completed) -> finishAsyncForOf(owner, closer,
                             SourceFlow.throwing(owner.cancellationCause), completed));
@@ -5237,12 +5258,14 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
+                            Object value;
                             try {
-                                continuation.accept(t,
-                                        applyIntegerIntrinsic(integerIntrinsic, arguments), null);
+                                value = applyIntegerIntrinsic(integerIntrinsic, arguments);
                             } catch (RuntimeException | Error invalid) {
                                 continuation.accept(t, null, invalid);
+                                return;
                             }
+                            continuation.accept(t, value, null);
                         });
                 return;
             }
@@ -5260,18 +5283,17 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Invocation invocation;
+                                boolean declaredFuture;
                                 try {
-                                    Invocation invocation =
-                                            functionInvocation(direct, values);
-                                    completeSourceInvocation(
-                                            t,
-                                            invocation,
-                                            invocationDeclaresAsync(invocation),
-                                            env,
-                                            continuation);
+                                    invocation = functionInvocation(direct, values);
+                                    declaredFuture = invocationDeclaresAsync(invocation);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                completeSourceInvocation(
+                                        t, invocation, declaredFuture, env, continuation);
                             });
                     return;
                 }
@@ -5296,25 +5318,18 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation.accept(t2, null, failure2);
                                             return;
                                         }
+                                        Invocation invocation;
+                                        boolean declaredFuture;
                                         try {
-                                            Invocation invocation =
-                                                    prepareInvocationEvaluated(
-                                                            call,
-                                                            receiver,
-                                                            values,
-                                                            env);
-                                            boolean declaredFuture =
-                                                    invocationDeclaresAsync(
-                                                            invocation);
-                                            completeSourceInvocation(
-                                                    t2,
-                                                    invocation,
-                                                    declaredFuture,
-                                                    env,
-                                                    continuation);
+                                            invocation = prepareInvocationEvaluated(
+                                                    call, receiver, values, env);
+                                            declaredFuture = invocationDeclaresAsync(invocation);
                                         } catch (RuntimeException | Error failure3) {
                                             continuation.accept(t2, null, failure3);
+                                            return;
                                         }
+                                        completeSourceInvocation(
+                                                t2, invocation, declaredFuture, env, continuation);
                                     });
                         });
                 return;
@@ -5364,46 +5379,42 @@ public final class OresEvalRootNode extends RootNode {
                 boolean declaredFuture,
                 Env env,
                 SourceValueCont continuation) {
+            // Do not catch exceptions from downstream callbacks. They may
+            // already have received a terminal result, and a second delivery
+            // would replay guest effects or double-release borrowed resources.
+            Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    // A settled Future is a value, not a suspension: do not
-                    // publish Await or relinquish the actor's execution lease.
-                    // In particular, no-yield guards can remain held across
-                    // this already-committed result without re-entering the
-                    // scheduler or running another actor's mailbox turn.
-                    if (future.isDone()) {
-                        Object completed;
-                        try {
-                            completed = future.join();
-                        } catch (RuntimeException | Error completedFailure) {
-                            continuation.accept(task, null, completedFailure);
-                            return;
-                        }
-                        continuation.accept(task, completed, null);
-                        return;
-                    }
-                    if (env.hasLiveMutexGuards()) {
-                        throw new IllegalStateException(
-                                "cannot suspend on an implicit Future while holding a live MutexGuard");
-                    }
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
-                }
+                result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
             }
+
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                // Already-settled Futures remain values, without yielding.
+                if (future.isDone()) {
+                    Object completed;
+                    try {
+                        completed = future.join();
+                    } catch (RuntimeException | Error completedFailure) {
+                        continuation.accept(task, null, completedFailure);
+                        return;
+                    }
+                    continuation.accept(task, completed, null);
+                    return;
+                }
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "cannot suspend on an implicit Future while holding a live MutexGuard"));
+                    return;
+                }
+                // suspend() can synchronously resume a completed Future. Its
+                // callback's exception must never enter an evaluation catch.
+                task.suspend(future, (t, value, failure) ->
+                        continuation.accept(t, value, failure));
+                return;
+            }
+            continuation.accept(task, result, null);
         }
 
         private boolean invocationDeclaresAsync(Invocation invocation) {
@@ -5925,16 +5936,17 @@ public final class OresEvalRootNode extends RootNode {
                             "actor callables cannot expose generator activations across mailbox turns");
                 }
 
-                List<?> captured = fn.async()
+                boolean asyncGeneratorProtocol = fn.async() || fn.suspends();
+                List<?> captured = asyncGeneratorProtocol
                         ? detachAsyncArguments(normalized, fn.parameters())
                         : List.copyOf(normalized);
                 GeneratorRuntime.Producer<Object> producer = emitter -> {
-                    GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
+                    GeneratorRuntime.Emitter<Object> boundaryEmitter = asyncGeneratorProtocol
                             ? value -> emitter.emit(detachAsyncValue(value, new IdentityHashMap<>()))
                             : emitter;
                     callGeneratorBodyRaw(fn, captured, boundaryEmitter);
                 };
-                return fn.async()
+                return asyncGeneratorProtocol
                         ? GeneratorRuntime.asyncGenerator(context.asyncRuntime(), producer)
                         : GeneratorRuntime.generator(context.asyncRuntime(), producer);
             }
@@ -6066,6 +6078,21 @@ public final class OresEvalRootNode extends RootNode {
                                         + " moves a BinaryFile and requires an owned BinaryFile parameter");
                     }
                     detached.add(file);
+                } else if (arg instanceof dev.oreslang.runtime.AsyncNioTcp.ReadHalf
+                        || arg instanceof dev.oreslang.runtime.AsyncNioTcp.WriteHalf) {
+                    // Split halves are affine like the connection: they MOVE into
+                    // the callee only through an owned NioReader/NioWriter formal.
+                    String want = arg instanceof dev.oreslang.runtime.AsyncNioTcp.ReadHalf
+                            ? "NioReader" : "NioWriter";
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !want.equals(formal.name())
+                            || !formal.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "async task argument " + (i + 1)
+                                        + " moves a " + want + " and requires an owned " + want + " parameter");
+                    }
+                    detached.add(arg);
                 } else if (arg instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
                     // An accepted NIO connection is an affine, single-owner
                     // capability: it MOVES (never copies or shares) into the
@@ -6297,7 +6324,7 @@ public final class OresEvalRootNode extends RootNode {
             GeneratorRuntime.Emitter<Object> previous = activeGeneratorEmitter.get();
             Boolean previousAsync = activeGeneratorAsync.get();
             activeGeneratorEmitter.set(emitter);
-            activeGeneratorAsync.set(fn.async());
+            activeGeneratorAsync.set(fn.async() || fn.suspends());
             try {
                 executeBlock(fn.body(), env);
             } catch (ReturnSignal signal) {
@@ -8200,6 +8227,31 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return bytes.equals(other);
                     };
+                    case "read_u16_be", "read_i16_be", "read_u32_be", "read_i32_be", "read_i64_be" ->
+                            (Invokable) args -> {
+                        requireOne(args, "Bytes." + name);
+                        int at = bytesIndex(args.getFirst(), "Bytes." + name + " offset");
+                        return switch (name) {
+                            case "read_u16_be" -> bytes.readU16Be(at);
+                            case "read_i16_be" -> bytes.readI16Be(at);
+                            case "read_u32_be" -> bytes.readU32Be(at);
+                            case "read_i32_be" -> bytes.readI32Be(at);
+                            default -> bytes.readI64Be(at);
+                        };
+                    };
+                    case "read_uvarint", "read_zigzag_varint" -> (Invokable) args -> {
+                        requireOne(args, "Bytes." + name);
+                        int at = bytesIndex(args.getFirst(), "Bytes." + name + " offset");
+                        long[] decoded = name.equals("read_uvarint")
+                                ? bytes.readUvarint(at) : bytes.readZigzagVarint(at);
+                        return List.of(decoded[0], decoded[1]);
+                    };
+                    case "crc32c", "crc32" -> (Invokable) args -> {
+                        requireTwo(args, "Bytes." + name);
+                        int start = bytesIndex(args.get(0), "Bytes." + name + " start");
+                        int end = bytesIndex(args.get(1), "Bytes." + name + " end");
+                        return name.equals("crc32c") ? bytes.crc32c(start, end) : bytes.crc32(start, end);
+                    };
                     case "copy" -> (Invokable) args -> {
                         requireZero(args, "Bytes.copy");
                         return dev.oreslang.runtime.OresBytes.copyOf(bytes.toArrayCopy());
@@ -8462,8 +8514,53 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown BinaryFile member " + name);
                 };
             }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.ReadHalf reader) {
+                return switch (name) {
+                    case "read_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "reader.read_owned_bytes_async");
+                        return reader.readOwnedBytesAsync(bytesIndex(args.getFirst(), "read limit"));
+                    };
+                    case "read_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "reader.read_bytes_async");
+                        return reader.readBytesAsync(bytesIndex(args.getFirst(), "read limit"));
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "reader.close_async");
+                        return reader.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown NioReader member " + name);
+                };
+            }
+            if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.WriteHalf writer) {
+                return switch (name) {
+                    case "write_owned_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "writer.write_owned_bytes_async");
+                        if (!(args.getFirst() instanceof dev.oreslang.runtime.OresBytes bytes)) {
+                            throw new IllegalArgumentException("write_owned_bytes_async needs Bytes");
+                        }
+                        return writer.writeOwnedBytesAsync(bytes);
+                    };
+                    case "write_bytes_async" -> (Invokable) args -> {
+                        requireOne(args, "writer.write_bytes_async");
+                        if (!(args.getFirst() instanceof List<?> data)) {
+                            throw new IllegalArgumentException("write_bytes_async needs List<int>");
+                        }
+                        return writer.writeBytesAsync(data);
+                    };
+                    case "close_async" -> (Invokable) args -> {
+                        requireZero(args, "writer.close_async");
+                        return writer.closeAsync();
+                    };
+                    default -> throw new IllegalArgumentException("unknown NioWriter member " + name);
+                };
+            }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
                 return switch (name) {
+                    case "split" -> (Invokable) args -> {
+                        requireZero(args, "socket.split");
+                        dev.oreslang.runtime.AsyncNioTcp.Halves halves = socket.split();
+                        return List.of(halves.reader(), halves.writer());
+                    };
                     case "read_resp2_hex_async" -> (Invokable) args -> {
                         requireZero(args, "socket.read_resp2_hex_async");
                         return socket.readResp2HexAsync();
@@ -8786,6 +8883,16 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ProcessFacade process) {
                 return switch (name) {
                     case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
+                    case "sleep_async" -> (Invokable) args -> {
+                        requireOne(args, "process.sleep_async");
+                        long millis = bytesIndex(args.getFirst(), "process.sleep_async milliseconds");
+                        if (millis < 0 || millis > 86_400_000L) {
+                            throw new IllegalArgumentException(
+                                    "process.sleep_async milliseconds must be 0..86400000");
+                        }
+                        return context.guestTimers().sleepNanos(
+                                java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(millis));
+                    };
                     case "unique_id" -> (Invokable) args -> { requireZero(args, "process.unique_id"); return java.util.UUID.randomUUID().toString(); };
                     case "unix_ms" -> (Invokable) args -> { requireZero(args, "process.unix_ms"); return System.currentTimeMillis(); };
                     case "context_id" -> process.contextId();
@@ -8834,6 +8941,32 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "Bytes.from_string");
                         return dev.oreslang.runtime.OresBytes.fromString(
                                 requireString(args.getFirst(), "Bytes.from_string"));
+                    };
+                    case "from_u8", "from_u16_be", "from_i16_be", "from_u32_be", "from_i32_be",
+                            "from_i64_be", "from_uvarint", "from_zigzag_varint" -> (Invokable) args -> {
+                        requireOne(args, "Bytes." + name);
+                        if (!(args.getFirst() instanceof Number number)
+                                || number.doubleValue() != Math.rint(number.doubleValue())) {
+                            throw new IllegalArgumentException("Bytes." + name + " needs an integer");
+                        }
+                        long v = number.longValue();
+                        return switch (name) {
+                            case "from_u8" -> dev.oreslang.runtime.OresBytes.fromU8(v);
+                            case "from_u16_be" -> dev.oreslang.runtime.OresBytes.fromU16Be(v);
+                            case "from_i16_be" -> dev.oreslang.runtime.OresBytes.fromI16Be(v);
+                            case "from_u32_be" -> dev.oreslang.runtime.OresBytes.fromU32Be(v);
+                            case "from_i32_be" -> dev.oreslang.runtime.OresBytes.fromI32Be(v);
+                            case "from_i64_be" -> dev.oreslang.runtime.OresBytes.fromI64Be(v);
+                            case "from_uvarint" -> dev.oreslang.runtime.OresBytes.fromUvarint(v);
+                            default -> dev.oreslang.runtime.OresBytes.fromZigzagVarint(v);
+                        };
+                    };
+                    case "join" -> (Invokable) args -> {
+                        requireOne(args, "Bytes.join");
+                        if (!(args.getFirst() instanceof List<?> parts)) {
+                            throw new IllegalArgumentException("Bytes.join requires List<Bytes>");
+                        }
+                        return dev.oreslang.runtime.OresBytes.join(parts);
                     };
                     default -> throw new IllegalArgumentException("unknown Bytes constructor " + name);
                 };
@@ -9052,7 +9185,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof GeneratorRuntime.AsyncGenerator<?> generator) {
                 return switch (name) {
                     case "next" -> (Invokable) args -> { requireZero(args, "AsyncIterator.next"); return generator.nextStep(); };
-                    case "close" -> (Invokable) args -> { requireZero(args, "AsyncIterator.close"); generator.close(); return null; };
+                    case "close" -> (Invokable) args -> { requireZero(args, "AsyncIterator.close"); return generator.closeAsync(); };
                     default -> throw new IllegalArgumentException("unknown AsyncIterator member " + name);
                 };
             }
@@ -9129,7 +9262,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof List<?> rawList) {
                 return switch (name) {
-                    case "size" -> (long) rawList.size();
+                    // TypeChecker admits length as a read-only scalar property.
+                    // Keep its runtime value identical to the canonical size.
+                    case "size", "length" -> (long) rawList.size();
                     case "get" -> (Invokable) args -> {
                         requireOne(args, "List.get");
                         Object index = args.getFirst();
