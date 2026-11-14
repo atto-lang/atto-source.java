@@ -7563,15 +7563,14 @@ public final class TypeChecker {
                 }
             }
             if (sequence.tail() != null && !sequence.tail().equals("_")) {
-                if (sequence.unit() == Ast.SequenceUnit.BIT) {
-                    // Bit tails may begin mid-byte. Do not fake this with Bytes,
-                    // round its cursor, or manufacture an escaping unproven loan.
-                    throw new IllegalArgumentException(
-                            "bits[] named tail requires checked BitView lifetime lowering (not yet admitted)");
-                }
-                // Byte tails are an owned Bytes.slice() copy in this initial
-                // Java execution slice, never an untracked borrowed pointer.
-                bindings.define(sequence.tail(), new Named("Bytes", List.of()), Ast.BindingKind.VAL);
+                // The current evaluator cannot yet guarantee destruction of
+                // a copied suffix on guard failure, and a borrowed suffix
+                // requires a fully checked lifetime across matches/await.
+                // Reject both byte and bit names rather than leaking a
+                // partially constructed Bytes or creating unsafe BitView.
+                throw new IllegalArgumentException(
+                        "named byte/bit tail requires checked ByteView/BitView "
+                                + "lifetime and guard-failure cleanup lowering");
             }
             return;
         }
