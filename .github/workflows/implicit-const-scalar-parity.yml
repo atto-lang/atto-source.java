@@ -1,0 +1,58 @@
+name: AttoLang Java implicit-const scalar guest parity
+on:
+  pull_request:
+    paths:
+      - 'contracts/implicit-const-scalar-v1/**'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/AttoImplicitConstScalarGuestTest.java'
+      - '.github/workflows/implicit-const-scalar-parity.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-java-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Exact source and eight cross-backend blob identities
+        shell: bash
+        env:
+          SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_HEAD"
+          test -z "$(git status --porcelain)"
+          test "$(find contracts/implicit-const-scalar-v1 -maxdepth 1 -type f -name '*.atto' | wc -l)" -eq 8
+          for row in \
+            'literal-equivalence a8e49769215a78946009f2cd2ac685b7c34c7804' \
+            'const-arithmetic 44daf131a7793f3b341c41a7e934cf8afe51f9db' \
+            'bool-local 52c7909c0d2ba760c000fef2cc4434aefbd91f97' \
+            'runtime-val-let fb47b57cb715ff9162de6a757ae515c1a9c19a30' \
+            'implicit-nonconst c3e5221ad48bfc8710249be41422acea41fccc8c' \
+            'explicit-nonconst 5a38a3999e3e7e2784c289ab764c68bbeefcf1af' \
+            'const-mut-scalar 2ff0af5fdcd84d1db293a6d6c1ebd82076e2e582' \
+            'const-overflow 496fe64c927b7ecee891c9e59d3583b0f2d58bed'; do
+            read -r name blob <<< "$row"
+            file="contracts/implicit-const-scalar-v1/$name.atto"
+            test -f "$file" && test ! -L "$file"
+            test "$(git hash-object --no-filters "$file")" = "$blob"
+          done
+          echo "SOURCE_HEAD=$SOURCE_HEAD SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Real Java parser, type checker and .atto guest execution
+        run: mvn -B -ntp -Dtest=AttoImplicitConstScalarGuestTest -DfailIfNoTests=true test
+      - name: Retain JUnit receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: atto-implicit-const-java-junit
+          path: target/surefire-reports/*AttoImplicitConstScalarGuestTest*
+          if-no-files-found: warn
