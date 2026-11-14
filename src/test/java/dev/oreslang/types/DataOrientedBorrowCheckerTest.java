@@ -171,6 +171,7 @@ final class DataOrientedBorrowCheckerTest {
         }
     }
 
+    @Test
     void conflictingLoansInsideOneWorksetCannotBeAdmittedAgainstEmptyPeer() {
         var region = place(SOA, "moving", "Position", "x", null);
         var reader = loan(region, READ);
@@ -185,7 +186,9 @@ final class DataOrientedBorrowCheckerTest {
         // Valid independent readers remain admitted even in the same workset.
         assertTrue(DataOrientedBorrowChecker.canRunConcurrently(
                 List.of(reader, reader), List.of()));
+    }
 
+    @Test
     void malformedHierarchyCannotFabricateIndependentProjectedLoans() {
         assertThrows(IllegalArgumentException.class, () ->
                 new DataOrientedBorrowChecker.Place(
@@ -193,7 +196,9 @@ final class DataOrientedBorrowCheckerTest {
         assertDoesNotThrow(() ->
                 new DataOrientedBorrowChecker.Place(
                         SOA, "world", null, null, null, null, 7));
+    }
 
+    @Test
     void oversizedValidReadWorksetFailsAdmissionBeforeQuadraticPairScan() {
         var region = place(AOS, "moving", "Position", "x", null);
         var read = loan(region, READ);
@@ -211,6 +216,7 @@ final class DataOrientedBorrowCheckerTest {
                 DataOrientedBorrowChecker.MAX_LOANS_PER_WORKSET, read);
         assertTrue(DataOrientedBorrowChecker.canRunConcurrently(
                 bounded, List.of()));
+    }
 
 }
 

@@ -61,6 +61,9 @@ public final class DataOrientedBorrowChecker {
             if (archetype == null && component != null) {
                 throw new IllegalArgumentException("component requires archetype");
             }
+            if (archetype == null && component != null) {
+                throw new IllegalArgumentException("component requires archetype");
+            }
             if (component == null && field != null) {
                 throw new IllegalArgumentException("field requires component");
             }
