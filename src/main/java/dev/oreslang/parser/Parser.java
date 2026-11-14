@@ -302,6 +302,23 @@ public final class Parser {
     }
 
     private Ast.ImportDecl parseImport() {
+        // Backend-qualified sugar for the existing capability-gated class import.
+        // Produce the identical AST as: import class Math as M from "java:java.lang.Math".
+        // No host class is resolved or initialized by this parser.
+        if (check(IDENT) && "jvm".equals(peek().lexeme())) {
+            advance();
+            String binaryName = consume(STRING, "expected quoted JVM class name").lexeme();
+            consume(AS, "JVM import requires 'as <alias>'");
+            String alias = consume(IDENT, "expected JVM class alias").lexeme();
+            consume(SEMICOLON, "expected ';' after JVM import");
+            String path = "java:" + binaryName;
+            String sourceName = dev.oreslang.imports.ImportRules.javaSimpleName(path);
+            return new Ast.ImportDecl(Ast.ImportKind.CLASS,
+                    List.of(sourceName), false, alias, path);
+        }
+        if (check(IDENT) && "dotnet".equals(peek().lexeme())) {
+            throw error(peek(), "dotnet host imports require the .NET backend");
+        }
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
         boolean wildcard = false;
