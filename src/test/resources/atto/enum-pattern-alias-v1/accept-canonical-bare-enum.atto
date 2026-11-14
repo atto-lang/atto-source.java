@@ -1,0 +1,20 @@
+define enum Messages {
+    Reset { reset: int },
+    Delta { delta: int },
+    Ready
+}
+
+fnc decode(Messages message): int {
+    return match message over {
+        on Reset(payload) { return payload.reset; }
+        on Delta(payload) { return payload.delta; }
+        on Ready { return 0; }
+    };
+}
+
+pub fnc main(): void {
+    stdio.println(decode(Messages.Reset(infer struct { reset: 41 })));
+    stdio.println(decode(Messages.Delta(infer struct { delta: 5 })));
+    stdio.println(decode(Messages.Ready()));
+    return;
+}
