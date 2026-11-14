@@ -99,6 +99,33 @@ final class LambdaCommaPipelineGuestTest {
     }
 
     @Test
+    void originalTwoArgumentStdioPipelineExampleChecksAllLambdaBodyForms() throws Exception {
+        String guest = """
+                fnc foo(int n): Tuple[int, int] { return tuple(n, n + 1); }
+                pub fnc main(): void {
+                    val braces = || -> void {
+                        return 5 |> foo |> |x, y| -> stdio.println(x, y);
+                    };
+                    val comma = || -> void ::
+                        5 |> foo |> |x, y| -> stdio.println(x, y)
+                    end;
+                    val inline = || -> void =>
+                        5 |> foo |> |x, y| -> stdio.println(x, y);
+                    braces();
+                    comma();
+                    inline();
+                    return;
+                }
+                """;
+        String output = execute(guest);
+        assertEquals(3L, output.lines().count(), "each lambda must run once");
+        for (String line : output.lines().toList()) {
+            assertTrue(line.contains("5") && line.contains("6"),
+                    "tuple destructuring lost a printed operand: " + line);
+        }
+    }
+
+    @Test
     void typedInlineCommaLambdaAsPipelineStagePreservesOuterPipeline() throws Exception {
         assertEquals("11:42", execute("""
                 fnc increment(int n): int { return n + 1; }
