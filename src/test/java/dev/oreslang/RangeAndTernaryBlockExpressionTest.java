@@ -340,6 +340,64 @@ final class RangeAndTernaryBlockExpressionTest {
         assertEquals("42", run(source));
     }
 
+    @Test
+    void valueIfIsDistinctFromStatementIfAndMatchesTernary() throws Exception {
+        String source = wrap("""
+                val first: int = if true then
+                  5
+                else
+                  4
+                fi;
+                val second: int = if false then 5 else 4 fi;
+                val ternary: int = true ? { return 5 } : { return 4 };
+                stdio.stdout.write(first);
+                stdio.stdout.write(second);
+                stdio.stdout.write(ternary);
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("545", run(source));
+    }
+
+    @Test
+    void valueIfElifAndArmBlocksAreLazy() throws Exception {
+        String source = wrap("""
+                val n: int = 2;
+                val result: int = if n eq 1 then
+                  { stdio.stdout.write("wrong"); return 1 }
+                elif n eq 2 then
+                  { val x: int = 40; x + 2 }
+                else
+                  { stdio.stdout.write("wrong"); return 3 }
+                fi;
+                stdio.stdout.write(result);
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("42", run(source));
+    }
+
+    @Test
+    void bracedImperativeIfNoLongerRequiresFi() throws Exception {
+        String source = wrap("""
+                if true {
+                  stdio.stdout.write("yes");
+                } else {
+                  stdio.stdout.write("wrong");
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("yes", run(source));
+    }
+
+    @Test
+    void valueIfRejectsMissingElseOrNonBoolPredicate() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(wrap("val v = if true then 5 fi;")));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap("val v = if 1 then 5 else 4 fi;"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap("val v = if true then 5 else false fi;"))));
+    }
+
     private static String wrap(String body) {
         return "pub routine main(): void { " + body + " }";
     }
