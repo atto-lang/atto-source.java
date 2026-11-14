@@ -398,6 +398,80 @@ final class RangeAndTernaryBlockExpressionTest {
                 () -> TypeChecker.check(Parser.parse(wrap("val v = if true then 5 else false fi;"))));
     }
 
+    @Test
+    void nestedBracedIfDoesNotEatEnclosingKeywordFi() throws Exception {
+        String source = wrap("""
+                if true then
+                  if true {
+                    stdio.stdout.write("inner");
+                  }
+                fi
+                stdio.stdout.write("outer");
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("innerouter", run(source));
+    }
+
+    @Test
+    void keywordIfInsideBracedStatementHasIndependentDelimiters() throws Exception {
+        String source = wrap("""
+                if true {
+                  if false then
+                    stdio.stdout.write("wrong");
+                  else
+                    stdio.stdout.write("right");
+                  fi
+                } else {
+                  stdio.stdout.write("wrong");
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("right", run(source));
+    }
+
+    @Test
+    void standaloneBracedStatementFollowedByFiIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(wrap("if true { stdio.stdout.write(1); } fi")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(wrap("if true { } else { } fi")));
+    }
+
+    @Test
+    void deeplyChainedValueIfIsRejectedBeforeAstConstruction() {
+        StringBuilder source = new StringBuilder("val v: int = if false then 0 ");
+        for (int i = 0; i < 130; i++) {
+            source.append("elif false then 0 ");
+        }
+        source.append("else 42 fi;");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(wrap(source.toString())));
+        assertTrue(failure.getMessage().contains("128 conditional arms"), failure::getMessage);
+    }
+
+    @Test
+    void valueIfIsAdmittedInsideOrdinaryTernaryArmAndFunctionCall() throws Exception {
+        String source = wrap("""
+                val direct: int = true ? { (if true then 40 else 0 fi) + 2 } : { 1 };
+                val nested: int = if false then 9 else true ? { 42 } : { 7 } fi;
+                stdio.stdout.write(direct);
+                stdio.stdout.write(":");
+                stdio.stdout.write(nested);
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("42:42", run(source));
+    }
+
+    @Test
+    void valueIfChecksInactiveArmAndForbidsLeakingBranchLocals() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap(
+                        "val v: int = if true then 42 else undeclared fi;"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrap(
+                        "val v: int = if true then { val hidden: int = 42; hidden } else 1 fi; stdio.stdout.write(hidden);"))));
+    }
+
     private static String wrap(String body) {
         return "pub routine main(): void { " + body + " }";
     }
