@@ -69,6 +69,31 @@ final class CommaDelimitedCallableBodyTest {
     }
 
     @Test
+    void actorReceiverMtdAndMultipleActorsRetainDistinctLexicalBodies() {
+        Ast.Program program = Parser.parse("""
+                define actor Foo1 as
+                    pub mtd compute(int n) -> int ::
+                        int x = 5, x + n
+                    end
+                end
+                define actor Foo2 as
+                    pub mtd compute(int n) -> int ::
+                        int x = 7, x * n
+                    end
+                end
+                """);
+        assertEquals(2, program.modules().getFirst().declarations().size());
+        for (Ast.Decl decl : program.modules().getFirst().declarations()) {
+            Ast.ClassDecl actor = assertInstanceOf(Ast.ClassDecl.class, decl);
+            assertEquals(1, actor.methods().size());
+            Ast.MethodDecl method = actor.methods().getFirst();
+            assertEquals(2, method.body().size());
+            assertInstanceOf(Ast.ReturnStmt.class, method.body().getLast());
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
     void nestedCallArgumentCommasAreNotSequenceDelimiters() {
         Ast.Program program = Parser.parse("""
                 fnc combine(int a, int b): int { return a + b; }
