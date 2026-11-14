@@ -8398,8 +8398,12 @@ public final class ActorRuntime implements AutoCloseable {
         private final String codeActorType;
         /** One trusted lifecycle gate per physical source actor incarnation. */
         private final ActorSourceLifecycleGate sourceLifecycleGate;
-        /** Mutable source actor state, created on this actor's dispatcher. */
-        private ActorOwnedGuestState codeActorState;
+        /** Actor-owned source state is installed on the dispatcher, but
+         * host STOP and teardown admission inspect its identity on another
+         * carrier. Publish the reference with a volatile happens-before
+         * relationship; this does NOT grant cross-actor mutable state access.
+         */
+        private volatile ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
