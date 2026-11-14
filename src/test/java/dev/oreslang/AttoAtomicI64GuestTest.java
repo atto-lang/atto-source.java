@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -18,27 +20,12 @@ import static org.junit.jupiter.api.Assertions.*;
 final class AttoAtomicI64GuestTest {
     @Test
     void actualGuestAtomicI64OperationsRunThroughCompiler() throws Exception {
-        String code = """
-                pub fnc main(): void {
-                  val counter: Atomic<int> = Atomic.new(0);
-                  counter.fetch_add(40);
-                  counter.fetch_add(2);
-                  val failed = counter.compare_exchange(1, 200);
-                  val changed = counter.compare_exchange(42, 44);
-                  if failed.exchanged then
-                    stdio.stdout.write("unexpected-failure-cas");
-                  elif changed.exchanged then
-                    stdio.stdout.write(failed.observed);
-                    stdio.stdout.write(":");
-                    stdio.stdout.write(changed.observed);
-                    stdio.stdout.write(":");
-                    stdio.stdout.write(counter.load());
-                  else
-                    stdio.stdout.write("unexpected-success-cas");
-                  fi
-                  return;
-                }
-                """;
+        String code = Files.readString(
+                Path.of("tests/fixtures/atomic-v1/atomic_i64_guest.atto"),
+                StandardCharsets.UTF_8);
+        String expected = Files.readString(
+                Path.of("tests/fixtures/atomic-v1/atomic_i64_guest.expected"),
+                StandardCharsets.UTF_8);
         TypeChecker.check(Parser.parse(code));
         ByteArrayOutputStream stdout = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, code, "atomic-i64-guest.atto")
@@ -47,7 +34,7 @@ final class AttoAtomicI64GuestTest {
                 .allowAllAccess(false).out(stdout).build()) {
             context.eval(source);
         }
-        assertEquals("42:42:44", stdout.toString(StandardCharsets.UTF_8));
+        assertEquals(expected, stdout.toString(StandardCharsets.UTF_8));
     }
 
     @Test
