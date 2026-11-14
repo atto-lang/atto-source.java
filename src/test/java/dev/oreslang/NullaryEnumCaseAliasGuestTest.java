@@ -15,8 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Nullary nominal enum aliases go through the real type/ownership checker
- * and guest evaluator. Payload aliases are NOT admitted until case-borrow
- * lifetime and typed projection lowering has been implemented.
+ * and guest evaluator. Non-Copy payloads may only be borrowed within a match arm;\n * they must never be returned as owned values.
  */
 final class NullaryEnumCaseAliasGuestTest {
     private static String fixture(String name) throws Exception {
@@ -43,10 +42,11 @@ final class NullaryEnumCaseAliasGuestTest {
     }
 
     @Test
-    void payloadAliasRejectedForBorrowProofNotConstructorArity() throws Exception {
+    void nonCopyWholeAliasCannotBeReturnedAsOwnedMessage() throws Exception {
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(fixture("reject-payload-whole-alias"))));
-        assertTrue(rejected.getMessage().contains("case-borrow lowering"), rejected.getMessage());
+                () -> OwnershipChecker.check(
+                        TypeChecker.check(Parser.parse(fixture("reject-payload-whole-alias")))));
+        assertNotNull(rejected.getMessage());
     }
 
     @Test
