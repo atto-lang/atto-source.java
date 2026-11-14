@@ -4544,6 +4544,11 @@ public final class OwnershipChecker {
             return type.arguments().isEmpty() && findClass("NioConnection") == null
                     ? new AutoTraitRules.Capabilities(true, false, false) : none;
         }
+        // A BinaryFile handle is affine like a socket: one owning task.
+        if (name.equals("BinaryFile")) {
+            return type.arguments().isEmpty() && declaredClass == null
+                    ? new AutoTraitRules.Capabilities(true, false, false) : none;
+        }
 
         // Bytes v1 is an immutable, move-only owned byte string.
         if (name.equals("Bytes") && declaredClass == null) {
