@@ -41,6 +41,39 @@ sweeper or unbounded queue was added. Each Java receive lease is an ordinary
 JVM object and can still contribute to host GC; explicit native actor arenas
 are a separate memory domain. A process-level no-GC claim is not supported.
 
+## Additional admission/receipt hardening
+
+A STOP could previously win between the source mailbox dispatcher's
+first lifecycle check and the separately synchronized receive-lease mint.
+The gate would then reject `enterReceive` as an IllegalStateException, and
+the broad actor exception handler would incorrectly promote an otherwise
+graceful STOP to a terminal actor failure. The source receive path now
+holds `ActorCell.lifecycleLock` around the final stopped/finalized check
+**and** receive-lease admission; the STOP CAS and source gate seal take
+the same monitor. If STOP wins, the dequeued envelope is closed and skipped,
+not dispatched or counted as an actor failure.
+
+The gate also creates its receiver lease **before** incrementing the active
+receive count, so failed JVM allocation cannot strand a false physical pin.
+A synchronized single-release receipt replaces the additional per-mail
+`AtomicBoolean` allocation. Neither change eliminates JVM host GC.
+
+### Local gate-only executed evidence
+
+On 2026-11-14, an isolated JDK 21 build copied the exact Git blob of
+`ActorSourceLifecycleGate.java` at
+`0e71c4c3f048f2a831ac1cd0f36ef5fb842caffa` and verified its
+`git hash-object`. With minimal external `ActorRuntime` type stubs,
+`javac --release 21 -Xlint:all -Werror` succeeded and an executable
+two-virtual-thread STOP/admission harness passed 1,000 rounds, alongside
+teardown-before-reclamation, duplicate-release and forged owner cases.
+This tests the byte-exact **gate**, not the full application, Maven/JUnit
+suite, JDK 25 or compiled `.atto` guest.
+
+The production `ActorRuntime` STOP-admission race fix and its
+24-round `ActorSourceTearDownTest` have been **authored but not
+executed** as a full project binary. Exact-head source CI remains pending.
+
 ## Regression tests and exact-head acceptance
 
 - `ActorReceiveQuiescenceGateTest`: two separately scheduled Java receiver
