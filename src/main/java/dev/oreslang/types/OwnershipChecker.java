@@ -2585,6 +2585,19 @@ public final class OwnershipChecker {
                                 variant.payload().recordMembers()));
             }
         }
+        // Relative case names are resolved only from the statically declared
+        // scrutinee enum. Never infer ownership from a global variant spelling.
+        if (separator < 0) {
+            Ast.EnumDecl declarationEnum = enumDeclaration(subjectType.name());
+            if (declarationEnum != null) {
+                for (Ast.EnumVariant variant : declarationEnum.variants()) {
+                    if (!variant.name().equals(constructor)) continue;
+                    return variant.payload() == null ? List.of()
+                            : List.of(Ast.TypeRef.readonlyRecordType(
+                                    variant.payload().recordMembers()));
+                }
+            }
+        }
         if (constructor.equals("Some") && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {
             return List.of(subjectType.arguments().getFirst());
         }
