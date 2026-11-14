@@ -12,7 +12,12 @@ public final class SourceIdentityV1 {
 
     /** Fixed-width identity; two long lanes avoid storing UUID text on hot paths. */
     public record Id(Kind kind, long high, long low) {
-        public Id { Objects.requireNonNull(kind, "kind"); }
+        public Id {
+            Objects.requireNonNull(kind, "kind");
+            if (high == 0L && low == 0L) {
+                throw new IllegalArgumentException("source ID must be nonzero");
+            }
+        }
     }
 
     public record Site(Id routineId, Id siteId, int descriptorIndex) {
