@@ -70,8 +70,14 @@ public final class ActorCriticalStatePreflight {
                         var aliases = new HashSet<String>();
                         var readSnapshots = new HashSet<String>();
                         for (var statement : method.body()) {
-                            if (statement instanceof Ast.ActorStateAccessStmt access)
+                            if (statement instanceof Ast.ActorStateAccessStmt access) {
+                                if (access.viewName().equals(method.receiverName())
+                                        || method.parameters().stream().anyMatch(
+                                                param -> param.name().equals(access.viewName()))) {
+                                    throw deny("critical state loan shadows actor receiver or mail");
+                                }
                                 aliases.add(access.viewName());
+                            }
                             if (statement instanceof Ast.BindingStmt bind
                                     && bind.initializer() instanceof Ast.ActorStateReadExpr read)
                                 aliases.add(read.viewName());
@@ -89,6 +95,13 @@ public final class ActorCriticalStatePreflight {
                                         unit.getKey(), key, method, access, fields));
                             } else if (statement instanceof Ast.BindingStmt bind
                                     && bind.initializer() instanceof Ast.ActorStateReadExpr read) {
+                                if (!readSnapshots.isEmpty()) {
+                                    throw deny("closed v2 receive admits one detached Copy read only");
+                                }
+                                if (read.viewName().equals(method.receiverName())
+                                        || read.viewName().equals(bind.name())) {
+                                    throw deny("critical-read view cannot shadow a receiver or Copy binding");
+                                }
                                 if (bind.kind() != Ast.BindingKind.VAL
                                         || bind.declaredType() == null
                                         || !bind.declaredType().name().equals("int")
@@ -109,7 +122,8 @@ public final class ActorCriticalStatePreflight {
                                 }
                                 var field = fields.get(read.fieldName());
                                 if (field == null || !field.type().name().equals("int")
-                                        || !field.type().arguments().isEmpty()) {
+                                        || !field.type().arguments().isEmpty()
+                                        || field.type().inferArguments()) {
                                     throw deny("detached critical-read requires declared scalar int field");
                                 }
                                 readSnapshots.add(bind.name());

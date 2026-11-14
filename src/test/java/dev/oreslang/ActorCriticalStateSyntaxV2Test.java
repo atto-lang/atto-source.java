@@ -225,6 +225,23 @@ final class ActorCriticalStateSyntaxV2Test {
                 build::auditDeclaredActors);
         assertTrue(unknown.getMessage().contains("declared scalar int field"),
                 unknown.getMessage());
+
+        Files.writeString(path, original.replace(
+                "critical-read |s| -> s.total",
+                "critical-read |c| -> c.total"));
+        var receiverShadow = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(receiverShadow.getMessage().contains("shadow"),
+                receiverShadow.getMessage());
+
+        Files.writeString(path, original.replace(
+                "self.send(snapshot);",
+                "self.send(snapshot); val int extra = "
+                + "self.handle_state(critical-read |s| -> s.total); self.send(extra);"));
+        var repeatedRead = assertThrows(IllegalArgumentException.class,
+                build::auditDeclaredActors);
+        assertTrue(repeatedRead.getMessage().contains("one detached Copy read"),
+                repeatedRead.getMessage());
     }
 
     @Test
