@@ -276,18 +276,23 @@ public final class LogicalActorProxyMailboxV1 implements AutoCloseable {
                     fresh.add(envelope);
                     prepared.addLast(envelope);
                 }
+                // Even building the immutable result is fallible; complete
+                // it before any publication so no post-commit allocation
+                // can trigger rollback or scrub already-owned queued DATA.
+                List<Envelope> result = List.copyOf(fresh);
                 queued = prepared;
                 nextMessageSequence += count;
                 retainedMessages += count;
                 retainedBytes += total;
                 checkStructuralInvariantsLocked();
                 lock.notifyAll();
-                return List.copyOf(fresh);
+                return result;
             } catch (RuntimeException | Error failed) {
-                // Copies made on a failed preparation are private. Erase
-                // their owned bytes before propagating allocation failure.
-                // Existing queued/outstanding envelopes are never touched.
-                for (Envelope envelope : fresh)
+                // If publication has not begun, prepared copies are private.
+                // If a post-commit invariant throws, they are now owned
+                // by the live queue and MUST NOT be scrubbed here.
+                boolean published = queued.containsAll(fresh) && !fresh.isEmpty();
+                if (!published) for (Envelope envelope : fresh)
                     java.util.Arrays.fill(envelope.payload, (byte) 0);
                 throw failed;
             }
