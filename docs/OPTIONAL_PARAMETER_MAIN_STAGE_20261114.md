@@ -43,3 +43,22 @@ The TypeChecker's ordinary and linked entrypoints use a validation scope to
 revoke plans attached during a subsequently failing declaration check.
 Tests verify successful type-check publication and failed-pass rollback.
 This step does not change executable argument evaluation or arity.
+
+## Name-first parity (2026-11-14)
+
+AttoLang now *parses* both declaration orders to exactly the same `Ast.Param`:
+
+```atto
+fnc calculate(int x, int y? = 10, int? z?): int { return x + y; }
+fnc calculate(x: int, y?: int = 10, z?: int?): int { return x + y; }
+```
+
+The second spelling's omission marker goes **before `:`** and the type
+marker stays **after the type**. `z: int?` is still a *required* Option
+value; `z?: int?` is omittable and defaults to typed None. Name-first
+`x: int??` is rejected rather than interpreting the second type suffix as
+an omission flag. This normalization is scoped to formal lists, including
+class methods, interfaces, declarations using `|...|`, and lambdas. 
+Call-site named arguments, checked defaults and executable omissions are
+**not enabled by this parser change**; their guards remain active. The JUnit
+cases are authored but not an executed compiler/guest receipt.
