@@ -1,0 +1,191 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Multiple actor forward declarations are signatures, not runtime actor
+ * instances or extensions to the compiler-owned mailbox/state authority.
+ */
+final class ActorForwardNamespaceReceiverTest {
+    @Test
+    void twoActorsShareFileAndNamespaceButNotTheirMethods() {
+        var parsed = Parser.parse("""
+                use namespace two_workers;
+                declare actor Foo1;
+                declare actor Foo2;
+
+                define actor Foo1 as
+                  mtd increment(int x): int { return x + 1; }
+                  receive(ActorMail<String> mail): void {
+                    self.send(self.increment(40));
+                    self.end();
+                    return;
+                  }
+                end
+
+                define actor Foo2 as
+                  mtd double_value(int x): int { return x + x; }
+                  receive(ActorMail<String> mail): void {
+                    self.send(self.double_value(21));
+                    self.end();
+                    return;
+                  }
+                end
+                """);
+        assertEquals("two_workers", parsed.namespace());
+        var declarations = parsed.modules().getFirst().declarations();
+        assertEquals(2, declarations.size(), "forwards do not become executable declarations");
+        var first = assertInstanceOf(Ast.ClassDecl.class, declarations.get(0));
+        var second = assertInstanceOf(Ast.ClassDecl.class, declarations.get(1));
+        assertEquals(Ast.ActorKind.SHARED, first.actorKind());
+        assertEquals(Ast.ActorKind.SHARED, second.actorKind());
+        assertEquals("Foo1", first.name());
+        assertEquals("Foo2", second.name());
+        assertEquals("increment", first.methods().getFirst().name());
+        assertEquals("double_value", second.methods().getFirst().name());
+        assertFalse(first.methods().stream().anyMatch(m -> m.name().equals("double_value")));
+        assertFalse(second.methods().stream().anyMatch(m -> m.name().equals("increment")));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+    }
+
+    @Test
+    void eachModuleOwnsItsForwardAndActorIdentity() {
+        var program = Parser.parse("""
+                use namespace actor_services;
+                define module left as
+                  declare actor Worker;
+                  define actor Worker as
+                    mtd left_only(): int { return 21; }
+                  end
+                end
+                define module right as
+                  declare actor Worker;
+                  define actor Worker as
+                    mtd right_only(): int { return 42; }
+                  end
+                end
+                """);
+        assertEquals("actor_services", program.namespace());
+        assertEquals(2, program.modules().size());
+        for (var module : program.modules()) {
+            assertEquals(1, module.declarations().size());
+            assertEquals("Worker", ((Ast.ClassDecl) module.declarations().getFirst()).name());
+        }
+        var left = (Ast.ClassDecl) program.modules().get(0).declarations().getFirst();
+        var right = (Ast.ClassDecl) program.modules().get(1).declarations().getFirst();
+        assertEquals("left_only", left.methods().getFirst().name());
+        assertEquals("right_only", right.methods().getFirst().name());
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(program));
+    }
+
+    @Test
+    void supportsIsolatedActorForwardWithExactKind() {
+        var program = Parser.parse("""
+                use namespace isolated;
+                declare isoactor PrivateOne;
+                define isoactor PrivateOne as
+                  mtd answer(): int { return 42; }
+                end
+                """);
+        var actor = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.ActorKind.PRIVATE, actor.actorKind());
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(program));
+    }
+
+    @Test
+    void crossScopeForwardsDoNotImplicitlyBindEvenWithSameNamespace() {
+        reject("""
+                use namespace wrong_scope;
+                define module first as
+                  declare actor Worker;
+                end
+                define module second as
+                  define actor Worker as end
+                end
+                """, "unresolved forward");
+        reject("""
+                use namespace wrong_scope;
+                declare actor Worker;
+                define module nested as
+                  define actor Worker as end
+                end
+                """, "unresolved forward");
+    }
+
+    @Test
+    void rejectsDuplicateMissingAndMismatchedActorForwards() {
+        reject("declare actor Foo; declare actor Foo; define actor Foo as end",
+                "duplicate forward");
+        reject("declare actor Missing; define actor Other as end",
+                "unresolved forward");
+        reject("declare actor Worker; define isoactor Worker as end",
+                "kind mismatch");
+        reject("declare isoactor Worker; define actor Worker as end",
+                "kind mismatch");
+        reject("declare actor Worker; define class Worker as end",
+                "value declaration");
+        reject("declare actor Worker; define type Worker = int;",
+                "kind mismatch");
+        reject("declare pub actor Worker; define actor Worker as end",
+                "visibility mismatch");
+        reject("declare actor Worker; define pub actor Worker as end",
+                "visibility mismatch");
+        reject("declare actor Worker<T>; define actor Worker as end",
+                "generic parameter mismatch");
+        reject("declare actor Worker; define untrusted actor Worker as end",
+                "kind mismatch");
+    }
+
+    @Test
+    void rejectsExternalTypedReceiverMethodsOnActorsToProtectSealedState() {
+        reject("""
+                use namespace guarded;
+                declare actor Foo1;
+                declare actor Foo2;
+                define actor Foo1 as end
+                define actor Foo2 as end
+                mtd (mut self: Foo1) steal_state(): int { return 42; }
+                """, "ordinary nongeneric class");
+        reject("""
+                declare actor Foo1;
+                define actor Foo1 as
+                  mtd handle_state(): void { return; }
+                end
+                """, "compiler-owned");
+    }
+
+    @Test
+    void actualTwoActorGuestRunsWithIndependentMethodSets() throws Exception {
+        String source;
+        try (var stream = getClass().getResourceAsStream(
+                "/atto/mtd-receiver-v1/multi-actor-namespace.atto")) {
+            assertNotNull(stream, "missing same-file two-actor .atto fixture");
+            source = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        var guest = Source.newBuilder(OresLanguage.ID, source, "multi-actor-namespace.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        var output = new ByteArrayOutputStream();
+        try (var context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(guest);
+        }
+        assertEquals("41|42", output.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    private static void reject(String source, String fragment) {
+        var exception = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(source), source);
+        assertTrue(exception.getMessage().contains(fragment),
+                "expected '" + fragment + "', got " + exception.getMessage());
+    }
+}
