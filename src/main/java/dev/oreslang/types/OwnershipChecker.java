@@ -2555,6 +2555,30 @@ public final class OwnershipChecker {
                 Ast.TypeRef argType = i < argTypes.size() ? argTypes.get(i) : Ast.TypeRef.inferred();
                 definePatternAliases(constructor.arguments().get(i), argType, source, destination);
             }
+            if (constructor.wholeAlias() != null) {
+                // Fail closed before any move/capture analysis unless this
+                // is a proven nullary, immutable nominal enum case. A payload
+                // alias requires its own case-view/borrow lowering.
+                Ast.EnumDecl declarationEnum = subjectType == null
+                        ? null : enumDeclaration(subjectType.name());
+                if (declarationEnum == null || !argTypes.isEmpty()
+                        || !constructor.arguments().isEmpty()) {
+                    throw error("whole-variant alias requires a nullary nominal enum case");
+                }
+                String caseName = constructor.constructor();
+                int sep = caseName.lastIndexOf('.');
+                if (sep >= 0) {
+                    if (!caseName.substring(0, sep).equals(declarationEnum.name())) {
+                        throw error("whole-variant alias has foreign nominal enum owner");
+                    }
+                    caseName = caseName.substring(sep + 1);
+                }
+                Ast.EnumVariant member = enumVariant(declarationEnum, caseName);
+                if (member.payload() != null) {
+                    throw error("whole-variant alias of payload case requires checked borrow lowering");
+                }
+                defineRefinementAlias(constructor.wholeAlias(), subjectType, source, destination);
+            }
         }
     }
 
@@ -2700,6 +2724,7 @@ public final class OwnershipChecker {
             for (Ast.Pattern nested : tuple.elements()) collectPatternBindingNames(nested, names);
         } else if (pattern instanceof Ast.ConstructorPattern constructor) {
             for (Ast.Pattern nested : constructor.arguments()) collectPatternBindingNames(nested, names);
+            if (constructor.wholeAlias() != null) names.add(constructor.wholeAlias());
         }
     }
 
