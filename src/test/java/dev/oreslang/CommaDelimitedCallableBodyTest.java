@@ -132,6 +132,18 @@ final class CommaDelimitedCallableBodyTest {
     }
 
     @Test
+    void nestedBraceCommaCannotEscapeSequenceBoundary() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc bad(int n) -> int ::
+                    if n > 0 then
+                        block { int nested = 1, nested + n }
+                    fi
+                    n
+                end
+                """));
+    }
+
+    @Test
     void finalExpressionStillPassesTypeAndReadonlyChecking() {
         for (String source : new String[] {
                 "fnc bad(int n) -> int :: int x = true, x + n end",
