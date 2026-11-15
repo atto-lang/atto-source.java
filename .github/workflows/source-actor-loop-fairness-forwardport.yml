@@ -50,15 +50,15 @@ jobs:
               -DfailIfNoTests=true \
               -Dsurefire.failIfNoSpecifiedTests=true test \
             | tee target/source-loop-forwardport-junit.log
-      - name: Enforce 19 actual guest JUnit receipts including both new tests
+      - name: Enforce 20 actual guest JUnit receipts including the three forward-port tests
         shell: bash
         run: |
           set -euo pipefail
           file=src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java
           report=target/surefire-reports/TEST-dev.oreslang.SourceLoopSoftPreemptionTest.xml
           expected="$(grep -Ec '^[[:space:]]*@Test' "$file")"
-          test "$expected" = 19 || {
-            echo "EXPECTED_19_TEST_DECLARATIONS got=$expected" >&2
+          test "$expected" = 20 || {
+            echo "EXPECTED_20_TEST_DECLARATIONS got=$expected" >&2
             exit 1
           }
           test -s "$report" || {
@@ -72,13 +72,14 @@ jobs:
           fi
           for name in \
             synchronousReceiveHelperLoopPreservesOneLogicalMessageAndCooperates \
-            twoInfiniteNestedHelperActorsCannotStarveSingleCarrierPeer; do
+            twoInfiniteNestedHelperActorsCannotStarveSingleCarrierPeer \
+            synchronousFreeFunctionCpuLoopRemainsScalarAcrossActorCall; do
             grep -Fq "name=\"$name\"" "$report" || {
               echo "MISSING_JVM_GUEST_CASE $name" >&2
               exit 1
             }
           done
-          echo 'SOURCE_LOOP_19_JVM_GUEST_PASS'
+          echo 'SOURCE_LOOP_20_JVM_GUEST_PASS'
       - name: Evidence boundaries
         if: always()
         run: |
