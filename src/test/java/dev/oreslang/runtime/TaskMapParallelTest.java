@@ -255,6 +255,10 @@ public class TaskMapParallelTest {
                     });
             assertTrue(started.await(3, TimeUnit.SECONDS));
             assertTrue(handle.cancel("requested by owner"));
+            // cancel() is a request: the result settles once the coordinator
+            // turn unwinds, and it must settle as Cancelled, not Failed.
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> handle.result().get(3, TimeUnit.SECONDS));
             assertTrue(handle.result().isCancelled());
             assertNull(handle.getDone().get(3, TimeUnit.SECONDS));
             List<TaskMapParallel.ChildFailure> details =

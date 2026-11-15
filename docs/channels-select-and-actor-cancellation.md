@@ -247,6 +247,27 @@ do select {
 }
 ```
 
+The outer braces are interchangeable with `over ... end`; arm bodies remain
+braced and the runtime semantics are identical:
+
+```ores
+do select over
+  when readch incoming: let msg {
+    stdio.println("Received:", msg);
+  }
+  when writech outgoing, payload: {
+    stdio.println("Sent payload successfully");
+  }
+  when readch shutdown: const signal {
+    return;
+  }
+end
+```
+
+The same delimiter equivalence applies to `select`, `nb select`, and the
+legacy-compatible `do nb select` form. Selection policy (`first`, `fair`,
+or `random`) appears before either `{` or `over`.
+
 **One wait mode per selection:** the enclosing `select`, `nb select`, or `try select` controls whether the entire selection suspends, registers an asynchronous selection, or probes immediately. An arm is atomic and must use plain `readch` or `writech`. Arm-level `nb` or `try` modifiers are invalid. Standalone operations in arm bodies remain governed by their own rules.
 
 A read arm may bind with `let`, `val`, or `const`. `const` means the
@@ -256,10 +277,11 @@ compile-time constant.
 Every `when` (or legacy `case`) and `default` arm requires its own `{ ... }` body, including
 empty arms. Canonical source uses two spaces per indentation level and no tabs
 for indentation: arms sit one level inside `select`, and their statements sit
-one level inside the arm. The same rules apply to `nb select`, `do nb select`, and `try select`.
+one level inside the arm. The same rules apply to `nb select`, `do nb select`, and `try select`,
+whether the outer selection uses braces or `over ... end`.
 Legacy unbraced arms are rejected by the parser; `oresfmt` migrates them.
 
-A select may include one `default: { ... }` arm.
+A select may include one `default: { ... }` arm, and `default` must be the final arm.
 
 A static select arm is a non-throwing control-flow boundary. An ordinary
 `throw` may be handled by a local `try/catch`, or absorbed by a called

@@ -1,0 +1,41 @@
+name: HTTP actor policy exact-head compiler regression
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/compiler/TreeShaker.java"
+      - "src/main/java/dev/oreslang/ast/Ast.java"
+      - "src/test/java/dev/oreslang/TreeShakerHttpActorPolicyTest.java"
+      - "src/test/resources/http-actor-v1/**"
+      - "src/test/java/dev/oreslang/ActorTransportConcurrencyContractTest.java"
+      - ".github/workflows/http-actor-policy-exact-head.yml"
+permissions:
+  contents: read
+jobs:
+  http-actor-policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact PR head without retained credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact head and clean source tree
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "HTTP_ACTOR_POLICY_SOURCE_SHA=$EXPECTED_SHA"
+      - name: Set up GraalVM 25 with JDK25 and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+          cache: maven
+      - name: Execute compiler policy and actor transport contract JUnit tests
+        run: |
+          mvn -B -ntp -Dtest=TreeShakerHttpActorPolicyTest,ActorTransportConcurrencyContractTest test
