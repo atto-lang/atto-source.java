@@ -658,8 +658,18 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.MatchStmt matched) {
-            ValueInfo subject = checkExpr(matched.subject(), scope, false);
-            VarState source = matched.subject() instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
+            // Recoverable immediate write results are affine. Destructuring
+            // consumes the result once; each selected arm independently owns
+            // its extracted payload. It must never retain an alias to the
+            // consumed wrapper or allow a second match/use of that wrapper.
+            Ast.TypeRef scrutineeType = syntacticType(matched.subject(), scope);
+            boolean recoverableWrite = isTryWriteResult(scrutineeType);
+            if (recoverableWrite && matched.arms().stream().anyMatch(a -> a.guard() != null)) {
+                throw error("TryWriteResult match guards are not supported until guarded ownership rollback is proven");
+            }
+            ValueInfo subject = checkExpr(matched.subject(), scope, recoverableWrite);
+            VarState source = recoverableWrite ? null
+                    : matched.subject() instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
             Map<VarState, StateSnapshot> nextArm = base;
@@ -1091,9 +1101,14 @@ public final class OwnershipChecker {
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
         if (expr instanceof Ast.MatchExpr match) {
-            ValueInfo subject = checkExpr(match.subject(), scope, false);
-            VarState source = match.subject() instanceof Ast.NameExpr name
-                    ? scope.lookup(name.name()) : null;
+            Ast.TypeRef scrutineeType = syntacticType(match.subject(), scope);
+            boolean recoverableWrite = isTryWriteResult(scrutineeType);
+            if (recoverableWrite && match.arms().stream().anyMatch(a -> a.guard() != null)) {
+                throw error("TryWriteResult match guards are not supported until guarded ownership rollback is proven");
+            }
+            ValueInfo subject = checkExpr(match.subject(), scope, recoverableWrite);
+            VarState source = recoverableWrite ? null
+                    : match.subject() instanceof Ast.NameExpr name ? scope.lookup(name.name()) : null;
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
             Map<VarState, StateSnapshot> nextArm = base;
@@ -1674,27 +1689,11 @@ public final class OwnershipChecker {
             Ast.TypeRef element = channelElementType(channel.type);
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
-                // An immediate write returns only bool. On Full it cannot return
-                // a move-only payload to its caller, and the guest could otherwise
-                // lose the value without a successful channel admission. Fail
-                // closed before evaluating/consuming the payload expression.
-                // A future recoverable send must return the rejected owned value
-                // explicitly (including Closed), not silently pretend it is Copy.
-                if (channelOp.mode() == Ast.WaitMode.IMMEDIATE) {
-                    if (!isCopyType(element)) {
-                        throw error("try writech cannot accept a move-only payload: "
-                                + "bool cannot recover the value on Full or Closed; "
-                                + "use a Copy payload or a recoverable send API");
-                    }
-                    // rt take explicitly invalidates a binding even when its
-                    // static type is Copy (notably transferable capabilities).
-                    // The bool probe has no failure path that returns it.
-                    if (channelOp.value() instanceof Ast.RuntimeCallExpr transfer
-                            && transfer.operation().equals("take")) {
-                        throw error("try writech cannot rt take an owned value: "
-                                + "bool cannot return the value on failed admission");
-                    }
-                }
+                // An immediate write now returns a move-only TryWriteResult<T>
+                // which contains the exact rejected owner on Full/Closed.
+                // Its payload is evaluated/consumed exactly once as for
+                // blocking writes. The caller owns the result and must handle
+                // the rejected payload, not recover an invalidated old binding.
                 // Blocking/async channel writes transfer the payload to the
                 // operation; their completion, failure and cancellation have
                 // separate lifecycle contracts.
@@ -1729,7 +1728,8 @@ public final class OwnershipChecker {
                     case BLOCKING -> Ast.TypeRef.simple("void");
                     case NONBLOCKING -> new Ast.TypeRef(
                             "Future", List.of(Ast.TypeRef.simple("void")), false);
-                    case IMMEDIATE -> Ast.TypeRef.simple("bool");
+                    case IMMEDIATE -> new Ast.TypeRef(
+                            "TryWriteResult", List.of(element), false);
                 };
                 return new ValueInfo(result, kindOfType(result), null);
             }
@@ -4179,7 +4179,16 @@ public final class OwnershipChecker {
         if (constructor.equals("Err") && subjectType.name().equals("Result") && subjectType.arguments().size() == 2) {
             return List.of(subjectType.arguments().get(1));
         }
+        if ((constructor.equals("Full") || constructor.equals("Closed"))
+                && isTryWriteResult(subjectType)) {
+            return List.of(subjectType.arguments().getFirst());
+        }
         return List.of();
+    }
+
+    private static boolean isTryWriteResult(Ast.TypeRef type) {
+        return type != null && !type.isBorrow() && type.name().equals("TryWriteResult")
+                && type.arguments().size() == 1;
     }
 
     private void defineRefinementAlias(String name, Ast.TypeRef narrowedType, VarState source, Scope destination) {
@@ -4527,6 +4536,16 @@ public final class OwnershipChecker {
             // scalar type proof; the independent type checker remains
             // authoritative and this pass fails closed when necessary.
             return Ast.TypeRef.inferred();
+        }
+        if (expr instanceof Ast.ChannelOpExpr channel
+                && channel.operation() == Ast.ChannelOperation.WRITE
+                && channel.mode() == Ast.WaitMode.IMMEDIATE) {
+            return new Ast.TypeRef("TryWriteResult",
+                    List.of(syntacticType(channel.value(), scope)), false);
+        }
+        if (expr instanceof Ast.RuntimeCallExpr intrinsic
+                && intrinsic.operation().equals("take") && intrinsic.arguments().size() == 1) {
+            return syntacticType(intrinsic.arguments().getFirst(), scope);
         }
         if (expr instanceof Ast.TrapExpr trapped) {
             // Preserve the Option wrapper during generic call inference, even
