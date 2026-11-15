@@ -1,4 +1,4 @@
-name: Source actor CPU-loop fairness (compiled .atto guest)
+name: Source actor CPU-loop fairness (real .atto JVM guest)
 on:
   pull_request:
     paths:
@@ -39,7 +39,7 @@ jobs:
           version: '25.3'
           distribution: graalvm
           cache: maven
-      - name: Execute all compiled source-loop guest JUnit scenarios
+      - name: Execute real source-loop JVM guest JUnit scenarios
         shell: bash
         run: |
           set -euo pipefail
