@@ -240,7 +240,20 @@ final class ActorPublisherScopedObservationTest {
             assertTrue(producerA.awaitTermination(5, TimeUnit.SECONDS));
             assertFalse(runtime.isLiveActorAddress(address));
             assertTrue(scoped.get().closed());
-            assertEquals(0L, runtime.sharedMemoryBytes());
+
+            // Other actors are still live here. Their independently owned
+            // USER mailbox envelopes may account for shared memory even
+            // after this publisher's retained delivery has been refunded.
+            // Join every physical retirement before asserting zero bytes;
+            // never turn a still-live actor's mail into a false leak report.
+            observer.stop();
+            producerB.stop();
+            notJoined.stop();
+            assertTrue(observer.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(producerB.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(notJoined.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "all publisher-scoped and independent actor mail must retire");
         }
     }
     @Test
