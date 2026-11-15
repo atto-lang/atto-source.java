@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Checkout immutable event commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # audited in fast-ci
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -36,7 +36,7 @@ jobs:
           printf 'RECEIPT source_sha=%s\n' "$(git rev-parse HEAD)"
           printf 'RECEIPT source_tree=%s\n' "$(git rev-parse HEAD^{tree})"
       - name: Provision GraalVM JDK 25
-        uses: graalvm/setup-graalvm@v1
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # audited in fast-ci
         with:
           java-version: '25'
           distribution: 'graalvm'
