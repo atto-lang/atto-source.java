@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -13,6 +14,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -83,6 +85,7 @@ final class TypedImmediateChannelWriteTest {
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch finish = new CountDownLatch(8);
         AtomicInteger accepted = new AtomicInteger();
+        AtomicReference<Throwable> workerFailure = new AtomicReference<>();
         List<Payload> failed = java.util.Collections.synchronizedList(new ArrayList<>());
         List<Thread> workers = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
@@ -99,8 +102,9 @@ final class TypedImmediateChannelWriteTest {
                     } else {
                         throw new AssertionError("unexpected Closed result");
                     }
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
+                } catch (Throwable failure) {
+                    if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+                    workerFailure.compareAndSet(null, failure);
                 } finally {
                     finish.countDown();
                 }
@@ -111,6 +115,7 @@ final class TypedImmediateChannelWriteTest {
         start.countDown();
         assertTrue(finish.await(5, TimeUnit.SECONDS));
         for (Thread worker : workers) worker.join();
+        assertNull(workerFailure.get(), "worker assertions/errors must reach JUnit");
         assertEquals(1, accepted.get());
         assertEquals(7, failed.size());
         assertEquals(1, ch.size());
@@ -123,22 +128,24 @@ final class TypedImmediateChannelWriteTest {
             ChannelRuntime.Channel<Payload> ch = new ChannelRuntime.Channel<>(1);
             Payload original = new Payload(iteration);
             CountDownLatch start = new CountDownLatch(1);
-            java.util.concurrent.atomic.AtomicReference<ChannelRuntime.TryWriteResult<Payload>>
-                    observed = new java.util.concurrent.atomic.AtomicReference<>();
+            AtomicReference<ChannelRuntime.TryWriteResult<Payload>> observed = new AtomicReference<>();
+            AtomicReference<Throwable> raceFailure = new AtomicReference<>();
             Thread sender = new Thread(() -> {
                 try {
                     start.await();
                     observed.set(ch.tryWriteResult(original));
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
+                } catch (Throwable failure) {
+                    if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+                    raceFailure.compareAndSet(null, failure);
                 }
             });
             Thread closer = new Thread(() -> {
                 try {
                     start.await();
                     ch.close();
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
+                } catch (Throwable failure) {
+                    if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+                    raceFailure.compareAndSet(null, failure);
                 }
             });
             sender.start();
@@ -148,6 +155,8 @@ final class TypedImmediateChannelWriteTest {
             closer.join(3000);
             assertFalse(sender.isAlive());
             assertFalse(closer.isAlive());
+            assertNull(raceFailure.get(), "close/send worker errors must reach JUnit");
+            assertTrue(ch.isClosed());
             var outcome = observed.get();
             assertNotNull(outcome);
             if (outcome instanceof ChannelRuntime.TryWriteResult.Accepted<?>) {
