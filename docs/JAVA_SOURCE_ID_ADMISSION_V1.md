@@ -168,3 +168,27 @@ synthetic-AST host harness then passed a two-site positive fixture and
 **16** rejection checks (`JAVA_EXACT_GIT_BLOBS_BINDER_HOST_PASS:negative=16`).
 The actual repository Parser, Maven/JUnit, Truffle guest-node and JIT
 tests have **not** executed and remain mandatory before merge.
+
+
+### 2026-11-14 continued audit: span names, alias scope and Java-only 10k proof
+
+`SourceLogCallsiteBindingV1` now denies oversized (greater than 256
+UTF-8 bytes), C0/C1-control or malformed-surrogate lexical span names,
+active nested span alias reuse, and span aliases shadowing formal
+parameters. The corresponding Java JUnit negative fixtures are
+committed but the real parser/JUnit pipeline has **not executed**.
+
+The independent Java production validator
+`SourceTelemetryLiteralV1.java` (exact Git blob
+`876a7489e14f5dbe63c8a7a3b2c2f73dd9edf2bd`) and its
+standalone JDK21 10,000-input test (exact Git blob
+`0cc067349a0699ec65f888de1b3d506300cef017`) passed locally
+with `javac --release 21 -Xlint:all -Werror`. This covers
+96-byte log / 256-byte span limits, Unicode C1 controls, valid emoji,
+invalid UTF-16 surrogates and deterministic random UTF-16 input.
+`SourceTelemetryLiteralV1Test` invokes that standalone test from
+JUnit once a real Maven runner is available.
+
+The host-level literal test does not prove that Java's actual
+`Parser.parse`, Truffle guest nodes, JIT, NativeAOT or actor-owned
+heap/stack tracing executed.
