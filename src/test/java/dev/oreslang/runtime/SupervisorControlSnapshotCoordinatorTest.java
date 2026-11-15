@@ -306,21 +306,39 @@ final class SupervisorControlSnapshotCoordinatorTest {
     }
 
     @Test
-    void queuedDeadlineRetainsCapacityUntilPhysicalTurnFinishes() throws Exception {
+    void queuedDeadlineAbandonsUnstartedTurnAndReclaimsCapacity() throws Exception {
         var queue = new QueuedControl();
+        var realCaptureCalls = new AtomicInteger();
         try (var runtime = runtime(queue.dispatcher());
-             var service = new SupervisorControlSnapshotCoordinator(runtime);
+             var observer = new SupervisorRegistryObservation(
+                     runtime, System::nanoTime, () -> {
+                         realCaptureCalls.incrementAndGet();
+                         return java.time.Instant.now();
+                     });
+             var service = new SupervisorControlSnapshotCoordinator(runtime, observer);
              ExecutorService worker = Executors.newSingleThreadExecutor()) {
             Object session = new Object();
             var g = grant(service, runtime, session);
             var pending = service.request(g, session, TENANT, 1, 16, 8,
                     TimeUnit.MILLISECONDS.toNanos(20));
-            assertThrows(ExecutionException.class,
+            ExecutionException expired = assertThrows(ExecutionException.class,
                     () -> pending.toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(java.util.concurrent.TimeoutException.class, expired.getCause());
+            assertEquals(0, service.activeControlRequests(),
+                    "expired queued read must atomically release its slot");
+
+            // The abandoned dispatcher job still exists, but cannot run.
+            // New work may be admitted before that stale job is drained.
+            var replacement = read(service, grant(service, runtime, session), session);
             assertEquals(1, service.activeControlRequests());
-            assertThrows(SupervisorControlSnapshotCoordinator.SnapshotFailure.class,
-                    () -> read(service, g, session));
             worker.submit(queue.next()).get(5, TimeUnit.SECONDS);
+            assertEquals(0, realCaptureCalls.get(),
+                    "late physical turn must be denied after queued timeout");
+            assertEquals(1, service.activeControlRequests(),
+                    "stale dispatcher cannot release the replacement's lease");
+            worker.submit(queue.next()).get(5, TimeUnit.SECONDS);
+            assertEquals("partial",
+                    replacement.toCompletableFuture().get(5, TimeUnit.SECONDS).status());
             assertEquals(0, service.activeControlRequests());
         }
     }
