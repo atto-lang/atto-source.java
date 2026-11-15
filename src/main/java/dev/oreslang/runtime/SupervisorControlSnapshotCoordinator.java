@@ -111,7 +111,18 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
 
         // This future's JDK deadline is an observer timeout, not a new
         // executor/carrier pool or cancellation receipt for the CONTROL work.
+        // The timer may abandon a still-queued physical turn atomically;
+        // already started work retains its lease until the actual finally.
         request.result.orTimeout(timeoutNanos, TimeUnit.NANOSECONDS);
+        request.result.whenComplete((ignored, failure) -> {
+            if (failure instanceof TimeoutException
+                    && request.physicalTurn.abandonIfQueued()) {
+                release(request);
+            }
+        });
+        // A deadline may have expired before dispatch admission. Do not
+        // schedule a runnable that has already lost its start authority.
+        if (request.result.isDone()) return request.result.minimalCompletionStage();
 
         final OresFuture<Void> dispatch;
         try {
