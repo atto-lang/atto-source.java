@@ -47,19 +47,28 @@ pub async routine main(): void {
 
   source.send(5);
   val stage1 = await source.outputs.next();
-  transform.send(stage1.value.unwrap().value);
+  val output1 = stage1.value.unwrap();
+  val int value1 = output1.value;
+  transform.send(value1);
 
   val stage2 = await transform.outputs.next();
-  sink.send(stage2.value.unwrap().value);
+  val output2 = stage2.value.unwrap();
+  val int value2 = output2.value;
+  sink.send(value2);
 
   val stage3 = await sink.outputs.next();
-  transform.send(0 - stage3.value.unwrap().value);
+  val output3 = stage3.value.unwrap();
+  val int value3 = output3.value;
+  transform.send(0 - value3);
 
   val stage4 = await transform.outputs.next();
-  source.send(stage4.value.unwrap().value);
+  val output4 = stage4.value.unwrap();
+  val int value4 = output4.value;
+  source.send(value4);
 
   val result = await source.outputs.next();
-  stdio.stdout.write(result.value.unwrap().value);
+  val final_output = result.value.unwrap();
+  stdio.stdout.write(final_output.value);
   await source.get_done();
   await transform.get_done();
   await sink.get_done();

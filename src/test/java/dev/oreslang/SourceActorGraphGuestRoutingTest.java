@@ -57,10 +57,10 @@ final class SourceActorGraphGuestRoutingTest {
         // Execute the same real three-actor source path, but remove only the
         // coordinator's explicit process stdout write. ActorRef.send and
         // outputs.next are mailbox transport, not host stdout.
-        String emission = "stdio.stdout.write(result.value.unwrap().value);";
+        String emission = "stdio.stdout.write(final_output.value);";
         assertTrue(SOURCE.contains(emission), "guest fixture changed unexpectedly");
         String silentSource = SOURCE.replace(emission,
-                "val final_value = result.value.unwrap().value;");
+                "val final_value = final_output.value;");
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(silentSource)));
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -85,7 +85,9 @@ final class SourceActorGraphGuestRoutingTest {
                 + " val source = spawn SourceStage();");
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(unsupported)));
-        assertTrue(failure.getMessage().contains("typed pipe ports are compatible"),
+        // Main now rejects source-level actor pipes in the parser until
+        // role typing, bounded edges and lowering exist.
+        assertTrue(failure.getMessage().contains("actor pipe expressions require"),
                 failure::getMessage);
     }
 }
