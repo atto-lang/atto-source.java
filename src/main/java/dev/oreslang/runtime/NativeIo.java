@@ -6,6 +6,9 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
+import java.net.InetAddress;
+import java.net.Inet6Address;
+import java.net.UnknownHostException;
 import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -371,12 +374,28 @@ public final class NativeIo {
         }
         String endpoint = host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.connect");
+        // Resolve only once, pin the selected numeric address, and require a
+        // second explicit permission for that address before opening a socket.
+        // A hostname grant alone must not authorize an unexpected/private IP.
+        final InetAddress[] resolved;
+        try {
+            resolved = InetAddress.getAllByName(host);
+        } catch (UnknownHostException failure) {
+            throw new IllegalStateException("network DNS resolution failed for " + endpoint, failure);
+        }
+        if (resolved.length == 0) throw new SecurityException("network DNS returned no destination");
+        InetSocketAddress selected = checkedSelectedTcpAddress(
+                context.runtimePermissions(), endpoint, port, resolved[0]);
+        String selectedEndpoint = numericTcpEndpoint(selected.getAddress(), port);
+        context.requirePermission(RuntimePermissions.Permission.NET, selectedEndpoint,
+                "network.connect.selected");
         Socket socket = new Socket();
         try {
             context.nativeIo().register(socket);
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
-                socket.connect(new InetSocketAddress(host, port), 15_000);
-                return new TcpConnection(context, endpoint, socket);
+                // No hostname re-resolution at the physical connect boundary.
+                socket.connect(selected, 15_000);
+                return new TcpConnection(context, endpoint, selectedEndpoint, socket);
             }
         } catch (Exception failure) {
             context.nativeIo().unregister(socket);
@@ -385,16 +404,43 @@ public final class NativeIo {
         }
     }
 
+    private static String numericTcpEndpoint(InetAddress address, int port) {
+        String numeric = address.getHostAddress().toLowerCase(java.util.Locale.ROOT);
+        return (address instanceof Inet6Address ? "[" + numeric + "]" : numeric) + ":" + port;
+    }
+
+    // Package-private deterministic test seam: no DNS, sockets, actor code or
+    // permission grant is created by selecting an already resolved address.
+    static InetSocketAddress checkedSelectedTcpAddress(
+            RuntimePermissions permissions, String requestedEndpoint, int port,
+            InetAddress selected) {
+        java.util.Objects.requireNonNull(permissions, "permissions");
+        java.util.Objects.requireNonNull(selected, "selected");
+        if (port < 1 || port > 65535 || selected.isAnyLocalAddress()
+                || selected.isMulticastAddress()) {
+            throw new SecurityException("invalid selected TCP destination");
+        }
+        permissions.require(RuntimePermissions.Permission.NET, requestedEndpoint,
+                "network.connect.requested");
+        permissions.require(RuntimePermissions.Permission.NET,
+                numericTcpEndpoint(selected, port), "network.connect.selected");
+        return new InetSocketAddress(selected, port);
+    }
+
     public static final class TcpConnection implements AutoCloseable {
         private final OresContext context;
         private final String endpoint;
+        private final String selectedEndpoint;
         private final Socket socket;
         private final BufferedReader reader;
         private final BufferedWriter writer;
 
-        private TcpConnection(OresContext context, String endpoint, Socket socket) throws IOException {
+        private TcpConnection(
+                OresContext context, String endpoint, String selectedEndpoint, Socket socket)
+                throws IOException {
             this.context = context;
             this.endpoint = endpoint;
+            this.selectedEndpoint = selectedEndpoint;
             this.socket = socket;
             this.reader = new BufferedReader(
                     new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
@@ -405,6 +451,8 @@ public final class NativeIo {
         public String readLine() {
             TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.socket.read_line");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
+            context.requirePermission(RuntimePermissions.Permission.NET, selectedEndpoint,
+                    "network.socket.read_line.selected");
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 return reader.readLine();
             } catch (IOException failure) {
@@ -415,6 +463,8 @@ public final class NativeIo {
         public void writeText(String value) {
             TrustedNetworkIngressGuard.rejectUntrustedDirectNetwork("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
+            context.requirePermission(RuntimePermissions.Permission.NET, selectedEndpoint,
+                    "network.socket.write_text.selected");
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 writer.write(value);
                 writer.flush();
@@ -462,6 +512,37 @@ public final class NativeIo {
         int port = uri.getPort();
         if (port < 0) port = "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
         return uri.getHost().toLowerCase(java.util.Locale.ROOT) + ":" + port;
+    }
+
+    /**
+     * Open (creating if absent) a regular binary file for append and
+     * positional reads. Requires READ and WRITE on both the lexical and the
+     * canonical path, and refuses symlinks, like the text file operations.
+     * Runs on the native I/O worker only.
+     */
+    public static NativeBinaryFile openBinaryFile(OresContext context, String rawPath) {
+        String operation = "fs.open_binary_async";
+        Path lexical = lexicalPath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ, lexical.toString(), operation);
+        context.requirePermission(RuntimePermissions.Permission.WRITE, lexical.toString(), operation);
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException(operation + " refuses symlink: " + lexical);
+        }
+        Path path = canonicalWritePath(rawPath);
+        context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), operation);
+        context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), operation);
+        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)
+                && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException(operation + " requires a regular file: " + path);
+        }
+        try {
+            java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(path,
+                    StandardOpenOption.READ, StandardOpenOption.WRITE,
+                    StandardOpenOption.CREATE, LinkOption.NOFOLLOW_LINKS);
+            return new NativeBinaryFile(path, channel);
+        } catch (IOException failure) {
+            throw ioFailure("open", path, failure);
+        }
     }
 
     private static Path canonicalIfExisting(String rawPath) {
