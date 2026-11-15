@@ -146,6 +146,45 @@ class SourceLogCallsiteBindingV1Test {
     }
 
     @Test
+    void refusesOversizedAndControlCharacterSpanNames() {
+        var giant = parse("pub fnc main(): void { "
+                + "using telemetry.span(\"" + "x".repeat(257) + "\") as span {"
+                + " log.info(\"hammer.started\"); } }");
+        assertThrows(IllegalArgumentException.class,
+                () -> bind(giant, List.of(new SourceLogCallsiteBindingV1.Entry(
+                        giant.module(), "main", 0, "hammer.started", RID, START))));
+
+        var control = parse("pub fnc main(): void { "
+                + "using telemetry.span(\"line\\nname\") as span {"
+                + " log.info(\"hammer.started\"); } }");
+        assertThrows(IllegalArgumentException.class,
+                () -> bind(control, List.of(new SourceLogCallsiteBindingV1.Entry(
+                        control.module(), "main", 0, "hammer.started", RID, START))));
+    }
+
+    @Test
+    void refusesActiveOrParameterSpanAliasShadowing() {
+        var nested = parse("pub fnc main(): void { "
+                + "using telemetry.span(\"outer\") as scope {"
+                + " using telemetry.span(\"inner\") as scope {"
+                + " log.info(\"hammer.started\"); } } }");
+        assertThrows(IllegalArgumentException.class,
+                () -> bind(nested, List.of(new SourceLogCallsiteBindingV1.Entry(
+                        nested.module(), "main", 0, "hammer.started", RID, START))));
+
+        var parameter = parse("pub fnc main(int owner): void { "
+                + "using telemetry.span(\"hammer\") as owner {"
+                + " log.info(\"hammer.started\"); } }");
+        assertThrows(IllegalArgumentException.class,
+                () -> SourceLogCallsiteBindingV1.bind(
+                        parameter.ast(),
+                        List.of(new SourceLogCallsiteBindingV1.Entry(
+                                parameter.module(), "main", 1, "hammer.started", RID, START)),
+                        List.of(new SourceRoutineBindingV1.Entry(
+                                parameter.module(), "main", 1, RID))));
+    }
+
+    @Test
     void refusesDynamicPayloadAndAmbiguousRepeatedLiteral() {
         var dynamic = parse(
             "pub fnc main(): void { const msg = \"secret\"; log.info(msg); }");
