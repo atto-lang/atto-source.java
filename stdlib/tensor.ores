@@ -15,7 +15,7 @@ define module tensor as
   // division-based last-index bound cannot overflow even for i64::MAX.
   // The empty view may start at backing_elements, never beyond it, and
   // every span (even empty) requires a positive stride.
-  pub fnc valid_tensor_span(&TensorSpan span): bool {
+  pub fnc valid_tensor_span(borrow TensorSpan span): bool {
     if span.backing_elements < 0 || span.start_element < 0; do
       return false;
     fi

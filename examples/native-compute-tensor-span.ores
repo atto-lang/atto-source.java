@@ -19,49 +19,49 @@ pub routine main(): void {
   val TensorSpan neg_count = new TensorSpan(8, 0, -1, 1);
   val TensorSpan start_past_end = new TensorSpan(8, 9, 0, 1);
   val TensorSpan off_by_one = new TensorSpan(8, 0, 3, 4);
-  if !valid_tensor_span(&full); do
+  if !valid_tensor_span(rt borrow full); do
     rt fail("full span wrongly rejected");
   fi
-  if !valid_tensor_span(&stepped); do
+  if !valid_tensor_span(rt borrow stepped); do
     rt fail("strided span wrongly rejected");
   fi
-  if !valid_tensor_span(&empty); do
+  if !valid_tensor_span(rt borrow empty); do
     rt fail("empty end span wrongly rejected");
   fi
-  if !valid_tensor_span(&zero); do
+  if !valid_tensor_span(rt borrow zero); do
     rt fail("zero length span wrongly rejected");
   fi
-  if !valid_tensor_span(&max_last); do
+  if !valid_tensor_span(rt borrow max_last); do
     rt fail("max length boundary wrongly rejected");
   fi
-  if valid_tensor_span(&outside); do
+  if valid_tensor_span(rt borrow outside); do
     rt fail("out of bounds span accepted");
   fi
-  if valid_tensor_span(&end_nonempty); do
+  if valid_tensor_span(rt borrow end_nonempty); do
     rt fail("nonempty end span accepted");
   fi
-  if valid_tensor_span(&zero_stride); do
+  if valid_tensor_span(rt borrow zero_stride); do
     rt fail("zero stride accepted");
   fi
-  if valid_tensor_span(&neg_stride); do
+  if valid_tensor_span(rt borrow neg_stride); do
     rt fail("negative stride accepted");
   fi
-  if valid_tensor_span(&huge); do
+  if valid_tensor_span(rt borrow huge); do
     rt fail("overflowing strided span accepted");
   fi
-  if valid_tensor_span(&neg_capacity); do
+  if valid_tensor_span(rt borrow neg_capacity); do
     rt fail("negative backing length accepted");
   fi
-  if valid_tensor_span(&neg_start); do
+  if valid_tensor_span(rt borrow neg_start); do
     rt fail("negative start accepted");
   fi
-  if valid_tensor_span(&neg_count); do
+  if valid_tensor_span(rt borrow neg_count); do
     rt fail("negative count accepted");
   fi
-  if valid_tensor_span(&start_past_end); do
+  if valid_tensor_span(rt borrow start_past_end); do
     rt fail("past-end empty span accepted");
   fi
-  if valid_tensor_span(&off_by_one); do
+  if valid_tensor_span(rt borrow off_by_one); do
     rt fail("last element off by one accepted");
   fi
   stdio.stdout.println("COMPUTE-TENSOR-SPAN-OK");
