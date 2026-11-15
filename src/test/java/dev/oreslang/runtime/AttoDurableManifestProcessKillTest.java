@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -23,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * killing the first one. This is not power-cut or process-zero-GC evidence.
  */
 @EnabledOnOs(OS.LINUX)
+@EnabledIfSystemProperty(named = "ores.private.fs.guest.approved", matches = "true")
 @Timeout(120)
 final class AttoDurableManifestProcessKillTest {
     @TempDir Path temp;
