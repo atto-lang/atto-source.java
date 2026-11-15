@@ -278,8 +278,14 @@ final class SupervisorControlSnapshotCoordinatorTest {
     @Test
     void revocationAfterAdmissionBlocksLateObservedResults() throws Exception {
         var queue = new QueuedControl();
+        var realCaptureCalls = new AtomicInteger();
         try (var runtime = runtime(queue.dispatcher());
-             var service = new SupervisorControlSnapshotCoordinator(runtime);
+             var observer = new SupervisorRegistryObservation(
+                     runtime, System::nanoTime, () -> {
+                         realCaptureCalls.incrementAndGet();
+                         return java.time.Instant.now();
+                     });
+             var service = new SupervisorControlSnapshotCoordinator(runtime, observer);
              ExecutorService worker = Executors.newSingleThreadExecutor()) {
             Object session = new Object();
             var g = grant(service, runtime, session);
@@ -287,8 +293,11 @@ final class SupervisorControlSnapshotCoordinatorTest {
             assertEquals(1, service.activeControlRequests());
             service.revoke(g);
             assertCode(pending, "DENIED");
-            assertEquals(1, service.activeControlRequests());
+            assertEquals(0, service.activeControlRequests(),
+                    "revoked queued request must release via atomic abandon");
             worker.submit(queue.next()).get(5, TimeUnit.SECONDS);
+            assertEquals(0, realCaptureCalls.get(),
+                    "late dispatcher must not enter observation after revoke");
             assertEquals(0, service.activeControlRequests());
             assertThrows(SecurityException.class, () -> read(service, g, session));
         }
@@ -370,16 +379,25 @@ final class SupervisorControlSnapshotCoordinatorTest {
     @Test
     void coordinatorCloseRejectsQueuedRequestsWithoutPretendingRetirement() throws Exception {
         var queue = new QueuedControl();
+        var realCaptureCalls = new AtomicInteger();
         try (var runtime = runtime(queue.dispatcher());
-             var service = new SupervisorControlSnapshotCoordinator(runtime);
+             var observer = new SupervisorRegistryObservation(
+                     runtime, System::nanoTime, () -> {
+                         realCaptureCalls.incrementAndGet();
+                         return java.time.Instant.now();
+                     });
+             var service = new SupervisorControlSnapshotCoordinator(runtime, observer);
              ExecutorService worker = Executors.newSingleThreadExecutor()) {
             Object session = new Object();
             var g = grant(service, runtime, session);
             var pending = read(service, g, session);
             service.close();
             assertCode(pending, "COORDINATOR_CLOSED");
-            assertEquals(1, service.activeControlRequests());
+            assertEquals(0, service.activeControlRequests(),
+                    "closing queued request must release via atomic abandon");
             worker.submit(queue.next()).get(5, TimeUnit.SECONDS);
+            assertEquals(0, realCaptureCalls.get(),
+                    "late dispatcher must not enter observation after close");
             assertEquals(0, service.activeControlRequests());
         }
     }
