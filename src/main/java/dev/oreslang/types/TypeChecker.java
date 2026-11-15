@@ -4536,11 +4536,6 @@ public final class TypeChecker {
             }
             Type callee = typeOf(call.callee(), env, generics, self);
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
-            if (call.callee() instanceof Ast.LambdaExpr && fn.result() == Unknown.INSTANCE) {
-                throw new IllegalArgumentException(
-                        "immediately invoked lambda requires a statically known return type; "
-                                + "declare its result type for complex control-flow bodies");
-            }
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
                             call.arguments(), env, generics, self,
@@ -9418,7 +9413,19 @@ public final class TypeChecker {
     private Type typeOfTernaryArm(
             Ast.Expr arm, Env env, Set<String> generics, Type self) {
         if (!(arm instanceof Ast.BlockValueExpr block)) {
-            return typeOf(arm, env, generics, self);
+            Type armType = typeOf(arm, env, generics, self);
+            // A ternary arm is a typed value. Unknown is assignable everywhere,
+            // so an immediately invoked lambda whose complex body cannot be
+            // typed must declare its result instead of widening the ternary.
+            // Elsewhere (e.g. an if condition) main keeps admitting such IIFEs.
+            if (arm instanceof Ast.CallExpr call
+                    && call.callee() instanceof Ast.LambdaExpr
+                    && armType == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "immediately invoked lambda requires a statically known return type; "
+                                + "declare its result type for complex control-flow bodies");
+            }
+            return armType;
         }
         if (!admittedTernaryArms.add(block)) {
             throw new IllegalArgumentException(
