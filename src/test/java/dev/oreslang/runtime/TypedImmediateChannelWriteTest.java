@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -11,6 +12,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -54,7 +56,7 @@ final class TypedImmediateChannelWriteTest {
 
         assertSame(first, ch.tryRead().orElseThrow());
         assertInstanceOf(ChannelRuntime.TryWriteResult.Accepted.class,
-                writer.tryWriteResult(full.value()));
+                writer.tryWriteResult((Payload) full.value()));
         assertSame(retried, ch.tryRead().orElseThrow());
         assertTrue(ch.tryRead().isEmpty());
         assertEquals(0, ch.pendingRegistrations());
@@ -70,7 +72,7 @@ final class TypedImmediateChannelWriteTest {
         assertEquals(0, ch.pendingRegistrations());
         ch.close();
         var closed = assertInstanceOf(ChannelRuntime.TryWriteResult.Closed.class,
-                ch.tryWriteResult(full.value()));
+                ch.tryWriteResult((Payload) full.value()));
         assertSame(payload, closed.value());
         assertEquals(0, ch.pendingRegistrations());
     }
@@ -81,6 +83,7 @@ final class TypedImmediateChannelWriteTest {
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch finish = new CountDownLatch(8);
         AtomicInteger accepted = new AtomicInteger();
+        AtomicReference<Throwable> workerFailure = new AtomicReference<>();
         List<Payload> failed = java.util.Collections.synchronizedList(new ArrayList<>());
         List<Thread> workers = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
@@ -97,8 +100,9 @@ final class TypedImmediateChannelWriteTest {
                     } else {
                         throw new AssertionError("unexpected Closed result");
                     }
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
+                } catch (Throwable failure) {
+                    if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+                    workerFailure.compareAndSet(null, failure);
                 } finally {
                     finish.countDown();
                 }
@@ -109,6 +113,7 @@ final class TypedImmediateChannelWriteTest {
         start.countDown();
         assertTrue(finish.await(5, TimeUnit.SECONDS));
         for (Thread worker : workers) worker.join();
+        assertNull(workerFailure.get(), "worker assertions/exceptions must fail the JUnit test");
         assertEquals(1, accepted.get());
         assertEquals(7, failed.size());
         assertEquals(1, ch.size());
