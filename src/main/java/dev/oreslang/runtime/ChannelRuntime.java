@@ -324,8 +324,9 @@ public final class ChannelRuntime {
          * No waiter or pending write survives Full/Closed. Closed is decoded
          * only from ChannelClosedException, not from arbitrary failures.
          *
-         * This is the Java host primitive; source-level try writech currently
-         * uses the compatibility bool path until typed sum lowering lands.
+         * This host primitive is also the guest interpreter's immediate
+         * write result path. Only the Java-host tryWrite(T) compatibility API
+         * remains Boolean; source try writech returns TryWriteResult<T>.
          */
         public TryWriteResult<T> tryWriteResult(T value) {
             requireValue(value);
