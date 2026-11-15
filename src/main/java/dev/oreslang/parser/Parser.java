@@ -5392,7 +5392,9 @@ public final class Parser {
         // Both historical mutable-borrow orders lower to the same &mut AST.
         if (name.equals("borrow") && !mutableBorrow && match(MUT)) {
             mutableBorrow = true;
-        } else if (mutableBorrow && check(MUT)) {
+        }
+        // Also reject repeated mut after the legacy borrow-mut word order.
+        if (mutableBorrow && check(MUT)) {
             throw error(peek(), "duplicate mutable borrow qualifier");
         }
         Ast.Expr argument;
