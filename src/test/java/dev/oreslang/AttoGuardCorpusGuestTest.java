@@ -18,8 +18,31 @@ final class AttoGuardCorpusGuestTest {
     @Test
     void canonicalScalarGuardExecutes() throws Exception {
         String text = fixture("canonical-scalar.atto");
+        assertTrue(text.contains("x neq 5"), "AttoLang guard fixture must use canonical neq");
+        assertFalse(text.contains("x != 5"), "legacy inequality spelling is not canonical");
         TypeChecker.check(Parser.parse(text));
         Source source = Source.newBuilder(OresLanguage.ID, text, "canonical-scalar.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(42, context.eval(source).asInt());
+        }
+    }
+
+    @Test
+    void attoEqNeqAndBangEqCompileAndExecuteThroughTheGuestFrontend() throws Exception {
+        // Hosted Truffle guest execution only: not a GraalVM Native Image AOT proof.
+        String text = """
+                pub fnc main(): int {
+                  if (3 eq 3 && 3 neq 4 && 3 !eq 5) then
+                    return 42;
+                  else
+                    return 7;
+                  fi
+                }
+                """;
+        TypeChecker.check(Parser.parse(text));
+        Source source = Source.newBuilder(OresLanguage.ID, text, "atto-equality-operators.atto")
                 .mimeType(OresLanguage.MIME_TYPE).build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).build()) {
