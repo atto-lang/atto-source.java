@@ -375,18 +375,23 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 Throwable terminalFailure = unwrap(failure);
                 final boolean cancelled;
                 try {
-                    // CancellationException by itself is not cancellation
-                    // authority: dependent stages can propagate one while
-                    // remaining FAILED. Conversely, a foreign Future whose
-                    // isCancelled() spuriously reports true must not erase an
-                    // unrelated ordinary failure. Require BOTH the host's
-                    // cancellation state and a cancellation-shaped failure.
-                    // This is still only a HOST signal, not an Oreslang-owned
-                    // cancellation capability; the runtime preserves its own
-                    // authenticated state separately.
-                    cancelled = terminalFailure instanceof CancellationException
-                            && stage instanceof Future<?> hostFuture
+                    // Always consult the host's cancellation probe so an
+                    // inconsistent host that throws from it fails this
+                    // adapter instead of stranding it (main's contract).
+                    // A CancellationException delivered directly as this
+                    // stage's own outcome is cancellation, even when the
+                    // host flag is inconsistent. A CancellationException
+                    // merely propagated from a dependency (wrapped in a
+                    // CompletionException) counts only if the host also
+                    // reports cancellation, and a spurious host flag never
+                    // turns an ordinary failure into cancellation. This is
+                    // still only a HOST signal, not an Oreslang-owned
+                    // cancellation capability.
+                    boolean hostCancelled = stage instanceof Future<?> hostFuture
                             && hostFuture.isCancelled();
+                    cancelled = failure instanceof CancellationException
+                            || (hostCancelled
+                                    && terminalFailure instanceof CancellationException);
                 } catch (Throwable observationFailure) {
                     if (observationFailure instanceof VirtualMachineError fatal) throw fatal;
                     if (observationFailure instanceof ThreadDeath fatal) throw fatal;
