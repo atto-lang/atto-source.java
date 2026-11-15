@@ -1680,11 +1680,20 @@ public final class OwnershipChecker {
                 // closed before evaluating/consuming the payload expression.
                 // A future recoverable send must return the rejected owned value
                 // explicitly (including Closed), not silently pretend it is Copy.
-                if (channelOp.mode() == Ast.WaitMode.IMMEDIATE
-                        && !isCopyType(element)) {
-                    throw error("try writech cannot accept a move-only payload: "
-                            + "bool cannot recover the value on Full or Closed; "
-                            + "use a Copy payload or a recoverable send API");
+                if (channelOp.mode() == Ast.WaitMode.IMMEDIATE) {
+                    if (!isCopyType(element)) {
+                        throw error("try writech cannot accept a move-only payload: "
+                                + "bool cannot recover the value on Full or Closed; "
+                                + "use a Copy payload or a recoverable send API");
+                    }
+                    // rt take explicitly invalidates a binding even when its
+                    // static type is Copy (notably transferable capabilities).
+                    // The bool probe has no failure path that returns it.
+                    if (channelOp.value() instanceof Ast.RuntimeCallExpr transfer
+                            && transfer.operation().equals("take")) {
+                        throw error("try writech cannot rt take an owned value: "
+                                + "bool cannot return the value on failed admission");
+                    }
                 }
                 // Blocking/async channel writes transfer the payload to the
                 // operation; their completion, failure and cancellation have
