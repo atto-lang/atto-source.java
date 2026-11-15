@@ -312,7 +312,19 @@ final class ActorPublisherScopedObservationTest {
             observer.send(1);
             assertTrue(done.await(5, TimeUnit.SECONDS));
             assertNull(error.get());
-            assertEquals(0L, runtime.sharedMemoryBytes());
+
+            // Subscription quota credits are refunded inside the receive
+            // callback; other independently live actor mailbox envelopes
+            // are not leaked subscription state. Require physical retirement
+            // of all three actors before measuring total runtime bytes.
+            observer.stop();
+            a.stop();
+            b.stop();
+            assertTrue(observer.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(a.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(b.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "all publisher-scoped subscriptions and actor mail must retire");
         }
     }
 
