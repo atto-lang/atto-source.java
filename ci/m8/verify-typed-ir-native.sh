@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Keep the Git checkout clean for M7's exact-source native verifier.
+# Python's default __pycache__ side effects are not source code.
+export PYTHONDONTWRITEBYTECODE=1
 cd "$(dirname "$0")/../.."
 expected="$ATTO_EXPECTED_HEAD_SHA"
 if [[ ! "$expected" =~ ^[0-9a-f]{40}$ ]] || [[ "$(git rev-parse HEAD)" != "$expected" ]]; then
