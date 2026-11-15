@@ -347,6 +347,33 @@ final class TaskCaptureAdmissionIdentityTest {
                         checked, task, replacement).captureTransfers());
     }
 
+
+    @Test
+    void valueMatchPrefixShadowDoesNotMintOuterTaskCapture() {
+        Ast.Program checked = OresCompiler.parseAndTypeCheck("""
+                pub async fnc main(): void {
+                  let Channel<int> shadowed = Channel.new<int>(1);
+                  let Future<int> child = task {
+                    return match<int> true over
+                      on true -> ::
+                        val int shadowed = 41;
+                        return shadowed + 1;
+                      end
+                      on false -> 0;
+                    end;
+                  };
+                  return;
+                }
+                """);
+
+        Ast.TaskExpr task = firstTask(checked);
+        long epoch = Ast.CheckedTaskCaptures.requireProgramEpoch(checked);
+        assertEquals(
+                java.util.Map.of(),
+                Ast.CheckedTaskCaptures.require(
+                        checked, task, epoch).captureTransfers());
+    }
+
     private static Ast.TaskExpr firstTask(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {

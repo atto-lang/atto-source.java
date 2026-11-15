@@ -1,0 +1,21 @@
+{
+  "schema_version":"0.1.0",
+  "path":"examples/match.ores",
+  "functions":[
+    {
+      "name":"main",
+      "actor_kind":"shared",
+      "allows_error":false,
+      "entry":0,
+      "nodes":[
+        {"id":0,"line":1,"column":1,"op":"entry","successors":[1]},
+        {"id":1,"line":2,"column":1,"op":"branch","successors":[2]},
+        {"id":2,"line":3,"column":1,"op":"return","successors":[]}
+      ],
+      "matches":[
+        {"line":2,"column":1,"closed_variants":["Some","None"],
+         "arms":[{"variants":["Some"]},{"variants":["None"]}]}
+      ]
+    }
+  ]
+}

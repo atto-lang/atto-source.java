@@ -36,7 +36,7 @@ fn is_execution_surface(path: &str) -> bool {
 }
 
 fn forbidden_execution_line(line: &str) -> bool {
-    let l = line.trim().to_ascii_lowercase();
+    let l = line.trim().to_ascii_lowercase().replace('\t', " ");
     if l.starts_with('#') {
         return false;
     }
@@ -116,7 +116,15 @@ fn main() {
         let file = Path::new(&root).join(name.as_ref());
 
         // Path-only checks still apply even when the content is binary or unreadable.
-        let body = fs::read_to_string(&file).unwrap_or_default();
+        let body = match fs::read_to_string(&file) {
+            Ok(body) => body,
+            Err(err) if is_execution_surface(&name) => {
+                eprintln!("{name}: cannot read execution surface: {err}");
+                found += 1;
+                continue;
+            }
+            Err(_) => String::new(),
+        };
         for problem in violations(&name, &body) {
             eprintln!("{name}: {problem}");
             found += 1;
@@ -184,5 +192,21 @@ mod tests {
     fn prose_is_not_treated_as_execution() {
         let body = "Python is prohibited; replace Python tooling with Rust.";
         assert!(violations("README.md", body).is_empty());
+    }
+
+    #[test]
+    fn rejects_python_heredocs_and_tab_separated_commands() {
+        assert!(forbidden_execution_line("python3 - <<'PY'"));
+        assert!(forbidden_execution_line("- run: python3\t-c 'pass'"));
+        assert!(forbidden_execution_line("  - uses: actions/setup-python@v5"));
+    }
+
+    #[test]
+    fn synthetic_runner_smoke_is_source_free_and_python_free() {
+        let smoke = include_str!("../../../.github/workflows/synthetic-ci-runner-smoke.yml");
+        assert!(smoke.contains("permissions: {}"));
+        assert!(smoke.contains("SOURCE_FREE_RUNNER_STEP_EXECUTED"));
+        assert!(!smoke.contains("actions/checkout@"));
+        assert!(smoke.lines().all(|line| !forbidden_execution_line(line)));
     }
 }
