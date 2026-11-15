@@ -74,7 +74,8 @@ final class OwnershipBangAliasesTest {
                 end
                 fnc main(): int {
                   val Item item = new Item();
-                  return %s.value;
+                  val Item cloned = %s;
+                  return cloned.value;
                 }
                 """;
         for (String operation : new String[]{"copy", "share"}) {
