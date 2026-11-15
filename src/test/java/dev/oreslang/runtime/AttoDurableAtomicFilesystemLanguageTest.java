@@ -11,6 +11,7 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.condition.OS;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -20,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * This is not a real power-loss, process SIGKILL or native-image AOT test.
  */
 @EnabledOnOs(OS.LINUX)
+@EnabledIfSystemProperty(named = "ores.private.fs.guest.approved", matches = "true")
 final class AttoDurableAtomicFilesystemLanguageTest {
     @TempDir Path temp;
 
