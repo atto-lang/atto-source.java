@@ -1,8 +1,8 @@
-// A direct take invalidates a Copy source even if the channel is full.
+// Explicit take invalidates even Copy bindings, regardless of the outcome.
 pub routine main(): void {
   val Channel<int> channel = Channel.new<int>(1);
   val int payload = 7;
-  val bool accepted = try writech channel, rt take payload;
+  val TryWriteResult<int> result = try writech channel, rt take payload;
   stdio.stdout.write(payload);
   return;
 }
