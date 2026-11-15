@@ -158,8 +158,8 @@ pub async routine main(): void {
   // Both child actors start before the executor waits on either result.
   val inventory = await spawn ReserveWorkflowInventory();
   val payment = await spawn AuthorizeWorkflowPayment();
-  inventory.send(accepted.value);
-  payment.send(accepted.value);
+  inventory.send(accepted.value as String);
+  payment.send(accepted.value as String);
   val stock = (await inventory.outputs.next()).value.unwrap();
   val charge = (await payment.outputs.next()).value.unwrap();
   await inventory.get_done();

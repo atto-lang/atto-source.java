@@ -44,13 +44,13 @@ pub async routine main(): void {
 
   if ready.value == "review-ready"; do
     val review = await spawn ReviewFixture();
-    review.send(ready.value);
+    review.send(ready.value as String);
     val signal = (await review.outputs.next()).value.unwrap();
     await review.get_done();
 
     if signal.value == "approved-fixture-only"; do
       val preview = await spawn PreviewOnly();
-      preview.send(signal.value);
+      preview.send(signal.value as String);
       val result = (await preview.outputs.next()).value.unwrap();
       await preview.get_done();
       if result.value == "preview-only"; do

@@ -26,7 +26,7 @@ final class SourceActorStepWorkflowExecutionTest {
     @Timeout(value=30,unit=TimeUnit.SECONDS)
     void executesThreeIndependentStepActorsInSequence() throws Exception {
         assertEquals("complete", runResource("/parity/actor-step-sequential.ores",
-                "e8d9b1c0a870ff6a8d35ced1acf860f85fd7e42d"));
+                "7ad94d37efb5f1b457144f0b78efb6dbee2387d2"));
     }
 
     @Test
@@ -48,7 +48,7 @@ final class SourceActorStepWorkflowExecutionTest {
     void executesCoordinatorActorWithGuardedForkJoinAndDuplicateReceipt() throws Exception {
         assertEquals("workflow:actor-fork-join", runResource(
                 "/parity/actor-coordinator-fork-join.ores",
-                "80b8da1ba193b30137efa122d94f30b52dae7d46"));
+                "9470d82a3180744c28abe9f890545b9bafdb2110"));
     }
 
     private static String runResource(String resourceName, String expectedGitBlob)

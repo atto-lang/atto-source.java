@@ -44,13 +44,13 @@ pub async routine main(): void {
   await capture.get_done();
 
   val verify = await spawn VerifyFixture();
-  verify.send(received.value);
+  verify.send(received.value as String);
   val decision = (await verify.outputs.next()).value.unwrap();
   await verify.get_done();
 
   if decision.value == "verified-fixture-only"; do
     val index = await spawn IndexEphemeral();
-    index.send(decision.value);
+    index.send(decision.value as String);
     val result = (await index.outputs.next()).value.unwrap();
     await index.get_done();
     if result.value == "indexed-ephemeral"; do

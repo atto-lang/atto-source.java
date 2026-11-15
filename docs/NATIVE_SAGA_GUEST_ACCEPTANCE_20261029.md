@@ -8,10 +8,10 @@ a Java or Node workflow simulator.
 
 | Native demo fixture | Git blob SHA-1 | Expected stdout |
 |---|---|---|
-| `workflows/order-saga-success.ores` | `1d47ce2cfb929d43a7501fbc4bf2363ec2195fde` | `saga:complete` |
+| `workflows/order-saga-success.ores` | `79d88461c4278220126fd15980746b064ca98b69` | `saga:complete` |
 | `workflows/order-saga-compensated.ores` | `d4782060ff0f53588b00e8c2eb9b7f87f5824e3d` | `saga:compensated` |
-| `workflows/order-saga-ambiguous.ores` | `51ca94e1cbf983a495ed89f1531e9e740d50c34d` | `saga:reconciliation-required` |
-| `workflows/order-saga-void-unknown.ores` | `82c9e08e95ab443e9ae5949466d322478ddec20a` | `saga:compensation-incomplete` |
+| `workflows/order-saga-ambiguous.ores` | `188d6a9d5153f21f36cd5158d8ec8151d14966be` | `saga:reconciliation-required` |
+| `workflows/order-saga-void-unknown.ores` | `7137fcfaba3782e357ffe433a8b05798cd811849` | `saga:compensation-incomplete` |
 
 Each target Git blob was independently created from the same source file
 bytes in `oreslang-source.java` and verified equal to its demo blob SHA.

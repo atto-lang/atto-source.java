@@ -42,12 +42,12 @@ pub async routine main(): void {
   await inventory.get_done();
   if stock.value == "inventory-reserved"; do
     val payment = await spawn AuthorizeSuccessPayment();
-    payment.send(stock.value);
+    payment.send(stock.value as String);
     val authorized = (await payment.outputs.next()).value.unwrap();
     await payment.get_done();
     if authorized.value == "payment-authorized"; do
       val shipping = await spawn CompleteSuccessShipment();
-      shipping.send(authorized.value);
+      shipping.send(authorized.value as String);
       val shipped = (await shipping.outputs.next()).value.unwrap();
       await shipping.get_done();
       if shipped.value == "shipment-created"; do

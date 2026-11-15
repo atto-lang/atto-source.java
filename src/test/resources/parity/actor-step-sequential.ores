@@ -43,12 +43,12 @@ pub async routine main(): void {
   await validation.get_done();
 
   val processing = await spawn ProcessStep();
-  processing.send(validated.value);
+  processing.send(validated.value as String);
   val processed = (await processing.outputs.next()).value.unwrap();
   await processing.get_done();
 
   val completion = await spawn CompleteStep();
-  completion.send(processed.value);
+  completion.send(processed.value as String);
   val completed = (await completion.outputs.next()).value.unwrap();
   await completion.get_done();
 

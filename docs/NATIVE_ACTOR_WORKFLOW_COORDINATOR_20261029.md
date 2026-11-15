@@ -26,7 +26,7 @@ graph decisions.
 - Any unexpected output, exception or JUnit timeout fails the test.
 
 Git blob SHA-1 of exact new `.ores` fixture:
-`80b8da1ba193b30137efa122d94f30b52dae7d46`.
+`9470d82a3180744c28abe9f890545b9bafdb2110`.
 
 `SourceActorStepWorkflowExecutionTest` now pins the blobs for all **4**
 baseline fixtures and asserts actual guest stdout via Graal `Context.eval`.

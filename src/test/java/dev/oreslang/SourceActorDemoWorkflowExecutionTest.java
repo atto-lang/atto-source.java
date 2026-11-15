@@ -30,7 +30,7 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void executesAcceptedOrderForkAndJoin() throws Exception {
-        assertGuest("order-workflow", "order:complete", "7fc2e538d980d7f925f5c6d8d81395533ff09e7a");
+        assertGuest("order-workflow", "order:complete", "beb1e74abdfdcf06371d00e432e0a6af4e2052b0");
     }
 
     @Test
@@ -42,7 +42,7 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void executesMemoryFixtureCaptureVerificationAndIndex() throws Exception {
-        assertGuest("agent-memory-workflow", "memory:fixture-indexed", "058cf01e876faee1e27908039a5e81aea793346b");
+        assertGuest("agent-memory-workflow", "memory:fixture-indexed", "970302d6de46d05b2402059f201ddcb532010992");
     }
 
     @Test
@@ -54,7 +54,7 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void executesReviewFixtureToPreviewOnly() throws Exception {
-        assertGuest("release-review-workflow", "release:preview-only", "f971404e7c33d95e9e92d88a76672f92bc23662c");
+        assertGuest("release-review-workflow", "release:preview-only", "cafb2332e30d3289869687d9ca0cbffdd7a59663");
     }
 
     @Test
@@ -84,26 +84,26 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void executesSagaSuccessWithNoCompensation() throws Exception {
-        assertGuest("order-saga-success", "saga:complete", "1d47ce2cfb929d43a7501fbc4bf2363ec2195fde");
+        assertGuest("order-saga-success", "saga:complete", "79d88461c4278220126fd15980746b064ca98b69");
     }
 
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void compensatesKnownNoEffectRejectionInReverseOrder() throws Exception {
-        assertGuest("order-saga-compensated", "saga:compensated", "cbf0650473414a7d53755f756633a07fe64f14c3");
+        assertGuest("order-saga-compensated", "saga:compensated", "79bdbddf049297b9f6692c59ca670a2604fdcfa2");
     }
 
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void quarantinesAmbiguousSagaOutcomeWithoutCompensation() throws Exception {
-        assertGuest("order-saga-ambiguous", "saga:reconciliation-required", "51ca94e1cbf983a495ed89f1531e9e740d50c34d");
+        assertGuest("order-saga-ambiguous", "saga:reconciliation-required", "188d6a9d5153f21f36cd5158d8ec8151d14966be");
     }
 
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void doesNotReleaseInventoryAfterUnconfirmedPaymentVoid() throws Exception {
         assertGuest("order-saga-void-unknown", "saga:compensation-incomplete",
-                "82c9e08e95ab443e9ae5949466d322478ddec20a");
+                "7137fcfaba3782e357ffe433a8b05798cd811849");
     }
 
     private static void assertGuest(String fixture, String expected, String expectedGitBlob)

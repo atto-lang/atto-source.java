@@ -69,19 +69,19 @@ pub async routine main(): void {
   await inventory.get_done();
   if stock.value == "inventory-reserved"; do
     val payment = await spawn AuthorizeSagaPayment();
-    payment.send(stock.value);
+    payment.send(stock.value as String);
     val authorized = (await payment.outputs.next()).value.unwrap();
     await payment.get_done();
     if authorized.value == "payment-authorized"; do
       val shipment = await spawn RejectSagaShipment();
-      shipment.send(authorized.value);
+      shipment.send(authorized.value as String);
       val shipped = (await shipment.outputs.next()).value.unwrap();
       await shipment.get_done();
       if shipped.value == "rejected-no-effect"; do
         // Reverse order only for acknowledged, known pre-effect rejection:
         // void payment FIRST, release reserved inventory SECOND.
         val voider = await spawn VoidSagaPayment();
-        voider.send(authorized.value);
+        voider.send(authorized.value as String);
         val voided = (await voider.outputs.next()).value.unwrap();
         await voider.get_done();
 
@@ -94,7 +94,7 @@ pub async routine main(): void {
         fi
 
         val releaser = await spawn ReleaseSagaInventory();
-        releaser.send(stock.value);
+        releaser.send(stock.value as String);
         val released = (await releaser.outputs.next()).value.unwrap();
         await releaser.get_done();
 

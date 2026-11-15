@@ -50,8 +50,8 @@ pub async routine main(): void {
     // Start both workers BEFORE awaiting either output: bounded fan-out.
     val inventory = await spawn ReserveInventory();
     val payment = await spawn AuthorizePayment();
-    inventory.send(outcome.value);
-    payment.send(outcome.value);
+    inventory.send(outcome.value as String);
+    payment.send(outcome.value as String);
 
     val stock = (await inventory.outputs.next()).value.unwrap();
     val charge = (await payment.outputs.next()).value.unwrap();
