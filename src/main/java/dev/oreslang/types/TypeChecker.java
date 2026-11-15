@@ -4,6 +4,8 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.ast.CheckedDispatchPlansV1;
+import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
@@ -49,6 +51,13 @@ public final class TypeChecker {
             "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex",
             "Channel", "Future", "Fnc", "Function",
             "HttpClientResponse", "HttpClientBody");
+
+    // These nominal names carry VM-supplied mailbox identity or authority.
+    // A user class/alias must not make the type checker treat its fields as
+    // trusted ActorMail/ActorOutput metadata or its instances as ActorRef.
+    private static final Set<String> SEALED_ACTOR_PROTOCOL_TYPES = Set.of(
+            "ActorMail", "ActorOutput", "ActorOutputStream",
+            "ActorRef", "ActorId", "ActorKind");
 
     /** Strict source-profile flag is local to this checker; never process-global. */
     private boolean strictAttoEquality;
@@ -122,6 +131,28 @@ public final class TypeChecker {
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
+    /** Identity-indexed call proofs, published only on successful type checking. */
+    private final IdentityHashMap<Ast.CallExpr, CheckedDispatchPlansV1.Plan> checkedDispatchPlans =
+            new IdentityHashMap<>();
+
+    private void recordCheckedDispatch(
+            Ast.CallExpr call, AotDispatchPlannerV1.CallKind kind,
+            String name, int arity, Ast.FunctionDecl function,
+            Ast.ClassDecl receiverClass, Ast.MethodDecl method) {
+        AotDispatchPlannerV1.Strategy strategy = AotDispatchPlannerV1.classify(
+                new AotDispatchPlannerV1.Evidence(
+                        kind, AotDispatchPlannerV1.ReceiverProof.NONE,
+                        AotDispatchPlannerV1.Linkage.FROZEN_CODE_GENERATION, true));
+        CheckedDispatchPlansV1.Plan plan = new CheckedDispatchPlansV1.Plan(
+                kind, strategy, name, arity, function, receiverClass, method);
+        plan.requireCallShape(call);
+        CheckedDispatchPlansV1.Plan previous = checkedDispatchPlans.putIfAbsent(call, plan);
+        if (previous != null && !plan.sameTargets(previous)) {
+            throw new IllegalStateException(
+                    "same checker call identity acquired incompatible dispatch targets");
+        }
+    }
+
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
     public record TypeCheckResult(
@@ -224,7 +255,49 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * A parsed user method named handle_state is rejected by Parser, but
+     * macros, linked ASTs and direct compiler API users can inject ClassDecl
+     * objects without passing through Parser. Never allow such a forged
+     * method to masquerade as the future compiler-owned state-loan intrinsic.
+     */
+    private static void rejectForgedActorStateIntrinsic(Ast.ClassDecl actor) {
+        if (actor.actorKind() != Ast.ActorKind.NONE
+                && actor.methods().stream().anyMatch(m -> m.name().equals("handle_state"))) {
+            throw new IllegalArgumentException(
+                    "ACTOR_STATE_INTRINSIC_FORGED: actor '" + actor.name()
+                            + "' cannot define compiler-owned handle_state");
+        }
+        if (actor.methods().stream().anyMatch(Ast.MethodDecl::critical)) {
+            throw new IllegalArgumentException(
+                    "CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED: class/actor '"
+                            + actor.name() + "' contains an unlowered critical method");
+        }
+    }
+
+    /**
+     * All checked entrypoints MUST reject unlowered sealed state before any
+     * macro/annotation expansion can project or rebuild an actor ClassDecl
+     * with legacy 11-parameter constructors. This is not runtime lowering.
+     */
+    private static void rejectUnloweredSealedActorState(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl actor) {
+                    rejectForgedActorStateIntrinsic(actor);
+                    if (!actor.sealedStateFields().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: actor '"
+                                        + actor.name() + "' requires compiler-sealed state ownership "
+                                        + "and handle_state lowering; not yet enabled");
+                    }
+                }
+            }
+        }
+    }
+
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        rejectUnloweredSealedActorState(program);
         return checkTypesWithDiagnostics(program, false);
     }
 
@@ -237,6 +310,7 @@ public final class TypeChecker {
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
+        rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -244,6 +318,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -292,8 +367,14 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
+            rejectForgedActorStateIntrinsic(linked);
+            if (!linked.sealedStateFields().isEmpty())
+                throw new IllegalArgumentException(
+                        "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: linked actor '"
+                                + linked.name() + "' cannot export unlowered state");
             rejectUnloweredCheckedClassEffects(linked);
         }
         for (Ast.InterfaceDecl linked : linkedContracts.values()) {
@@ -302,6 +383,7 @@ public final class TypeChecker {
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
         // structural projection can discard newly introduced effect rows.
+        rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
@@ -399,6 +481,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
+        CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -422,6 +505,10 @@ public final class TypeChecker {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
                 else if (declaration instanceof Ast.ClassDecl klass) {
+                    if (SEALED_ACTOR_PROTOCOL_TYPES.contains(klass.name())) {
+                        throw new IllegalArgumentException(
+                                klass.name() + " is a reserved actor protocol type; user classes cannot shadow it");
+                    }
                     if (Set.of("HttpResponse", "HttpClientResponse", "HttpClientBody")
                             .contains(klass.name())) {
                         throw new IllegalArgumentException(
@@ -432,6 +519,10 @@ public final class TypeChecker {
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    if (SEALED_ACTOR_PROTOCOL_TYPES.contains(alias.name())) {
+                        throw new IllegalArgumentException(
+                                alias.name() + " is a reserved actor protocol type; type aliases cannot shadow it");
+                    }
                     if (alias.name().equals("HttpResponse")) {
                         throw new IllegalArgumentException(
                                 "HttpResponse is a sealed transport response type; type aliases cannot shadow it");
@@ -1272,6 +1363,14 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
+        // State metadata must NEVER be typechecked as ordinary actor fields.
+        // Only a compiler-issued, turn/incarnation-bound physical state region
+        // and verified non-suspending critical loan may lower these fields.
+        if (!klass.sealedStateFields().isEmpty())
+            throw new IllegalArgumentException(
+                    "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: actor '"
+                    + klass.name() + "' requires compiler-sealed state ownership "
+                    + "and handle_state lowering; not yet enabled");
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
@@ -2226,6 +2325,20 @@ public final class TypeChecker {
                     "using request.borrow() as view requires verified transport-loan "
                             + "lifetime checking and evaluator lowering; feature is not enabled");
         }
+        if (stmt instanceof Ast.UsingTelemetrySpanStmt scope) {
+            // A compiler intrinsic, not a guest-callable global namespace.
+            if (env.lookup("telemetry") != null) {
+                throw new IllegalArgumentException(
+                        "telemetry.span scope cannot be shadowed by a guest binding");
+            }
+            requireAssignable(typeOf(scope.name(), env, generics, self),
+                    Primitive.STRING, "telemetry.span name");
+            Env spanEnv = new Env(env);
+            spanEnv.define(scope.binding(), new Named("$TelemetrySpan", List.of()),
+                    Ast.BindingKind.CONST);
+            checkBlock(scope.body(), spanEnv, generics, expectedReturn, self);
+            return;
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             String inferredName = binding.inferredTypeName() != null
                     ? binding.inferredTypeName() : shortInferredTypeNames.get(binding);
@@ -2265,6 +2378,10 @@ public final class TypeChecker {
                 actual = typeOfAgainstExpected(binding.initializer(), declaredAhead, env, generics, self);
             } finally {
                 permittedPartialStructInitializer = previousPartial;
+            }
+            if (actual instanceof Named named && named.name().equals("$TelemetrySpan")) {
+                throw new IllegalArgumentException(
+                        "lexical telemetry span cannot be rebound or captured as a value");
             }
             if (actual instanceof Record record && record.readOnly() && binding.mutableReferent()) {
                 throw new IllegalArgumentException(
@@ -2423,6 +2540,9 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            if (actual instanceof Named named && named.name().equals("$TelemetrySpan")) {
+                throw new IllegalArgumentException("lexical telemetry span cannot escape via return");
+            }
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
             if (strictAttoEquality && ret.value() != null && strictCallableReturnSource != null) {
@@ -3456,6 +3576,14 @@ public final class TypeChecker {
                         checkStrictNumericCallArguments(target, call.arguments(), env);
                     }
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
+                    // This target is a checked local function declaration in the
+                    // immutable, macro-expanded program. A runtime lexical value
+                    // still wins if the identifier is shadowed.
+                    if (target.genericParameters().isEmpty()
+                            && CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                        recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
+                                target.name(), arity, target, null, null);
+                    }
                     return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
             }
@@ -3995,10 +4123,11 @@ public final class TypeChecker {
                                         + " does not accept call-site type arguments");
                     }
                     return switch (member.member()) {
-                        case "send" -> {
+                        case "send", "try_send", "send_async" -> {
                             if (call.arguments().size() != 1) {
                                 throw new IllegalArgumentException(
-                                        "ActorRef.send expects exactly one mailbox value");
+                                        "ActorRef." + member.member()
+                                                + " expects exactly one mailbox value");
                             }
                             Type payload = typeOf(
                                     call.arguments().getFirst(), env, generics, self);
@@ -4006,13 +4135,18 @@ public final class TypeChecker {
                                     payload,
                                     actorClass.actorKind(),
                                     false,
-                                    "ActorRef.send mailbox value");
+                                    "ActorRef." + member.member() + " mailbox value");
                             Type expectedPayload = actorMailboxPayloadType(actorRef);
                             requireAssignable(
                                     payload,
                                     expectedPayload,
-                                    "ActorRef.send mailbox value for actor '" + actorClass.name() + "'");
-                            yield Primitive.VOID;
+                                    "ActorRef." + member.member() + " mailbox value for actor '"
+                                            + actorClass.name() + "'");
+                            yield switch (member.member()) {
+                                case "try_send" -> Primitive.BOOL;
+                                case "send_async" -> new Named("Future", List.of(Primitive.VOID));
+                                default -> Primitive.VOID;
+                            };
                         }
                         case "stop" -> {
                             if (!call.arguments().isEmpty()) {
@@ -4081,6 +4215,14 @@ public final class TypeChecker {
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
                 if (collectionBuiltin != null) {
+                    if (member.member().equals("get_copy")
+                            && !(member.receiver() instanceof Ast.NameExpr)) {
+                        // The first scalar Copy lane requires an explicit
+                        // compiler-checked named owner. Nested projections
+                        // and temporaries need stronger root provenance.
+                        throw new IllegalArgumentException(
+                                "get_copy requires a named builtin Array<int>/List<int> receiver");
+                    }
                     if (receiver instanceof Named map && map.name().equals("Map")
                             && (member.member().equals("set")
                                     || member.member().equals("delete"))) {
@@ -4275,6 +4417,13 @@ public final class TypeChecker {
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
                     requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
+                    // Only the exact class identity can consume this direct
+                    // target: a new code generation has different AST owners.
+                    if (klass.genericParameters().isEmpty() && fn.genericParameters().isEmpty()
+                            && CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                        recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.STATIC_METHOD,
+                                fn.name(), staticArity, null, klass, fn);
+                    }
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
@@ -4378,7 +4527,7 @@ public final class TypeChecker {
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type result = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -4387,6 +4536,16 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
+                        // No sealed/final proof exists here. Record an open
+                        // method slot, not a direct-call assertion. Runtime may
+                        // skip the slot lookup only if the receiver's *actual*
+                        // class identity equals the checked class identity.
+                        if (klass.genericParameters().isEmpty() && method.genericParameters().isEmpty()
+                                && CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                            recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.INSTANCE_METHOD,
+                                    method.name(), methodArity, null, klass, method);
+                        }
+                        return result;
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
@@ -4529,6 +4688,18 @@ public final class TypeChecker {
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            if (receiver instanceof Named named && named.name().equals("$TelemetrySpan")) {
+                return switch (member.member()) {
+                    case "attribute" -> new Function(
+                            List.of(Primitive.STRING, Unknown.INSTANCE), Primitive.VOID);
+                    case "trace_id", "span_id" ->
+                            new Function(List.of(), Primitive.STRING);
+                    case "recording" ->
+                            new Function(List.of(), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException(
+                            "unknown telemetry span member " + member.member());
+                };
+            }
             Type sumReceiver = receiverDispatchType(deref(receiver));
             // Nested extraction consumes the receiver. unwrap_all also
             // requires a checked static-depth proof bound to the CallExpr's
@@ -4580,7 +4751,7 @@ public final class TypeChecker {
                             List.of(Unknown.INSTANCE));
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
-                    case "send", "stop", "cancel", "kill" ->
+                    case "send", "try_send", "send_async", "stop", "cancel", "kill" ->
                             throw new IllegalArgumentException(
                                     "ActorRef." + member.member()
                                             + " is direct-call-only; invoke it with (...)");
@@ -5784,6 +5955,8 @@ public final class TypeChecker {
             if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) return true;
             if (stmt instanceof Ast.BlockStmt block && taskHasValueReturn(block.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope && taskHasValueReturn(scope.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope
+                    && taskHasValueReturn(scope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && taskHasValueReturn(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
@@ -8926,6 +9099,18 @@ public final class TypeChecker {
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), list.element());
+                case "get_copy" -> {
+                    // Candidate safe-collection-access-v1: only concrete Copy<int>
+                    // is admitted until generic Copy and provenance obligations
+                    // are implemented. Legacy get(int) remains direct-value.
+                    if (!list.element().equals(Primitive.INT)) {
+                        throw new IllegalArgumentException(
+                                "collection get_copy requires a proven Copy<int> element; "
+                                        + "other element types are not admitted yet");
+                    }
+                    yield new Function(List.of(Primitive.INT),
+                            new Named("Option", List.of(Primitive.INT)));
+                }
                 case "add" -> new Function(List.of(list.element()), Primitive.VOID);
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),
@@ -10234,6 +10419,9 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(block.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.TaskScopeStmt taskScope) {
                 rejectStaticClassGenericReferences(taskScope.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.UsingTelemetrySpanStmt scope) {
+                rejectStaticClassGenericReferences(scope.name(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(scope.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.LoopStmt loop) {
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.IfStmt conditional) {
@@ -11806,6 +11994,8 @@ public final class TypeChecker {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope
+                    && definitelyReturns(scope.body())) return true;
             if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 boolean allBranches = !conditional.branches().isEmpty()
@@ -11836,6 +12026,8 @@ public final class TypeChecker {
             if (stmt instanceof Ast.BreakStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope
+                    && containsBreakForCurrentLoop(scope.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope
                     && containsBreakForCurrentLoop(scope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
