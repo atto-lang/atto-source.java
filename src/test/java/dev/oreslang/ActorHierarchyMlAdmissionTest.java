@@ -64,26 +64,22 @@ final class ActorHierarchyMlAdmissionTest {
         assertTrue(error.getMessage().contains("isolation kind"), error.getMessage());
     }
 
+    // The second-concrete-actor-parent rule (Parser: "may extend at most one
+    // actor superclass") is introduced and pinned by #2425
+    // (ActorHierarchyAdmissionTest.multipleActorSuperclassesAreRejected...);
+    // main still admits ordinary-class style multiple parents for actors, so
+    // this test-only PR keeps only the ancestry rule main already enforces.
     @Test
-    void rejectOrdinaryObjectAndMultipleConcreteActorSuperclasses() {
-        for (String source : new String[] {
-                """
-                define class Plain as
-                end
-                define actor A1 extends Plain as
-                  pub value(): int { return 42; }
-                end
-                """,
-                """
-                shared actor Left {}
-                shared actor Right {}
-                shared actor A1 extends Left, Right {}
-                """
-        }) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(source)),
-                    "Actor ancestry must not gain a nonactor or a second concrete parent");
-        }
+    void rejectOrdinaryObjectActorSuperclass() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Plain as
+                        end
+                        define actor A1 extends Plain as
+                          pub value(): int { return 42; }
+                        end
+                        """)),
+                "Actor ancestry must not gain a nonactor parent");
     }
 
     @Test
