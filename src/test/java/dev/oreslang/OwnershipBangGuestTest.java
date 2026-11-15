@@ -27,7 +27,9 @@ final class OwnershipBangGuestTest {
     private static final Map<String, String> PINS = Map.of(
             "compact", "5336fa679a7816dbd353be4480f95dac639b6af7",
             "spaced", "06afd973b34a6cd09d1d78cee258134b1c3b0451",
-            "legacy", "fa3d3ef8173d046783efdae808bd291be00891be");
+            "legacy", "fa3d3ef8173d046783efdae808bd291be00891be",
+            "mut-canonical", "df0c1fc55c6412f9fccad648b99bc14f0b2b520a",
+            "mut-compatible", "acb47dccde8fa037374d5c0b2a2238f6cdce4cc0");
 
     private static String shaOfGitBlob(byte[] bytes) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-1");
@@ -38,7 +40,7 @@ final class OwnershipBangGuestTest {
 
     @Test
     void compactSpacedAndLegacyPrefixesCompileAndExecuteAttoGuest() throws Exception {
-        for (String variant : new String[]{"compact", "spaced", "legacy"}) {
+        for (String variant : new String[]{"compact", "spaced", "legacy", "mut-canonical", "mut-compatible"}) {
             Path file = ROOT.resolve(variant + ".atto");
             assertTrue(Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS), variant);
             // Regular-file checks on the leaf are insufficient if any parent
