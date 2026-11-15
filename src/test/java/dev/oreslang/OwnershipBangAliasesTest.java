@@ -30,6 +30,11 @@ final class OwnershipBangAliasesTest {
         sameAst("rt borrow foo", "borrow! foo", "borrow!foo");
         sameAst("rt share foo", "share! foo", "share!foo");
         sameAst("rt mut borrow foo", "mut borrow! foo", "mut borrow!foo");
+        sameAst("rt mut borrow foo", "borrow! mut foo", "borrow!mut foo");
+        sameAst("rt borrow mut foo", "borrow! mut foo", "borrow!mut foo");
+        sameAst("rt mut borrow foo.bar", "borrow! mut foo.bar", "borrow!mut foo.bar");
+        assertThrows(RuntimeException.class, () -> source("mut borrow! mut foo"),
+                "two mutable borrow qualifiers must not be admitted");
         assertEquals(source("rt mut borrow foo"), source("rt borrow mut foo"),
                 "both historic mutable-borrow word orders must agree");
         sameAst("rt copy(foo + 1)", "copy! (foo + 1)", "copy!(foo + 1)");
