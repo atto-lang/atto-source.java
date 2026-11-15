@@ -70,6 +70,21 @@ final class OwnershipBangAliasesTest {
     }
 
     @Test
+    void doubleMutableQualifiersReceiveTargetedDiagnostic() {
+        for (String malformed : new String[]{
+                "borrow! mut mut foo",
+                "borrow!mut mut foo",
+                "mut borrow! mut foo",
+                "rt borrow mut mut foo",
+                "rt mut borrow mut foo"}) {
+            RuntimeException error = assertThrows(RuntimeException.class,
+                    () -> source(malformed), malformed);
+            assertTrue(error.getMessage().contains("duplicate mutable borrow qualifier"),
+                    malformed + ": " + error.getMessage());
+        }
+    }
+
+    @Test
     void inequalityAndLogicalNegationKeepTheirExistingTokenization() {
         assertDoesNotThrow(() -> Parser.parse("fnc main(): bool { val bool copy = false; " +
                 "val bool foo = true; return copy != foo; }"));
