@@ -1,0 +1,51 @@
+name: AttoLang pinned binary interface admission (Java)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/PinnedPackageInterface.java'
+      - 'src/main/java/dev/oreslang/compiler/ExportInterfaceCodec.java'
+      - 'src/test/java/dev/oreslang/PinnedPackageInterfaceTest.java'
+      - '.github/workflows/atto-pinned-package-interface.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-oresi-v1-preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify source commit and tree
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          echo "IMPORT_PREFLIGHT_SOURCE_HEAD=$EXPECTED_SHA"
+          echo "IMPORT_PREFLIGHT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Setup JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Compile real Java decoder and execute JUnit
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=PinnedPackageInterfaceTest,ExportInterfaceCodecTest -DfailIfNoTests=true test
+      - name: Require JUnit executions
+        run: |
+          set -euo pipefail
+          for class in PinnedPackageInterfaceTest ExportInterfaceCodecTest; do
+            report="target/surefire-reports/TEST-dev.oreslang.${class}.xml"
+            test -s "$report"
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+            if grep -Eq '<testsuite[^>]*(failures|errors)="[1-9][0-9]*"' "$report"; then exit 1; fi
+          done
+          echo 'JAVA_ORESI_PREFLIGHT_EXECUTED=true (NOT an Atto guest/linker test)'

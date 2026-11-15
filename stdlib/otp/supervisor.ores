@@ -1,0 +1,79 @@
+// Pure Oreslang restart-policy calculations for OTP-style supervisors.
+//
+// FIRST IMPLEMENTATION SLICE ONLY: this is not a supervisor actor. It neither
+// creates/receives CONTROL authority nor stops, starts, monitors or restarts
+// children. Only the trusted actor runtime may perform those actions.
+//
+// Policy and child indexes are explicit, bounded inputs. No OS, ambient clock,
+// process, filesystem, I/O, interop, threads or allocator API is used here.
+define module OtpSupervisor as
+  // Half-open span of supervised children. Runtime orchestration must stop
+  // selected children in reverse order and start them in declared order.
+  pub define class RestartSpan as
+    pub val int first;
+    pub val int end_exclusive;
+  end
+
+  // Supported strategies: one_for_one, one_for_all, rest_for_one.
+  // The exact ordered child list is owned by a trusted supervisor, not DATA.
+  pub fnc restart_span(String strategy, int failed_index, int child_count): Result<RestartSpan, String> {
+    if child_count < 1 || child_count > 4096; do
+      return Err("child_count must be 1..4096");
+    fi
+    if failed_index < 0 || failed_index >= child_count; do
+      return Err("failed child index out of bounds");
+    fi
+    if strategy == "one_for_one"; do
+      return Ok(new RestartSpan(failed_index, failed_index + 1));
+    elif strategy == "one_for_all"; do
+      return Ok(new RestartSpan(0, child_count));
+    elif strategy == "rest_for_one"; do
+      return Ok(new RestartSpan(failed_index, child_count));
+    else
+      return Err("unsupported supervisor restart strategy");
+    fi
+  }
+
+  // 'normal_or_shutdown' must be classified by trusted CONTROL, not guessed
+  // from a guest-supplied error string. Unknown policies reject.
+  pub fnc should_restart(String policy, bool normal_or_shutdown): Result<bool, String> {
+    if policy == "permanent"; do
+      return Ok(true);
+    elif policy == "transient"; do
+      return Ok(!normal_or_shutdown);
+    elif policy == "temporary"; do
+      return Ok(false);
+    else
+      return Err("unsupported child restart policy");
+    fi
+  }
+
+  // Compatibility helper for a one-child restart.
+  pub fnc restart_budget_allows(int restarts_in_window, int max_restarts): Result<bool, String> {
+    return restart_budget_allows(restarts_in_window, 1, max_restarts);
+  }
+
+  // Pure group-restart predicate. Charge every replacement child before
+  // starting any of them, so one_for_all/rest_for_one cannot hide restart
+  // amplification behind one logical failure event.
+  //
+  // Runtime supervisor still owns the bounded timestamp window and monotonic
+  // clock. This deliberately does NOT invent time or perform restarts.
+  pub fnc restart_budget_allows(
+      int restarts_in_window,
+      int requested_restarts,
+      int max_restarts): Result<bool, String> {
+    if restarts_in_window < 0
+        || requested_restarts < 0
+        || max_restarts < 0
+        || max_restarts > 4096; do
+      return Err("invalid restart-intensity accounting");
+    fi
+    if requested_restarts > max_restarts; do
+      return Ok(false);
+    fi
+    // Subtract before compare rather than adding the two counters: this stays
+    // overflow-safe even if the integer representation changes later.
+    return Ok(restarts_in_window <= max_restarts - requested_restarts);
+  }
+end

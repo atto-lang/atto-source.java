@@ -1,0 +1,12 @@
+// AttoLang equality truth table: explicit operators, never C/BEAM aliases.
+// Java/Graal guest execution parity; strict guest AOT is a separate gate.
+pub fnc main(): void {
+  stdio.println(7 eq 7);
+  stdio.println(7 eq 8);
+  stdio.println(7 neq 8);
+  stdio.println(7 !eq 8);
+  stdio.println(7 !eq 7);
+  stdio.println((7 + 1) !eq 8);
+  stdio.println((7 + 1) !eq 9);
+  return;
+}

@@ -333,7 +333,7 @@ final class CoreAssertTest {
                     import module Assert from "std/assert";
                     trap fnc guarded(): bool {
                       %s
-                      fs.write_text("%s", "forbidden");
+                      await fs.write_text("%s", "forbidden");
                       return true;
                     }
                     pub routine main(): void { guarded(); return; }
@@ -376,7 +376,7 @@ final class CoreAssertTest {
                     trap fnc guarded(): bool {
                         %s
                         try {
-                            fs.write_text("%s", "forbidden");
+                            await fs.write_text("%s", "forbidden");
                         } catch (error) {
                             stdio.stdout.write("caught-denial");
                         } finally {
