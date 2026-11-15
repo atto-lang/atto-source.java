@@ -408,8 +408,16 @@ final class SupervisorControlSnapshotCoordinatorTest {
             var g = grant(service, runtime, session);
             var pending = read(service, g, session);
             assertEquals(1, service.activeControlRequests());
+            // A future observer may attempt new admission *as soon as* the
+            // denial is published. It must see the reclaimed queued slot,
+            // not a stale reservation released after notification.
+            var slotsAtDenial = new CompletableFuture<Integer>();
+            pending.whenComplete((ignored, failure) ->
+                    slotsAtDenial.complete(service.activeControlRequests()));
             service.revoke(g);
             assertCode(pending, "DENIED");
+            assertEquals(0, slotsAtDenial.get(5, TimeUnit.SECONDS),
+                    "DENIED completion preceded queued slot cleanup");
             assertEquals(0, service.activeControlRequests(),
                     "revoked queued request must release via atomic abandon");
             worker.submit(queue.next()).get(5, TimeUnit.SECONDS);
@@ -522,8 +530,13 @@ final class SupervisorControlSnapshotCoordinatorTest {
             Object session = new Object();
             var g = grant(service, runtime, session);
             var pending = read(service, g, session);
+            var slotsAtClose = new CompletableFuture<Integer>();
+            pending.whenComplete((ignored, failure) ->
+                    slotsAtClose.complete(service.activeControlRequests()));
             service.close();
             assertCode(pending, "COORDINATOR_CLOSED");
+            assertEquals(0, slotsAtClose.get(5, TimeUnit.SECONDS),
+                    "CLOSED completion preceded queued slot cleanup");
             assertEquals(0, service.activeControlRequests(),
                     "closing queued request must release via atomic abandon");
             worker.submit(queue.next()).get(5, TimeUnit.SECONDS);
