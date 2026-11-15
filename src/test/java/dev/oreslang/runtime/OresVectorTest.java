@@ -44,7 +44,9 @@ final class OresVectorTest {
         OresVector zero = new OresVector(0, 0);
         assertThrows(IllegalArgumentException.class, () -> zero.push(1));
         assertTrue(zero.isEmpty());
-        assertThrows(IllegalArgumentException.class, zero::pop);
+        // Host-level pop on an empty vector is a state error; the guest
+        // Vector.pop lowering returns Option.None instead of calling it.
+        assertThrows(IllegalStateException.class, zero::pop);
         assertThrows(IllegalArgumentException.class, () -> new OresVector(1, 2));
         assertThrows(IllegalArgumentException.class, () -> new OresVector(-1, 0));
         assertThrows(IllegalArgumentException.class, () -> new OresVector(2, -1));
