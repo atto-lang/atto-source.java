@@ -32,9 +32,11 @@ linked `.atto` programs through `LinkedProgramRunner`, exercising successful
 replace, subsequent read, reopening, symlink denial, denial-before-metadata
 and directory permissions. A second approved-only JUnit class
 (`AttoDurableManifestProcessKillTest`) starts a **child JVM which compiles
-and executes real .atto guest source**, waits for its awaited I/O completion
-receipt, issues real OS SIGKILL, and starts a fresh child JVM to read the
-manifest via another actual .atto guest. **That test has been authored, not
+and executes real .atto guest source**, awaits `BinaryFile.append_async`
+and `sync_async` for a small WAL record, then writes the durable manifest,
+waits for its awaited I/O completion receipt, issues real OS SIGKILL, and
+starts a fresh child JVM to read **both** the WAL record and manifest via
+another actual .atto guest. **That test has been authored, not
 yet executed on the approved private runner.** It is a manifest-only crash
 test, not WAL recovery, actor state recovery or OS power-loss proof.
 The separate Rust WAL model in `atto-poc/atto-rmq-clone.atto` PR #36
@@ -55,6 +57,9 @@ journal replay, fsync-then-state commit, ambiguous receipt reconciliation,
 Linux process kill/restart with an independent AMQP client, and Java/LLVM/.NET
 runtime parity.
 
-This primitive writes a **manifest** only. `BinaryFile.append_async` and
-`BinaryFile.sync_async` already exist; correctness of a full atomic
-WAL+manifest transaction and actor admission is not established here.
+This new primitive writes a **manifest** only. The SIGKILL probe uses
+existing `BinaryFile.append_async` and `BinaryFile.sync_async` to create
+one small journal record and checks both resources on reopen; it does not
+implement per-record CRCs, an atomic multi-file transaction, a persisted
+committed offset, writer lease fencing, or actor ownership. Correctness of
+a full WAL+manifest transaction and actor admission is not established.
