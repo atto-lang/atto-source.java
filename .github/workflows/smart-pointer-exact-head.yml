@@ -1,0 +1,44 @@
+name: Smart-pointer exact-head JDK25 regression
+on:
+  pull_request:
+    paths:
+      - .github/workflows/smart-pointer-exact-head.yml
+      - pom.xml
+      - src/main/java/dev/oreslang/runtime/OresSmartPointers.java
+      - src/test/java/dev/oreslang/runtime/OresSmartPointersTest.java
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pointer-lifetime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout the source repository at this workflow head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          submodules: false
+          # Avoid the synthetic refs/pull/N/merge commit: test the exact head.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up GraalVM 25 (JDK 25)
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Verify checked-out source head and JDK
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          java -version
+          mvn -version
+      - name: Compile and run actual smart-pointer JUnit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=OresSmartPointersTest test

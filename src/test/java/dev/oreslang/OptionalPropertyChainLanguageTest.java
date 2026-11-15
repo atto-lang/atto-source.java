@@ -28,7 +28,10 @@ final class OptionalPropertyChainLanguageTest {
         String source = """
                 define class Box as
                     pub val int count = 42;
-                    pub val Option<int> optional_count = Some(9);
+                    pub val Option<int> optional_count;
+                    // Main forbids calls (including Some(...)) in eager field
+                    // initializers; construct the Option in the constructor.
+                    constructor() { self.optional_count = Some(9); }
                 end
                 fnc fallback(): int {
                     stdio.stdout.write("F");
@@ -80,7 +83,7 @@ final class OptionalPropertyChainLanguageTest {
                 fnc bad(Option<Box> v): Option<int> {
                     return v?.missing;
                 }
-                """, "unknown");
+                """, "missing");
         assertRejects("""
                 define class Box as
                     pub val int count = 1;

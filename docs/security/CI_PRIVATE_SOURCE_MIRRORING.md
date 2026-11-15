@@ -47,7 +47,11 @@ bytes. Thus path, Git mode, or blob drift after review fails closed.
 The exact carrier-main SHA is rechecked before every source-bearing destination
 write. Full carrier review/tree attestation is repeated at initial admission,
 immediately before executable refs, and again while the source-bearing payload
-ref is still inert before creating the one-use authorization ref.
+ref is still inert before creating the one-use authorization ref. Handoff ref
+cleanup is attempted for ordinary authorization failures, transport ambiguity,
+interrupts, and unexpected exceptions; both payload and authorization refs are
+removed when they still point to the exact handoff commit, and incomplete
+rollback fails closed.
 
 At the 2026-10-20 audit, source `main` still reported `protected: false`,
 and GitHub reported private-repository rulesets unavailable on the current
@@ -61,12 +65,23 @@ Run the checked transfer from trusted, reviewed source, not an untrusted PR
 checkout. If an approval policy can be modified by the code under test, treat
 the result as untrusted.
 
+The legacy publisher also treats checkout policy as **data only**: it does not
+execute `scripts/check-private-ci-destination.sh` from the candidate checkout
+as part of privileged authorization. The shell checker remains a source-free
+operator/CI diagnostic. Publication reads the approval through no-follow
+descriptor-safe Python, validates the pinned destination repository identity,
+then independently verifies protected-origin governance before reading private
+source bytes. A PR-controlled shell script must never be an authorization
+primitive for its own export.
+
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
-launcher**. V3 accepts an approved destination, a bounded local source
-directory, the exact open source PR head, and one test plan already pinned by
-the protected carrier contract:
+launcher**. The direct CLI in `scripts/publish-private-ci-source.py` is
+unconditionally disabled; that module remains importable only for shared
+verification helpers and offline adversarial tests. V3 accepts an approved
+destination, a bounded local source directory, the exact open source PR head,
+and one test plan already pinned by the protected carrier contract:
 
 ```bash
 scripts/run-in-private-ci-destination.sh opto-sync-test/go-java-validation \
@@ -79,10 +94,15 @@ scripts/run-in-private-ci-destination.sh opto-sync-test/go-java-validation \
 The caller does not choose the executable carrier branch. After proving the
 complete source Git tree, the dispatcher derives exactly
 `ci/oreslang-<SOURCE_ROOT_TREE_SHA>`. The exact source commit must also be
-the current head of the named open PR against source `main`. V3 validates
-that relationship both before reading/uploading the source and again immediately
-before creating executable carrier refs, so a PR that advances or closes during
-the transfer fails closed.
+the current head of the named open PR against source `main`, with the latest
+immutable security-owner review approving that exact head. V3 validates that
+authorization before reading source and again before **every source-bearing Git
+object write**. Each per-write check also reattests the original protected-main
+authority and the reviewed control-plane/carrier-contract bytes. Weakening
+source protection, moving source `main`, changing the reviewed control plane or
+carrier contract, closing the PR, moving its head, or dismissing/revoking the
+exact-head approval therefore stops the next persistent destination write. V3
+also rechecks once more immediately before executable carrier refs are created.
 
 The checked-in policy file must explicitly list the destination. The
 publisher checks the live GitHub identity and `visibility=private` /
