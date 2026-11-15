@@ -1806,17 +1806,17 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ThrowStmt thrown) {
-            requireNonVoidControlPayload(
+            requireOwnedErrorPayload(
                     typeOf(thrown.value(), env, generics, self), "throw");
             return;
         }
         if (stmt instanceof Ast.RaiseStmt raised) {
-            requireNonVoidControlPayload(
+            requireOwnedErrorPayload(
                     typeOf(raised.value(), env, generics, self), "raise");
             return;
         }
         if (stmt instanceof Ast.PanicStmt panicked) {
-            requireNonVoidControlPayload(
+            requireOwnedErrorPayload(
                     typeOf(panicked.value(), env, generics, self), "panic");
             return;
         }
@@ -3596,6 +3596,9 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.NewExpr created) {
             if (created.type().name().equals("Error") && findClass("Error") == null) {
+                if (created.type().inferArguments() || !created.type().arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Error does not accept type arguments");
+                }
                 if (created.arguments().size() > 1) {
                     throw new IllegalArgumentException("Error constructor accepts zero or one message argument");
                 }
@@ -6946,9 +6949,11 @@ public final class TypeChecker {
         return trapped ? new Named("TrapResult", List.of(result)) : result;
     }
 
-    private void requireNonVoidControlPayload(Type type, String keyword) {
-        if (type == Primitive.VOID) {
-            throw new IllegalArgumentException(keyword + " requires a non-void payload");
+    private void requireOwnedErrorPayload(Type type, String keyword) {
+        // The linked std/error hierarchy needs a separate nominal identity proof.
+        if (!(type instanceof Named named) || !named.name().equals("Error")
+                || !named.arguments().isEmpty() || findClass("Error") != null) {
+            throw new IllegalArgumentException(keyword + " requires an owned compiler-provided Error");
         }
     }
 

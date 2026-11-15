@@ -1962,7 +1962,7 @@ public final class OresEvalRootNode extends RootNode {
                             (t, value, failure) -> continuation.accept(
                                     t,
                                     SourceFlow.throwing(failure == null
-                                            ? new GuestControlSignal.Throw(value)
+                                            ? checkedExceptionalSignal(value, GuestControlSignal.Throw::new)
                                             : failure)));
                     return;
                 }
@@ -1974,7 +1974,7 @@ public final class OresEvalRootNode extends RootNode {
                             (t, value, failure) -> continuation.accept(
                                     t,
                                     SourceFlow.throwing(failure == null
-                                            ? new GuestControlSignal.Raise(value)
+                                            ? checkedExceptionalSignal(value, GuestControlSignal.Raise::new)
                                             : failure)));
                     return;
                 }
@@ -1986,7 +1986,7 @@ public final class OresEvalRootNode extends RootNode {
                             (t, value, failure) -> continuation.accept(
                                     t,
                                     SourceFlow.throwing(failure == null
-                                            ? new GuestControlSignal.Panic(value)
+                                            ? checkedExceptionalSignal(value, GuestControlSignal.Panic::new)
                                             : failure)));
                     return;
                 }
@@ -5058,23 +5058,27 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isRecoverSignal(Throwable failure) {
-            GuestControlSignal signal = guestControlSignalCause(failure);
-            return signal instanceof GuestControlSignal.Raise
-                    || signal instanceof GuestControlSignal.Panic
-                    || hasCause(failure, OresPanic.class);
+            return GuestControlSignal.recoverableRaise(failure) != null;
         }
 
         private RecoverySignalValue recoverySignal(Throwable failure) {
-            GuestControlSignal signal = guestControlSignalCause(failure);
-            if (signal instanceof GuestControlSignal.Raise
-                    || signal instanceof GuestControlSignal.Panic) {
-                return new RecoverySignalValue(
-                        signal.kind(),
-                        safeMessage(messageForPayload(signal.payload())));
+            GuestControlSignal.Raise signal = GuestControlSignal.recoverableRaise(failure);
+            if (signal == null) throw new IllegalStateException("expected recoverable raise");
+            return new RecoverySignalValue(
+                    signal.kind(), safeMessage(messageForPayload(signal.payload())));
+        }
+
+        private RuntimeException checkedExceptionalSignal(
+                Object payload, java.util.function.Function<Object, GuestControlSignal> factory) {
+            return payload instanceof GuestErrorValue
+                    ? factory.apply(payload)
+                    : new InvalidExceptionalPayload();
+        }
+
+        private static final class InvalidExceptionalPayload extends RuntimeException {
+            InvalidExceptionalPayload() {
+                super("exceptional effect requires a compiler-provided Error value");
             }
-            Throwable panic = causeOf(failure, OresPanic.class);
-            String message = panic == null ? failure.getMessage() : panic.getMessage();
-            return new RecoverySignalValue("panic", safeMessage(message));
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
@@ -5372,13 +5376,13 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ThrowStmt thrown) {
-                throw new GuestControlSignal.Throw(eval(thrown.value(), env));
+                throw checkedExceptionalSignal(eval(thrown.value(), env), GuestControlSignal.Throw::new);
             }
             if (stmt instanceof Ast.RaiseStmt raised) {
-                throw new GuestControlSignal.Raise(eval(raised.value(), env));
+                throw checkedExceptionalSignal(eval(raised.value(), env), GuestControlSignal.Raise::new);
             }
             if (stmt instanceof Ast.PanicStmt panicked) {
-                throw new GuestControlSignal.Panic(eval(panicked.value(), env));
+                throw checkedExceptionalSignal(eval(panicked.value(), env), GuestControlSignal.Panic::new);
             }
             if (stmt instanceof Ast.ReturnStmt ret) {
                 returnFrom(

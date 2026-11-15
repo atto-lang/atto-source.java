@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
@@ -250,7 +251,7 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void raiseAndPanicBypassTrapAndReachNearestRecover() throws Exception {
+    void raiseReachesRecoverButPanicEscapes() throws Exception {
         String source = """
                 trap fnc raises(): int {
                   raise new Error("abort");
@@ -283,7 +284,7 @@ final class TrapOptionSemanticsTest {
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("raise:abort|panic:invariant", run(source));
+        assertPanicEscapes(source, "raise:abort|", "Oreslang panic signal");
     }
 
     @Test
@@ -389,9 +390,7 @@ final class TrapOptionSemanticsTest {
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals(
-                "raise:primary raise|raise:cleanup raise|panic:cleanup panic",
-                run(source));
+        assertPanicEscapes(source, "raise:primary raise|raise:cleanup raise|", "Oreslang panic signal");
     }
 
     @Test
@@ -436,11 +435,11 @@ final class TrapOptionSemanticsTest {
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("Dthrow|Draise|Dpanic", run(source));
+        assertPanicEscapes(source, "Dthrow|Draise|D", "Oreslang panic signal");
     }
 
     @Test
-    void internalOptionUnwrapPanicStillBypassesTrapButCanBeRecovered() throws Exception {
+    void internalOptionUnwrapPanicBypassesTrapAndRecover() throws Exception {
         String source = """
                 trap fnc panics(): int {
                   val Option<int> missing = None;
@@ -460,7 +459,7 @@ final class TrapOptionSemanticsTest {
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("panic:called Option::unwrap() on a None value", run(source));
+        assertPanicEscapes(source, "", "called Option::unwrap() on a None value");
     }
 
     @Test
@@ -497,6 +496,34 @@ final class TrapOptionSemanticsTest {
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void allExceptionalEffectsRejectScalarPayload() throws Exception {
+        var fixture = java.nio.file.Path.of("src/test/resources/exception-boundaries/non_error.atto");
+        String template = java.nio.file.Files.readString(fixture);
+        for (String keyword : java.util.List.of("throw", "raise", "panic")) {
+            String program = template.replace("throw 43", keyword + " 43");
+            assertDoesNotThrow(() -> Parser.parse(program));
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(program));
+            assertTrue(failure.getMessage().contains(keyword
+                    + " requires an owned compiler-provided Error"), failure::getMessage);
+        }
+    }
+
+    private static void assertPanicEscapes(String program, String expectedOutput, String diagnostic)
+            throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "panic-boundary.atto")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false)
+                .out(output).build()) {
+            var failure = assertThrows(PolyglotException.class, () -> context.eval(source));
+            assertTrue(failure.getMessage().contains(diagnostic), failure::getMessage);
+        }
+        assertEquals(expectedOutput, output.toString(StandardCharsets.UTF_8));
     }
 
     private static String run(String program) throws Exception {
