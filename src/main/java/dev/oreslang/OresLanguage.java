@@ -178,7 +178,14 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
 
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
-            program = OresCompiler.parseAndTypeCheck(text);
+            // Canonical .atto units enter the production strict admission
+            // boundary before Truffle creates any guest CallTarget. Legacy
+            // .ores and unnamed snippets retain the compatibility parser.
+            // A trusted prechecked lease was already type/ownership checked
+            // across its linked unit graph, so it is not reparsed here.
+            program = codeUnitId.endsWith(".atto")
+                    ? OresCompiler.parseAndTypeCheckStrictAtto(text)
+                    : OresCompiler.parseAndTypeCheck(text);
         }
         RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
