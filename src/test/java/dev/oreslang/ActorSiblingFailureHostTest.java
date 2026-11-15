@@ -63,6 +63,7 @@ final class ActorSiblingFailureHostTest {
                     "witness mailbox deliveries were lost or replayed");
             witness.stop();
             assertTrue(witness.awaitTermination(2, TimeUnit.SECONDS));
+            witness.getDone().get(2, TimeUnit.SECONDS);
             assertEquals(0L, runtime.privateMemoryBytes(),
                     "both private actor memory charges must retire after physical done");
         }
