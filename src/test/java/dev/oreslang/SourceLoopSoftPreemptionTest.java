@@ -45,7 +45,7 @@ final class SourceLoopSoftPreemptionTest {
                   if true; do
                     loop do
                       i = i + 1;
-                      if i % 3 == 0; do
+                      if Integer.rem(i, 3) == 0; do
                         continue;
                       fi
                       count = count + 1;
