@@ -1,0 +1,374 @@
+package dev.oreslang.runtime;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Deterministic guest error wire encoding (no host stacks, Java Throwable
+ * objects, executable closures, or ambient serialization/reflection).
+ * Wire schema version 1; protobuf field numbers are immutable.
+ */
+public final class GuestErrorWireCodec {
+    private static final int MAX_NAME = 128;
+    private static final int MAX_MESSAGE = 4096;
+    private static final int MAX_FRAMES = 64;
+    private static final int MAX_FRAME_TEXT = 256;
+
+    private GuestErrorWireCodec() { }
+
+    /**
+     * Strict value-only diagnostic snapshot. This is not an actor CONTROL
+     * envelope and conveys no supervision authority or runtime identity.
+     * No arbitrary guest object, method, closure or mutable map is retained.
+     */
+    public record ErrorSnapshot(String name, int code, String message,
+                                List<String> frames, boolean full) {
+        public ErrorSnapshot {
+            // Reject arbitrary List implementations before calling their methods.
+            requireJdkOwnedFrameArray(frames);
+            // Bounded snapshot first: never clone arbitrary-length input.
+            // The caller must provide an actor-confined or immutable list.
+            frames = snapshotBoundedFrames(frames);
+            validate(name, code, message, frames);
+            if (!full && (!message.isEmpty() || !frames.isEmpty())) {
+                throw new IllegalArgumentException(
+                        "compact actor diagnostic cannot retain message or trace");
+            }
+        }
+
+        public String toJson() {
+            return GuestErrorWireCodec.json(name, code, message, frames, full);
+        }
+
+        public List<Long> toMessagePack() {
+            return GuestErrorWireCodec.messagePack(name, code, message, frames, full);
+        }
+
+        public List<Long> toProtoBuf() {
+            return GuestErrorWireCodec.protoBuf(name, code, message, frames, full);
+        }
+    }
+
+    /**
+     * Default actor -> supervisor wire diagnostic. Runtime must provide a
+     * trusted nominal class name and catalog code; the fields argument is
+     * intentionally NEVER read, enumerated or rendered. It may contain
+     * methods/closures, foreign handles, actor refs or cyclic structures.
+     * Those have no presence in the resulting snapshot. Caller-defined
+     * full_trace/json_full/binary_full flags have zero effect here.
+     *
+     * The result is DIAGNOSTIC DATA ONLY. Only the ActorRuntime's protected
+     * CONTROL scheduler can create authoritative supervisor notices.
+     */
+    @Deprecated(forRemoval = true)
+    public static ErrorSnapshot supervisorCompactSnapshot(
+            String trustedNominalName, int trustedCatalogCode,
+            java.util.Map<String, ?> ignoredGuestFields) {
+        // Compatibility only. Arbitrary guest-provided name/code pairs must
+        // never be represented as a trusted core error descriptor.
+        // No field inspection, host reflection, or guest method invocation.
+        CoreErrorDescriptors.Descriptor descriptor =
+                CoreErrorDescriptors.requireKnown(trustedNominalName);
+        if (descriptor.code() != trustedCatalogCode) {
+            throw new IllegalArgumentException("error name/code catalog mismatch");
+        }
+        return supervisorCompactCoreSnapshot(descriptor, ignoredGuestFields);
+    }
+
+    /**
+     * Canonical std/error variant. Catalog code is derived from trusted
+     * runtime-owned metadata, NOT from guest code(), text or field contents.
+     * Callers must separately authenticate the nominal class identity.
+     */
+    public static ErrorSnapshot supervisorCompactCoreSnapshot(
+            CoreErrorDescriptors.Descriptor descriptor,
+            java.util.Map<String, ?> ignoredGuestFields) {
+        java.util.Objects.requireNonNull(descriptor, "core error descriptor");
+        java.util.Objects.requireNonNull(ignoredGuestFields, "guest fields");
+        if (descriptor.abstractType())
+            throw new IllegalArgumentException("abstract error category cannot be a value");
+        // Only private-constructed catalog instances qualify; no arbitrary
+        // caller-supplied name/code pairs are ever serialized as trusted types.
+        if (CoreErrorDescriptors.requireKnown(descriptor.name()) != descriptor)
+            throw new IllegalArgumentException("untrusted error descriptor");
+        return new ErrorSnapshot(descriptor.name(), descriptor.code(),
+                "", List.of(), false);
+    }
+
+    /**
+     * Host-authorized local diagnostics only; never the default supervisor
+     * transfer path. Read exactly two allowlisted scalar/array fields without
+     * ever invoking code(), getters, toString(), reflection or other guest
+     * callables, even if unknown subclass fields contain closures.
+     * The trusted caller must already have validated nominal Error identity.
+     */
+    public static ErrorSnapshot trustedLocalSnapshot(
+            String trustedNominalName, int trustedCatalogCode,
+            java.util.Map<String, ?> guestFields) {
+        requireJdkOwnedFields(guestFields);
+        Object message = guestFields.get("message");
+        Object trace = guestFields.get("stack");
+        if (!(message instanceof String safeMessage) || !(trace instanceof List<?> rawFrames)) {
+            throw new IllegalArgumentException("trusted error snapshot requires String message and frame array");
+        }
+        List<String> safeFrames = snapshotBoundedFrames(rawFrames);
+        return new ErrorSnapshot(trustedNominalName, trustedCatalogCode,
+                safeMessage, safeFrames, true);
+    }
+
+    /**
+     * Guest error frames come from a JVM-owned ArrayList, List.of() or
+     * List.copyOf(). Custom List implementations may execute arbitrary code in
+     * size(), iterator() or get(), so reject them before invoking an accessor.
+     */
+    /**
+     * Detach at most MAX_FRAMES elements. Enforce the maximum before any
+     * allocation proportional to the untrusted list's original length.
+     * JDK-owned class admission prevents guest-defined get()/size() hooks.
+     *
+     * A mutable ArrayList still requires actor-confined/exclusive ownership:
+     * Java data races cannot be turned into an atomic snapshot by this method.
+     */
+    private static List<String> snapshotBoundedFrames(List<?> frames) {
+        requireJdkOwnedFrameArray(frames);
+        final int count = frames.size();
+        if (count > MAX_FRAMES) {
+            throw new IllegalArgumentException("too many guest error frames");
+        }
+        ArrayList<String> detached = new ArrayList<>(count);
+        try {
+            for (int i = 0; i < count; ++i) {
+                Object value = frames.get(i);
+                if (!(value instanceof String frame)) {
+                    throw new IllegalArgumentException(
+                            "guest error stack contains non-string or executable value");
+                }
+                detached.add(frame);
+            }
+            if (frames.size() != count) {
+                throw new IllegalArgumentException("guest error frames changed during snapshot");
+            }
+        } catch (IndexOutOfBoundsException | java.util.ConcurrentModificationException invalid) {
+            throw new IllegalArgumentException("guest error frames changed during snapshot", invalid);
+        }
+        return List.copyOf(detached);
+    }
+
+    private static void requireJdkOwnedFrameArray(List<?> frames) {
+        if (frames == null) throw new IllegalArgumentException("missing error frames");
+        Class<?> type = frames.getClass();
+        if (type != ArrayList.class
+                && !type.getName().startsWith("java.util.ImmutableCollections$")) {
+            throw new IllegalArgumentException("error frames require owned built-in array/list");
+        }
+    }
+
+    private static void requireJdkOwnedFields(java.util.Map<String, ?> fields) {
+        if (fields == null) throw new IllegalArgumentException("missing error fields");
+        Class<?> type = fields.getClass();
+        if (type != java.util.LinkedHashMap.class && type != java.util.HashMap.class) {
+            throw new IllegalArgumentException("local error fields require owned built-in map");
+        }
+    }
+
+    private static void validate(String name, int code, String message, List<String> frames) {
+        if (name == null || name.length() > MAX_NAME
+                || !name.matches("[A-Za-z][A-Za-z0-9_]*")
+                || code < 0 || message == null || message.length() > MAX_MESSAGE
+                || frames == null || frames.size() > MAX_FRAMES)
+            throw new IllegalArgumentException("invalid bounded guest error encoding");
+        validateUnicode(message);
+        for (String frame : frames) {
+            if (frame == null || frame.length() > MAX_FRAME_TEXT)
+                throw new IllegalArgumentException("invalid guest trace frame length");
+            validateUnicode(frame);
+        }
+    }
+
+    /** Reject unpaired UTF-16 surrogates instead of allowing JSON/binary divergence. */
+    private static void validateUnicode(String source) {
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 == source.length() || !Character.isLowSurrogate(source.charAt(i + 1)))
+                    throw new IllegalArgumentException("invalid UTF-16 in guest error");
+                i++;
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException("invalid UTF-16 in guest error");
+            }
+        }
+    }
+
+    /**
+     * Prevent a guest message or frame from forging extra lines in a
+     * supervisor/diagnostic log. Keep actual frame separators host-owned.
+     */
+    private static void appendSafeDiagnosticText(StringBuilder out, String guestText) {
+        for (int i = 0; i < guestText.length(); i++) {
+            char c = guestText.charAt(i);
+            if (c == '\n') out.append("\\n");
+            else if (c == '\r') out.append("\\r");
+            else if (c == '\t') out.append("\\t");
+            else if (Character.isISOControl(c)
+                    || (c >= 0x202a && c <= 0x202e)
+                    || (c >= 0x2066 && c <= 0x2069)) {
+                out.append("\\u")
+                   .append(Character.forDigit((c >>> 12) & 15, 16))
+                   .append(Character.forDigit((c >>> 8) & 15, 16))
+                   .append(Character.forDigit((c >>> 4) & 15, 16))
+                   .append(Character.forDigit(c & 15, 16));
+            } else out.append(c);
+        }
+    }
+
+    public static String text(String name, int code, String message, List<String> frames) {
+        validate(name, code, message, frames);
+        StringBuilder result = new StringBuilder(name).append(" (").append(code).append(")");
+        if (!message.isEmpty()) {
+            result.append(": ");
+            appendSafeDiagnosticText(result, message);
+        }
+        for (String frame : frames) {
+            result.append("\n  at ");
+            appendSafeDiagnosticText(result, frame);
+        }
+        return result.toString();
+    }
+
+    public static String json(String name, int code, String message,
+                              List<String> frames, boolean full) {
+        validate(name, code, message, frames);
+        StringBuilder result = new StringBuilder(128);
+        result.append("{\"schema\":1,\"code\":").append(code)
+                .append(",\"name\":");
+        appendJsonString(result, name);
+        if (full) {
+            result.append(",\"message\":");
+            appendJsonString(result, message);
+            result.append(",\"stack\":[");
+            for (int i = 0; i < frames.size(); i++) {
+                if (i != 0) result.append(',');
+                appendJsonString(result, frames.get(i));
+            }
+            result.append(']');
+        }
+        return result.append('}').toString();
+    }
+
+    private static void appendJsonString(StringBuilder result, String value) {
+        result.append('"');
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '"' -> result.append("\\\"");
+                case '\\' -> result.append("\\\\");
+                case '\n' -> result.append("\\n");
+                case '\r' -> result.append("\\r");
+                case '\t' -> result.append("\\t");
+                default -> {
+                    if (c < 0x20)
+                        result.append("\\u")
+                                .append(Character.forDigit((c >>> 12) & 15, 16))
+                                .append(Character.forDigit((c >>> 8) & 15, 16))
+                                .append(Character.forDigit((c >>> 4) & 15, 16))
+                                .append(Character.forDigit(c & 15, 16));
+                    else result.append(c);
+                }
+            }
+        }
+        result.append('"');
+    }
+
+    /** Valid MessagePack v1 map: schema/code/name/message/stack. */
+    public static List<Long> messagePack(String name, int code, String message, List<String> frames) {
+        return messagePack(name, code, message, frames, true);
+    }
+
+    public static List<Long> messagePack(String name, int code, String message, List<String> frames, boolean full) {
+        validate(name, code, message, frames);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(full ? 0x85 : 0x83);
+        writeMsgString(out, "schema");
+        writeMsgInt(out, 1);
+        writeMsgString(out, "code");
+        writeMsgInt(out, code);
+        writeMsgString(out, "name");
+        writeMsgString(out, name);
+        if (full) {
+            writeMsgString(out, "message");
+            writeMsgString(out, message);
+            writeMsgString(out, "stack");
+            if (frames.size() <= 15) out.write(0x90 | frames.size());
+            else { out.write(0xdc); writeU16(out, frames.size()); }
+            for (String frame : frames) writeMsgString(out, frame);
+        }
+        return unsignedBytes(out);
+    }
+
+    private static void writeMsgInt(ByteArrayOutputStream out, int value) {
+        if (value <= 127) out.write(value);
+        else if (value <= 0xff) { out.write(0xcc); out.write(value); }
+        else if (value <= 0xffff) { out.write(0xcd); writeU16(out, value); }
+        else { out.write(0xce); writeU32(out, value); }
+    }
+
+    private static void writeU16(ByteArrayOutputStream out, int value) {
+        out.write(value >>> 8); out.write(value);
+    }
+
+    private static void writeU32(ByteArrayOutputStream out, int value) {
+        out.write(value >>> 24); out.write(value >>> 16);
+        out.write(value >>> 8); out.write(value);
+    }
+
+    private static void writeMsgString(ByteArrayOutputStream out, String text) {
+        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length <= 31) out.write(0xa0 | bytes.length);
+        else if (bytes.length <= 0xff) { out.write(0xd9); out.write(bytes.length); }
+        else if (bytes.length <= 0xffff) { out.write(0xda); writeU16(out, bytes.length); }
+        else { out.write(0xdb); writeU32(out, bytes.length); }
+        out.writeBytes(bytes);
+    }
+
+    /** Wire-compatible with contracts/v1/guest-error.proto. */
+    public static List<Long> protoBuf(String name, int code, String message, List<String> frames) {
+        return protoBuf(name, code, message, frames, true);
+    }
+
+    public static List<Long> protoBuf(String name, int code, String message, List<String> frames, boolean full) {
+        validate(name, code, message, frames);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeVarint(out, 8); writeVarint(out, 1);  // schema=1, field 1
+        writeVarint(out, 16); writeVarint(out, code); // code, field 2
+        writeProtoString(out, 3, name);
+        if (full) {
+            writeProtoString(out, 4, message);
+            for (String frame : frames) writeProtoString(out, 5, frame);
+        }
+        return unsignedBytes(out);
+    }
+
+    private static void writeProtoString(ByteArrayOutputStream out, int field, String value) {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        writeVarint(out, (field << 3) | 2);
+        writeVarint(out, bytes.length);
+        out.writeBytes(bytes);
+    }
+
+    private static void writeVarint(ByteArrayOutputStream out, long value) {
+        while ((value & ~0x7fL) != 0) {
+            out.write(((int) value & 0x7f) | 0x80);
+            value >>>= 7;
+        }
+        out.write((int) value);
+    }
+
+    private static List<Long> unsignedBytes(ByteArrayOutputStream out) {
+        byte[] bytes = out.toByteArray();
+        List<Long> result = new ArrayList<>(bytes.length);
+        for (byte b : bytes) result.add((long) (b & 0xff));
+        return result;
+    }
+}
