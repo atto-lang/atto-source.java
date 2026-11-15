@@ -8604,15 +8604,22 @@ public final class TypeChecker {
         if (call.arguments().size() != (noCallback ? 0 : 1)
                 || (!noCallback && call.arguments().getFirst() instanceof Ast.SpreadExpr)) {
             throw new IllegalArgumentException(kind + "." + operation
-                    + " expects " + (noCallback ? "zero arguments"
+                    + " expects " + (noCallback ? "no arguments"
                             : operation.equals("ok_or") ? "one eager error value" : "one callable"));
         }
         if (noCallback) {
             if (operation.equals("ok")) return new Named("Option", List.of(input));
             // An unbound None/Ok/Err constructor cannot become a published
-            // nested ADT return type through transpose or flatten. Generic
-            // type variables remain admissible; erased Unknown slots do not.
-            if (containsUnknown(sum)) {
+            // nested ADT value type through transpose or flatten. Generic
+            // type variables remain admissible; an erased Unknown value slot
+            // does not. An Ok(v) literal's still-open error domain stays
+            // admissible, as main's pipe suite requires for
+            // Some(Ok(42)) |> Option.transpose(); Result.flatten separately
+            // requires a concrete, identical E.
+            Type nestedValue = input instanceof Named nestedInput
+                    && !nestedInput.arguments().isEmpty()
+                    ? nestedInput.arguments().getFirst() : input;
+            if (containsUnknown(nestedValue)) {
                 throw new IllegalArgumentException(kind + "." + operation
                         + " requires fully resolved nested ADT type arguments");
             }
