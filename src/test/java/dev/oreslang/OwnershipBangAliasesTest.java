@@ -22,6 +22,10 @@ final class OwnershipBangAliasesTest {
     @Test
     void aliasesShareTheLegacyOwnershipAst() {
         sameAst("rt copy foo", "copy! foo", "copy!foo");
+        // 'eqfoo' is an identifier: only the complete '!eq' word is atomic.
+        String eqPrefix = "fnc main(): int { val int eqfoo = 7; return %s; }";
+        assertEquals(Parser.parse(eqPrefix.formatted("rt copy eqfoo")),
+                     Parser.parse(eqPrefix.formatted("copy!eqfoo")));
         sameAst("rt take foo", "take! foo", "take!foo");
         sameAst("rt borrow foo", "borrow! foo", "borrow!foo");
         sameAst("rt share foo", "share! foo", "share!foo");
@@ -44,6 +48,12 @@ final class OwnershipBangAliasesTest {
     void inequalityAndLogicalNegationKeepTheirExistingTokenization() {
         assertDoesNotThrow(() -> Parser.parse("fnc main(): bool { val bool copy = false; " +
                 "val bool foo = true; return copy != foo; }"));
+        // AttoLang !eq is a *single inequality token* at an identifier
+        // boundary and must not be stolen by the ownership-prefix parser.
+        Ast.Program inequality = Parser.parse("fnc main(): bool { val int copy = 1; " +
+                "val int foo = 2; return copy!eq foo; }");
+        assertEquals(Parser.parse("fnc main(): bool { val int copy = 1; " +
+                "val int foo = 2; return copy neq foo; }"), inequality);
         assertDoesNotThrow(() -> Parser.parse("fnc main(): bool { val bool foo = false; " +
                 "return !foo; }"));
     }
