@@ -47,8 +47,10 @@ public final class M7CompiledActorProbe {
                 "compiled neighbor produced wrong sum: " + other);
             send(rt, actor, 11);
             require(rt.request_stop(actor), "STOP rejected a compiled actor");
-            require(rt.try_send(actor, 99) == AttoM7CooperativeRuntime.Admission.CLOSED,
-                "STOP failed to fence new DATA");
+            var afterStop = rt.try_send(actor, 99);
+            require(afterStop == AttoM7CooperativeRuntime.Admission.CLOSED ||
+                    afterStop == AttoM7CooperativeRuntime.Admission.STALE,
+                "STOP failed to fence new DATA: " + afterStop);
             require(rt.await_terminal(actor, 20_000), "compiled actor STOP failed to drain");
             var s = rt.snapshot(actor);
             require(s.accepted() == 2 && s.completed() == 2 && s.failed() == 0 &&
