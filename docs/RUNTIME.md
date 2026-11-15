@@ -165,9 +165,9 @@ Example:
 
 ```ores
 val state = Mutex.new(new Counter());
-val guard = state.lock();
-guard.count = guard.count + 1;
-guard.release();
+val lock_guard = state.lock();
+lock_guard.count = lock_guard.count + 1;
+lock_guard.release();
 
 val shared = SharedMutex.new(new Cache());
 val shared_guard = await shared.lock_async();

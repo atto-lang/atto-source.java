@@ -1,24 +1,30 @@
 # Async standard-library I/O
 
-The async APIs return native Oreslang `Future<T>` values. `await` suspends the
-source continuation and releases its actor/root execution carrier. Completion
-resumes through the owning scheduler; I/O workers never execute guest callbacks.
-Existing synchronous APIs remain available for compatibility.
+Standard-library I/O is awaitable by default and returns native Oreslang
+`Future<T>` values. `await` suspends the source continuation and releases its
+actor/root execution carrier. Completion resumes through the owning scheduler;
+I/O workers never execute guest callbacks.
+
+Do not add `*_async` spellings. The unsuffixed API is the canonical awaitable
+surface. When an API intentionally exposes an implementation backed by
+synchronous/blocking host I/O, use an explicit `*_blocking` suffix, but it must
+still return a `Future<T>` and callers still use `await`. This suffix describes
+the host I/O strategy; it never grants permission to block an actor carrier.
 
 | API | Awaited result |
 | --- | --- |
-| `fs.read_text_async(path)` | `String` (UTF-8) |
-| `fs.exists_async(path)` | `bool` |
-| `fs.write_text_async(path, text)` | `void` |
-| `fs.append_text_async(path, text)` | `void` |
-| `fs.remove_async(path)` | `void` |
-| `fs.mkdir_all_async(path)` | `void` |
-| `network.connect_async(host, port)` | `TcpConnection` |
-| `socket.read_line_async()` | `Option<String>` (`None` at EOF) |
-| `socket.write_text_async(text)` | `void` (flushes the text) |
-| `socket.close_async()` | `void` |
-| `http.get_text_async(url)` | `String` (response body) |
-| `http.post_text_async(url, text)` | `String` (response body) |
+| `fs.read_text(path)` | `String` (UTF-8) |
+| `fs.exists(path)` | `bool` |
+| `fs.write_text(path, text)` | `void` |
+| `fs.append_text(path, text)` | `void` |
+| `fs.remove(path)` | `void` |
+| `fs.mkdir_all(path)` | `void` |
+| `network.connect(host, port)` | `TcpConnection` |
+| `socket.read_line()` | `Option<String>` (`None` at EOF) |
+| `socket.write_text(text)` | `void` (flushes the text) |
+| `socket.close()` | `void` |
+| `http.get_text(url)` | `String` (response body) |
+| `http.post_text(url, text)` | `String` (response body) |
 
 `File` aliases `fs`; `net` aliases `network`. Async TCP connections are local
 capabilities, not mailbox-sendable values. Await each operation before starting
@@ -26,14 +32,17 @@ the next operation in the same direction; TCP reads and writes may run in parall
 
 ```ores
 pub async routine main(): void {
-  await fs.write_text_async("./message.txt", "hello");
-  val String text = await fs.read_text_async("./message.txt");
+  await fs.write_text("./message.txt", "hello");
+  val String text = await fs.read_text("./message.txt");
   stdio.println(text);
   return;
 }
 ```
 
-Grant the same filesystem/network permissions required by synchronous calls.
+Grant the same filesystem/network permissions required by the underlying host operation.
+For the migrated dual-surface APIs, `*_blocking` is an explicit awaitable alias
+for callers that want to document that the current backend uses blocking host I/O.
+The old `*_async` aliases are intentionally not part of the canonical API.
 Actor-local capabilities are checked before submission. Canonical path resolution,
 resource permission checks, DNS/connect, file operations and blocking client HTTP
 work execute off the actor carrier. Only immutable argument values are captured.
@@ -80,27 +89,34 @@ EOF, errors and future results travel through normal continuation lowering.
 
 Run `mvn -Dtest=AsyncNativeIoTest test` with JDK 25.
 
-## Synchronous directory operations (Oreslang stack CLI)
+## Awaitable blocking-backed directory operations (Oreslang stack CLI)
 
-The Java/Graal interpreter exposes capability-gated `fs.list_dir(path): List<String>`,
-`fs.is_dir(path): bool` and `fs.is_symlink(path): bool`. `list_dir` returns only
-the immediate child **names**, sorted lexically, and refuses directories with
-more than 20,000 children. It rejects a symlink at the input path; callers
-must check children before descending. Each operation requires scoped filesystem
-read permission. These metadata operations are not a race-free openat-style
-directory handle and are not sufficient for processing hostile mutable trees.
+The Java/Graal interpreter exposes capability-gated awaitable
+`fs.list_dir(path): Future<List<String>>`, `fs.is_dir(path): Future<bool>` and
+`fs.is_symlink(path): Future<bool>`. The stack CLI deliberately spells these
+`fs.list_dir_blocking`, `fs.is_dir_blocking` and `fs.is_symlink_blocking`
+and still uses `await`, documenting that the current Java backend performs
+blocking host filesystem calls off the guest carrier.
+
+`list_dir` returns only the immediate child **names**, sorted lexically, and
+refuses directories with more than 20,000 children. It rejects a symlink at the
+input path; callers must check children before descending. Each operation
+requires scoped filesystem read permission. These metadata operations are not a
+race-free openat-style directory handle and are not sufficient for processing
+hostile mutable trees.
 The language also exposes `String.split_literal`, `trim`, `starts_with`,
 `ends_with`, and `contains_literal` for source-level code generators.
 
 ## Audited Oreslang Stack CLI source-generation primitives
 
-`fs.write_text_atomic(path, value)` uses a temporary UTF-8 file adjacent to
+`await fs.write_text_atomic(path, value)` (or the explicit
+`await fs.write_text_atomic_blocking(path, value)`) uses a temporary UTF-8 file adjacent to
 the destination and an atomic move/replace. It requires write permission on
 both the lexical path and canonical parent target, refuses an existing symlink
 destination, and does not fall back to a non-atomic move. Atomic replacement
 is **one file at a time**, not a transaction over all RPC/Lambda outputs.
 
-Metadata operations `fs.is_dir` and `fs.is_symlink` resolve and authorize
+Awaitable metadata operations `fs.is_dir` and `fs.is_symlink` resolve and authorize
 the parent before inspecting a child entry without following its terminal
 symbolic link. They can inspect an exactly granted project root even when
 its parent directory is not granted; symlinked ancestors cannot extend the
