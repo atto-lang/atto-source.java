@@ -51,6 +51,13 @@ public final class M5MailboxNativeProbe {
         var afterClose = blocked.snapshot();
         require(afterClose.rejectedClosed() >= 1, "stale-handle rejection not accounted");
         blocked.close();
+        var afterDispose = blocked.snapshot();
+        mustBeAccounted(afterDispose);
+        require(afterDispose.closed() && afterDispose.finalState() == 17,
+                "post-close snapshot lost terminal native state");
+        blocked.close(); // Repeated close must not double-free Arena.ofShared().
+        require(blocked.snapshot().finalState() == 17,
+                "repeat close invalidated terminal state");
 
         // Independently scheduled MPSC stress; 100k accepted turns on first
         // actor, 1k on a second actor. No boxed message/envelope allocations.
@@ -110,6 +117,10 @@ public final class M5MailboxNativeProbe {
                 "failed turn was silently lost, retried or partially committed");
         require(!bad.try_send(8), "failed actor was resurrected by send");
         bad.close();
+        var failedAfterDispose = bad.snapshot();
+        mustBeAccounted(failedAfterDispose);
+        require(failedAfterDispose.failed() && failedAfterDispose.finalState() == Long.MAX_VALUE,
+                "fault terminal snapshot became invalid after arena disposal");
 
         long after = gcCount();
         long usedAfter = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed();
@@ -124,6 +135,7 @@ public final class M5MailboxNativeProbe {
                            (heapBoundQualified ? "PASS" : "NOT_QUALIFIED"));
 
         System.out.println("M5_MAILBOX_CAPACITY_REFUSAL=PASS");
+        System.out.println("M5_MAILBOX_POST_CLOSE_SNAPSHOT=PASS");
         System.out.println("M5_MAILBOX_CONCURRENT_ACCEPTED=100000");
         System.out.println("M5_MAILBOX_NEIGHBOR_ACCEPTED=1000");
         System.out.println("M5_MAILBOX_ACTOR_STATE=100000");
