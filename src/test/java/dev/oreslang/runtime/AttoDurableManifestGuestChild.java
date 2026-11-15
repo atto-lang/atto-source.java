@@ -21,10 +21,19 @@ public final class AttoDurableManifestGuestChild {
         }
         Path root = Path.of(args[1]).toRealPath();
         Path manifest = root.resolve("classic.meta");
+        Path wal = root.resolve("classic.wal");
         String path = manifest.toString().replace("\\", "\\\\").replace("\"", "\\\"");
+        String walPath = wal.toString().replace("\\", "\\\\").replace("\"", "\\\"");
         String body = args[0].equals("write-hold")
-                ? "await fs.write_text_durable_atomic_async(\"" + path + "\", \"generation=7\");"
-                : "stdio.println(await fs.read_text_bounded_async(\"" + path + "\", 1024));";
+                ? "val log = await fs.open_binary_async(\"" + walPath + "\");\n"
+                    + "  val offset = await log.append_async(Bytes.from_string(\"record=7\"));\n"
+                    + "  await log.sync_async();\n"
+                    + "  await log.close_async();\n"
+                    + "  await fs.write_text_durable_atomic_async(\"" + path + "\", \"generation=7\");"
+                : "val log = await fs.open_binary_async(\"" + walPath + "\");\n"
+                    + "  stdio.println((await log.read_at_async(0, 64)).to_utf8().unwrap());\n"
+                    + "  await log.close_async();\n"
+                    + "  stdio.println(await fs.read_text_bounded_async(\"" + path + "\", 1024));";
         String source = "pub async routine main(): void {\n  "
                 + body + "\n  return;\n}\n";
         OresCompiler.parseAndTypeCheck(source);
@@ -47,7 +56,7 @@ public final class AttoDurableManifestGuestChild {
             System.out.flush();
             Thread.sleep(Long.MAX_VALUE);
         } else {
-            System.out.println("ATTO_GUEST_REPLAY=" + output.toString(StandardCharsets.UTF_8).trim());
+            System.out.println("ATTO_GUEST_REPLAY=" + output.toString(StandardCharsets.UTF_8).trim().replace("\\r", "").replace("\\n", "|"));
             System.out.flush();
         }
     }
