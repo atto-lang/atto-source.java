@@ -22,7 +22,7 @@ final class AggregateCallBoundaryHardeningTest {
     @Test
     void tupleReturnedByFunctionCanBeSpreadIntoFixedArityCall() {
         accepts("""
-                fnc pair(): (int, int) { return (19, 23); }
+                fnc pair(): Tuple[int, int] { return ~tuple(19, 23); }
                 fnc add(int left, int right): int { return left + right; }
                 fnc use(): int { return add(...pair()); }
                 """);
@@ -57,7 +57,7 @@ final class AggregateCallBoundaryHardeningTest {
     @Test
     void tupleReturnSpreadStillEnforcesArity() {
         rejects("""
-                fnc pair(): (int, int) { return (19, 23); }
+                fnc pair(): Tuple[int, int] { return ~tuple(19, 23); }
                 fnc unary(int only): int { return only; }
                 fnc bad(): int { return unary(...pair()); }
                 """);
@@ -66,7 +66,7 @@ final class AggregateCallBoundaryHardeningTest {
     @Test
     void tupleReturnSpreadStillEnforcesTypes() {
         rejects("""
-                fnc pair(): (int, string) { return (19, "wrong"); }
+                fnc pair(): Tuple[int, string] { return ~tuple(19, "wrong"); }
                 fnc add(int left, int right): int { return left + right; }
                 fnc bad(): int { return add(...pair()); }
                 """);
@@ -97,7 +97,7 @@ final class AggregateCallBoundaryHardeningTest {
     @Test
     void returnedTupleSpreadExecutesUsingDeclarationOrder() throws Exception {
         assertEquals("42", run("""
-                fnc pair(): (int, int) { return (19, 23); }
+                fnc pair(): Tuple[int, int] { return ~tuple(19, 23); }
                 fnc add(int left, int right): int { return left + right; }
                 pub routine main(): void {
                   stdio.stdout.write(add(...pair()));
@@ -124,13 +124,13 @@ final class AggregateCallBoundaryHardeningTest {
     @Test
     void multipleReturnedTupleSpreadsEvaluateOnceInLexicalOrder() throws Exception {
         assertEquals("AB1234", run("""
-                fnc first(): (int, int) {
+                fnc first(): Tuple[int, int] {
                   stdio.stdout.write("A");
-                  return (1, 2);
+                  return ~tuple(1, 2);
                 }
-                fnc second(): (int, int) {
+                fnc second(): Tuple[int, int] {
                   stdio.stdout.write("B");
-                  return (3, 4);
+                  return ~tuple(3, 4);
                 }
                 fnc digits(int a, int b, int c, int d): int {
                   return a * 1000 + b * 100 + c * 10 + d;

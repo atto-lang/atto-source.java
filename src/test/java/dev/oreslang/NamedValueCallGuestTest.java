@@ -83,7 +83,9 @@ final class NamedValueCallGuestTest {
                   return value;
                 }
                 pub routine main(): void {
-                  stdio.stdout.write(choose(
+                  // Main's ownership pass cannot infer T from a call result;
+                  // the explicit witness keeps the named-argument effect order check.
+                  stdio.stdout.write(choose<int>(
                       ignored: emit("I", 7),
                       value: emit("V", 42)));
                   return;
@@ -165,7 +167,7 @@ final class NamedValueCallGuestTest {
                 fnc consume(borrow mut Cell owner, int value): int { return value; }
                 fnc invalid(): int {
                   val Cell cell = new Cell();
-                  return consume(owner: rt borrow mut cell, value: cell.value);
+                  return consume(owner: rt mut borrow cell, value: cell.value);
                 }
                 """;
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
@@ -186,7 +188,7 @@ final class NamedValueCallGuestTest {
                 }
                 fnc invalid(): int {
                   val Cell cell = new Cell();
-                  return write(second: rt borrow mut cell, first: rt borrow mut cell);
+                  return write(second: rt mut borrow cell, first: rt mut borrow cell);
                 }
                 """;
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));

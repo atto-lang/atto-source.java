@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 APPROVAL = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$")
@@ -26,6 +27,7 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 MAX_GH_API_RESPONSE_CHARS = 24 * 1024 * 1024
+MAX_INCIDENT_COMMENT_PAGES = 10  # 100 comments/page; deny at the audit bound
 PREFIX = "private-oreslang-source"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
@@ -37,14 +39,31 @@ BLOCKING_INCIDENT_IDS = {
     127: 5935338521,
     171: 6042555082,  # recovery/runtime source-bearing private carrier; pending classification
     172: 6042602777,  # LLVM exact-tree carrier; independent placement review outstanding
+    198: 6070465058,  # ClaimGraph exact Java CI-script placement; independent classification required
+    200: 6071264936,  # ClaimGraph private Java governance-blob retention; disposition required
+    252: 6129229261,  # hnpt-e2e private Oreslang source placement; disposition required
 }
-BLOCKING_INCIDENTS = (22, 77, 127, 171, 172)
+BLOCKING_INCIDENTS = (22, 77, 127, 171, 172, 198, 200, 252)
 QUARANTINED_DESTINATIONS = (
     "zed-pkg-test/java-app",
+    "scintilla-run-test/gleam-runner-conformance",
+    "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra",
     "agent-pontifex-test/agent-pontifex-e2e-tests",
     "led-dynamo/leddy-e2e",
+    "ClaimGraph-test/claimgraph-e2e",
+    "honeypot-r-us-test/hnpt-e2e",
+    "ores-llm/ores-llm-ml-conformance-tests",
 )
-QUARANTINED_DESTINATION_IDS = (1323575966,)
+QUARANTINED_DESTINATION_IDS = (
+    1323575966,  # zed-pkg-test/java-app (#22)
+    1323598260,  # scintilla-run-test/gleam-runner-conformance (#77)
+    1412142815,  # ores-dummy-org-oreslang-stack/... (#127)
+    1370782550,  # agent-pontifex-test/agent-pontifex-e2e-tests (#171)
+    1324139596,  # led-dynamo/leddy-e2e (#172)
+    1350751074,  # ClaimGraph-test/claimgraph-e2e (#198/#200)
+    1346492776,  # honeypot-r-us-test/hnpt-e2e (#252)
+    1441272675,  # ores-llm/ores-llm-ml-conformance-tests (ores-llm issue #29)
+)
 SOURCE_PROTECTED_BRANCH = "main"
 POLICY_PATH = ".github/private-ci-approved-repositories.txt"
 CODEOWNERS_PATH = ".github/CODEOWNERS"
@@ -58,6 +77,9 @@ SECURITY_CODEOWNER_PATHS = (
     "/scripts/publish-private-ci-source-v3.py",
 )
 SECURITY_CODEOWNER = "@ORESoftware"
+INCIDENT_DISPOSITION_REVIEWER = "ORESoftware"
+INCIDENT_DISPOSITION_REVIEWER_ID = 11139560
+INCIDENT_DISPOSITION_MARKER = "PRIVATE_CI_INCIDENT_DISPOSITION_RESOLVED"
 
 
 class Denied(RuntimeError):
@@ -220,6 +242,46 @@ def gh_api(route, method="GET", payload=None):
     return data
 
 
+def gh_api_list(route):
+    """Authenticated GitHub list response through the same sealed transport."""
+    argv = [trusted_github_cli(), "api", "--method", "GET", route,
+            "--header", "Accept: application/vnd.github+json"]
+    try:
+        p = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            env=github_api_environment(),
+            timeout=45,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("authenticated GitHub API request unavailable") from exc
+    if (not isinstance(p.stdout, str)
+            or len(p.stdout) > MAX_GH_API_RESPONSE_CHARS
+            or not isinstance(p.stderr, str)
+            or len(p.stderr) > MAX_GH_API_RESPONSE_CHARS):
+        raise Denied("authenticated GitHub API response exceeds size limit")
+    if p.returncode != 0:
+        raise Denied("authenticated GitHub API request failed")
+    data = strict_json_loads(p.stdout)
+    if not isinstance(data, list):
+        raise Denied("unexpected GitHub list response shape")
+    return data
+
+
+def github_timestamp(value, label):
+    """Parse GitHub's canonical UTC second-resolution timestamp."""
+    if (not isinstance(value, str)
+            or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value)):
+        raise Denied(label)
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise Denied(label) from exc
+    return parsed.replace(tzinfo=timezone.utc)
+
+
 def checked_repo(repository, expected_repository_id=None):
     result = gh_api("repos/" + repository)
     if (not isinstance(result.get("full_name"), str)
@@ -276,6 +338,88 @@ def require_resolved_blocking_incidents():
                 or issue.get("state_reason") != "completed"):
             raise Denied(
                 "blocking P0 incident #" + str(number) + " remains unresolved"
+            )
+        closed_at = github_timestamp(
+            issue.get("closed_at"),
+            "blocking P0 incident close timestamp invalid",
+        )
+        # Read all pages before interpreting the independent reviewer's last
+        # comment. A later page may revoke an earlier approval. Bound the
+        # authenticated REST reads; never accept a saturated final page.
+        comments = []
+        for page in range(1, MAX_INCIDENT_COMMENT_PAGES + 1):
+            batch = gh_api_list(
+                "repos/" + BLOCKING_INCIDENT_REPO + "/issues/"
+                + str(number) + "/comments?per_page=100&page=" + str(page)
+            )
+            if len(batch) > 100:
+                raise Denied("blocking P0 incident comment page exceeds 100")
+            comments.extend(batch)
+            if len(batch) < 100:
+                break
+        else:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " disposition comments exceed bounded audit pages"
+            )
+        marker = INCIDENT_DISPOSITION_MARKER + " issue=#" + str(number)
+        reviewer_comments = []
+        seen_comment_ids = set()
+        for comment in comments:
+            if not isinstance(comment, dict):
+                raise Denied("blocking P0 incident comment shape invalid")
+            comment_id = comment.get("id")
+            user = comment.get("user")
+            body = comment.get("body")
+            if (type(comment_id) is not int or comment_id <= 0
+                    or comment_id in seen_comment_ids
+                    or not isinstance(user, dict)
+                    or not isinstance(body, str)):
+                raise Denied("blocking P0 incident comment identity invalid")
+            seen_comment_ids.add(comment_id)
+            created_at = github_timestamp(
+                comment.get("created_at"),
+                "blocking P0 incident comment timestamp invalid",
+            )
+            updated_at = github_timestamp(
+                comment.get("updated_at"),
+                "blocking P0 incident comment timestamp invalid",
+            )
+            if updated_at < created_at:
+                raise Denied("blocking P0 incident comment timestamp invalid")
+            if (user.get("id") == INCIDENT_DISPOSITION_REVIEWER_ID
+                    and isinstance(user.get("login"), str)
+                    and user["login"].casefold()
+                    == INCIDENT_DISPOSITION_REVIEWER.casefold()):
+                # GitHub comment creation order is immutable. Sorting by
+                # updated_at lets an edited old approval supersede a newer
+                # revocation, so order by creation time and comment ID.
+                reviewer_comments.append(
+                    (created_at, comment_id, updated_at, body)
+                )
+        if not reviewer_comments:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " lacks independent security disposition"
+            )
+        reviewer_comments.sort(key=lambda item: (item[0], item[1]))
+        disposition_created_at, _comment_id, _updated_at, disposition_body = reviewer_comments[-1]
+        # A pre-closure comment edited after closure is not fresh security
+        # authorization: only GitHub's immutable created_at proves that the
+        # independent reviewer posted this disposition after current closure.
+        if disposition_created_at <= closed_at:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " disposition predates current closure"
+            )
+        # The latest security-owner comment is authoritative. Requiring the
+        # complete body to be the marker prevents prose/code examples from
+        # accidentally authorizing transfer and lets any later reviewer
+        # comment revoke authorization fail-closed.
+        if disposition_body != marker:
+            raise Denied(
+                "blocking P0 incident #" + str(number)
+                + " latest independent security disposition is absent or revoked"
             )
 
 

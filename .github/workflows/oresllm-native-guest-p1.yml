@@ -1,0 +1,99 @@
+name: OresLLM P1/P2 real Graal JVM numerical + integrated guest smoke
+on:
+  pull_request:
+    paths:
+      - 'contracts/oresllm-p1/**'
+      - '.github/workflows/oresllm-native-guest-p1.yml'
+  push:
+    branches: ['feat/oresllm-native-guest-p1-20261031']
+permissions:
+  contents: read
+jobs:
+  native-oresllm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact compiler PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Set up GraalVM Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Verify exact original OresLLM Git blobs with no cross-org token
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_head="${{ github.event.pull_request.head.sha || github.sha }}"
+          test "$(git rev-parse HEAD)" = "$expected_head"
+          n=0
+          while read -r want path; do
+            test -f "$path"
+            test ! -L "$path"
+            got="$(git hash-object "$path")"
+            test "$got" = "$want" || { echo "BLOB_SHA_MISMATCH $path" >&2; exit 1; }
+            n=$((n+1))
+          done < contracts/oresllm-p1/source-blobs.sha
+          test "$n" -eq 9
+          echo "BLOB_VERIFIED=9/9"
+          integrated=contracts/oresllm-p1/integrated/tests/native-integrated-train.ores
+          test -f "$integrated" && test ! -L "$integrated"
+          test "$(git hash-object "$integrated")" = "82afada05a21d011c375737038c885179763787a"
+          echo "INTEGRATED_FIXTURE_BLOB_VERIFIED=82afada05a21d011c375737038c885179763787a"
+          for entry in "84d3c190765351da12d77a07714086f6d143f75b contracts/oresllm-p1/regression/tests/native-mutable-state-loop.ores" "3a2b43ef8b6d992a0eee5ff118f770bf46a9915e contracts/oresllm-p1/regression/tests/reject-nonnumeric-multiply.ores"; do
+            read -r want path <<< "$entry"
+            test -f "$path" && test ! -L "$path"
+            test "$(git hash-object "$path")" = "$want" || { echo "REGRESSION_FIXTURE_BLOB_MISMATCH $path" >&2; exit 1; }
+          done
+          git rev-parse HEAD
+      - name: Build the actual Java compiler and runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests package
+          mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+          test -s target/conformance-classpath.txt
+          test -f target/classes/dev/oreslang/launcher/OresMain.class
+      - name: Compiler --check and guest execution for 5 exact-source, integrated and class loop regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp="target/classes:$(cat target/conformance-classpath.txt)"
+          launcher=dev.oreslang.launcher.OresMain
+          run_guest() {
+            local source="$1" marker="$2" kind="$3"
+            echo "COMPILER_CHECK source=$source"
+            timeout 80s java -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCI --sun-misc-unsafe-memory-access=allow --enable-native-access=ALL-UNNAMED -cp "$cp" "$launcher" --check "$source"
+            echo "GUEST_RUN source=$source"
+            local stdout
+            stdout="$(timeout 80s java -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCI --sun-misc-unsafe-memory-access=allow --enable-native-access=ALL-UNNAMED -cp "$cp" "$launcher" "$source")"
+            if [[ "$kind" = exact ]]; then
+              printf '%s\n' "$stdout" | grep -Fx -- "$marker"
+            else
+              printf '%s\n' "$stdout" | grep -E '^ORES-LLM-SCALAR-TRAIN\\|weight=[0-9.eE+-]+\\|loss=[0-9.eE+-]+$'
+            fi
+            echo "GUEST_VERIFIED source=$source"
+          }
+          run_guest contracts/oresllm-p1/tensor/tests/native-tensor2-smoke.ores ORES-TENSOR2-NATIVE-PASS exact
+          run_guest contracts/oresllm-p1/autograd/tests/native-affine2-grad-smoke.ores ORES-AFFINE2-AUTOGRAD-NATIVE-PASS exact
+          run_guest contracts/oresllm-p1/nn/tests/native-tiny-mlp-smoke.ores ORES-TINY-MLP-NATIVE-PASS exact
+          run_guest contracts/oresllm-p1/optim/tests/native-scalar-sgd-smoke.ores ORES-SCALAR-SGD-NATIVE-PASS exact
+          run_guest contracts/oresllm-p1/example/examples/native-sgd-neuron.ores ORES-LLM-SCALAR-TRAIN regex
+          run_guest contracts/oresllm-p1/integrated/tests/native-integrated-train.ores ORES-ML-INTEGRATED-TRAIN-NATIVE-PASS exact
+          run_guest contracts/oresllm-p1/regression/tests/native-mutable-state-loop.ores ORES-MUTABLE-STATE-LOOP-NATIVE-PASS exact
+          invalid=contracts/oresllm-p1/regression/tests/reject-nonnumeric-multiply.ores
+          set +e
+          timeout 75s java -cp "$cp" "$launcher" --check "$invalid" > /tmp/oresllm-invalid-numeric.log 2>&1
+          rejected=$?
+          set -e
+          if (( rejected == 0 || rejected == 124 )); then
+            echo "INVALID_NUMERIC_REJECTION_FAILED exit=$rejected" >&2; exit 1
+          fi
+          grep -Eqi "operator.*needs numeric operands|numeric operands" /tmp/oresllm-invalid-numeric.log || { cat /tmp/oresllm-invalid-numeric.log >&2; exit 1; }
+          echo "INVALID_NUMERIC_REJECTED exit=$rejected"
+          echo "GUEST_SUMMARY=7/7 original plus integrated and mutable-state regression; 1 negative rejected"
