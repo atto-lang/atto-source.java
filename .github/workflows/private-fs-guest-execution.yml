@@ -104,6 +104,22 @@ jobs:
         shell: bash
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native -Dores.private.fs.guest.approved=true -Dtest=dev.oreslang.runtime.AsyncFilesystemAtomicLanguageTest,dev.oreslang.runtime.BoundedFilesystemReadLanguageTest,dev.oreslang.runtime.AttoDurableAtomicFilesystemLanguageTest,dev.oreslang.runtime.AttoDurableManifestProcessKillTest test
+      - name: Verify non-skipped linked durability guest execution receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in AttoDurableAtomicFilesystemLanguageTest AttoDurableManifestProcessKillTest; do
+            xml="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
+            test -s "$xml" || { echo "::error::Missing guest suite receipt $xml"; exit 1; }
+            grep -Eq 'tests="[1-9][0-9]*"' "$xml"
+            grep -Eq 'errors="0"' "$xml"
+            grep -Eq 'failures="0"' "$xml"
+            grep -Eq 'skipped="0"' "$xml"
+            echo "GUEST_SUITE_EXECUTED_AND_PASSED=$suite"
+          done
+          grep -Fq 'aCompletedAttoDurableManifestWriteSurvivesSigkillAndFreshGuestReplay' \
+            target/surefire-reports/TEST-dev.oreslang.runtime.AttoDurableManifestProcessKillTest.xml
+          echo "ATTO_CHILD_JVM_SIGKILL_AND_REPLAY_TEST_EXECUTED"
       - name: Execute existing native filesystem regression tests
         shell: bash
         run: |
