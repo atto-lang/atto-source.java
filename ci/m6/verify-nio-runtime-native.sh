@@ -16,7 +16,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/classes"
 "$JAVA_HOME/bin/javac" -d "$work/classes" src/m6/AttoM6Runtime.java tests/m6/M6NioRuntimeProbe.java \
-  tests/m6/M6SelectorLifecycleAuditProbe.java
+  tests/m6/M6SelectorLifecycleAuditProbe.java \
+  tests/m6/M6ControlBudgetStressProbe.java
 "$JAVA_HOME/bin/java" -version
 if ! timeout 90 "$JAVA_HOME/bin/java" -cp "$work/classes" M6NioRuntimeProbe > "$work/jvm" 2> "$work/jvm.err"; then
   echo 'M6_JVM_EXECUTION_FAILED' >&2; cat "$work/jvm.err" >&2; exit 1
@@ -46,6 +47,14 @@ for marker in \
   M6_AUDIT_BUDGETED_SELECTED_KEYS_96=PASS \
   M6_AUDIT_EXTERNAL_CHANNEL_CLOSE_SURVIVES=PASS \
   M6_AUDIT_POST_CLOSE_SELECTOR_FAST_FAIL=PASS \
+  M6_BUDGET_WATCHDOG_LIVE_NOTICE=PASS \
+  M6_CONTROL_DUPLICATE_STOP_2000_COALESCED=PASS \
+  M6_BUDGET_NEIGHBOR_PROGRESS=PASS \
+  M6_CONTROL_STOP_TO_PANIC_ESCALATION=PASS \
+  M6_STRESS_MPSC_ACCEPTED_SETTLED=100000 \
+  M6_STRESS_NEIGHBOR_ACCEPTED_SETTLED=2000 \
+  M6_STRESS_SERIAL_MAX_RECEIVES=1 \
+  M6_STRESS_READINESS_STOP_RACES=48 \
   M6_NIO_SCHEDULER_SUPERVISOR_NATIVE_HOST=PASS \
   M6_SCOPE=HOST_SUBSET_NOT_ATTO_GUEST_OR_HARD_REAL_TIME_PROOF; do
   grep -Fx "$marker" "$work/native" >/dev/null || { echo "M6_MISSING_NATIVE=$marker" >&2; exit 1; }
