@@ -160,6 +160,7 @@ public final class M7CompiledActorProbe {
         compiled_sum_yield_resume_and_fairness();
         four_carrier_serial_fairness();
         priority_control_and_panic_conservation();
+        M7CallbackIsolationAuditProbe.run();
         System.out.println("M7_COMPILED_GUEST_SOURCE_SHA256=" + M7GeneratedActor.SOURCE_SHA256);
         System.out.println("M7_RESTRICTED_COMPILED_ATTO_HOST_SCHEDULER=PASS");
         System.out.println("M7_SCOPE=RESTRICTED_STATIC_ATTO_LOOP_COOPERATE_NOT_FULL_COMPILER_OR_HARD_RT");
