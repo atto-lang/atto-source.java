@@ -2211,12 +2211,14 @@ public final class OresEvalRootNode extends RootNode {
                             recovered.body(),
                             env,
                             (t, flow) -> {
-                                if (flow.kind() == SourceFlowKind.THROW
-                                        && isRecoverSignal(flow.failure())) {
+                                GuestControlSignal.Raise raised = flow.kind() == SourceFlowKind.THROW
+                                        ? GuestControlSignal.recoverableRaise(flow.failure())
+                                        : null;
+                                if (raised != null) {
                                     Env caught = new Env(env);
                                     caught.define(
                                             recovered.signalName(),
-                                            recoverySignal(flow.failure()),
+                                            recoverySignal(raised),
                                             Ast.BindingKind.VAL);
                                     runBlock(
                                             t,
@@ -5057,13 +5059,7 @@ public final class OresEvalRootNode extends RootNode {
                     : failure;
         }
 
-        private boolean isRecoverSignal(Throwable failure) {
-            return GuestControlSignal.recoverableRaise(failure) != null;
-        }
-
-        private RecoverySignalValue recoverySignal(Throwable failure) {
-            GuestControlSignal.Raise signal = GuestControlSignal.recoverableRaise(failure);
-            if (signal == null) throw new IllegalStateException("expected recoverable raise");
+        private RecoverySignalValue recoverySignal(GuestControlSignal.Raise signal) {
             return new RecoverySignalValue(
                     signal.kind(), safeMessage(messageForPayload(signal.payload())));
         }
@@ -5303,11 +5299,12 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     executeBlock(recovered.body(), env, true);
                 } catch (RuntimeException failure) {
-                    if (!isRecoverSignal(failure)) throw failure;
+                    GuestControlSignal.Raise raised = GuestControlSignal.recoverableRaise(failure);
+                    if (raised == null) throw failure;
                     Env caught = new Env(env);
                     caught.define(
                             recovered.signalName(),
-                            recoverySignal(failure),
+                            recoverySignal(raised),
                             Ast.BindingKind.VAL);
                     // The active recover frame handles only the signal from its
                     // body. A new raise/panic in the handler escapes to an outer frame.

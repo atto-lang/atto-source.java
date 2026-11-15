@@ -533,6 +533,22 @@ final class TrapOptionSemanticsTest {
         assertNull(dev.oreslang.runtime.GuestControlSignal.recoverableRaise(primary));
     }
 
+    @Test
+    void recoveryRejectsHostWrapperSubclassesWithoutReadingTheirCause() {
+        var raised = new dev.oreslang.runtime.GuestControlSignal.Raise("raise");
+        var causeReads = new java.util.concurrent.atomic.AtomicInteger();
+        var hostWrapper = new java.util.concurrent.CompletionException(raised) {
+            @Override public Throwable getCause() {
+                causeReads.incrementAndGet();
+                return raised;
+            }
+        };
+        assertNull(dev.oreslang.runtime.GuestControlSignal.recoverableRaise(hostWrapper));
+        assertNull(dev.oreslang.runtime.GuestControlSignal.recoverableRaise(
+                new java.util.concurrent.ExecutionException(hostWrapper)));
+        assertEquals(0, causeReads.get());
+    }
+
     private static void assertPanicEscapes(String program, String expectedOutput, String diagnostic)
             throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();

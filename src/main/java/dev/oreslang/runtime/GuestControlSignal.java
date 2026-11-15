@@ -62,8 +62,12 @@ public abstract sealed class GuestControlSignal extends RuntimeException
     }
 
     private static boolean isAsyncWrapper(Throwable failure) {
-        return failure instanceof java.util.concurrent.CompletionException
-                || failure instanceof java.util.concurrent.ExecutionException;
+        if (failure == null) return false;
+        // Subclasses can override getCause() and present different failures
+        // during classification, or execute host code on the recovery path.
+        Class<?> type = failure.getClass();
+        return type == java.util.concurrent.CompletionException.class
+                || type == java.util.concurrent.ExecutionException.class;
     }
 
     public static final class Throw extends GuestControlSignal {
