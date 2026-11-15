@@ -371,7 +371,10 @@ public final class CapabilityChecker {
                 checkExpr(s.initializer(), policy);
             }
             else if (stmt instanceof Ast.DestructureStmt s) checkExpr(s.initializer(), policy);
-            else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
+            else if (stmt instanceof Ast.ReturnStmt s) {
+                // Bare `return;` is a control-only node with no nested effects.
+                if (s.value() != null) checkExpr(s.value(), policy);
+            }
             else if (stmt instanceof Ast.YieldStmt s) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
@@ -386,6 +389,11 @@ public final class CapabilityChecker {
                 // Even when runtime borrow lowering is unavailable, static
                 // effect admission must not silently skip the resource or body.
                 checkExpr(s.resource(), policy);
+                checkStatements(s.body(), policy);
+            }
+            else if (stmt instanceof Ast.UsingTelemetrySpanStmt s) {
+                // The span name is evaluated with the actor's authority.
+                checkExpr(s.name(), policy);
                 checkStatements(s.body(), policy);
             }
             else if (stmt instanceof Ast.LocalTypeDeclStmt s) checkType(s.target(), policy);
@@ -455,6 +463,8 @@ public final class CapabilityChecker {
             checkType(p.type(), policy);
         } else if (pattern instanceof Ast.StructuralPattern p) {
             checkType(p.target(), policy);
+        } else if (pattern instanceof Ast.RecordPattern p) {
+            for (Ast.RecordFieldPattern field : p.fields()) checkPattern(field.value(), policy);
         } else if (pattern instanceof Ast.TuplePattern p) {
             for (Ast.Pattern item : p.elements()) checkPattern(item, policy);
         } else if (pattern instanceof Ast.ConstructorPattern p) {
@@ -675,7 +685,16 @@ public final class CapabilityChecker {
             checkType(e.declaredReturnType(), policy);
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
-        } else if (!(expr instanceof Ast.LiteralExpr) && expr != null) {
+        } else if (expr instanceof Ast.TypedEmptyAggregateExpr e) {
+            checkType(e.aggregateType(), policy);
+        } else if (expr instanceof Ast.MapLiteralExpr e) {
+            checkType(e.mapType(), policy);
+            for (Ast.MapLiteralEntry entry : e.entries()) {
+                checkExpr(entry.key(), policy);
+                checkExpr(entry.value(), policy);
+            }
+        } else if (!(expr instanceof Ast.LiteralExpr)
+                && !(expr instanceof Ast.ContextualEmptyMapExpr) && expr != null) {
             // AST extensions must never gain zero-authority admission just
             // because a new expression node was forgotten in this visitor.
             throw new SecurityException(
