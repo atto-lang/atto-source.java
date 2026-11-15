@@ -156,6 +156,28 @@ final class AttoDurableAtomicFilesystemLanguageTest {
     }
 
     @Test
+    void canonicalParentWriteDenialBlocksSymlinkedDirectoryEscape() throws Exception {
+        Path allowed = privateRoot("symlink-parent-granted");
+        Path outside = privateRoot("symlink-parent-outside");
+        Path original = outside.resolve("classic.meta");
+        Files.writeString(original, "preserve-outside");
+        Path alias = allowed.resolve("redirect");
+        Files.createSymbolicLink(alias, outside);
+        Path redirected = alias.resolve("classic.meta");
+        String program = program(redirected, """
+                  await fs.write_text_durable_atomic_async("__MANIFEST__", "escape");
+                """);
+        RuntimePermissions granted = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.WRITE, allowed.toString());
+        RuntimeException denied = assertThrows(RuntimeException.class, () ->
+                guest(allowed.resolve("main.atto"), program, granted, rwPolicy()));
+        assertTrue(errorChain(denied).contains("permission denied"),
+                "resolved parent WRITE must be checked: " + errorChain(denied));
+        assertEquals("preserve-outside", Files.readString(original));
+        assertTrue(Files.isSymbolicLink(alias));
+    }
+
+    @Test
     void untrustedGroupReadableDirectoryCannotClaimDurableCommit() throws Exception {
         Path root = privateRoot("world-readable");
         Files.setPosixFilePermissions(root, EnumSet.of(
