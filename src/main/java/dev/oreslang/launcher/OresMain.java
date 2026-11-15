@@ -173,6 +173,14 @@ public final class OresMain {
                     if (raw.isEmpty()) {
                         throw new IllegalArgumentException("--allow-host-class requires a fully qualified Java class name");
                     }
+                    if (raw.indexOf('#') >= 0)
+                        throw new UsageException("method selectors require --allow-host-method, not --allow-host-class");
+                    allowedHostClasses.add(raw);
+                } else if (arg.startsWith("--allow-host-method=")) {
+                    String raw = arg.substring("--allow-host-method=".length()).trim();
+                    // Exact manifest validation happens in IsolatePolicy
+                    // before building a guest Graal Context.
+                    dev.oreslang.runtime.SafeHostMemberManifest.className(raw);
                     allowedHostClasses.add(raw);
                 } else if (arg.startsWith("--")) {
                     throw new UsageException("unknown option: " + arg);
@@ -341,7 +349,11 @@ public final class OresMain {
         }
 
         ExecutionProfile profile = ExecutionProfile.parse(mode, platform);
-        int exitStatus = LinkedProgramRunner.runWithExitStatus(
+        int exitStatus = (policy.capabilities().contains(IsolatePolicy.Capability.STDIN)
+                ? LinkedProgramRunner.runWithInput(
+                        path, policy, permissions, permissionCheckMode, profile,
+                        allowedHostClasses, System.getenv(), System.in, System.out, System.err)
+                : LinkedProgramRunner.runWithExitStatus(
                 path,
                 policy,
                 permissions,
@@ -350,7 +362,7 @@ public final class OresMain {
                 allowedHostClasses,
                 System.getenv(),
                 System.out,
-                System.err).exitStatus();
+                System.err)).exitStatus();
         return exitStatus;
     }
 
@@ -429,7 +441,7 @@ public final class OresMain {
                         + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] "
                         + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
-                        + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
+                        + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] [--allow-host-method=java.lang.Long#sum(long,long)] "
                         + "[file.atto|file.ores|file.java]");
     }
 
