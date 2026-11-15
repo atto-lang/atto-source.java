@@ -40,7 +40,9 @@ final class StrictImplicitConversionTest {
         reject("val float value = 3 + 1.5;", "identical numeric operand types");
         reject("val float value = 3.0 * 2;", "identical numeric operand types");
         reject("val bool value = 3.0 < 4;", "comparison requires the same numeric type");
-        reject("val bool value = 3 == 3.0;", "numeric equality requires identical operand types");
+        // Main keeps mixed numeric equality legal in the legacy profile and
+        // rejects it in the strict AttoLang profile.
+        rejectStrictAtto("val bool value = 3 eq 3.0;", "ATTO_STRICT_INCOMPATIBLE_EQUALITY_TYPES");
     }
 
     @Test
@@ -61,6 +63,17 @@ final class StrictImplicitConversionTest {
                 "numeric checker must reject: " + statement);
         assertNotNull(failure.getMessage(), "rejection must carry a diagnostic");
         assertTrue(failure.getMessage().contains(expectedDiagnostic),
+                () -> "rejected for the wrong reason: " + failure.getMessage()
+                        + " (expected: " + expectedDiagnostic + ")");
+    }
+
+    private static void rejectStrictAtto(String statement, String expectedDiagnostic) {
+        var parsed = assertDoesNotThrow(() -> Parser.parseStrictAtto(source(statement)),
+                "negative fixture must parse: " + statement);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypesWithDiagnostics(parsed, true),
+                "strict numeric checker must reject: " + statement);
+        assertTrue(String.valueOf(failure.getMessage()).contains(expectedDiagnostic),
                 () -> "rejected for the wrong reason: " + failure.getMessage()
                         + " (expected: " + expectedDiagnostic + ")");
     }

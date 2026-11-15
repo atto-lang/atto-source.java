@@ -221,6 +221,13 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
         if (!("GET".equals(method) || "HEAD".equals(method)))
             throw new IllegalArgumentException("loopback harness only supports GET or HEAD");
 
+        if (!"http".equals(target.getScheme()) || !"127.0.0.1".equals(target.getHost())
+                || target.getPort() < 1 || target.getPort() > 65535
+                || target.getRawUserInfo() != null || target.getRawFragment() != null
+                || target.getRawAuthority() == null
+                || !target.getRawAuthority().equals("127.0.0.1:" + target.getPort()))
+            throw new IllegalArgumentException("only canonical literal IPv4 loopback HTTP authorities allowed");
+
         // The current proof transport uses a literal address, so its physical
         // HttpClient connection cannot re-resolve behind this pin. Keep this
         // as the first consumer of the shared egress policy without widening
@@ -235,17 +242,12 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
                             "literal loopback target unexpectedly reached DNS: " + host);
                 });
 
-        if (!"http".equals(target.getScheme()) || !"127.0.0.1".equals(target.getHost())
-                || target.getPort() < 1 || target.getPort() > 65535
-                || target.getRawUserInfo() != null || target.getRawFragment() != null
-                || target.getRawAuthority() == null
-                || !target.getRawAuthority().equals("127.0.0.1:" + target.getPort()))
-            throw new IllegalArgumentException("only canonical literal IPv4 loopback HTTP authorities allowed");
         String path = target.getRawPath();
         if (path == null || !path.startsWith("/") || path.contains("//")
                 || path.contains("/./") || path.contains("/../")
                 || path.endsWith("/.") || path.endsWith("/..")
-                || path.contains("\\") || path.contains("%") || target.getRawQuery() != null)
+                || path.contains("\\") || path.contains("%") || target.getRawQuery() != null
+                || path.chars().anyMatch(ch -> ch <= 0x20 || ch >= 0x7f))
             throw new IllegalArgumentException("unsafe loopback test request path");
     }
 
@@ -319,8 +321,12 @@ public final class ProxyOutboundLoopback implements AutoCloseable {
             }
         }
         Set<String> excluded = new HashSet<>(HOP);
+        int connectionOptions = 0;
         for (String value : headers.allValues("connection")) {
             for (String item : value.split(",", -1)) {
+                // One field can name many options, so the field budget alone misses this.
+                if (++connectionOptions > 100)
+                    throw new IllegalArgumentException("upstream Connection option budget exceeded");
                 String token = item.trim();
                 if (!HEADER_NAME.matcher(token).matches())
                     throw new IllegalArgumentException("invalid upstream Connection token");

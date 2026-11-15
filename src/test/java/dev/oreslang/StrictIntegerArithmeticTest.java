@@ -336,8 +336,8 @@ final class StrictIntegerArithmeticTest {
         Path entry = temp.resolve("math-shadow.ores");
         Files.writeString(entry, """
                 define class Math as
-                  static fnc abs(int value): int { return 7; }
-                  static fnc neg(int value): int { return 8; }
+                  pub static fnc abs(int value): int { return 7; }
+                  pub static fnc neg(int value): int { return 8; }
                 end
                 pub routine main(): void {
                   stdio.println(Math.abs(-42));

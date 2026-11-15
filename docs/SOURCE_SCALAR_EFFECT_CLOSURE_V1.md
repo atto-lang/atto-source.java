@@ -14,7 +14,7 @@ untrusted proof JSON or runtime reflection.
 The source slice is intentionally small: one **unqualified, unannotated**
 file-root module, no namespace/imports/module contracts, only zero-argument
 nongeneric `fnc` declarations (not actor functions or `routine` declarations),
-and direct zero-argument calls. The file-root boundary is verified before and
+and direct zero-argument calls. Admitted return types are restricted to unparameterized `int`, `bool`, `void` and `string`; other representations—including `any`, unions and floating-point—remain unproved until their typed ABI and boxing/allocation costs are verified. The file-root boundary is verified before and
 after type checking so normalization cannot erase its admission constraints.
 Integer/Boolean scalar literal returns are admitted with empty direct
 effects; string literals conservatively count as allocation. Optional block
