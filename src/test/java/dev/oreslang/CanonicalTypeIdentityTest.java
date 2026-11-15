@@ -24,8 +24,13 @@ final class CanonicalTypeIdentityTest {
         var immutable = Ast.TypeRef.borrowed(left, false);
         assertNotEquals(id(mutable), id(immutable));
 
+        // Main (0a4663bfd8): record shapes are readonly by default, so a
+        // record and an explicit readonly record are one identity; the
+        // mutable fixed product is a struct and must hash differently.
         var readonly = Ast.TypeRef.readonlyRecordType(Map.of("alpha", intType, "beta", string));
-        assertNotEquals(id(left), id(readonly));
+        assertEquals(id(left), id(readonly));
+        var struct = Ast.TypeRef.structType(Map.of("alpha", intType, "beta", string));
+        assertNotEquals(id(left), id(struct));
 
         assertEquals(id(new Ast.TypeRef("$union$", List.of(intType, string), false)),
                 id(new Ast.TypeRef("$union$", List.of(string, intType), false)));
