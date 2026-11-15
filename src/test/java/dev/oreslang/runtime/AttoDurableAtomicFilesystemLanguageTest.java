@@ -74,10 +74,9 @@ final class AttoDurableAtomicFilesystemLanguageTest {
         Path root = privateRoot("durable");
         Path file = root.resolve("classic.meta");
         Path sourceFile = root.resolve("main.atto");
-        String first = program(file, """
-                  await fs.write_text_durable_atomic_async("__MANIFEST__", "generation=1");
-                  stdio.println(await fs.read_text_bounded_async("__MANIFEST__", 1024));
-                """);
+        String first = Files.readString(
+                Path.of("tests", "fixtures", "durable_atomic_manifest_smoke.atto"),
+                StandardCharsets.UTF_8).replace("__MANIFEST__", quoted(file));
         assertEquals("generation=1", guest(sourceFile, first, rights(root), rwPolicy()));
         assertEquals("generation=1", Files.readString(file));
         String second = program(file, """
