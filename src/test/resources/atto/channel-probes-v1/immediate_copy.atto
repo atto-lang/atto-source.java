@@ -1,12 +1,12 @@
 // Typed immediate probes: Accepted, Full, and successful retry.
 pub routine main(): void {
   val Channel<int> channel = Channel.new<int>(1);
-  val TryWriteResult<int> first = try writech channel, 41;
+  val TryWriteResult<int> first_result = try writech channel, 41;
   val TryWriteResult<int> full = try writech channel, 42;
   val Option<int> received = try readch channel;
   val Option<int> empty = try readch channel;
   val TryWriteResult<int> retried = try writech channel, 42;
-  do match first over
+  do match first_result over
     on Accepted -> { }
     on Full(n) -> { stdio.stdout.write("unexpected-first-full"); }
     on Closed(n) -> { stdio.stdout.write("unexpected-first-closed"); }
