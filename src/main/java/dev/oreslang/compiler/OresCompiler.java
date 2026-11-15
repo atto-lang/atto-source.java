@@ -6,6 +6,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.BorrowMirAuditV1;
 
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
@@ -32,6 +33,20 @@ public final class OresCompiler {
      */
     public static java.util.List<Ast.SingletonDecl> checkSingletonDeclarationsOnly(String source) {
         return SingletonCheckOnly.check(Parser.parseSingletonsCheckOnly(source));
+    }
+
+    /**
+     * Run the real Parser -> TypeChecker -> OwnershipChecker only once while
+     * collecting a bounded, fail-closed MIR shadow event stream.
+     *
+     * This does not run the Rust oracle or certify compiled guest execution.
+     * The ordinary production compilation entry point remains unchanged.
+     */
+    public static BorrowMirAuditV1.Report analyzeBorrowMirV1(String source) {
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(source));
+        return OwnershipChecker.checkWithBorrowMirAuditV1(
+                checked.program(), checked.shortInferredAliases());
     }
 
     /**
