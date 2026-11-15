@@ -382,14 +382,18 @@ final class HotReloadCurrentMainTransactionTest {
     }
 
     @Test
-    void explicitLegacyStartIsNotAnAuthorizedServingPublication() {
+    void explicitStartPublishesAndFencesOlderReloadCandidates() {
+        // Main's direct-start contract (#2845): a successful explicit start()
+        // of a staged generation publishes it. Publication bumps the routing
+        // epoch, so an older in-flight reloadAndStart() candidate is fenced.
         try (var manager = new HotReloadManager(IsolatePolicy.developer(), PROFILE)) {
             var candidate = manager.load("worker.ores", GOOD);
             candidate.start();
             assertTrue(candidate.initialized());
             assertSame(candidate, manager.active("worker.ores"));
-            assertNull(manager.serving("worker.ores"),
-                    "only the transactional coordinator publishes serving routes");
+            assertSame(candidate, manager.serving("worker.ores"),
+                    "successful explicit start publishes the serving route");
+            assertSame(candidate, manager.serving());
             candidate.close();
             assertEquals(0, manager.liveGenerations());
         }

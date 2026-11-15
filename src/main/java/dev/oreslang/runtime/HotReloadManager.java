@@ -52,6 +52,8 @@ public final class HotReloadManager implements AutoCloseable {
     private long routingEpoch;
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
+    // Last successful publication across code units (main's serving() API, #2845).
+    private final AtomicReference<Generation> serving = new AtomicReference<>();
     // Serving routes have separate publication authority: legacy load() may
     // change activeByCodeUnit without shadowing an already healthy service.
     private final Map<String, Generation> servingByCodeUnit = new LinkedHashMap<>();
@@ -235,7 +237,7 @@ public final class HotReloadManager implements AutoCloseable {
             expectedEpoch = routingEpoch;
         }
         try {
-            candidate.start();
+            candidate.startUnpublished();
             synchronized (this) {
                 requireOpen();
                 if (routingEpoch != expectedEpoch
@@ -247,6 +249,7 @@ public final class HotReloadManager implements AutoCloseable {
                 ++routingEpoch;
                 activeByCodeUnit.put(name, candidate);
                 servingByCodeUnit.put(name, candidate);
+                serving.set(candidate);
                 active.set(candidate);
                 return candidate;
             }
@@ -274,15 +277,15 @@ public final class HotReloadManager implements AutoCloseable {
     /** Last generation staged, retained for compatibility with the single-unit API. */
     public Generation active() { return active.get(); }
 
-    /** Active generation for one independently compiled code unit. */
+    /** Last staged generation for one independently compiled code unit. */
     public synchronized Generation active(String codeUnitId) {
         return activeByCodeUnit.get(codeUnitId);
     }
 
     /**
      * Single supervisor-owned serving route, independent of the legacy
-     * active() staging pointer. Only successful reloadAndStart() publication
-     * enters this registry. Initialization success is NOT a health/ABI or
+     * active() staging pointer. Only a successful reloadAndStart() commit or a
+     * successful explicit Generation.start() enters this registry. Initialization success is NOT a health/ABI or
      * actor-quiescence certificate.
      */
     public synchronized Generation serving(String codeUnitId) {
@@ -323,6 +326,35 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     /** Select the committed route and pin it in one monitor transaction. */
+    /** Last successfully started generation across code units; unlike active(), never a mere stage. */
+    public synchronized Generation serving() {
+        Generation selected = serving.get();
+        return selected != null && selected.initialized() && !selected.closed()
+                ? selected : null;
+    }
+
+    public synchronized Map<String, Generation> servingGenerations() {
+        return Map.copyOf(servingByCodeUnit);
+    }
+
+    /**
+     * Trusted startup commit for a directly started staged generation. Guest
+     * execution finished outside this monitor; a concurrent retire/close wins
+     * and publication fails closed. Bumps the routing epoch so an older
+     * in-flight reloadAndStart() candidate cannot overwrite this route.
+     */
+    private synchronized void onGenerationStarted(Generation generation) {
+        requireOpen();
+        if (generation.closed() || !generation.initialized()
+                || generations.get(generation.id()) != generation) {
+            throw new IllegalStateException("cannot publish retired or foreign guest generation");
+        }
+        requireRoutingEpochCapacity();
+        ++routingEpoch;
+        servingByCodeUnit.put(generation.codeUnitId(), generation);
+        serving.set(generation);
+    }
+
     public synchronized ServingOperation pinServing(String codeUnitId) {
         java.util.Objects.requireNonNull(codeUnitId, "codeUnitId");
         Generation selected = serving(codeUnitId);
@@ -357,6 +389,7 @@ public final class HotReloadManager implements AutoCloseable {
                 boolean removed = active.compareAndSet(generation, null);
                 removed |= activeByCodeUnit.remove(generation.codeUnitId(), generation);
                 removed |= servingByCodeUnit.remove(generation.codeUnitId(), generation);
+                removed |= serving.compareAndSet(generation, null);
                 if (removed) ++routingEpoch;
             }
         }
@@ -378,6 +411,7 @@ public final class HotReloadManager implements AutoCloseable {
         boolean removed = activeByCodeUnit.remove(generation.codeUnitId(), generation);
         removed |= servingByCodeUnit.remove(generation.codeUnitId(), generation);
         removed |= active.compareAndSet(generation, null);
+        removed |= serving.compareAndSet(generation, null);
         if (removed && !closed) ++routingEpoch;
     }
 
@@ -409,6 +443,7 @@ public final class HotReloadManager implements AutoCloseable {
             activeByCodeUnit.clear();
             servingByCodeUnit.clear();
             active.set(null);
+            serving.set(null);
         }
         Throwable failure = null;
         for (Generation generation : toClose) {
@@ -533,8 +568,31 @@ public final class HotReloadManager implements AutoCloseable {
             }
         }
 
-        /** Starts once, reserving a lifecycle lease before entering Graal. */
+        /**
+         * Starts the staged generation exactly once and, on success, publishes it
+         * as the serving route for its code unit (main's direct-start contract).
+         */
         public Value start() {
+            Value value = startUnpublished();
+            HotReloadManager manager = owner.get();
+            try {
+                if (manager == null) {
+                    throw new IllegalStateException("guest generation manager was reclaimed");
+                }
+                manager.onGenerationStarted(this);
+                return value;
+            } catch (RuntimeException | Error failure) {
+                try {
+                    close();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
+                }
+                throw failure;
+            }
+        }
+
+        /** Starts once, reserving a lifecycle lease before entering Graal; never publishes. */
+        private Value startUnpublished() {
             HotReloadManager manager = owner.get();
             if (manager == null) {
                 throw new IllegalStateException("generation owner is no longer available");

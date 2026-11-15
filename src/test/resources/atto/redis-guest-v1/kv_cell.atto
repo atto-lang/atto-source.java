@@ -1,0 +1,64 @@
+// Compiler-backed first step: a single-key in-memory AttoLang cell.
+// NOT a hashmap, actor, network server, or durable WAL. String is not Bytes.
+// Monotonic LSN admission and tombstones are the future shard's publication rule.
+define class KvCell as
+  let String stored_key = "";
+  let String stored_value = "";
+  let bool present = false;
+  let int applied_lsn = 0;
+
+  pub apply_set(mut self)(String key, String value, int lsn): bool {
+    if key == "" || lsn <= self.applied_lsn; then
+      return false;
+    fi
+    self.stored_key = key;
+    self.stored_value = value;
+    self.applied_lsn = lsn;
+    self.present = true;
+    return true;
+  }
+
+  pub apply_delete(mut self)(String key, int lsn): bool {
+    if key == "" || key != self.stored_key || lsn <= self.applied_lsn; then
+      return false;
+    fi
+    self.stored_value = "";
+    self.applied_lsn = lsn;
+    self.present = false;
+    return true;
+  }
+
+  pub contains(String key): bool {
+    return self.present && self.stored_key == key;
+  }
+
+  pub read(String key): String {
+    if self.contains(key); then
+      return self.stored_value;
+    fi
+    return "";
+  }
+
+  pub lsn(): int {
+    return self.applied_lsn;
+  }
+end
+
+pub routine main(): void {
+  val KvCell store = new KvCell();
+  stdio.println(store.apply_set("k", "first", 1));
+  stdio.println(store.contains("k"));
+  stdio.println(store.read("k"));
+  stdio.println(store.apply_set("k", "stale", 1));
+  stdio.println(store.read("k"));
+  stdio.println(store.apply_delete("k", 2));
+  stdio.println(store.contains("k"));
+  stdio.println(store.apply_set("k", "stale-revive", 1));
+  stdio.println(store.apply_set("k", "second", 3));
+  stdio.println(store.read("k"));
+  stdio.println(store.lsn());
+  stdio.println(store.apply_set("k", "", 4));
+  stdio.println(store.contains("k"));
+  stdio.println(store.read("k") == "");
+  return;
+}

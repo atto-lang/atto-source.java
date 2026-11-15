@@ -487,4 +487,48 @@ final class ActorAsyncSendBackpressureTest {
             ref.getDone().get(5, TimeUnit.SECONDS);
         }
     }
+
+    @Test
+    void trySendIsImmediateAndDoesNotCreateAPendingWriter() throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        List<Integer> processed = Collections.synchronizedList(new ArrayList<>());
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(oneMessagePolicy(), () -> (message, context) -> {
+                if (message == 1) {
+                    firstEntered.countDown();
+                    if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("held actor turn timed out");
+                    }
+                }
+                processed.add(message);
+            });
+
+            ref.send(1);
+            assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+            ref.send(2);
+            assertFalse(ref.trySend(3), "full USER mailbox rejects without suspending");
+            OresFuture<Void> pending = ref.sendAsync(4);
+            assertFalse(pending.isDone(), "awaitable admission retains an explicit waiter");
+
+            releaseFirst.countDown();
+            pending.get(5, TimeUnit.SECONDS);
+            ref.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(List.of(1, 2, 4), processed,
+                    "the failed immediate send must never arrive later");
+
+            assertTrue(ref.trySend(5));
+            ref.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(List.of(1, 2, 4, 5), processed);
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+            assertThrows(ActorRuntime.ActorTerminatedException.class,
+                    () -> ref.trySend(6),
+                    "try_send returns false only for capacity, not invalid lifecycle");
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
 }
