@@ -59,6 +59,15 @@ final class ImmediateChannelProbeHardeningTest {
         assertTrue(error.getMessage().contains("try writech cannot rt take"), error::getMessage);
     }
 
+    @Test
+    void nestedTakeCannotHideAConsumedOwnerBehindCopyArithmetic() throws Exception {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(fixture("irrecoverable_nested_take.atto"))));
+        assertTrue(error.getMessage().contains("try writech cannot consume an owned value"),
+                error::getMessage);
+    }
+
     private static void assertRejectedMoveOnly(String name) throws Exception {
         String guest = fixture(name);
         IllegalArgumentException error = assertThrows(
