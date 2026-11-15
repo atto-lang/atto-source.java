@@ -28,6 +28,9 @@ final class OwnershipBangAliasesTest {
                      Parser.parse(eqPrefix.formatted("copy!eqfoo")));
         sameAst("rt take foo", "take! foo", "take!foo");
         sameAst("rt borrow foo", "borrow! foo", "borrow!foo");
+        // Without a token boundary, mutfoo is an ordinary identifier and the
+        // operation remains immutable Borrow, not BorrowMut.
+        sameAst("rt borrow mutfoo", "borrow! mutfoo", "borrow!mutfoo");
         sameAst("rt share foo", "share! foo", "share!foo");
         sameAst("rt mut borrow foo", "mut borrow! foo", "mut borrow!foo");
         sameAst("rt mut borrow foo", "borrow! mut foo", "borrow!mut foo");
@@ -58,7 +61,9 @@ final class OwnershipBangAliasesTest {
     @Test
     void rejectsWhitespaceBeforeBangRatherThanReinterpretingItAsOwnership() {
         for (String invalid : new String[]{"copy !foo", "take !foo", "borrow !foo",
-                "mut borrow !foo", "share !foo", "copy!", "mut borrow!"}) {
+                "mut borrow !foo", "share !foo", "copy!", "mut borrow!",
+                "borrow! mut", "borrow!mut", "borrow! mut mut foo",
+                "mut borrow! mut foo"}) {
             assertThrows(RuntimeException.class, () -> source(invalid), invalid);
         }
     }
@@ -192,7 +197,7 @@ final class OwnershipBangAliasesTest {
                 end
                 fnc read_it(): void {
                   let Item item = new Item();
-                  val borrow mut Item first = mut borrow!item;
+                  val borrow mut Item first = borrow! mut item;
                   val borrow mut Item second = mut borrow! item;
                   stdio.println(first.value);
                   stdio.println(second.value);
