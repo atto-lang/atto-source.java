@@ -99,7 +99,7 @@ final class MaybeAdmissionFenceTest {
                 """;
         var typed = TypeChecker.check(Parser.parse(source));
         OwnershipChecker.check(typed);
-        assertEquals("8D|EDtrue|7|0", run(source));
+        assertEquals("D8|EDtrue|7|0", run(source));
     }
 
     @Test
@@ -127,7 +127,7 @@ final class MaybeAdmissionFenceTest {
                 """;
         var typed = TypeChecker.check(Parser.parse(source));
         OwnershipChecker.check(typed);
-        assertEquals("7D|EDtrue", run(source));
+        assertEquals("D7|EDtrue", run(source));
     }
 
     @Test
