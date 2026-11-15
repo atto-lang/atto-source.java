@@ -115,6 +115,24 @@ final class OwnershipBangAliasesTest {
     }
 
     @Test
+    void nestedCommentsCannotLeakOwnershipAliasesOrExceedLexerBudget() {
+        assertDoesNotThrow(() -> Parser.parse(
+                "fnc main(): int { val int foo = 7; return " +
+                "/* outer /* borrow! mut foo */ tail /* take!foo */ */ copy!foo; }"));
+        RuntimeException unclosed = assertThrows(RuntimeException.class,
+                () -> Parser.parse(
+                        "fnc main(): int { return /* outer /* copy!7 */ 7; }"));
+        assertTrue(unclosed.getMessage().contains("unterminated block comment"),
+                unclosed::getMessage);
+        String excessive = "fnc main(): int { return " +
+                "/*".repeat(129) + "copy!7" + "*/".repeat(129) + "7; }";
+        RuntimeException tooDeep = assertThrows(RuntimeException.class,
+                () -> Parser.parse(excessive));
+        assertTrue(tooDeep.getMessage().contains("block comment nesting exceeds 128"),
+                tooDeep::getMessage);
+    }
+
+    @Test
     void bangBorrowRunsTheExistingOwnershipChecker() {
         String base = """
                 define class Item as
