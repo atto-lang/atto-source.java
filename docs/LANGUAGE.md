@@ -727,7 +727,7 @@ Owned sum values cannot hide lexical borrows until explicit lifetime parameters 
 
 Panics are distinct from ordinary recoverable errors. Normal `try/catch` does not swallow an unwrap panic, while lexical cleanup and `finally` still execute during unwind. Use `unwrap_safe()`, matching, or explicit variant inspection when absence/failure should remain data.
 
-`Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. Ordinary non-trapped functions return `void` when no value is produced. Callable `trap fnc`/`trap routine` calls return the compiler-owned `TrapResult<T>`: destructuring exposes `Option<[T]>` for success and `Option<TrapError>` for failure; a successful `void` call exposes `Some([])`. The separate proposed `trap expression` operator still has an `Option<T>` design and is not implemented. See [trap callable semantics](TRAP.md) and the [expression-trap/unwrap contract](TRAP_EXPRESSION_UNWRAP.md).
+`Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. Ordinary non-trapped functions return `void` when no value is produced. Callable `trap fnc` and `trap routine` calls return `Option<T>`. Success yields `Some(value)` and a trapped ordinary throw yields `None`. Successful `void` calls yield `Some(void)`. Expression `trap` adds the same Option layer and preserves nested options. See [trap callable semantics](TRAP.md) and the [expression-trap/unwrap contract](TRAP_EXPRESSION_UNWRAP.md).
 
 ## Numbers
 

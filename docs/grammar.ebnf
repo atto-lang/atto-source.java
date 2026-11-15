@@ -163,8 +163,7 @@ object_pattern  = "{" ( object_rest_item
                                     [ "," object_rest_item ] ) "}" ;
 sequence_destructure_item
                 = [ binding_kind ] ( IDENT | "_" | sequence_pattern ) ;
-(* Nested sequence patterns are currently enabled for the Option-aware single-value
-   projection of a TrapResult; other nested destructuring is rejected by type checking. *)
+(* Nested destructuring remains reserved and is rejected by type checking. *)
 sequence_rest_item
                 = [ binding_kind ] "..." IDENT ;
 object_destructure_item

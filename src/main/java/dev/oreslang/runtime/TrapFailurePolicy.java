@@ -16,8 +16,8 @@ import java.util.concurrent.TimeoutException;
  * Distinct guest failure boundaries:
  * <ul>
  *   <li>{@code trap} converts explicit guest {@code throw} signals and
- *       classified interpreter-origin failures into a structured
- *       {@code TrapResult}. Unclassified host runtime exceptions, authority
+ *       classified interpreter-origin failures into a guest
+ *       {@code Option}. Unclassified host runtime exceptions, authority
  *       denial and runtime timeout remain terminal.</li>
  *   <li>Explicit guest {@code catch} may recover a denied operation, but cannot
  *       consume runtime timeout, panic, scheduler cancellation or host failures.</li>

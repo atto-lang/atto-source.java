@@ -1762,13 +1762,9 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
             Type source = deref(typeOf(destructure.initializer(), env, generics, self));
-            if (source instanceof Named named && named.name().equals("TrapResult")) {
-                checkTrapResultDestructure(destructure, named, env);
-                return;
-            }
             if (containsNestedDestructure(destructure.pattern())) {
                 throw new IllegalArgumentException(
-                        "nested destructuring is currently supported only for TrapResult values");
+                        "nested destructuring is not supported");
             }
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                 List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings());
@@ -1860,11 +1856,7 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) {
-            Type expressionType = deref(typeOf(expression.expression(), env, generics, self));
-            if (isTrapResultType(expressionType)) {
-                throw new IllegalArgumentException(
-                        "trap result cannot be discarded; bind both success and error slots");
-            }
+            typeOf(expression.expression(), env, generics, self);
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
@@ -1874,11 +1866,7 @@ public final class TypeChecker {
             }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
             try {
-                Type deferredType = deref(typeOf(defer.expression(), env, generics, self));
-                if (isTrapResultType(deferredType)) {
-                    throw new IllegalArgumentException(
-                            "defer cannot discard a trap result; destructure it before deferring work");
-                }
+                typeOf(defer.expression(), env, generics, self);
             } finally {
                 // Defer executes later; checking its expression now must not
                 // establish definite-initialization facts for following code.
@@ -6946,7 +6934,7 @@ public final class TypeChecker {
     }
 
     private Type trapResult(boolean trapped, Type result) {
-        return trapped ? new Named("TrapResult", List.of(result)) : result;
+        return trapped ? new Named("Option", List.of(result)) : result;
     }
 
     private void requireOwnedErrorPayload(Type type, String keyword) {
@@ -6957,61 +6945,12 @@ public final class TypeChecker {
         }
     }
 
-    private boolean isTrapResultType(Type type) {
-        return type instanceof Named named
-                && named.name().equals("TrapResult")
-                && named.arguments().size() == 1;
-    }
-
     private boolean containsNestedDestructure(Ast.DestructurePattern pattern) {
         if (pattern instanceof Ast.DestructureBindingPattern) return false;
         Ast.NestedDestructurePattern nested = (Ast.NestedDestructurePattern) pattern;
         return nested.children().stream().anyMatch(child ->
                 child instanceof Ast.NestedDestructurePattern
                         || containsNestedDestructure(child));
-    }
-
-    private void checkTrapResultDestructure(
-            Ast.DestructureStmt destructure, Named source, Env env) {
-        if (source.arguments().size() != 1
-                || destructure.kind() != Ast.DestructureKind.SEQUENCE
-                || !(destructure.pattern() instanceof Ast.NestedDestructurePattern root)
-                || root.children().size() != 2
-                || !(root.children().get(1) instanceof Ast.DestructureBindingPattern errorPattern)) {
-            throw new IllegalArgumentException(
-                    "TrapResult destructuring requires [success, error] with exactly two slots");
-        }
-
-        Ast.DestructureBinding errorBinding = errorPattern.binding();
-        if (errorBinding.isDiscard() || errorBinding.rest()) {
-            throw new IllegalArgumentException(
-                    "trap error slot cannot be discarded or used as a rest binding");
-        }
-
-        Type successType = source.arguments().getFirst();
-        Type successBundle = new Tuple(
-                successType == Primitive.VOID ? List.of() : List.of(successType),
-                TupleKind.TUPLE);
-        Type successSlotType = new Named("Option", List.of(successBundle));
-        Type errorSlotType = new Named("Option", List.of(new Named("TrapError", List.of())));
-
-        Ast.DestructurePattern successPattern = root.children().getFirst();
-        if (successPattern instanceof Ast.DestructureBindingPattern successBinding) {
-            defineDestructureBinding(env, successBinding.binding(), successSlotType);
-        } else if (successPattern instanceof Ast.NestedDestructurePattern nestedSuccess
-                && nestedSuccess.kind() == Ast.DestructureKind.SEQUENCE
-                && nestedSuccess.children().size() == 1
-                && nestedSuccess.children().getFirst() instanceof Ast.DestructureBindingPattern single) {
-            if (single.binding().rest()) {
-                throw new IllegalArgumentException("nested TrapResult success binding cannot be a rest binding");
-            }
-            defineDestructureBinding(
-                    env, single.binding(), new Named("Option", List.of(successType)));
-        } else {
-            throw new IllegalArgumentException(
-                    "nested TrapResult success syntax must be [const [value], const error]");
-        }
-        defineDestructureBinding(env, errorBinding, errorSlotType);
     }
 
     private Function trapFunctionType(Ast.FunctionDecl fn, Set<String> generics, Type self) {
@@ -8181,13 +8120,8 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
                 yield new Named("Option", List.of(element));
             }
-            case "TrapResult" -> {
-                if (ref.inferArguments() || ref.arguments().size() != 1) {
-                    throw new IllegalArgumentException("TrapResult requires exactly one explicit type argument");
-                }
-                yield new Named("TrapResult", List.of(resolve(ref.arguments().getFirst(), generics, self, true)));
-            }
-            case "TrapError", "RecoverySignal", "Error" -> {
+            case "TrapResult", "TrapError" -> throw new IllegalArgumentException("trap callables return Option<T>");
+            case "RecoverySignal", "Error" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
                 }

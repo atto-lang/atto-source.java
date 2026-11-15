@@ -1008,7 +1008,7 @@ public final class OresEvalRootNode extends RootNode {
                     // or resumed continuation wraps the original exception.
                     if (function != null && function.trapped()
                             && isTrappableFailure(failure)) {
-                        return OresScheduler.done(trapFailure(failure));
+                        return OresScheduler.done(new OptionValue(false, null));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
                             function != null ? function.name() : method != null ? method.name() : "<block>",
@@ -2021,15 +2021,9 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
-                                    if (value instanceof TrapResultValue trapResult) {
-                                        bindTrapResultDestructure(
-                                                destructure.pattern(), trapResult, env);
-                                        continuation.accept(t, SourceFlow.normal());
-                                        return;
-                                    }
                                     if (containsNestedDestructure(destructure.pattern())) {
                                         throw new IllegalArgumentException(
-                                                "nested destructuring is currently supported only for TrapResult values");
+                                                "nested destructuring is not supported");
                                     }
                                     if (destructure.kind()
                                             == Ast.DestructureKind.SEQUENCE) {
@@ -4913,15 +4907,6 @@ public final class OresEvalRootNode extends RootNode {
                             ? new OptionValue(true, detachAsyncValue(option.value(), visiting))
                             : option;
                 }
-                if (value instanceof TrapResultValue trap) {
-                    return trap.success()
-                            ? new TrapResultValue(
-                                    true,
-                                    trap.value() == null ? null : detachAsyncValue(trap.value(), visiting),
-                                    null,
-                                    trap.voidSuccess())
-                            : trap;
-                }
                 if (value instanceof ResultValue result) {
                     return new ResultValue(result.ok(), detachAsyncValue(result.value(), visiting));
                 }
@@ -4976,17 +4961,17 @@ public final class OresEvalRootNode extends RootNode {
                 return trapSuccess(fn, callFunctionBodyUnchecked(fn, args));
             } catch (RuntimeException failure) {
                 if (!isTrappableFailure(failure)) throw failure;
-                return trapFailure(failure);
+                return new OptionValue(false, null);
             }
         }
 
-        private TrapResultValue trapSuccess(Ast.FunctionDecl function, Object value) {
+        private OptionValue trapSuccess(Ast.FunctionDecl function, Object value) {
             boolean voidSuccess = isVoidReturnType(function);
             if (voidSuccess != (value == null)) {
                 throw new OresPanic(
                         "trap success invariant violated for callable '" + function.name() + "'");
             }
-            return new TrapResultValue(true, value, null, voidSuccess);
+            return new OptionValue(true, value);
         }
 
         private boolean isVoidReturnType(Ast.FunctionDecl function) {
@@ -5002,20 +4987,6 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
-        private TrapResultValue trapFailure(Throwable failure) {
-            return new TrapResultValue(false, null, toTrapError(failure), false);
-        }
-
-        private TrapErrorValue toTrapError(Throwable failure) {
-            GuestControlSignal signal = guestControlSignalCause(failure);
-            if (signal instanceof GuestControlSignal.Throw thrown) {
-                return new TrapErrorValue("Thrown", safeMessage(messageForPayload(thrown.payload())));
-            }
-            String message = failure.getMessage();
-            if (message == null || message.isBlank()) message = failure.getClass().getSimpleName();
-            return new TrapErrorValue("Runtime", safeMessage(message));
-        }
-
         private GuestControlSignal guestControlSignalCause(Throwable failure) {
             return dev.oreslang.runtime.TrapFailurePolicy.findTrustedCause(
                     failure, GuestControlSignal.class);
@@ -5023,7 +4994,6 @@ public final class OresEvalRootNode extends RootNode {
 
         private String messageForPayload(Object payload) {
             if (payload instanceof GuestErrorValue error) return error.message();
-            if (payload instanceof TrapErrorValue error) return error.message();
             if (payload instanceof RecoverySignalValue signal) return signal.message();
             return display(payload);
         }
@@ -5325,13 +5295,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.DestructureStmt destructure) {
                 Object value = eval(destructure.initializer(), env);
-                if (value instanceof TrapResultValue trapResult) {
-                    bindTrapResultDestructure(destructure.pattern(), trapResult, env);
-                    return;
-                }
                 if (containsNestedDestructure(destructure.pattern())) {
                     throw new IllegalArgumentException(
-                            "nested destructuring is currently supported only for TrapResult values");
+                            "nested destructuring is not supported");
                 }
                 if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                     bindSequenceDestructure(
@@ -7333,22 +7299,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.equals("message")) return error.message();
                 throw new IllegalArgumentException("unknown Error member " + name);
             }
-            if (receiver instanceof TrapErrorValue error) {
-                return switch (name) {
-                    case "kind" -> error.kind();
-                    case "message" -> error.message();
-                    default -> throw new IllegalArgumentException("unknown TrapError member " + name);
-                };
-            }
             if (receiver instanceof RecoverySignalValue signal) {
                 return switch (name) {
                     case "kind" -> signal.kind();
                     case "message" -> signal.message();
                     default -> throw new IllegalArgumentException("unknown RecoverySignal member " + name);
                 };
-            }
-            if (receiver instanceof TrapResultValue) {
-                throw new IllegalArgumentException("TrapResult must be destructured into success and error slots");
             }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
@@ -9115,58 +9071,6 @@ public final class OresEvalRootNode extends RootNode {
                         || containsNestedDestructure(child));
         }
 
-        private void bindTrapResultDestructure(
-                Ast.DestructurePattern pattern, TrapResultValue result, Env destination) {
-            if (!(pattern instanceof Ast.NestedDestructurePattern root)
-                    || root.kind() != Ast.DestructureKind.SEQUENCE
-                    || root.children().size() != 2
-                    || !(root.children().get(1) instanceof Ast.DestructureBindingPattern errorPattern)) {
-                throw new IllegalArgumentException(
-                        "TrapResult destructuring requires [success, error] with exactly two slots");
-            }
-            Ast.DestructureBinding errorBinding = errorPattern.binding();
-            if (errorBinding.isDiscard() || errorBinding.rest()) {
-                throw new IllegalArgumentException(
-                        "trap error slot cannot be discarded or used as a rest binding");
-            }
-
-            Ast.DestructurePattern successPattern = root.children().getFirst();
-            if (successPattern instanceof Ast.DestructureBindingPattern successPatternBinding) {
-                Ast.DestructureBinding successBinding = successPatternBinding.binding();
-                if (successBinding.rest()) {
-                    throw new IllegalArgumentException("TrapResult success slot cannot be a rest binding");
-                }
-                if (!successBinding.isDiscard()) {
-                    destination.define(
-                            successBinding.name(),
-                            result.successProjection(),
-                            successBinding.kind());
-                }
-            } else if (successPattern instanceof Ast.NestedDestructurePattern nestedSuccess
-                    && nestedSuccess.kind() == Ast.DestructureKind.SEQUENCE
-                    && nestedSuccess.children().size() == 1
-                    && nestedSuccess.children().getFirst() instanceof Ast.DestructureBindingPattern single) {
-                Ast.DestructureBinding successBinding = single.binding();
-                if (successBinding.rest()) {
-                    throw new IllegalArgumentException("nested TrapResult success binding cannot be a rest binding");
-                }
-                if (!successBinding.isDiscard()) {
-                    destination.define(
-                            successBinding.name(),
-                            new OptionValue(result.success(), result.success() ? result.value() : null),
-                            successBinding.kind());
-                }
-            } else {
-                throw new IllegalArgumentException(
-                        "nested TrapResult success syntax must be [const [value], const error]");
-            }
-
-            destination.define(
-                    errorBinding.name(),
-                    result.errorProjection(),
-                    errorBinding.kind());
-        }
-
         private List<?> asSequence(Object value) {
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
@@ -9885,35 +9789,6 @@ public final class OresEvalRootNode extends RootNode {
             return present && value != null ? List.of(value) : List.of();
         }
         @Override public String toString(){return CycleSafeDisplay.render(this);}
-    }
-    private record TrapResultValue(
-            boolean success, Object value, TrapErrorValue error, boolean voidSuccess)
-            implements OresMutex.SharedState {
-        private TrapResultValue {
-            boolean valid = success
-                    ? error == null && (voidSuccess ? value == null : value != null)
-                    : value == null && !voidSuccess && error != null;
-            if (!valid) throw new OresPanic("invalid compiler-owned TrapResult state");
-        }
-        private List<?> successBundle() {
-            if (!success) return List.of();
-            return voidSuccess ? List.of() : List.of(value);
-        }
-        private OptionValue successProjection() {
-            return new OptionValue(success, success ? successBundle() : null);
-        }
-        private OptionValue errorProjection() {
-            return new OptionValue(!success, success ? null : error);
-        }
-        @Override public Iterable<?> sharedStateChildren() {
-            if (success) return value == null ? List.of() : List.of(value);
-            return error == null ? List.of() : List.of(error);
-        }
-        @Override public String toString() { return CycleSafeDisplay.render(this); }
-    }
-    private record TrapErrorValue(String kind, String message) implements OresMutex.SharedState {
-        @Override public Iterable<?> sharedStateChildren() { return List.of(); }
-        @Override public String toString() { return "TrapError(" + kind + ": " + message + ")"; }
     }
     private record GuestErrorValue(String message) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren() { return List.of(); }

@@ -26,7 +26,7 @@ final class OreslangGrammarDriftTest {
             annotation_arg return_spec type_return_spec generic_params param_list param
             binding_decl binding_kind named_inferred_binding named_inferred_literal destructure_stmt sequence_pattern
             object_pattern sequence_destructure_item sequence_rest_item object_destructure_item object_rest_item block
-            statement return_stmt defer_stmt block_stmt break_stmt continue_stmt
+            statement return_stmt throw_stmt raise_stmt panic_stmt recover_stmt defer_stmt block_stmt break_stmt continue_stmt
             loop_stmt while_stmt if_stmt conditional_branch deprecated_if_do condition_head condition condition_and
             match_stmt match_arm pattern switch_stmt switch_case switch_default
             try_stmt select_stmt select_wait_mode select_policy select_arm select_arm_keyword
