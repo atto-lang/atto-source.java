@@ -40,7 +40,12 @@ final class OwnershipBangGuestTest {
         for (String variant : new String[]{"compact", "spaced", "legacy"}) {
             Path file = ROOT.resolve(variant + ".atto");
             assertTrue(Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS), variant);
-            assertFalse(Files.isSymbolicLink(file), variant);
+            // Regular-file checks on the leaf are insufficient if any parent
+            // component is a symlink into a different source tree.
+            for (Path part = file; part != null; part = part.getParent()) {
+                assertFalse(Files.isSymbolicLink(part),
+                        "fixture path escaped via symlink: " + part);
+            }
             long size = Files.size(file);
             assertTrue(size <= 4096 && size > 20, "bounded .atto fixture: " + variant);
             byte[] bytes = Files.readAllBytes(file);
