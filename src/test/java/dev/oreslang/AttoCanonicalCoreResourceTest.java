@@ -28,12 +28,14 @@ final class AttoCanonicalCoreResourceTest {
     void canonicalAttoCoreSourceMatchesPinnedCrossBackendGitBlob() throws Exception {
         byte[] canonical = readResource("/dev/atto/core/numeric.atto");
         byte[] legacy = readResource("/dev/oreslang/core/numeric.ores");
+        // Pinned to main's current Core numeric source, which since #2641 also
+        // exports the named Integer.rem/mod migration shims.
         assertArrayEquals(legacy, canonical, "legacy compatibility bytes drifted");
-        assertEquals(657, canonical.length);
+        assertEquals(1243, canonical.length);
         MessageDigest digest = MessageDigest.getInstance("SHA-1");
         digest.update(("blob " + canonical.length + "\0").getBytes(StandardCharsets.US_ASCII));
         digest.update(canonical);
-        assertEquals("5ced991f1d49b3c2a60fdd72b9003c0a4d18cd72",
+        assertEquals("babf9cd1b3ffa1e6878315f2391f1b1ea6cdcc1a",
                 HexFormat.of().formatHex(digest.digest()));
         assertEquals(new String(canonical, StandardCharsets.UTF_8),
                 CoreLibrarySources.oresCoreSource("atto.core/numeric.atto"));

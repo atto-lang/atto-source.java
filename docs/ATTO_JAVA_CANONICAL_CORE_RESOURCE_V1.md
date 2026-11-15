@@ -1,10 +1,11 @@
 # Java/GraalVM canonical Atto Core source migration
 
 The **active** compiler-owned source resource is now
-`src/main/resources/dev/atto/core/numeric.atto`, byte-identical with the
-cross-backend pinned numeric module Git blob
-`5ced991f1d49b3c2a60fdd72b9003c0a4d18cd72`.
-Legacy `dev/oreslang/core/numeric.ores` stays packaged as an unchanged
+`src/main/resources/dev/atto/core/numeric.atto`, byte-identical with main's
+current numeric module (Git blob `babf9cd1b3ffa1e6878315f2391f1b1ea6cdcc1a`, which
+since #2641 includes the named Integer.rem/mod migration shims; the earlier
+cross-backend blob `5ced991f1d49b3c2a60fdd72b9003c0a4d18cd72` predates them).
+Legacy `dev/oreslang/core/numeric.ores` stays packaged as a byte-identical
 compatibility snapshot; it is **not** the runtime module selected by
 `CoreLibrarySources.oresCoreSource`.
 
