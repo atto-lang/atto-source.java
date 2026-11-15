@@ -52,8 +52,15 @@ final class SignedI64NativeGuestParityTest {
     }
 
     @Test
-    void implicitNumericWideningCannotSilentlyChangeReturnType() {
+    void implicitNumericNarrowingCannotSilentlyChangeReturnType() {
+        // Main's numeric contract: int -> float is a valid assignment widening
+        // (see TypeChecker / PatternMatchingHardeningTest), so only a narrowing
+        // float -> int return may never be silently accepted.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc widened(): float { return 7; }")));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
-                "fnc bad(): float { return 7; }")));
+                "fnc bad(): int { return 7.5; }")));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                "fnc bad(): int { val float x = 7.5; return x; }")));
     }
 }
