@@ -1,0 +1,7 @@
+pub fnc main(): void {
+    const strings = ~map<string, int>();
+    const symbols = ~<Map<Symbol, bool>>();
+    stdio.println(strings.size);
+    stdio.println(symbols.size);
+    return;
+}
