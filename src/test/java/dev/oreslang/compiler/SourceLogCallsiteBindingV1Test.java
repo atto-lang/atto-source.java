@@ -44,11 +44,10 @@ class SourceLogCallsiteBindingV1Test {
     private static java.util.Map<Ast.CallExpr,
             dev.oreslang.runtime.SourceIdentityV1.Site> bind(
             Fixture fixture, List<SourceLogCallsiteBindingV1.Entry> sites) {
-        var checkedRoutines = SourceRoutineBindingV1.bind(fixture.ast(), List.of(
-                new SourceRoutineBindingV1.Entry(
-                        fixture.module(), "main", 0, RID)));
         return SourceLogCallsiteBindingV1.bind(
-                fixture.ast(), sites, checkedRoutines);
+                fixture.ast(), sites, List.of(
+                    new SourceRoutineBindingV1.Entry(
+                        fixture.module(), "main", 0, RID)));
     }
 
     @Test
@@ -87,28 +86,30 @@ class SourceLogCallsiteBindingV1Test {
     }
 
     @Test
-    void refusesDifferentAstWithSameStructureAndUnverifiedRoutineTable() {
-        var first = parse(SOURCE);
-        var second = parse(SOURCE);
-        var checked = SourceRoutineBindingV1.bind(first.ast(), List.of(
-                new SourceRoutineBindingV1.Entry(first.module(), "main", 0, RID)));
+    void deniesUntrustedMissingAndConflictingRoutineRegistryRows() {
+        var fixture = parse(SOURCE);
+        var correct = new SourceRoutineBindingV1.Entry(
+                fixture.module(), "main", 0, RID);
         assertThrows(IllegalArgumentException.class,
                 () -> SourceLogCallsiteBindingV1.bind(
-                        second.ast(), entries(second.module()), checked));
+                        fixture.ast(), entries(fixture.module()), List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> SourceLogCallsiteBindingV1.bind(
+                        fixture.ast(), entries(fixture.module()),
+                        List.of(new SourceRoutineBindingV1.Entry(
+                                fixture.module(), "unknown", 0, RID))));
+        assertThrows(IllegalArgumentException.class,
+                () -> SourceLogCallsiteBindingV1.bind(
+                        fixture.ast(), entries(fixture.module()),
+                        List.of(new SourceRoutineBindingV1.Entry(
+                                fixture.module(), "main", 0,
+                                "rid_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> SourceLogCallsiteBindingV1.bind(
+                        fixture.ast(), entries(fixture.module()), List.of(correct, correct)));
         assertThrows(NullPointerException.class,
                 () -> SourceLogCallsiteBindingV1.bind(
-                        first.ast(), entries(first.module()), null));
-        var foreign = new java.util.IdentityHashMap<Ast.FunctionDecl,
-                dev.oreslang.runtime.SourceIdentityV1.Id>(checked);
-        var another = second.ast().modules().stream()
-                .flatMap(module -> module.declarations().stream())
-                .filter(Ast.FunctionDecl.class::isInstance)
-                .map(Ast.FunctionDecl.class::cast)
-                .findFirst().orElseThrow();
-        foreign.put(another, checked.values().iterator().next());
-        assertThrows(IllegalArgumentException.class,
-                () -> SourceLogCallsiteBindingV1.bind(
-                        first.ast(), entries(first.module()), foreign));
+                        fixture.ast(), entries(fixture.module()), null));
     }
 
     @Test
@@ -125,16 +126,15 @@ class SourceLogCallsiteBindingV1Test {
     void refusesGuestOwnedLogParameterAndSpanAlias() {
         var guestParameter = parse(
                 "pub fnc main(int log): void { log.info(\"hammer.started\"); }");
-        var checked = SourceRoutineBindingV1.bind(
-                guestParameter.ast(), List.of(new SourceRoutineBindingV1.Entry(
-                        guestParameter.module(), "main", 1, RID)));
+
         assertThrows(IllegalArgumentException.class,
                 () -> SourceLogCallsiteBindingV1.bind(
                         guestParameter.ast(),
                         List.of(new SourceLogCallsiteBindingV1.Entry(
                                 guestParameter.module(), "main", 1, "hammer.started",
                                 RID, START)),
-                        checked));
+                        List.of(new SourceRoutineBindingV1.Entry(
+                                guestParameter.module(), "main", 1, RID))));
 
         var scopeAlias = parse(
                 "pub fnc main(): void {"
