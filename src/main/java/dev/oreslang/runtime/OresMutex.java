@@ -146,14 +146,20 @@ public final class OresMutex {
     // Guards created and not yet released, process-wide. The interpreter
     // deep-scans lexical slots for live guards on every statement; when this
     // is zero no live guard exists anywhere, so the scan can be skipped.
-    // Increment happens before any release path can run, so the count never
-    // under-reports; a guard whose construction fails only over-reports.
+    // Increment before publishing a guard to Task lease cleanup, so count
+    // never under-reports. Both local and shared guard acquisition roll back
+    // this increment if Task lease registration rejects the new guard.
     private static final java.util.concurrent.atomic.AtomicLong LIVE_GUARDS =
             new java.util.concurrent.atomic.AtomicLong();
 
     /** False only when no unreleased guard exists in this process. */
     public static boolean mayHaveLiveGuards() {
         return LIVE_GUARDS.get() != 0;
+    }
+
+    /** Diagnostic: guards created and not yet released, process-wide. */
+    public static long liveGuardCount() {
+        return LIVE_GUARDS.get();
     }
 
     public interface Guard<T> extends AutoCloseable {
@@ -1315,11 +1321,22 @@ public final class OresMutex {
                 this.ownerDomain = ownerDomain;
                 this.enforceOwnerDomain = enforceOwnerDomain;
                 this.requestingActorDomain = requestingActorDomain;
-                this.taskLease = registerCurrentTask
-                        ? TaskOwnedLeases.registerIfTracked(
-                                () -> releaseFromRuntime(false),
-                                () -> releaseFromRuntime(true))
-                        : inheritedLease;
+                // The live counter is incremented before lease registration:
+                // a concurrently retiring tracked Task must never release a
+                // registered guard before the increment becomes visible. But
+                // admission can fail (e.g. 4,096 live leases), so restore the
+                // counter on failure. checkedGuardAfterAcquire() owns physical
+                // permit/domain rollback and must remain the sole releaser.
+                try {
+                    this.taskLease = registerCurrentTask
+                            ? TaskOwnedLeases.registerIfTracked(
+                                    () -> releaseFromRuntime(false),
+                                    () -> releaseFromRuntime(true))
+                            : inheritedLease;
+                } catch (RuntimeException | Error admissionFailure) {
+                    LIVE_GUARDS.decrementAndGet();
+                    throw admissionFailure;
+                }
             }
 
             private void requireOwnerDomain() {

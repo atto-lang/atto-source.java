@@ -608,6 +608,8 @@ public final class CapabilityChecker {
                 if (path.startsWith("process.spawn")) require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
             }
             checkExpr(m.receiver(), policy);
+        } else if (expr instanceof Ast.CaptureExpr e) {
+            checkExpr(e.value(), policy);
         } else if (expr instanceof Ast.SpreadExpr e) {
             checkExpr(e.expression(), policy);
         } else if (expr instanceof Ast.MatchExpr e) {

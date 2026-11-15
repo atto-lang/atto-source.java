@@ -44,6 +44,10 @@ public final class OresContext implements AutoCloseable {
     // Host-provisioned at context creation; default is DENY with no service.
     private final WorkflowHostServiceRegistry workflowHostServices;
     public AsyncNativeIo nativeIo() { return nativeIo; }
+    // Guest-visible timers (process.sleep_async). Revoked before actor and
+    // native I/O retirement so no clock callback outlives the context.
+    private final OresTimers guestTimers = new OresTimers();
+    public OresTimers guestTimers() { return guestTimers; }
     /** Typed intrinsic only; returns guest-owned scalar data, never host handles. */
     public OresFuture<java.util.List<Object>> submitWorkflowGuest(Object payload) {
         requireCapability(IsolatePolicy.Capability.WORKFLOW_STORAGE, "rt workflow_request");
@@ -526,6 +530,7 @@ public final class OresContext implements AutoCloseable {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
+        guestTimers.close();
         // Revoke workflow admission and drain callbacks before JNI teardown.
         // On timeout, retain the context rather than freeing live host state.
         try {
