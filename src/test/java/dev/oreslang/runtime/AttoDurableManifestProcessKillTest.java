@@ -80,7 +80,10 @@ final class AttoDurableManifestProcessKillTest {
             writer.destroyForcibly();
             assertTrue(writer.waitFor(15, TimeUnit.SECONDS), "SIGKILL writer must exit");
         }
-        assertNotEquals(0, writer.exitValue(), "writer must terminate abnormally");
+        // On Linux Java's Process API reports 128 + SIGKILL (9) = 137.
+        // Any other nonzero exit could be a JVM crash, not the requested kill.
+        assertEquals(137, writer.exitValue(),
+                "durable child must be terminated by SIGKILL, not a different failure");
         assertEquals("generation=7", Files.readString(root.resolve("classic.meta")));
         assertEquals("record=7", Files.readString(root.resolve("classic.wal")),
                 "fsynced WAL bytes must survive actual child-JVM termination");
