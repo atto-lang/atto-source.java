@@ -90,7 +90,7 @@ final class CheckedCollectionGetCopyLanguageTest {
                 """;
         RuntimeException failure = assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(failure.getMessage().contains("requires Copy<int>"),
+        assertTrue(failure.getMessage().contains("requires a proven Copy<int> element"),
                 () -> "expected semantic non-Copy rejection, got: " + failure.getMessage());
     }
 
@@ -106,7 +106,7 @@ final class CheckedCollectionGetCopyLanguageTest {
                 """;
         RuntimeException failure = assertThrows(RuntimeException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(failure.getMessage().contains("requires Copy<int>"),
+        assertTrue(failure.getMessage().contains("requires a proven Copy<int> element"),
                 () -> "Option<Option<int>> must not be flattened: " + failure.getMessage());
     }
 
