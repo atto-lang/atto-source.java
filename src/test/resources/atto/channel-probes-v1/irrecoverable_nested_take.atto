@@ -1,0 +1,8 @@
+// A nested explicit move must not be hidden by a Copy-typed arithmetic result.
+pub routine main(): void {
+  val Channel<int> channel = Channel.new<int>(1);
+  val int payload = 7;
+  val bool accepted = try writech channel, (rt take payload) + 1;
+  stdio.stdout.write(payload);
+  return;
+}
