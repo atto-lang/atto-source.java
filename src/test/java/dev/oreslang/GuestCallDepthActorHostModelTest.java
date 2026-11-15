@@ -17,12 +17,16 @@ import static org.junit.jupiter.api.Assertions.*;
  * restart test.
  */
 final class GuestCallDepthActorHostModelTest {
+    // Main requires stateless BehaviorFactory lambdas (no captured host
+    // state), so the sibling's delivery probe lives in a static field.
+    private static final AtomicInteger SIBLING_DELIVERIES = new AtomicInteger();
+
     @Test
     void actorBudgetExhaustionRetiresOnlyThatActorAndAllowsSiblingTurn() throws Exception {
         // Both SHARED actor turns use a one-worker SHARED carrier pool.
         var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
-            AtomicInteger siblingDeliveries = new AtomicInteger();
+            SIBLING_DELIVERIES.set(0);
             var exhausted = runtime.<String>spawnShared(factory ->
                     (message, turn) -> {
                         int reserved = 0;
@@ -40,7 +44,7 @@ final class GuestCallDepthActorHostModelTest {
                         int depth = GuestCallDepthGuard.enter();
                         try {
                             assertEquals(1, depth, "previous turn polluted the carrier");
-                            siblingDeliveries.incrementAndGet();
+                            SIBLING_DELIVERIES.incrementAndGet();
                         } finally {
                             GuestCallDepthGuard.leave(depth);
                             turn.self().stop();
@@ -56,7 +60,7 @@ final class GuestCallDepthActorHostModelTest {
             assertInstanceOf(GuestCallDepthExceededException.class,
                     exhausted.failure().orElseThrow());
             assertTrue(sibling.failure().isEmpty());
-            assertEquals(1, siblingDeliveries.get());
+            assertEquals(1, SIBLING_DELIVERIES.get());
         }
     }
 }
