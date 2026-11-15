@@ -5084,14 +5084,14 @@ public final class OresEvalRootNode extends RootNode {
         private Throwable mergeControlFailure(Throwable earlier, Throwable later) {
             if (earlier == null) return later;
             if (later == null || earlier == later) return earlier;
-            // A deferred exit(0) must not turn an already failing
-            // execution into a successful exit. Nonzero exit remains a
-            // terminal request and outranks ordinary guest control signals.
-            if (later instanceof ProcessExitSignal exit && exit.exitStatus() == 0) {
+            int earlierPriority = controlPriority(earlier);
+            // A cleanup exit may choose a status for an otherwise normal
+            // return. It cannot hide an unhandled failure or an earlier exit.
+            if (later instanceof ProcessExitSignal && earlierPriority > 1) {
                 earlier.addSuppressed(later);
                 return earlier;
             }
-            if (controlPriority(later) > controlPriority(earlier)) {
+            if (controlPriority(later) > earlierPriority) {
                 later.addSuppressed(earlier);
                 return later;
             }

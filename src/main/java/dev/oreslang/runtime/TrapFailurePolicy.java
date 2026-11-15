@@ -33,7 +33,11 @@ public final class TrapFailurePolicy {
             ArithmeticException.class, IndexOutOfBoundsException.class,
             ClassCastException.class, UnsupportedOperationException.class,
             NoSuchElementException.class, NegativeArraySizeException.class,
-            ArrayStoreException.class);
+            ArrayStoreException.class, ArrayIndexOutOfBoundsException.class,
+            StringIndexOutOfBoundsException.class,
+            ChannelRuntime.ChannelClosedException.class,
+            ChannelRuntime.ChannelBackpressureException.class,
+            ChannelRuntime.SelectAdmissionException.class);
 
     private record Visit(Throwable failure, boolean primary) { }
 
@@ -115,6 +119,10 @@ public final class TrapFailurePolicy {
         Class<?> type = failure.getClass();
         return type == CompletionException.class || type == ExecutionException.class
                 || type == SecurityException.class || failure instanceof GuestControlSignal
+                // A checked file error may be retained as the cause of an
+                // explicitly mapped guest I/O failure. It cannot qualify a
+                // failure as guest-originated by itself.
+                || type == java.nio.file.NoSuchFileException.class
                 || MAPPED_GUEST_FAILURE_TYPES.contains(type) || isGuestCastError(type);
     }
 
