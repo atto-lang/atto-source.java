@@ -76,6 +76,14 @@ final class ImmediateChannelProbeHardeningTest {
     }
 
     @Test
+    void discardingRecoverableProbeIsRejected() throws Exception {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(fixture("typed_discard_result.atto"))));
+        assertTrue(error.getMessage().contains("cannot be discarded"), error::getMessage);
+    }
+
+    @Test
     void matchingTheAffineResultTwiceIsRejected() throws Exception {
         assertUseAfterMove("typed_move_result_reuse.atto");
     }
