@@ -161,7 +161,9 @@ public final class AnnotationExpander {
                 klass.fields(),
                 klass.constructor(),
                 methods,
-                klass.actorConcurrency());
+                klass.actorConcurrency(),
+                klass.sealedStateFields(),
+                klass.actorMessageContract());
     }
 
     private static void addGeneratedAccessor(
