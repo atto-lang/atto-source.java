@@ -184,8 +184,9 @@ binding_decl    = named_inferred_binding
                   "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
 (* Type declarations use 'type T = <type_ref>'. Type names are immutable by
-   definition; 'const type T = ...' is not a declaration. The marker in
-   'const type T value = ...' is a legitimate type-position annotation.
+   definition; 'const type T = ...' is not a declaration. Inside a callable
+   every 'const type' spelling (including 'const type T value = ...') is
+   rejected as redundant; write 'const T value = ...'.
    Function/block-local type declarations and their public return ABI are
    NOT enabled in this grammar revision. *)
 named_inferred_binding

@@ -86,15 +86,28 @@ final class RecordTypeValueContextTest {
     }
 
     @Test
-    void aliasMarkerInValueBindingRemainsLegal() {
-        String source = """
+    void aliasMarkerInValueBindingIsRedundantInsideCallables() {
+        // Main (79a839368a) rejects every 'const type' spelling inside a
+        // callable as redundant; the plain named binding is the legal form.
+        String marker = """
                 type T = record { foo: string };
                 fnc make(): T {
                     const type T x = record { foo: "hello" };
                     return x;
                 }
                 """;
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(marker));
+        assertTrue(error.getMessage().contains("'const type' is redundant"), error.getMessage());
+
+        String plain = """
+                type T = record { foo: string };
+                fnc make(): T {
+                    const T x = record { foo: "hello" };
+                    return x;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(plain));
     }
 
     @Test
@@ -104,16 +117,22 @@ final class RecordTypeValueContextTest {
                 "fnc make(): void { const type T = record { foo: string }; return; }")) {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class, () -> Parser.parse(source));
-            assertTrue(error.getMessage().contains("'const type' is not a declaration"),
+            // Module scope: this PR's diagnostic. Callable scope: main's
+            // earlier block-level "'const type' is redundant" (79a839368a).
+            assertTrue(error.getMessage().contains("'const type' is not a declaration")
+                            || error.getMessage().contains("'const type' is redundant"),
                     error.getMessage());
         }
     }
 
     @Test
     void runtimeNamesCannotBecomeFieldTypesAndTypeNamesCannotBecomeFieldValues() {
+        // Main resolves type alias bodies lazily (an unused alias is not
+        // validated), so exercise the alias: a runtime parameter name used
+        // as a field type can never be satisfied by a value.
         String invalidType = """
                 type T = record { foo: runtimeName };
-                fnc make(string runtimeName): void { return; }
+                fnc make(string runtimeName): T { return record { foo: runtimeName }; }
                 """;
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(invalidType)));
