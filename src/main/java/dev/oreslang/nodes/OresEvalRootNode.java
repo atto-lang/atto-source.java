@@ -2031,7 +2031,11 @@ public final class OresEvalRootNode extends RootNode {
                 Set<Object> seen) {
             if (!seen.add(function)) return false;
             for (Ast.Stmt stmt : function.body()) {
-                if (statementContainsPotentialSuspension(stmt, seen)) {
+                // A synchronous helper's CPU backedge still needs a resumable
+                // SourceTask, even when the helper declares no async effects.
+                // Otherwise its caller can occupy an actor carrier forever.
+                if (containsSourceLoop(stmt)
+                        || statementContainsPotentialSuspension(stmt, seen)) {
                     return true;
                 }
             }
@@ -6495,10 +6499,14 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean methodBodyMaySuspend(Ast.MethodDecl method) {
             for (Ast.Stmt stmt : method.body()) {
-                if (statementContainsPotentialSuspension(
-                        stmt,
-                        java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
+                // Account for synchronous loops in instance methods as well
+                // as free functions. The cached callability decision must
+                // match the SourceTask cooperative backedge lowering.
+                if (containsSourceLoop(stmt)
+                        || statementContainsPotentialSuspension(
+                                stmt,
+                                java.util.Collections.newSetFromMap(
+                                        new IdentityHashMap<>()))) {
                     return true;
                 }
             }
