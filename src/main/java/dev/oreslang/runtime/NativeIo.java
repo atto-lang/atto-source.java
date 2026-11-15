@@ -283,21 +283,31 @@ public final class NativeIo {
         if (bytes.length > 1_048_576) {
             throw new IllegalArgumentException("durable atomic manifest exceeds 1 MiB");
         }
+        // A write grant for one destination file does not authorize creating
+        // a sibling temp file or rewriting the containing directory's metadata.
+        // Verify lexical directory WRITE before *any* path metadata lookup.
+        Path parent = lexical.getParent();
+        if (parent == null) throw new IllegalArgumentException("durable manifest has no parent");
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                parent.toString(), "fs.write_text_durable_atomic_async.parent");
         if (Files.isSymbolicLink(lexical)) {
             throw new SecurityException("durable atomic destination cannot be a symlink");
         }
-        Path parent = lexical.getParent();
-        if (parent == null) throw new IllegalArgumentException("durable manifest has no parent");
         Path actualParent = realPath(parent);
         Path target = actualParent.resolve(lexical.getFileName());
+        // A symlinked ancestor must not turn one approved lexical directory
+        // into a different, unapproved directory for temporary write/rename.
+        context.requirePermission(RuntimePermissions.Permission.WRITE,
+                actualParent.toString(), "fs.write_text_durable_atomic_async.parent");
         context.requirePermission(RuntimePermissions.Permission.WRITE,
                 target.toString(), "fs.write_text_durable_atomic_async");
         if (!Files.isDirectory(actualParent, LinkOption.NOFOLLOW_LINKS)
                 || Files.isSymbolicLink(target)) {
             throw new SecurityException("durable manifest directory/leaf is unsafe");
         }
-        // Reject hostile directory replacement and metadata races by requiring
-        // an independently controlled directory in addition to path grants.
+        // A private POSIX directory reduces untrusted cross-UID changes,
+        // but does NOT prevent replacement by the same UID or a process with
+        // write access to its parent. A trusted custody boundary is required.
         try {
             var attributes = Files.readAttributes(actualParent,
                     java.nio.file.attribute.PosixFileAttributes.class,
