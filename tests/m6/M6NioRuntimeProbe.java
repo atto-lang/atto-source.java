@@ -228,6 +228,7 @@ public final class M6NioRuntimeProbe {
         control_and_shutdown();
         pooled_serial_actor_and_neighbor();
         close_races_and_registration_fencing();
+        M6SelectorLifecycleAuditProbe.run();
         System.out.println("M6_NIO_SCHEDULER_SUPERVISOR_NATIVE_HOST=PASS");
         System.out.println("M6_SCOPE=HOST_SUBSET_NOT_ATTO_GUEST_OR_HARD_REAL_TIME_PROOF");
     }
