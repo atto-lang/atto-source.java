@@ -1695,10 +1695,29 @@ public final class OwnershipChecker {
                                 + "bool cannot return the value on failed admission");
                     }
                 }
+                // A Copy-typed result can still be computed by consuming an
+                // owner inside a nested expression (e.g. (rt take value) + 1,
+                // or a call accepting an owned argument). An unsuccessful bool
+                // probe cannot restore any such consumed source. Snapshot the
+                // visible ownership roots before checking the operand, then
+                // reject ANY newly moved root, not just a top-level rt take.
+                Map<VarState, StateSnapshot> beforeImmediatePayload =
+                        channelOp.mode() == Ast.WaitMode.IMMEDIATE
+                                ? stateSnapshot(scope) : null;
                 // Blocking/async channel writes transfer the payload to the
                 // operation; their completion, failure and cancellation have
                 // separate lifecycle contracts.
                 ValueInfo payload = checkExpr(channelOp.value(), scope, true);
+                if (beforeImmediatePayload != null) {
+                    for (Map.Entry<VarState, StateSnapshot> entry
+                            : beforeImmediatePayload.entrySet()) {
+                        if (!entry.getValue().moved() && entry.getKey().moved) {
+                            throw error("try writech cannot consume an owned value "
+                                    + "while computing a bool probe payload; "
+                                    + "a failed admission cannot recover it");
+                        }
+                    }
+                }
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
                 }
