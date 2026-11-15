@@ -17,6 +17,9 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(15)
 final class ActorGroupManagedWorkersReconciliationTest {
+    private static volatile CountDownLatch WORKER_ENTERED;
+    private static volatile CountDownLatch WORKER_EXIT;
+
 
     @Test
     void immediateAndReadySpawnsHaveManagedRefsWithoutImplicitMembership() throws Exception {
@@ -108,6 +111,9 @@ final class ActorGroupManagedWorkersReconciliationTest {
             ActorRuntime.ActorGroup other = runtime.createActorGroup();
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch exit = new CountDownLatch(1);
+            // Shared actor factories must be stateless (main): coordinate via statics.
+            WORKER_ENTERED = entered;
+            WORKER_EXIT = exit;
             ActorRuntime.ActorRef<Integer> worker = runtime.spawnShared(
                     () -> (value, ctx) -> {
                         entered.countDown();
@@ -144,15 +150,18 @@ final class ActorGroupManagedWorkersReconciliationTest {
         ActorRuntime runtime = new ActorRuntime();
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch exit = new CountDownLatch(1);
+        // Shared actor factories must be stateless (main): coordinate via statics.
+        WORKER_ENTERED = entered;
+        WORKER_EXIT = exit;
         ActorRuntime.ActorGroup group = runtime.createActorGroup();
         ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
                 ActorRuntime.ActorKind.SHARED,
                 IsolatePolicy.developer(),
                 ctx -> (value, turn) -> {
-                    entered.countDown();
-                    while (exit.getCount() != 0) {
+                    WORKER_ENTERED.countDown();
+                    while (WORKER_EXIT.getCount() != 0) {
                         try {
-                            exit.await(50, TimeUnit.MILLISECONDS);
+                            WORKER_EXIT.await(50, TimeUnit.MILLISECONDS);
                         } catch (InterruptedException ignored) {
                             // Runtime carrier shutdown may interrupt the host
                             // thread. Keep the turn alive until the fixture
@@ -211,14 +220,17 @@ final class ActorGroupManagedWorkersReconciliationTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch exit = new CountDownLatch(1);
+            // Shared actor factories must be stateless (main): coordinate via statics.
+            WORKER_ENTERED = entered;
+            WORKER_EXIT = exit;
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
                     ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
                     ctx -> (value, turn) -> {
-                        entered.countDown();
-                        while (exit.getCount() != 0) {
+                        WORKER_ENTERED.countDown();
+                        while (WORKER_EXIT.getCount() != 0) {
                             try {
-                                exit.await(50, TimeUnit.MILLISECONDS);
+                                WORKER_EXIT.await(50, TimeUnit.MILLISECONDS);
                             } catch (InterruptedException ignored) {
                                 // Deliberately retain the in-flight turn while
                                 // the manager revokes new actor admissions.
@@ -263,14 +275,17 @@ final class ActorGroupManagedWorkersReconciliationTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch exit = new CountDownLatch(1);
+            // Shared actor factories must be stateless (main): coordinate via statics.
+            WORKER_ENTERED = entered;
+            WORKER_EXIT = exit;
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
             ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
                     ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
                     ctx -> (value, turn) -> {
-                        entered.countDown();
-                        while (exit.getCount() != 0) {
+                        WORKER_ENTERED.countDown();
+                        while (WORKER_EXIT.getCount() != 0) {
                             try {
-                                exit.await(50, TimeUnit.MILLISECONDS);
+                                WORKER_EXIT.await(50, TimeUnit.MILLISECONDS);
                             } catch (InterruptedException ignored) {
                                 // Keep shutdown's worker retirement observable.
                             }
@@ -308,6 +323,9 @@ final class ActorGroupManagedWorkersReconciliationTest {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch exit = new CountDownLatch(1);
+            // Shared actor factories must be stateless (main): coordinate via statics.
+            WORKER_ENTERED = entered;
+            WORKER_EXIT = exit;
             CountDownLatch start = new CountDownLatch(1);
             java.util.concurrent.atomic.AtomicReference<OresFuture<java.util.List<Void>>>
                     observed = new java.util.concurrent.atomic.AtomicReference<>();
@@ -318,10 +336,10 @@ final class ActorGroupManagedWorkersReconciliationTest {
             ActorRuntime.ActorRef<Integer> worker = group.spawnWorker(
                     ActorRuntime.ActorKind.SHARED, IsolatePolicy.developer(),
                     ctx -> (value, turn) -> {
-                        entered.countDown();
-                        while (exit.getCount() != 0) {
+                        WORKER_ENTERED.countDown();
+                        while (WORKER_EXIT.getCount() != 0) {
                             try {
-                                exit.await(50, TimeUnit.MILLISECONDS);
+                                WORKER_EXIT.await(50, TimeUnit.MILLISECONDS);
                             } catch (InterruptedException ignored) {
                                 // Preserve the active turn across close admission.
                             }

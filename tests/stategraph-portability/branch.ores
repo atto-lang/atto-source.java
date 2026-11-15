@@ -1,0 +1,8 @@
+// Native Java/Graal guest: branch admission and explicit return.
+fnc bounded_step(int value, int maximum): int {
+  if value >= maximum then return value; fi
+  return value + 1;
+}
+pub fnc main(): int {
+  return bounded_step(41, 42);
+}
