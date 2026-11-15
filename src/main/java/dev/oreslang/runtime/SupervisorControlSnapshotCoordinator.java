@@ -79,11 +79,12 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         Request request;
         synchronized (admissionLock) { request = pending.get(grant); }
         if (request != null) {
-            request.result.completeExceptionally(new SnapshotFailure("DENIED"));
-            // A queued request can be atomically abandoned: any late
-            // dispatcher invocation will fail tryStart(). Once physical
-            // execution has started, only its finally owns slot release.
+            // Publish revocation only after reclaiming QUEUED capacity. An
+            // external waiter must not observe DENIED and then find a stale
+            // slot when retrying immediately with a fresh grant. A STARTED
+            // turn retains its slot until its actual physical finally.
             if (request.physicalTurn.abandonIfQueued()) release(request);
+            request.result.completeExceptionally(new SnapshotFailure("DENIED"));
         }
     }
 
@@ -218,12 +219,12 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         }
         observation.close();
         for (Request request : outstanding) {
+            // An unstarted request may be physically canceled now, before
+            // exposing COORDINATOR_CLOSED to any independent host waiter.
+            // STARTED work still owns its slot until physical completion.
+            if (request.physicalTurn.abandonIfQueued()) release(request);
             request.result.completeExceptionally(
                     new SnapshotFailure("COORDINATOR_CLOSED"));
-            // Never strand an unstarted CONTROL reservation if the VM
-            // dispatcher drops a queued runnable during shutdown. Already
-            // started turns keep the reservation until physical finally.
-            if (request.physicalTurn.abandonIfQueued()) release(request);
         }
     }
 }
