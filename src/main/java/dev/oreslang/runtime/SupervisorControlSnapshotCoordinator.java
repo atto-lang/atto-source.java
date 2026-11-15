@@ -22,6 +22,7 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
 
     /** Stable, non-sensitive error codes; never leak internal runtime exceptions. */
     public static final class SnapshotFailure extends IllegalStateException {
+        @java.io.Serial private static final long serialVersionUID = 1L;
         private final String code;
         private SnapshotFailure(String code) {
             super(code);
