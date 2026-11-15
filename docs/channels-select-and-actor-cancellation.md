@@ -166,56 +166,51 @@ it completes or is cancelled.
 
 ### Immediate probe forms
 
-```ores
+```atto
 val Option<int> now = try readch input;
-val bool wrote = try writech output, value;
+val TryWriteResult<int> result = try writech output, value;
 ```
 
-`try` means **attempt immediate admission without leaving a waiter**.
+Both probes arbitrate atomically **without leaving a registered waiter**.
 
-- `try readch` returns `Some(value)` if a value is ready and `None` if it is
-  temporarily empty. After a closed channel's committed buffer is drained,
-  it raises the channel-closed error; closure is **not** reported as `None`.
-- `try writech` returns `true` only after atomic admission and `false` on
-  temporary full/unready state. Closure is an error, **not** `false`. A failed
-  immediate write never registers a waiter or publishes its value later.
-- The Boolean write API has no slot for returning an unadmitted *move-only*
-  value. Until a typed recoverable send API exists, the ownership checker
-  rejects `try writech` for non-Copy channel element types **before consuming
-  the value**. An explicit direct `rt take` argument is also rejected, even
-  when its type is Copy, because the explicit transfer invalidates the sender's
-  binding. Ordinary Copy payloads can be retried with the same sender-side value.
-  Do not interpret this as recoverable ownership for ordinary blocking or
-  asynchronous writes, which have different completion/cancellation semantics.
+- `try readch` returns `Some(value)` if a value is ready or `None` if
+  temporarily empty. Once a closed channel's committed buffer is drained,
+  reading raises a channel-closed error; closure is not reported as `None`.
+- `try writech` now returns `TryWriteResult<T>`, a sealed outcome:
+  `Accepted` commits the value exactly once, `Full(value)` returns the
+  rejected owner when no writer can be admitted, and `Closed(value)` returns
+  it when the channel is closed. Full includes an unready capacity-zero
+  rendezvous, not only a physically full buffer.
+- A rejected payload **is not queued**, and no waiter or deferred send
+  remains registered. For a move-only payload, use `rt take` and handle
+  `Full(recovered)` / `Closed(recovered)` to regain ownership. The original
+  source binding remains moved and cannot be read again.
+- The earlier `bool`-return guest contract is superseded. Assigning
+  `try writech` to `bool` is a type error. This is an API migration
+  and requires corresponding fixture and backend updates, not a silent
+  bool-to-result conversion.
 
-### Recoverable typed write probe (host primitive staged)
-
-The approved target guest API is:
-
-```ores
+```atto
 val result = try writech output, rt take message;
 match result over
-  on Accepted -> { /* transferred exactly once */ }
-  on Full(message) -> { /* original owned message returned */ }
-  on Closed(message) -> { /* original owned message returned */ }
+  on Accepted -> {
+    // Exactly one channel admission; the sender no longer owns the payload.
+  }
+  on Full(recovered) -> {
+    // The move-only owner is recovered for an explicit retry.
+  }
+  on Closed(recovered) -> {
+    // The owner is recovered; this channel no longer accepts writes.
+  }
 end
 ```
 
-The Java host runtime now exposes `Channel<T>.tryWriteResult(T)` and
-`WriteChannel<T>.tryWriteResult(T)`, returning a sealed
-`TryWriteResult<T>` (`Accepted<T>`, `Full<T>(value)`,
-`Closed<T>(value)`). It shares the existing atomic probe arbitration and
-returns the same reference on rejection. Only the channel-closed failure is
-translated into `Closed`; other failures remain failures.
-
-**Implementation boundary:** this is a *Java host primitive*, not a claim
-that the guest `try writech` expression already returns the new variant.
-The source parser/type checker/evaluator currently keep the Boolean API and
-reject move-only values (or direct `rt take`) to avoid ownership loss.
-When guest lowering is implemented, its move logic must transfer into the
-channel only on Accepted, and instead transfer the original payload into
-Full/Closed. Until that is proven, do not loosen the existing ownership gate.
-LLVM/.NET/Wasm/Forge implementations are not certified by this host change.
+The Java host implementation exposes `Channel<T>.tryWriteResult(T)` and
+write-only `WriteChannel<T>.tryWriteResult(T)`, backed by the atomic select
+coordinator. Compiler guest lowering, ownership analysis, and `match` support
+must be proven by actual `.atto` execution and negative compile tests before
+the typed guest API is treated as production-ready. LLVM, .NET, Wasm and Forge
+need independent conformance evidence; this document is not parity proof.
 
 Immediate probes and select registrations use the same channel arbitration, so
 an immediate write can rendezvous with a pending select-read and an immediate
