@@ -15,7 +15,8 @@ test -x "${JAVA_HOME:-}/bin/javac" && test -x "$JAVA_HOME/bin/native-image" || {
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/classes"
-"$JAVA_HOME/bin/javac" -d "$work/classes" src/m6/AttoM6Runtime.java tests/m6/M6NioRuntimeProbe.java
+"$JAVA_HOME/bin/javac" -d "$work/classes" src/m6/AttoM6Runtime.java tests/m6/M6NioRuntimeProbe.java \
+  tests/m6/M6SelectorLifecycleAuditProbe.java
 "$JAVA_HOME/bin/java" -version
 if ! timeout 90 "$JAVA_HOME/bin/java" -cp "$work/classes" M6NioRuntimeProbe > "$work/jvm" 2> "$work/jvm.err"; then
   echo 'M6_JVM_EXECUTION_FAILED' >&2; cat "$work/jvm.err" >&2; exit 1
@@ -42,6 +43,9 @@ for marker in \
   M6_POOLED_NEIGHBOR_PROGRESS=100 \
   M6_SERIAL_MAX_CONCURRENT_RECEIVES=1 \
   M6_GLOBAL_CLOSE_SPAWN_FENCE=PASS \
+  M6_AUDIT_BUDGETED_SELECTED_KEYS_96=PASS \
+  M6_AUDIT_EXTERNAL_CHANNEL_CLOSE_SURVIVES=PASS \
+  M6_AUDIT_POST_CLOSE_SELECTOR_FAST_FAIL=PASS \
   M6_NIO_SCHEDULER_SUPERVISOR_NATIVE_HOST=PASS \
   M6_SCOPE=HOST_SUBSET_NOT_ATTO_GUEST_OR_HARD_REAL_TIME_PROOF; do
   grep -Fx "$marker" "$work/native" >/dev/null || { echo "M6_MISSING_NATIVE=$marker" >&2; exit 1; }
