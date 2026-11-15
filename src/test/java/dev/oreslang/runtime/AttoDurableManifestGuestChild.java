@@ -56,7 +56,7 @@ public final class AttoDurableManifestGuestChild {
             System.out.flush();
             Thread.sleep(Long.MAX_VALUE);
         } else {
-            System.out.println("ATTO_GUEST_REPLAY=" + output.toString(StandardCharsets.UTF_8).trim().replace("\\r", "").replace("\\n", "|"));
+            System.out.println("ATTO_GUEST_REPLAY=" + output.toString(StandardCharsets.UTF_8).trim().replace("\r", "").replace("\n", "|"));
             System.out.flush();
         }
     }
