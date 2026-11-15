@@ -171,7 +171,20 @@ val Option<int> now = try readch input;
 val bool wrote = try writech output, value;
 ```
 
-`try` means **succeed now or return immediately without leaving a waiter**.
+`try` means **attempt immediate admission without leaving a waiter**.
+
+- `try readch` returns `Some(value)` if a value is ready and `None` if it is
+  temporarily empty. After a closed channel's committed buffer is drained,
+  it raises the channel-closed error; closure is **not** reported as `None`.
+- `try writech` returns `true` only after atomic admission and `false` on
+  temporary full/unready state. Closure is an error, **not** `false`. A failed
+  immediate write never registers a waiter or publishes its value later.
+- The Boolean write API has no slot for returning an unadmitted *move-only*
+  value. Until a typed recoverable send API exists, the ownership checker
+  rejects `try writech` for non-Copy channel element types **before consuming
+  the value**. Copy payloads can be retried with the same sender-side value.
+  Do not interpret this as recoverable ownership for ordinary blocking or
+  asynchronous writes, which have different completion/cancellation semantics.
 
 Immediate probes and select registrations use the same channel arbitration, so
 an immediate write can rendezvous with a pending select-read and an immediate
