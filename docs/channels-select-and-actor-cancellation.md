@@ -182,7 +182,9 @@ val bool wrote = try writech output, value;
 - The Boolean write API has no slot for returning an unadmitted *move-only*
   value. Until a typed recoverable send API exists, the ownership checker
   rejects `try writech` for non-Copy channel element types **before consuming
-  the value**. Copy payloads can be retried with the same sender-side value.
+  the value**. An explicit direct `rt take` argument is also rejected, even
+  when its type is Copy, because the explicit transfer invalidates the sender's
+  binding. Ordinary Copy payloads can be retried with the same sender-side value.
   Do not interpret this as recoverable ownership for ordinary blocking or
   asynchronous writes, which have different completion/cancellation semantics.
 
