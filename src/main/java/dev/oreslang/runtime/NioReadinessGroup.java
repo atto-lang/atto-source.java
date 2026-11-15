@@ -116,13 +116,16 @@ final class NioReadinessGroup implements AutoCloseable {
                 return OresFuture.failed(new RejectedExecutionException(
                         "NIO readiness group is closed"));
             }
-            if (pending >= maxPending) {
-                return OresFuture.failed(new RejectedExecutionException(
-                        "NIO readiness watch capacity exhausted"));
-            }
+            // Ownership is checked before capacity: a duplicate watch is a
+            // channel-ownership violation even when the group is saturated
+            // (often by that very channel's outstanding watch).
             if (watches.containsKey(channel)) {
                 return OresFuture.failed(new IllegalStateException(
                         "channel already owns an outstanding readiness watch"));
+            }
+            if (pending >= maxPending) {
+                return OresFuture.failed(new RejectedExecutionException(
+                        "NIO readiness watch capacity exhausted"));
             }
 
             try {
