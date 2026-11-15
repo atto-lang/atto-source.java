@@ -1,0 +1,8 @@
+// Even with a recoverable result, rt take invalidates the sender binding.
+pub routine main(): void {
+  val Channel<Array<int>> ch = Channel.new<Array<int>>(1);
+  val Array<int> payload = [7, 8];
+  val TryWriteResult<Array<int>> result = try writech ch, rt take payload;
+  stdio.stdout.write(payload[0]);
+  return;
+}
