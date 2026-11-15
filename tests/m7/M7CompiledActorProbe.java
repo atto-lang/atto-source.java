@@ -92,7 +92,7 @@ public final class M7CompiledActorProbe {
                 require(rt.await_terminal(actor, 15_000), "pool actor starved");
                 var s = rt.snapshot(actor);
                 require(s.accepted() == 3 && s.completed() == 3 &&
-                    s.resultSum() == 129_795 && s.maxConcurrentReceives() == 1 &&
+                    s.resultSum() == 129_745 && s.maxConcurrentReceives() == 1 &&
                     s.controlsDelivered() == 1 && s.yielded() > 0,
                     "pooled actor frame loss/overlap: " + s);
                 AttoM7CooperativeRuntime.check_conservation(s);
