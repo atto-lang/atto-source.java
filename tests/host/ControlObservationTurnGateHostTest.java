@@ -22,6 +22,58 @@ public final class ControlObservationTurnGateHostTest {
         check(!running.abandonIfQueued(), "running turn incorrectly released");
         check(!running.tryStart(), "duplicate execution admitted");
 
+        // Revocation and coordinator close can race each other and a
+        // physical CONTROL start. Exactly one participant owns release.
+        for (int i = 0; i < 500; i++) {
+            ControlObservationTurnGate gate = new ControlObservationTurnGate();
+            CountDownLatch ready = new CountDownLatch(3);
+            CountDownLatch go = new CountDownLatch(1);
+            AtomicInteger owners = new AtomicInteger();
+            AtomicInteger released = new AtomicInteger();
+            AtomicInteger errors = new AtomicInteger();
+            Runnable start = () -> {
+                ready.countDown();
+                try {
+                    go.await();
+                    if (gate.tryStart()) {
+                        owners.incrementAndGet();
+                        // Running physical finally retains release ownership.
+                        released.incrementAndGet();
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    errors.incrementAndGet();
+                }
+            };
+            Runnable abandon = () -> {
+                ready.countDown();
+                try {
+                    go.await();
+                    if (gate.abandonIfQueued()) {
+                        owners.incrementAndGet();
+                        released.incrementAndGet();
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    errors.incrementAndGet();
+                }
+            };
+            Thread runner = new Thread(start);
+            Thread revoked = new Thread(abandon);
+            Thread closed = new Thread(abandon);
+            runner.start(); revoked.start(); closed.start();
+            check(ready.await(10, TimeUnit.SECONDS), "triple-race workers never started");
+            go.countDown();
+            runner.join(10000); revoked.join(10000); closed.join(10000);
+            check(!runner.isAlive() && !revoked.isAlive() && !closed.isAlive(),
+                    "deadlock in revoke/close/start race");
+            check(errors.get() == 0, "triple-race interrupted");
+            check(owners.get() == 1 && released.get() == 1,
+                    "one and only one physical accounting owner must release");
+            check(!gate.tryStart() && !gate.abandonIfQueued(),
+                    "revoked/closed request reopened");
+        }
+
         for (int i = 0; i < 2000; i++) {
             ControlObservationTurnGate gate = new ControlObservationTurnGate();
             CountDownLatch ready = new CountDownLatch(2);
