@@ -1,0 +1,6 @@
+// Even a temporary move-only payload cannot be certified recoverable.
+pub routine main(): void {
+  val Channel<Array<int>> channel = Channel.new<Array<int>>(1);
+  val bool accepted = try writech channel, [7, 8];
+  return;
+}
