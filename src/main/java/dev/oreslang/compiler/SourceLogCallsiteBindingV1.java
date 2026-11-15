@@ -103,16 +103,10 @@ public final class SourceLogCallsiteBindingV1 {
                     throw new IllegalArgumentException(
                             "log-site tracing across suspension/actor turns requires proven continuation cleanup");
                 }
-                // Exact AST object identity, NOT record structural equality.
-                // This prevents a structurally equivalent foreign AST node
-                // from being passed as authority for this compilation unit.
-                SourceIdentityV1.Id checkedId = null;
-                for (var candidate : checkedRoutines.entrySet()) {
-                    if (candidate.getKey() == fn) {
-                        checkedId = candidate.getValue();
-                        break;
-                    }
-                }
+                // SourceRoutineBindingV1.bind returns a read-only view over
+                // an IdentityHashMap. Lookup is reference-identity-based and
+                // avoids quadratic scans across many checked functions.
+                SourceIdentityV1.Id checkedId = checkedRoutines.get(fn);
                 if (checkedId == null || checkedId.kind() != SourceIdentityV1.Kind.ROUTINE) {
                     throw new IllegalArgumentException("missing exact independently checked function identity");
                 }
