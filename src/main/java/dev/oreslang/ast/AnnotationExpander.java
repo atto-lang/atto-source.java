@@ -185,6 +185,7 @@ public final class AnnotationExpander {
                 klass.constructor(),
                 methods,
                 klass.actorConcurrency(),
+                klass.sealedStateFields(),
                 klass.annotations());
     }
 
