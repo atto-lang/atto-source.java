@@ -32,6 +32,13 @@ public final class AttoM6Runtime implements AutoCloseable {
                            String failureType, int workerIdentities) {}
     public record ReactorSnapshot(long bytesAdmitted, long bytesHeld, long eof, long errors,
                                   long wakeRequests, long bytesRejected, int registrations) {}
+    // Watchdog is diagnostic, not a preemptive guest scheduler or supervisor CONTROL.
+    public record TurnBudgetSnapshot(long maxElapsedNanos, long overBudgetTurns,
+                                     long watchdogNotices, boolean running,
+                                     boolean overdueNow) {}
+    public record SchedulerSnapshot(int readyDepth, int controlDepth, int registeredActors,
+                                    int activeReceives, long watchdogNotices,
+                                    long overBudgetTurns, long budgetNanos) {}
 
     private static final class Actor {
         final ActorRef ref;
@@ -40,6 +47,8 @@ public final class AttoM6Runtime implements AutoCloseable {
         final ArrayDeque<Long> inbox = new ArrayDeque<>();
         final Set<Long> workers = new HashSet<>();
         long accepted, completed, failed, abandoned, controlsDelivered;
+        long turnStartedNanos, maxTurnNanos, overBudgetTurns, watchdogNotices;
+        boolean currentTurnNotified;
         boolean accepting = true, fenced, running, scheduled, retired;
         boolean controlQueued;
         ControlKind pendingControl, lastControl;
@@ -67,6 +76,9 @@ public final class AttoM6Runtime implements AutoCloseable {
     private final List<Thread> carriers = new ArrayList<>();
     private final Thread supervisor;
     private final Thread reactor;
+    private final Thread watchdog;
+    private final long turnBudgetNanos;
+    private long totalWatchdogNotices, totalOverBudgetTurns;
     private final Selector selector;
     private final ArrayBlockingQueue<Runnable> nioCommands = new ArrayBlockingQueue<>(128);
     private static final int MAX_REGISTRATIONS = 512;
@@ -85,13 +97,22 @@ public final class AttoM6Runtime implements AutoCloseable {
     private final int maxActors;
 
     public AttoM6Runtime(int carrierCount, int maxActors) throws IOException {
-        if (carrierCount < 1 || carrierCount > 32 || maxActors < 1 || maxActors > 256)
-            throw new IllegalArgumentException("bounded carrier and actor limits required");
+        this(carrierCount, maxActors, 50);
+    }
+
+    // A 1..60000ms observation threshold; this does not interrupt or preempt handlers.
+    public AttoM6Runtime(int carrierCount, int maxActors, long turnBudgetMillis)
+            throws IOException {
+        if (carrierCount < 1 || carrierCount > 32 || maxActors < 1 || maxActors > 256 ||
+            turnBudgetMillis < 1 || turnBudgetMillis > 60_000)
+            throw new IllegalArgumentException("invalid bounded carriers, actors or turn budget");
         this.maxActors = maxActors;
+        this.turnBudgetNanos = TimeUnit.MILLISECONDS.toNanos(turnBudgetMillis);
         selector = Selector.open();
         supervisor = new Thread(this::supervise, "atto-m6-supervisor-CONTROL");
         reactor = new Thread(this::react, "atto-m6-nio-reactor");
-        supervisor.start(); reactor.start();
+        watchdog = new Thread(this::watch_over_budget, "atto-m6-budget-watchdog");
+        supervisor.start(); reactor.start(); watchdog.start();
         for (int i = 0; i < carrierCount; i++) {
             Thread worker = new Thread(this::carry, "atto-m6-carrier-" + i);
             carriers.add(worker);
@@ -160,7 +181,12 @@ public final class AttoM6Runtime implements AutoCloseable {
             if (kind == ControlKind.PANIC) actor.pendingControl = kind;
             return;
         }
-        // One preallocated logical CONTROL slot per actor incarnation, no DATA use.
+        // A repeated STOP after its delivery is not another terminal event.
+        // PANIC still upgrades an already delivered STOP (different severity).
+        if (actor.lastControl == ControlKind.PANIC ||
+            (actor.lastControl == ControlKind.STOP && kind == ControlKind.STOP))
+            return;
+        // One logical CONTROL slot per incarnation; DATA capacity cannot consume it.
         actor.pendingControl = kind;
         actor.controlQueued = true;
         controls.addLast(actor);
@@ -171,6 +197,8 @@ public final class AttoM6Runtime implements AutoCloseable {
         if (!actor.accepting && actor.inbox.isEmpty() && !actor.running &&
             !actor.controlQueued) {
             actor.retired = true;
+            // A fenced actor's stale ready entry must not accumulate across restarts.
+            if (actor.scheduled) ready.remove(actor);
             actor.scheduled = false;
             gate.notifyAll();
         }
@@ -220,7 +248,10 @@ public final class AttoM6Runtime implements AutoCloseable {
                             continue;
                         mail = actor.inbox.removeFirst();
                         actor.running = true;
+                        actor.turnStartedNanos = System.nanoTime();
+                        actor.currentTurnNotified = false;
                         actor.workers.add(Thread.currentThread().threadId());
+                        gate.notifyAll(); // Wake an idle watchdog for the active turn.
                         break;
                     }
                 }
@@ -229,6 +260,12 @@ public final class AttoM6Runtime implements AutoCloseable {
                 try { actor.handler.receive(mail); }
                 catch (Throwable e) { error = e; }
                 synchronized (gate) {
+                    long elapsed = System.nanoTime() - actor.turnStartedNanos;
+                    if (elapsed > actor.maxTurnNanos) actor.maxTurnNanos = elapsed;
+                    if (elapsed >= turnBudgetNanos) {
+                        actor.overBudgetTurns++;
+                        totalOverBudgetTurns++;
+                    }
                     actor.running = false;
                     if (error == null) actor.completed++;
                     else {
@@ -250,6 +287,61 @@ public final class AttoM6Runtime implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             synchronized (gate) { if (!stopping) throw new AssertionError("carrier interrupted", e); }
+        }
+    }
+
+    // Samples running callbacks without invoking guest code or changing dispatch order.
+    private void watch_over_budget() {
+        try {
+            synchronized (gate) {
+                while (!stopping) {
+                    boolean active = false;
+                    long now = System.nanoTime();
+                    for (Actor actor : actors.values()) {
+                        if (!actor.running) continue;
+                        active = true;
+                        if (!actor.currentTurnNotified &&
+                            now - actor.turnStartedNanos >= turnBudgetNanos) {
+                            actor.currentTurnNotified = true;
+                            actor.watchdogNotices++;
+                            totalWatchdogNotices++;
+                            gate.notifyAll();
+                        }
+                    }
+                    if (!stopping) {
+                        // Park indefinitely without active turns; avoid idle polling.
+                        if (active) gate.wait(Math.max(1L,
+                            Math.min(10L, TimeUnit.NANOSECONDS.toMillis(turnBudgetNanos / 4L))));
+                        else gate.wait();
+                    }
+                }
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            synchronized (gate) {
+                if (!stopping) throw new AssertionError("watchdog interrupted", interrupted);
+            }
+        }
+    }
+
+    public TurnBudgetSnapshot budget_snapshot(ActorRef ref) {
+        synchronized (gate) {
+            Actor actor = actors.get(ref.name());
+            if (actor == null || actor.ref != ref)
+                throw new IllegalArgumentException("stale actor ref");
+            boolean overdue = actor.running &&
+                System.nanoTime() - actor.turnStartedNanos >= turnBudgetNanos;
+            return new TurnBudgetSnapshot(actor.maxTurnNanos, actor.overBudgetTurns,
+                actor.watchdogNotices, actor.running, overdue);
+        }
+    }
+
+    public SchedulerSnapshot scheduler_snapshot() {
+        synchronized (gate) {
+            int active = 0;
+            for (Actor actor : actors.values()) if (actor.running) active++;
+            return new SchedulerSnapshot(ready.size(), controls.size(), actors.size(),
+                active, totalWatchdogNotices, totalOverBudgetTurns, turnBudgetNanos);
         }
     }
 
@@ -464,7 +556,7 @@ public final class AttoM6Runtime implements AutoCloseable {
     @Override public synchronized void close() throws Exception {
         if (fullyClosed) return;
         if (Thread.currentThread() == supervisor || Thread.currentThread() == reactor ||
-            carriers.contains(Thread.currentThread()))
+            Thread.currentThread() == watchdog || carriers.contains(Thread.currentThread()))
             throw new IllegalStateException("cannot close runtime on internal thread");
         List<ActorRef> refs;
         synchronized (gate) {
@@ -484,8 +576,10 @@ public final class AttoM6Runtime implements AutoCloseable {
         }
         reactor.join(10_000);
         supervisor.join(10_000);
+        watchdog.join(10_000);
         for (Thread worker : carriers) worker.join(10_000);
-        if (reactor.isAlive() || supervisor.isAlive() || carriers.stream().anyMatch(Thread::isAlive))
+        if (reactor.isAlive() || supervisor.isAlive() || watchdog.isAlive() ||
+            carriers.stream().anyMatch(Thread::isAlive))
             throw new IllegalStateException("runtime threads failed to quiesce");
         fullyClosed = true;
     }
