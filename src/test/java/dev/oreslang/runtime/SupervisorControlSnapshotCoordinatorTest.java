@@ -344,6 +344,55 @@ final class SupervisorControlSnapshotCoordinatorTest {
     }
 
     @Test
+    void runningDeadlineKeepsSlotUntilPhysicalControlExit() throws Exception {
+        var turn = new AtomicReference<Runnable>();
+        var dispatchDone = new AtomicReference<OresFuture.Callback<Void>>();
+        var captureEntered = new CountDownLatch(1);
+        var finishCapture = new CountDownLatch(1);
+        ActorRuntime.ControlDispatcher dispatcher = work ->
+                OresFuture.<Void>fromCallback(done -> {
+                    turn.set(work);
+                    dispatchDone.set(done);
+                });
+        try (var runtime = runtime(dispatcher);
+             var observer = new SupervisorRegistryObservation(
+                     runtime, System::nanoTime, () -> {
+                         captureEntered.countDown();
+                         try {
+                             if (!finishCapture.await(5, TimeUnit.SECONDS))
+                                 throw new IllegalStateException("test capture timed out");
+                         } catch (InterruptedException interrupted) {
+                             Thread.currentThread().interrupt();
+                             throw new IllegalStateException("test interrupted", interrupted);
+                         }
+                         return java.time.Instant.now();
+                     });
+             var service = new SupervisorControlSnapshotCoordinator(runtime, observer);
+             ExecutorService worker = Executors.newSingleThreadExecutor()) {
+            Object session = new Object();
+            var grant = grant(service, runtime, session);
+            var result = service.request(grant, session, TENANT, 1, 16, 8,
+                    TimeUnit.SECONDS.toNanos(3));
+            assertNotNull(turn.get());
+            var physical = worker.submit(turn.get());
+            try {
+                assertTrue(captureEntered.await(2, TimeUnit.SECONDS),
+                        "observation must begin before its deadline");
+                ExecutionException expired = assertThrows(ExecutionException.class,
+                        () -> result.toCompletableFuture().get(5, TimeUnit.SECONDS));
+                assertInstanceOf(java.util.concurrent.TimeoutException.class, expired.getCause());
+                assertEquals(1, service.activeControlRequests(),
+                        "deadline must not free physically running CONTROL lease");
+            } finally {
+                finishCapture.countDown();
+            }
+            physical.get(5, TimeUnit.SECONDS);
+            dispatchDone.get().resolve(null);
+            assertEquals(0, service.activeControlRequests());
+        }
+    }
+
+    @Test
     void revocationAfterAdmissionBlocksLateObservedResults() throws Exception {
         var queue = new QueuedControl();
         var realCaptureCalls = new AtomicInteger();
