@@ -35,6 +35,7 @@ cat "$work/native"
 test ! -s "$work/native.err" || { cat "$work/native.err" >&2; exit 1; }
 for marker in \
   M6_NIO_READ_ONE_SHOT_BACKPRESSURE=PASS \
+  M6_NIO_LOOPBACK_SOCKET_EOF=PASS \
   M6_STRICT_CONTROL_BEFORE_DATA=PASS \
   M6_SUPERVISOR_CONTROL_PANIC_FENCING=PASS \
   M6_POOLED_SERIAL_CARRIER_MPSC=1000 \
