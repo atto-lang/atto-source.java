@@ -296,6 +296,66 @@ final class ForwardTypeDeclarationHardeningTest {
         rejects("declare async type Token;", "forward declarations accept only");
     }
 
+    @Test
+    void wildcardInferenceHoleCannotBeDeclaredAsGenericParameter() {
+        // '_' belongs to type-argument inference, not binder identity. Every
+        // declaration family shares the same generic binder admission rule.
+        for (String source : new String[]{
+                "define type Bad<_> = int;",
+                "define class Bad<_> as end",
+                "define interface Bad<_> as end",
+                "define trait Bad<_> as end",
+                "declare type Bad<_>; define type Bad<T> = T;",
+                "declare pub trait Bad<_>; define pub trait Bad<T> as end",
+                """
+                define module example as
+                  declare interface Bad<_>;
+                  define interface Bad<T> as end
+                end
+                """
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), source);
+            assertTrue(error.getMessage().contains("generic argument inference hole"),
+                    () -> "expected precise binder diagnostic, got: " + error.getMessage());
+        }
+    }
+
+    @Test
+    void wildcardCannotIntroduceANominalOrForwardTypeName() {
+        for (String source : new String[]{
+                "define type _ = int;",
+                "define class _ as end",
+                "define actor _ as end",
+                "define interface _ as end",
+                "define trait _ as end",
+                "define contract _ as end",
+                "declare type _; define type Good = int;",
+                "declare pub interface _; define pub interface Good as end",
+                "define module m as declare trait _; define trait Good as end end"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(source), source);
+            assertTrue(error.getMessage().contains("cannot be used as a declared type name"),
+                    () -> "unexpected nominal type binder diagnostic: " + error.getMessage());
+        }
+    }
+
+    @Test
+    void ordinaryNamedGenericsStayAdmittedWithMatchingForwardSignatures() {
+        String source = """
+                declare pub type Box<T>;
+                define pub type Box<T> = Option<T>;
+                declare trait Printable<T>;
+                define trait Printable<T> as
+                  fnc print(T value) => String;
+                end
+                declare interface Pair<A,B>;
+                define interface Pair<A,B> as end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
+    }
+
     private static void rejects(String source, String fragment) {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(source), source);

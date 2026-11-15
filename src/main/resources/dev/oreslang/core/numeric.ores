@@ -31,4 +31,20 @@ define module numeric as
     return value;
   }
 
+  // Native Oreslang wrappers around the Java backend's sealed named
+  // intrinsics. Other backends must independently implement the same contract
+  // before claiming support; do not fall back to Java interoperability.
+  pub fnc rem_int(int dividend, int divisor): int {
+    return Integer.rem(dividend, divisor);
+  }
+
+  pub fnc mod_int(int dividend, int divisor): int {
+    return Integer.mod(dividend, divisor);
+  }
+
+  // No caret syntax is necessary for native guest bitwise XOR.
+  pub fnc bit_xor_int(int left, int right): int {
+    return (left & ~right) | (~left & right);
+  }
+
 end
