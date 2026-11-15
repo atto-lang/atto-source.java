@@ -22,6 +22,8 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    /** Opt-in canonical AttoLang grammar; legacy parser entry points retain source compatibility. */
+    private boolean strictConditionalSyntax;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
     private final java.util.ArrayDeque<java.util.Set<String>> localTypeScopes =
             new java.util.ArrayDeque<>();
@@ -80,7 +82,9 @@ public final class Parser {
                         + ": template interpolation requires profile-preserving typed lowering");
             }
         }
-        return new Parser(scanned).parseProgram();
+        Parser parser = new Parser(scanned);
+        parser.strictConditionalSyntax = true;
+        return parser.parseProgram();
     }
 
 
@@ -3070,7 +3074,12 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(GUARD)) return parseGuard();
-        if (match(IF)) return parseIf();
+        if (check(DO) && checkNext(IF)) {
+            advance(); // do
+            advance(); // if
+            return parseIf(true);
+        }
+        if (match(IF)) return parseIf(false);
         if ((check(NB)
                 || (check(IDENT) && peek().lexeme().equals("task")))
                 && current + 2 < tokens.size()
@@ -4071,7 +4080,7 @@ public final class Parser {
         return false;
     }
 
-    private Ast.Stmt parseIf() {
+    private Ast.Stmt parseIf(boolean explicitImperative) {
         List<Ast.IfBranch> branches = new ArrayList<>();
         List<Ast.BindingStmt> bindings = new ArrayList<>();
         ConditionHead head = parseConditionHead(false);
@@ -4091,12 +4100,19 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseConditionalBraceBody();
-            consume(FI, "expected 'fi' to close if");
+            // Canonical brace-style statements end at '}', while legacy source
+            // retains its historical mandatory 'fi' delimiter.
+            if (strictConditionalSyntax) match(FI);
+            else consume(FI, "expected 'fi' to close if");
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 
-        // Canonical keyword-delimited form:
-        //   if condition; then
+        if (strictConditionalSyntax && !explicitImperative) {
+            throw error(peek(), "'if ... then ... fi' produces a value; use 'do if ... then ... fi' for imperative control flow");
+        }
+
+        // Legacy keyword-delimited form, or explicit imperative 'do if':
+        //   do if condition; then
         //   elif condition; then
         //   else
         //   fi
@@ -4897,6 +4913,24 @@ public final class Parser {
         return stage instanceof Ast.NameExpr || stage instanceof Ast.LambdaExpr;
     }
 
+    /** A value-producing 'if' lowers through the already checked ternary AST. */
+    private Ast.Expr parseValueIf() {
+        Ast.Expr condition = parseCondition();
+        consume(THEN, "value-producing 'if' requires 'then'");
+        Ast.Expr whenTrue = parseConditionalValueArm();
+        consume(ELSE, "value-producing 'if' requires an 'else' value; use 'do if' for statements");
+        Ast.Expr whenFalse = parseConditionalValueArm();
+        consume(FI, "expected 'fi' to close value-producing 'if'");
+        return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
+    }
+
+    private Ast.Expr parseConditionalValueArm() {
+        if (check(BREAK) || check(CONTINUE) || check(RETURN)) {
+            throw error(peek(), "value-producing 'if' branch must produce a value; break/continue/return require 'do if'");
+        }
+        return parseExpression();
+    }
+
     private Ast.Expr parseConditional() {
         Ast.Expr condition = parseLogicalOr();
         if (!match(QUESTION)) return condition;
@@ -5594,6 +5628,7 @@ public final class Parser {
                     + "no host fallback is allowed");
         }
         if (match(MATCH)) return parseValueMatch();
+        if (match(IF)) return parseValueIf();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
