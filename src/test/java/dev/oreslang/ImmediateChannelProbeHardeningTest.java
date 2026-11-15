@@ -14,57 +14,59 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-/** Execute .atto probes and enforce a recoverable ownership boundary at compilation. */
+/** Executes real .atto typed try-write probes and checks ownership diagnostics. */
 @Timeout(10)
 final class ImmediateChannelProbeHardeningTest {
-    private static String fixture(String name) throws Exception {
+    private static String fixture(String dir, String name) throws Exception {
         try (InputStream stream = ImmediateChannelProbeHardeningTest.class.getResourceAsStream(
-                "/atto/channel-probes-v1/" + name)) {
+                "/atto/" + dir + "/" + name)) {
             if (stream == null) {
-                throw new AssertionError("missing Atto guest fixture: " + name);
+                throw new AssertionError("missing Atto guest fixture: " + dir + "/" + name);
             }
             return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
 
-    @Test
-    void immediateCopyProbesExecuteAsAttoGuest() throws Exception {
-        String guest = fixture("immediate_copy.atto");
+    private static String run(String fixture) throws Exception {
+        String guest = fixture("channel-probes-v2", fixture);
         TypeChecker.check(Parser.parse(guest));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, guest, "immediate_copy.atto")
+        Source source = Source.newBuilder(OresLanguage.ID, guest, fixture)
                 .mimeType(OresLanguage.MIME_TYPE).build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals("4142", output.toString(StandardCharsets.UTF_8));
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     @Test
-    void moveOnlyLvalueCannotBeSilentlyConsumedByBooleanProbe() throws Exception {
-        assertRejectedMoveOnly("irrecoverable_move.atto");
+    void typedImmediateCopyProbeReportsAcceptedFullAndRetry() throws Exception {
+        assertEquals("4142", run("typed_copy.atto"));
     }
 
     @Test
-    void moveOnlyTemporaryCannotBeSilentlyDroppedByBooleanProbe() throws Exception {
-        assertRejectedMoveOnly("irrecoverable_literal.atto");
+    void typedImmediateProbeReturnsMoveOnlyPayloadOnFull() throws Exception {
+        assertEquals("7", run("typed_move_full.atto"));
     }
 
     @Test
-    void explicitTakeOfCopyValueCannotBeLostOnFailedBooleanProbe() throws Exception {
-        IllegalArgumentException error = assertThrows(
+    void senderCannotReuseOwnerAfterTakingIntoTypedProbe() throws Exception {
+        IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(fixture("irrecoverable_take_copy.atto"))));
-        assertTrue(error.getMessage().contains("try writech cannot rt take"), error::getMessage);
+                () -> TypeChecker.check(Parser.parse(
+                        fixture("channel-probes-v2", "moved_source_after_probe.atto"))));
+        assertTrue(failure.getMessage().contains("moved value"), failure::getMessage);
     }
 
-    private static void assertRejectedMoveOnly(String name) throws Exception {
-        String guest = fixture(name);
-        IllegalArgumentException error = assertThrows(
+    @Test
+    void legacyBooleanAssignmentToTryWritechIsRejected() throws Exception {
+        IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(guest)));
-        assertTrue(error.getMessage().contains(
-                "try writech cannot accept a move-only payload"), error::getMessage);
+                () -> TypeChecker.check(Parser.parse(
+                        fixture("channel-probes-v1", "immediate_copy.atto"))));
+        assertTrue(failure.getMessage().contains("bool")
+                        || failure.getMessage().contains("TryWriteResult"),
+                failure::getMessage);
     }
 }
