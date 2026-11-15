@@ -19,10 +19,26 @@ public final class QuantumCircuitIR {
                 throw new IllegalArgumentException("simulation profile supports 1..16 qubits and bits");
             }
             Objects.requireNonNull(gates, "gates");
-            // Reject oversized user-supplied collections before List.copyOf
-            // traverses/allocates their entire contents.
-            if (gates.size() > 1024) throw new IllegalArgumentException("circuit exceeds gate quota");
-            gates = List.copyOf(gates);
+            // Never call a caller-supplied List.toArray() or copyOf(gates):
+            // a malicious List can lie about size() and allocate an unbounded
+            // array before a post-copy quota check is reached.
+            int declaredSize = gates.size();
+            if (declaredSize < 0 || declaredSize > 1024) {
+                throw new IllegalArgumentException("circuit exceeds gate quota");
+            }
+            List<Gate> bounded = new ArrayList<>();
+            var cursor = gates.iterator();
+            while (cursor.hasNext()) {
+                // Stop before retaining a 1,025th gate even if size() lied.
+                if (bounded.size() >= 1024) {
+                    throw new IllegalArgumentException("circuit exceeds gate quota");
+                }
+                bounded.add(Objects.requireNonNull(cursor.next(), "gate"));
+            }
+            if (bounded.size() != declaredSize) {
+                throw new IllegalArgumentException("inconsistent circuit gate list size");
+            }
+            gates = List.copyOf(bounded);
             boolean measuring = false;
             boolean[] consumedQubits = new boolean[qubits];
             boolean[] filledBits = new boolean[classicalBits];
