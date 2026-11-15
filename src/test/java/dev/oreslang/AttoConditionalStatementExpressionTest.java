@@ -170,6 +170,22 @@ final class AttoConditionalStatementExpressionTest {
     }
 
     @Test
+    void ifnotAndUnlessEvaluateTheirConditionsExactlyOnce() {
+        String source = """
+                fnc tick_false(): bool {
+                    stdio.stdout.write("t");
+                    return false;
+                }
+                pub routine main(): void {
+                    do ifnot tick_false() then stdio.stdout.write("1"); fi
+                    do unless tick_false() then stdio.stdout.write("2"); fi
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parseStrictAtto(source)));
+        assertEquals("t1t2", run(source));
+    }
+
+    @Test
     void negatedDoIfStillForbidsBreakOutsideLoops() {
         for (String head : new String[] { "ifnot", "unless" }) {
             assertThrows(IllegalArgumentException.class,
