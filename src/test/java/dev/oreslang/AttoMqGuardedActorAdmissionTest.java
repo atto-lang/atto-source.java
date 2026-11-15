@@ -79,4 +79,94 @@ final class AttoMqGuardedActorAdmissionTest {
                 end
                 """));
     }
+
+    @Test
+    void duplicateSealedStateContainersAreRejected() {
+        var rejected = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define serial actor GuardedPartitionOwner as
+                  state { let bool occupied = false; }
+                  state { let bool closed = false; }
+                end
+                """));
+        assertTrue(rejected.getMessage().contains("duplicate sealed actor state container"));
+    }
+
+    @Test
+    void duplicateSealedStateFieldNamesAreRejected() {
+        var rejected = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define serial actor GuardedPartitionOwner as
+                  state {
+                    let int request_id = 0;
+                    let int request_id = 1;
+                  }
+                end
+                """));
+        assertTrue(rejected.getMessage().contains("duplicate sealed actor state field"));
+    }
+
+    @Test
+    void sealedStateMustUseTheSupportedScalarTypes() {
+        var rejected = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define serial actor GuardedPartitionOwner as
+                  state { let String ticket = "untrusted"; }
+                end
+                """));
+        assertTrue(rejected.getMessage().contains("scalar int/bool fields"));
+    }
+
+    @Test
+    void sealedStateInitializersMustMatchTheDeclaredType() {
+        var rejected = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define serial actor GuardedPartitionOwner as
+                  state { let int request_id = true; }
+                end
+                """));
+        assertTrue(rejected.getMessage().contains("initializer type must match int"));
+    }
+
+    @Test
+    void sealedStateCannotMixOrdinaryActorFields() {
+        var rejected = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define serial actor GuardedPartitionOwner as
+                  state { let bool occupied = false; }
+                  let int spoofed_mailbox_slot = 0;
+                end
+                """));
+        assertTrue(rejected.getMessage().contains("cannot mix ordinary actor fields"));
+    }
+
+    @Test
+    void untrustedActorCodeCannotDefineHandleStateIntrinsic() {
+        var rejected = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define serial actor GuardedPartitionOwner as
+                  state { let bool occupied = false; }
+                  handle_state(): void { return; }
+                end
+                """));
+        assertTrue(rejected.getMessage().contains("handle_state is compiler-owned"));
+    }
+
+    @Test
+    void actorLocalPanicHandlerCannotInterceptSupervisorControl() {
+        var rejected = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define serial actor GuardedPartitionOwner as
+                  state { let bool occupied = false; }
+                  on_panic(): void { return; }
+                end
+                """));
+        assertTrue(rejected.getMessage().contains("actor-local on_panic is forbidden"));
+    }
+
+    @Test
+    void sealedStateFieldBudgetIsEnforcedAtParseTime() {
+        var source = new StringBuilder(
+                "define serial actor GuardedPartitionOwner as\n  state {\n");
+        for (int field = 0; field < 65; field++) {
+            source.append("    let int slot_").append(field).append(" = 0;\n");
+        }
+        source.append("  }\nend\n");
+        var rejected = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source.toString()));
+        assertTrue(rejected.getMessage().contains("exceeds 64-field bound"));
+    }
 }
