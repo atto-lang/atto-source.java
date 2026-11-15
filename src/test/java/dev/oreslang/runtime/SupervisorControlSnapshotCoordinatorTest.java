@@ -206,10 +206,14 @@ final class SupervisorControlSnapshotCoordinatorTest {
     @Test
     void revokeAndCloseCannotReleaseRunningControlTurn() throws Exception {
         var submitted = new AtomicReference<Runnable>();
+        var dispatchDone = new AtomicReference<OresFuture.Callback<Void>>();
         var captureEntered = new CountDownLatch(1);
         var finishCapture = new CountDownLatch(1);
         ActorRuntime.ControlDispatcher dispatcher = turn ->
-                OresFuture.<Void>fromCallback(done -> submitted.set(turn));
+                OresFuture.<Void>fromCallback(done -> {
+                    submitted.set(turn);
+                    dispatchDone.set(done);
+                });
         try (var runtime = runtime(dispatcher);
              var observer = new SupervisorRegistryObservation(
                      runtime, System::nanoTime, () -> {
@@ -244,6 +248,7 @@ final class SupervisorControlSnapshotCoordinatorTest {
                 finishCapture.countDown();
             }
             physicalTurn.get(5, TimeUnit.SECONDS);
+            dispatchDone.get().resolve(null);
             assertEquals(0, service.activeControlRequests());
         }
     }
