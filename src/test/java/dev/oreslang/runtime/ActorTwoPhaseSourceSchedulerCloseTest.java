@@ -48,7 +48,7 @@ final class ActorTwoPhaseSourceSchedulerCloseTest {
                 try {
                     actor.stop();
                 } catch (Throwable error) {
-                    stopFailure.set(error);
+                    if (!isStopDeadline(error)) stopFailure.set(error);
                 }
             }, "source-close-stop-request");
             firstStop.start();
@@ -62,7 +62,7 @@ final class ActorTwoPhaseSourceSchedulerCloseTest {
                     try {
                         actor.stop();
                     } catch (Throwable error) {
-                        stopFailure.set(error);
+                        if (!isStopDeadline(error)) stopFailure.set(error);
                     }
                 }, "source-close-concurrent-stop");
                 concurrentStop.start();
@@ -86,5 +86,15 @@ final class ActorTwoPhaseSourceSchedulerCloseTest {
         } finally {
             releaseSubscriber.countDown();
         }
+    }
+
+    /**
+     * A host stop() is a bounded synchronization point: while a cancellation
+     * subscriber is deliberately blocked, it returns with the documented
+     * finalize-deadline error. Any other failure is a real defect.
+     */
+    private static boolean isStopDeadline(Throwable error) {
+        return error instanceof IllegalStateException
+                && String.valueOf(error.getMessage()).endsWith("did not finalize within the stop deadline");
     }
 }

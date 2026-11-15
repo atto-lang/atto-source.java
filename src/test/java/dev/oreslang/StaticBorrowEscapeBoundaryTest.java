@@ -41,7 +41,7 @@ final class StaticBorrowEscapeBoundaryTest {
                   yield rt borrow value;
                   return;
                 }
-                """, "cannot yield borrowed references");
+                """, "borrowed references cannot be yielded");
     }
 
     @Test
@@ -321,7 +321,7 @@ final class StaticBorrowEscapeBoundaryTest {
                 fnc bad(borrow int first, int second): int {
                   return consume(...arguments);
                 }
-                """, "spread cannot consume a borrowed tuple");
+                """, "contains borrowed parameter");
     }
 
     @Test

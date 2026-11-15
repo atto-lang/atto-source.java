@@ -62,11 +62,32 @@ jobs:
           test -s target/formal-typed-scalar/checked-clamp_int.smt2
           test -s target/formal-typed-scalar/mutated-min_int.smt2
           test -s target/formal-typed-scalar/mutated-clamp_int.smt2
-          grep -Fx 'unsat' target/formal-typed-scalar/checked-min_int.z3.out
-          grep -Fx 'unsat' target/formal-typed-scalar/checked-max_int.z3.out
-          grep -Fx 'unsat' target/formal-typed-scalar/checked-clamp_int.z3.out
-          grep -Fx 'sat' target/formal-typed-scalar/mutated-min_int.z3.out
-          grep -Fx 'sat' target/formal-typed-scalar/mutated-clamp_int.z3.out
+          # Exact SHA-256 of bytes `unsat\nsat\n` and `sat\nsat\n`.
+          # This rejects extra lines, comments, CRLF, missing data and suffixes.
+          for fn in min_int max_int clamp_int; do
+            actual="$(sha256sum "target/formal-typed-scalar/checked-${fn}.z3.out" | cut -d' ' -f1)"
+            test "$actual" = "c2af3da181f0cb683d48aba3b47c40b7f3814d13fa817ae57f7f098acb636fca"
+          done
+          for fn in min_int clamp_int; do
+            actual="$(sha256sum "target/formal-typed-scalar/mutated-${fn}.z3.out" | cut -d' ' -f1)"
+            test "$actual" = "d2f733b85518b2ef01097ad8856647c19731ca558ee45faebb65260de667c989"
+          done
+      - name: Require separate checked-AST proof/mutant query transcripts
+        run: |
+          set -euo pipefail
+          for fn in min_int max_int clamp_int; do
+            test -s "target/formal-typed-scalar/checked-${fn}-implementation.smt2"
+            test -s "target/formal-typed-scalar/checked-${fn}-negative-control.smt2"
+            test "$(cat "target/formal-typed-scalar/checked-${fn}-implementation.z3.out")" = "unsat"
+            test "$(cat "target/formal-typed-scalar/checked-${fn}-negative-control.z3.out")" = "sat"
+            sha256sum "target/formal-typed-scalar/checked-${fn}-implementation.smt2"
+            sha256sum "target/formal-typed-scalar/checked-${fn}-negative-control.smt2"
+          done
+          for fn in min_int clamp_int; do
+            test -s "target/formal-typed-scalar/mutated-${fn}-implementation.smt2"
+            test "$(cat "target/formal-typed-scalar/mutated-${fn}-implementation.z3.out")" = "sat"
+            test "$(cat "target/formal-typed-scalar/mutated-${fn}-negative-control.z3.out")" = "sat"
+          done
       - name: Upload proof inputs, solver outputs, and provenance
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -17,6 +17,20 @@ public final class RecordFrontendSmoke {
     private RecordFrontendSmoke() { }
 
     public static void main(String[] args) {
+        // Parser acceptance does not imply semantic admission. Test both
+        // independent checkers so bypassing one cannot silently accept an
+        // aggregate spread before field-wise ownership/lowering is proved.
+        Ast.Program stageOneSpread = Parser.parse("""
+                fnc blocked(): int {
+                    const base = infer struct{x: 1};
+                    const next = infer struct{...base, y: 2};
+                    return next.x;
+                }
+                """);
+        denied(() -> TypeChecker.check(stageOneSpread),
+                "unimplemented spread shape must fail closed");
+        denied(() -> OwnershipChecker.check(stageOneSpread),
+                "unimplemented spread ownership must fail closed");
         accepted("""
                 fnc read(): string {
                     const Person first = infer record{name: "Ada", age: 37};
