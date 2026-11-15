@@ -156,12 +156,45 @@ public final class M6NioRuntimeProbe {
             System.out.println("M6_SERIAL_MAX_CONCURRENT_RECEIVES=" + maxActive.get());
         }
     }
+    private static void close_races_and_registration_fencing() throws Exception {
+        var rt = new AttoM6Runtime(2, 8);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var errors = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var actor = rt.spawn("closing", 1, v -> {
+            entered.countDown();
+            require(release.await(5, TimeUnit.SECONDS), "close race release");
+        });
+        send(rt, actor, 1);
+        require(entered.await(5, TimeUnit.SECONDS), "close race worker missing");
+        Thread closer = new Thread(() -> {
+            try { rt.close(); } catch (Throwable t) { errors.set(t); }
+        }, "m6-close-thread");
+        closer.start();
+        until(() -> !rt.snapshot(actor).accepting(), "STOP admission fence");
+        require(rt.try_send(actor, 2) == AttoM6Runtime.Admission.CLOSED,
+            "send raced through global STOP gate");
+        boolean prevented = false;
+        try { rt.spawn("too-late", 1, v -> {}); }
+        catch (IllegalStateException expected) { prevented = true; }
+        require(prevented, "runtime permitted actor creation during close");
+        release.countDown();
+        closer.join(10_000);
+        require(!closer.isAlive() && errors.get() == null, "global close did not quiesce: " + errors.get());
+        rt.close(); // Idempotent after physical selector and carrier shutdown.
+        var snapshot = rt.snapshot(actor);
+        require(snapshot.retired() && snapshot.accepted() == 1 && snapshot.completed() == 1,
+            "graceful global close failed to drain");
+        AttoM6Runtime.check_conservation(snapshot);
+        System.out.println("M6_GLOBAL_CLOSE_SPAWN_FENCE=PASS");
+    }
     public static void main(String[] args) throws Exception {
         require(args.length == 0, "no external guest source accepted");
         nio_and_backpressure();
         strict_control_before_data_resume();
         control_and_shutdown();
         pooled_serial_actor_and_neighbor();
+        close_races_and_registration_fencing();
         System.out.println("M6_NIO_SCHEDULER_SUPERVISOR_NATIVE_HOST=PASS");
         System.out.println("M6_SCOPE=HOST_SUBSET_NOT_ATTO_GUEST_OR_HARD_REAL_TIME_PROOF");
     }
