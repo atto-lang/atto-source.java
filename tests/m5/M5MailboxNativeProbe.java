@@ -72,12 +72,16 @@ public final class M5MailboxNativeProbe {
         Thread closer2 = new Thread(stop, "atto-m5-closer-2");
         closer1.start();
         closer2.start();
-        while (closer1.isAlive() || closer2.isAlive()) {
+        long closeDeadline = System.nanoTime() + 30_000_000_000L;
+        while ((closer1.isAlive() || closer2.isAlive()) &&
+               System.nanoTime() < closeDeadline) {
             mustBeAccounted(closing.snapshot());
             Thread.onSpinWait();
         }
-        closer1.join(30_000);
-        closer2.join(30_000);
+        closer1.join(1000);
+        closer2.join(1000);
+        require(!closer1.isAlive() && !closer2.isAlive(),
+                "concurrent actor close failed to retire");
         require(closeError.get() == null, "concurrent actor close failed: " + closeError.get());
         var closedRace = closing.snapshot();
         mustBeAccounted(closedRace);
