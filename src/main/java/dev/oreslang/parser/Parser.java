@@ -5083,7 +5083,39 @@ public final class Parser {
         };
     }
 
+    private Ast.Expr parseBangOwnershipAlias() {
+        // This is a contextual unary operator, not a macro and not a new
+        // ownership semantic path. The lexer still emits IDENT / MUT / BANG.
+        boolean mutableBorrow = check(MUT);
+        if (mutableBorrow) advance();
+        String operation = advance().lexeme();
+        consume(BANG, "expected '!' attached to ownership operation");
+        Ast.Expr operand = parseUnary(); // postfix binds more tightly than ownership
+        return mutableBorrow ? new Ast.UnaryExpr("&mut", operand)
+                : new Ast.RuntimeCallExpr(operation, List.of(operand));
+    }
+
+    private boolean hasBangOwnershipAlias() {
+        // Only the operation verb must be adjacent to '!'. Whitespace after
+        // '!' is valid; no ordinary identifier's trailing ! becomes a macro.
+        int verbIndex = current;
+        if (check(MUT)) {
+            verbIndex++;
+            if (verbIndex >= tokens.size() || tokens.get(verbIndex).type() != IDENT
+                    || !tokens.get(verbIndex).lexeme().equals("borrow")) return false;
+        } else if (!check(IDENT)) {
+            return false;
+        }
+        String verb = tokens.get(verbIndex).lexeme();
+        if (!verb.equals("copy") && !verb.equals("take")
+                && !verb.equals("borrow") && !verb.equals("share")) return false;
+        if (verbIndex + 1 >= tokens.size()) return false;
+        Token marker = tokens.get(verbIndex + 1);
+        return marker.type() == BANG && adjacent(tokens.get(verbIndex), marker);
+    }
+
     private Ast.Expr parseUnary() {
+        if (hasBangOwnershipAlias()) return parseBangOwnershipAlias();
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
         // token sequence as a single negative literal, without broadening
@@ -5327,9 +5359,11 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
-        if (name.equals("borrow") && check(MUT)) {
-            throw error(peek(),
-                    "legacy 'rt borrow mut value' is not accepted; use 'rt mut borrow value'");
+        // Both historical mutable-borrow orders lower to the same &mut AST.
+        if (name.equals("borrow") && !mutableBorrow && match(MUT)) {
+            mutableBorrow = true;
+        } else if (mutableBorrow && check(MUT)) {
+            throw error(peek(), "duplicate mutable borrow qualifier");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
