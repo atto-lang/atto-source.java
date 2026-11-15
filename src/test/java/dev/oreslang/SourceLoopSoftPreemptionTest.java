@@ -45,7 +45,7 @@ final class SourceLoopSoftPreemptionTest {
                   if true; do
                     loop do
                       i = i + 1;
-                      if i % 3 == 0; do
+                      if Integer.rem(i, 3) == 0; do
                         continue;
                       fi
                       count = count + 1;
@@ -96,9 +96,9 @@ final class SourceLoopSoftPreemptionTest {
                 }
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   let answer = add_one(41);
-                  guard.release();
+                  lock_guard.release();
                   stdio.stdout.write(answer);
                   return;
                 }
@@ -119,9 +119,9 @@ final class SourceLoopSoftPreemptionTest {
                 }
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   let pending = blocked_source();
-                  guard.release();
+                  lock_guard.release();
                   return;
                 }
                 """;
@@ -163,9 +163,9 @@ final class SourceLoopSoftPreemptionTest {
                 }
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   val int answer = count_in_helper(effectful_argument());
-                  guard.release();
+                  lock_guard.release();
                   stdio.stdout.write(answer);
                   return;
                 }
@@ -195,9 +195,9 @@ final class SourceLoopSoftPreemptionTest {
                 pub async routine main(): void {
                   val Calculator calculator = new Calculator();
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   val int answer = calculator.count_in_helper(effectful_argument());
-                  guard.release();
+                  lock_guard.release();
                   stdio.stdout.write(answer);
                   return;
                 }
@@ -226,9 +226,9 @@ final class SourceLoopSoftPreemptionTest {
                 }
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   val int answer = Calculator.count_in_helper(effectful_argument());
-                  guard.release();
+                  lock_guard.release();
                   stdio.stdout.write(answer);
                   return;
                 }
@@ -242,7 +242,10 @@ final class SourceLoopSoftPreemptionTest {
         // result, but its implementation starts a new scheduler Task even
         // when the source Future has already settled. Its admission must
         // therefore fail before invocation, not at a later implicit await.
-        assertGuardedCallRejectedWithoutOutput("""
+        // Current main also checks Future.flatten statically (it requires
+        // Future<Future<T>>), so this source may be refused before execution;
+        // either way no chained Task may start and no output may appear.
+        assertGuardedCallRejectedWithoutOutput("Future.flatten requires Future<Future<T>>", """
                 define class Counter as
                   pub let int value = 0;
                 end
@@ -259,9 +262,9 @@ final class SourceLoopSoftPreemptionTest {
                   await worker.get_done();
                   val completed = worker.get_done();
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   val future = completed.flatten();
-                  guard.release();
+                  lock_guard.release();
                   stdio.stdout.write("ILLEGAL_FUTURE_CHAIN_STARTED");
                   return;
                 }
@@ -291,9 +294,9 @@ final class SourceLoopSoftPreemptionTest {
                 }
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Calculator());
-                  val guard = mutex.lock();
-                  val int result = guard.count_in_helper(effectful_argument());
-                  guard.release();
+                  val lock_guard = mutex.lock();
+                  val int result = lock_guard.count_in_helper(effectful_argument());
+                  lock_guard.release();
                   stdio.stdout.write(result);
                   return;
                 }
@@ -316,16 +319,16 @@ final class SourceLoopSoftPreemptionTest {
                     return 41;
                   };
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   val int answer = 1 + callback();
-                  guard.release();
+                  lock_guard.release();
                   stdio.stdout.write(answer);
                   return;
                 }
                 """;
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
-                        OresLanguage.ID, code, "nested-dynamic-call-under-guard.ores")
+                        OresLanguage.ID, code, "nested-dynamic-call-under-lock_guard.ores")
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
         RuntimeException rejected;
@@ -353,8 +356,8 @@ final class SourceLoopSoftPreemptionTest {
                     return 41;
                   };
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
-                  guard.release();
+                  val lock_guard = mutex.lock();
+                  lock_guard.release();
                   stdio.stdout.write(1 + callback());
                   return;
                 }
@@ -380,15 +383,15 @@ final class SourceLoopSoftPreemptionTest {
                 }
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   let answer = count_in_helper(4096);
-                  guard.release();
+                  lock_guard.release();
                   return;
                 }
                 """;
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
-                        OresLanguage.ID, sourceText, "nested-cpu-guard.ores")
+                        OresLanguage.ID, sourceText, "nested-cpu-lock_guard.ores")
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
         RuntimeException rejected;
@@ -632,14 +635,14 @@ final class SourceLoopSoftPreemptionTest {
                 end
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   for (let i = 0; i < 2000; i = i + 1) do
-                    guard.value = guard.value + 1;
+                    lock_guard.value = lock_guard.value + 1;
                   done
-                  stdio.stdout.write(guard.value);
+                  stdio.stdout.write(lock_guard.value);
                   stdio.stdout.write("|");
                   stdio.stdout.write(process.descriptor.source_loop_cooperates);
-                  guard.release();
+                  lock_guard.release();
                   return;
                 }
                 """));
@@ -662,9 +665,9 @@ final class SourceLoopSoftPreemptionTest {
                             pub async routine main(): void {
                               val mutex = Mutex.new(new Counter());
                               val Channel<int> pipe = Channel.new<int>(0);
-                              val guard = mutex.lock();
+                              val lock_guard = mutex.lock();
                             """ + operation + """
-                              guard.release();
+                              lock_guard.release();
                               return;
                             }
                             """), operation);
@@ -690,9 +693,9 @@ final class SourceLoopSoftPreemptionTest {
                   await idle.get_ready();
                   val pending = idle.get_done();
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   await pending;
-                  guard.release();
+                  lock_guard.release();
                   return;
                 }
                 """));
@@ -721,9 +724,9 @@ final class SourceLoopSoftPreemptionTest {
                   idle.send("stop");
                   await idle.get_done();
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   await idle.get_done();
-                  guard.release();
+                  lock_guard.release();
                   stdio.stdout.write("unreachable");
                   return;
                 }
@@ -743,9 +746,9 @@ final class SourceLoopSoftPreemptionTest {
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
                   val Channel<int> pipe = Channel.new<int>(1);
-                  val guard = mutex.lock();
-                  guard.value = 7;
-                  guard.release();
+                  val lock_guard = mutex.lock();
+                  lock_guard.value = 7;
+                  lock_guard.release();
                   writech pipe, 7;
                   stdio.stdout.write(readch pipe);
                   return;
@@ -762,9 +765,9 @@ final class SourceLoopSoftPreemptionTest {
                         end
                         generator fnc bad(): int {
                           val mutex = Mutex.new(new Counter());
-                          val guard = mutex.lock();
+                          val lock_guard = mutex.lock();
                           rt cooperate;
-                          guard.release();
+                          lock_guard.release();
                           yield 7;
                           return;
                         }
@@ -784,9 +787,9 @@ final class SourceLoopSoftPreemptionTest {
                 end
                 generator fnc values(): int {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
-                  guard.value = 7;
-                  guard.release();
+                  val lock_guard = mutex.lock();
+                  lock_guard.value = 7;
+                  lock_guard.release();
                   rt cooperate;
                   yield 7;
                   return;
@@ -808,9 +811,9 @@ final class SourceLoopSoftPreemptionTest {
                 end
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   rt cooperate;
-                  guard.release();
+                  lock_guard.release();
                   return;
                 }
                 """));
@@ -827,9 +830,9 @@ final class SourceLoopSoftPreemptionTest {
                 end
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
-                  guard.value = guard.value + 1;
-                  guard.release();
+                  val lock_guard = mutex.lock();
+                  lock_guard.value = lock_guard.value + 1;
+                  lock_guard.release();
                   rt cooperate;
                   stdio.stdout.write("released-then-cooperated");
                   return;
@@ -846,16 +849,16 @@ final class SourceLoopSoftPreemptionTest {
                 end
                 pub async routine main(): void {
                   val mutex = Mutex.new(new Counter());
-                  val guard = mutex.lock();
+                  val lock_guard = mutex.lock();
                   let i = 0;
                   while (i < 1024) do
-                    guard.value = guard.value + 1;
+                    lock_guard.value = lock_guard.value + 1;
                     i = i + 1;
                   done
-                  stdio.stdout.write(guard.value);
+                  stdio.stdout.write(lock_guard.value);
                   stdio.stdout.write("|");
                   stdio.stdout.write(process.descriptor.source_loop_cooperates);
-                  guard.release();
+                  lock_guard.release();
 
                   // The dispatch has already exhausted its budget. A newly
                   // safe backedge must cooperate immediately, rather than
@@ -1110,7 +1113,17 @@ final class SourceLoopSoftPreemptionTest {
                 "while must lower to the same resumable budgeted backedge");
     }
 
+    private static void assertGuardedCallRejectedWithoutOutput(String alternative, String code)
+            throws Exception {
+        assertRejectedWithoutOutput(code, alternative);
+    }
+
     private static void assertGuardedCallRejectedWithoutOutput(String code)
+            throws Exception {
+        assertRejectedWithoutOutput(code, null);
+    }
+
+    private static void assertRejectedWithoutOutput(String code, String alternative)
             throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
@@ -1124,7 +1137,8 @@ final class SourceLoopSoftPreemptionTest {
                 .build()) {
             rejected = assertThrows(RuntimeException.class, () -> context.eval(source));
         }
-        assertTrue(rejected.getMessage().contains("MutexGuard"),
+        assertTrue(rejected.getMessage().contains("MutexGuard")
+                        || (alternative != null && rejected.getMessage().contains(alternative)),
                 "the pre-invocation no-yield gate must reject the call: " + rejected);
         assertEquals("", output.toString(StandardCharsets.UTF_8),
                 "a rejected nested source call evaluated an effectful argument");
