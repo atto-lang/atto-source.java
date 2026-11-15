@@ -113,16 +113,21 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         // executor/carrier pool or cancellation receipt for the CONTROL work.
         // The timer may abandon a still-queued physical turn atomically;
         // already started work retains its lease until the actual finally.
+        // A completed observer timeout must also mean that any QUEUED
+        // accounting slot has been reclaimed. CompletableFuture may wake
+        // ordinary waiters before executing independent whenComplete actions,
+        // so return the dependent completion stage rather than the raw result.
+        CompletableFuture<SupervisorRegistryObservation.Snapshot> observed =
+                request.result.whenComplete((ignored, failure) -> {
+                    if (failure instanceof TimeoutException
+                            && request.physicalTurn.abandonIfQueued()) {
+                        release(request);
+                    }
+                });
         request.result.orTimeout(timeoutNanos, TimeUnit.NANOSECONDS);
-        request.result.whenComplete((ignored, failure) -> {
-            if (failure instanceof TimeoutException
-                    && request.physicalTurn.abandonIfQueued()) {
-                release(request);
-            }
-        });
         // A deadline may have expired before dispatch admission. Do not
         // schedule a runnable that has already lost its start authority.
-        if (request.result.isDone()) return request.result.minimalCompletionStage();
+        if (request.result.isDone()) return observed.minimalCompletionStage();
 
         final OresFuture<Void> dispatch;
         try {
@@ -134,7 +139,7 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
             // A dispatch implementation may throw after enqueueing. Claim
             // cancellation against physical start before releasing its slot.
             if (request.physicalTurn.abandonIfQueued()) release(request);
-            return request.result.minimalCompletionStage();
+            return observed.minimalCompletionStage();
         }
         try {
             dispatch.whenCompleteRuntime((ignored, failure) -> {
@@ -150,7 +155,7 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
                     new SnapshotFailure("CONTROL_DISPATCH_FAILED"));
             if (request.physicalTurn.abandonIfQueued()) release(request);
         }
-        return request.result.minimalCompletionStage();
+        return observed.minimalCompletionStage();
     }
 
     private void execute(Request request, Object session, String tenantId,
