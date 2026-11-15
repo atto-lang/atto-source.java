@@ -1,0 +1,1 @@
+pub fnc main(): int { const int n = 42; return match first<int> n over on x when x > 40 -> x on x when x > 0 -> 1 default -> 0 end; }

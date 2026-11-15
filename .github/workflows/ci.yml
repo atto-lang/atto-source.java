@@ -16,9 +16,23 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source revision
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: Set up GraalVM
-        uses: graalvm/setup-graalvm@v1
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
           version: '25.3'
           java-version: '25'
@@ -46,13 +60,37 @@ jobs:
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee /tmp/ores-testing-semantics-jit.out
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-jit.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-jit.out
+      - name: Run Orestra integration smoke under JVM/JIT
+        run: |
+          set -euo pipefail
+          for case in placement-smoke edge-guards workload-state-smoke control-plane-smoke; do
+            mvn -B -ntp -DskipTests exec:java -Dexec.args="integration/orestra/examples/${case}.ores" | tee "/tmp/${case}-jit.out"
+          done
+          grep -x "orestra-placement-ok" /tmp/placement-smoke-jit.out
+          grep -x "orestra-edge-guards-ok" /tmp/edge-guards-jit.out
+          grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-jit.out
+          grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-jit.out
 
   native-aot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source revision
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: Set up GraalVM
-        uses: graalvm/setup-graalvm@v1
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
           version: '25.3'
           java-version: '25'
@@ -65,6 +103,10 @@ jobs:
           native-image --version
       - name: Build interpreter-only AOT image
         run: mvn -B -ntp -Pnative-aot -DskipTests package
+      - name: Verify compressed reference mode is baked into AOT image
+        run: |
+          ./target/ores-aot --build-info | tee /tmp/ores-aot-build-info.json
+          grep -F '"managed_reference_mode":"compressed32"' /tmp/ores-aot-build-info.json
       - name: Run AOT image
         run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
       - name: Load packaged native stdlib under AOT
@@ -80,13 +122,78 @@ jobs:
           ./target/ores-aot --mode=aot --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-aot.out
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-aot.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-aot.out
+      - name: Run Orestra integration smoke under native AOT
+        run: |
+          set -euo pipefail
+          for case in placement-smoke edge-guards workload-state-smoke control-plane-smoke; do
+            ./target/ores-aot --mode=aot --platform=linux "integration/orestra/examples/${case}.ores" | tee "/tmp/${case}-aot.out"
+          done
+          grep -x "orestra-placement-ok" /tmp/placement-smoke-aot.out
+          grep -x "orestra-edge-guards-ok" /tmp/edge-guards-aot.out
+          grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-aot.out
+          grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-aot.out
+
+  native-aot-ref64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source revision
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: GraalVM diagnostics
+        run: |
+          java --version
+          native-image --version
+      - name: Build full-width AOT image
+        run: mvn -B -ntp -Pnative-aot,native-ref64 -DskipTests package
+      - name: Verify native64 reference mode is baked into AOT image
+        run: |
+          ./target/ores-aot --build-info | tee /tmp/ores-aot-ref64-build-info.json
+          grep -F '"managed_reference_mode":"native64"' /tmp/ores-aot-ref64-build-info.json
+      - name: Run full-width AOT image
+        run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
+      - name: Load packaged native stdlib under full-width AOT
+        run: ./target/ores-aot --mode=aot --platform=linux examples/native-core-library.ores
 
   native-hybrid:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source revision
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: Set up GraalVM
-        uses: graalvm/setup-graalvm@v1
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
           version: '25.3'
           java-version: '25'
@@ -99,6 +206,10 @@ jobs:
           native-image --version
       - name: Build AOT host with guest JIT
         run: mvn -B -ntp -Pnative-hybrid -DskipTests package
+      - name: Verify compressed reference mode is baked into hybrid image
+        run: |
+          ./target/ores-hybrid --build-info | tee /tmp/ores-hybrid-build-info.json
+          grep -F '"managed_reference_mode":"compressed32"' /tmp/ores-hybrid-build-info.json
       - name: Run hybrid image
         run: ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
       - name: Load packaged native stdlib under hybrid
@@ -114,13 +225,37 @@ jobs:
           ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-testing-semantics.ores | tee /tmp/ores-testing-semantics-hybrid.out
           grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/ores-testing-semantics-hybrid.out
           grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/ores-testing-semantics-hybrid.out
+      - name: Run Orestra integration smoke under native hybrid
+        run: |
+          set -euo pipefail
+          for case in placement-smoke edge-guards workload-state-smoke control-plane-smoke; do
+            ./target/ores-hybrid --mode=hybrid --platform=linux "integration/orestra/examples/${case}.ores" | tee "/tmp/${case}-hybrid.out"
+          done
+          grep -x "orestra-placement-ok" /tmp/placement-smoke-hybrid.out
+          grep -x "orestra-edge-guards-ok" /tmp/edge-guards-hybrid.out
+          grep -x "orestra-workload-state-ok" /tmp/workload-state-smoke-hybrid.out
+          grep -x "orestra-control-plane-ok" /tmp/control-plane-smoke-hybrid.out
 
   polyglot-isolate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source revision
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: Set up GraalVM
-        uses: graalvm/setup-graalvm@v1
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
           version: '25.3'
           java-version: '25'
@@ -148,3 +283,14 @@ jobs:
         run: |
           timeout 180s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/strict-root-await.ores" | tee /tmp/ores-strict-root-await.out
           grep -x "42" /tmp/ores-strict-root-await.out
+      - name: Reject JVM JIT mode inside the native polyglot isolate
+        shell: bash
+        run: |
+          set -euo pipefail
+          # NativeBuildMode must fail closed rather than silently downgrade JIT to hybrid.
+          # Require the specific policy denial, not merely a nonzero Maven exit.
+          if timeout 90s mvn -B -ntp -Dpolyglot.engine.IsolateLibrary="${{ steps.isolate.outputs.path }}" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=jit --platform=linux examples/together.ores" >/tmp/ores-strict-denied-jit.out 2>&1; then
+            echo "SECURITY FAILURE: native isolate unexpectedly accepted --mode=jit" >&2
+            exit 1
+          fi
+          grep -F "Native hybrid executables accept --mode=hybrid or --mode=aot, not JVM --mode=jit" /tmp/ores-strict-denied-jit.out

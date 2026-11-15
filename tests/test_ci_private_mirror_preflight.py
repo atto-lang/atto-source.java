@@ -1,6 +1,7 @@
 import io
 import json
 import sys
+import urllib.request
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -64,14 +65,97 @@ class MirrorGateTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(admission.MirrorPreflightError):
                 admission.verify("private/src", "private/dst", 21, 34, "a", "b", fetch=fetch)
 
+    def test_missing_or_unrecognized_active_status_rejected_on_both_sides(self):
+        for side in ("private/src", "private/dst"):
+            for field in ("archived", "disabled"):
+                for value in (None, "false", 0, 1, True):
+                    with self.subTest(side=side, field=field, value=value):
+                        def fetch(name, _token):
+                            result = metadata(name, 21 if name == "private/src" else 34)
+                            if name == side:
+                                result[field] = value
+                            return result
+                        with self.assertRaisesRegex(admission.MirrorPreflightError, "active status"):
+                            admission.verify("private/src", "private/dst", 21, 34, "a", "b", fetch=fetch)
+                with self.subTest(side=side, field=field, value="absent"):
+                    def fetch(name, _token):
+                        result = metadata(name, 21 if name == "private/src" else 34)
+                        if name == side:
+                            del result[field]
+                        return result
+                    with self.assertRaisesRegex(admission.MirrorPreflightError, "active status"):
+                        admission.verify("private/src", "private/dst", 21, 34, "a", "b", fetch=fetch)
+
+    def test_invalid_pinned_ids_rejected_before_any_network(self):
+        for invalid in (None, True, False, 0, -1, 3.5, "21", [], {}):
+            for side in ("source", "destination"):
+                with self.subTest(invalid=invalid, side=side):
+                    calls = []
+                    def fetch(name, _token):
+                        calls.append(name)
+                        return metadata(name, 21 if name == "private/src" else 34)
+                    src_id = invalid if side == "source" else 21
+                    dst_id = invalid if side == "destination" else 34
+                    with self.assertRaisesRegex(admission.MirrorPreflightError, "numeric repository identities"):
+                        admission.verify("private/src", "private/dst", src_id, dst_id,
+                                         "a", "b", fetch=fetch)
+                    self.assertEqual(calls, [])
+
     def test_missing_token_rejected_before_network(self):
         with self.assertRaisesRegex(admission.MirrorPreflightError, "authenticated"):
             admission.fetch_metadata("private/dst", "")
+
+    def test_malformed_tokens_fail_before_an_http_request(self):
+        malformed = (None, "", " ", " has-space", "trailing-space ",
+                     "line\nsecond", "carriage\rreturn", "tab\tvalue",
+                     "nonascii-雪", "bad:colon", "A" * (admission.MAX_TOKEN_LENGTH + 1),
+                     123, False)
+        for token in malformed:
+            with self.subTest(token_type=type(token).__name__, token_len=len(token) if isinstance(token, str) else 0):
+                called = []
+                def opener(req, timeout):
+                    called.append(req)
+                    raise AssertionError("malformed credential reached HTTP")
+                with self.assertRaisesRegex(admission.MirrorPreflightError, "authenticated"):
+                    admission.fetch_metadata("private/src", token, opener=opener)
+                self.assertEqual(called, [])
+
+    def test_both_tokens_required_before_either_metadata_fetch(self):
+        for bad_side in ("source", "destination"):
+            with self.subTest(bad_side=bad_side):
+                calls = []
+                def fetch(name, token):
+                    calls.append(name)
+                    return metadata(name, 21 if name == "private/src" else 34)
+                source_token = "a" if bad_side != "source" else "bad\nheader"
+                destination_token = "b" if bad_side != "destination" else None
+                with self.assertRaisesRegex(admission.MirrorPreflightError, "authenticated"):
+                    admission.verify("private/src", "private/dst", 21, 34,
+                                     source_token, destination_token, fetch=fetch)
+                self.assertEqual(calls, [])
+
+    def test_noncredential_bearer_error_is_sanitized(self):
+        key = "SECRET_CANARY"
+        def opener(req, timeout):
+            raise ValueError("malformed header " + key)
+        with self.assertRaisesRegex(admission.MirrorPreflightError, "metadata unavailable") as caught:
+            admission.fetch_metadata("private/src", key, opener=opener)
+        self.assertNotIn(key, str(caught.exception))
 
     def test_path_traversal_and_bad_names_refused(self):
         for name in ("foo", "../dst", "foo/../dst", "foo/dst?x=1", "foo/dst#tag", "/dst", "src/dst/%2F"):
             with self.subTest(name=name), self.assertRaises(admission.MirrorPreflightError):
                 admission.validate_repository_name(name)
+
+    def test_redirect_handler_refuses_to_forward_authenticated_request(self):
+        request = urllib.request.Request(
+            "https://api.github.com/repos/private/src",
+            headers={"Authorization": "Bearer SECRET_CANARY"})
+        with self.assertRaisesRegex(admission.MirrorPreflightError, "redirect refused"):
+            admission.NoRedirect().redirect_request(
+                request, None, 302, "Found",
+                {"Location": "https://untrusted.invalid/repo"},
+                "https://untrusted.invalid/repo")
 
     def test_http_response_is_bounded_and_credentials_not_reflected(self):
         key = "TEST_SECRET_CANARY"
@@ -93,6 +177,38 @@ class MirrorGateTest(unittest.TestCase):
             return FakeResponse(req.full_url, b"invalid JSON")
         with self.assertRaisesRegex(admission.MirrorPreflightError, "invalid repository metadata"):
             admission.fetch_metadata("private/dst", "test", opener=bad)
+
+    def test_duplicate_and_nonfinite_github_metadata_denied(self):
+        # Trust decisions must not depend on whichever duplicate JSON key a
+        # particular parser happens to retain. This is a source-free test.
+        malformed = (
+            b'{"private":true,"private":false}',
+            b'{"id":34,"id":34}',
+            b'{"visibility":"private","visibility":"public"}',
+            b'{"permissions":{"contents":"read","contents":"write"}}',
+            b'{"size":NaN}',
+            b'{"size":Infinity}',
+            b'{"size":-Infinity}',
+            b'{"size":1e999}',
+            b'{"size":-1e999}',
+        )
+        for body in malformed:
+            with self.subTest(body=body):
+                def fake(req, timeout):
+                    self.assertEqual(timeout, 8)
+                    return FakeResponse(req.full_url, body)
+                with self.assertRaises(admission.MirrorPreflightError):
+                    admission.fetch_metadata("private/dst", "TEST_CANARY", opener=fake)
+
+    def test_canonical_github_metadata_still_admitted(self):
+        body = (b'{"private":true,"visibility":"private",'
+                b'"full_name":"private/dst","id":34,'
+                b'"archived":false,"disabled":false}')
+        def fake(req, timeout):
+            return FakeResponse(req.full_url, body)
+        parsed = admission.fetch_metadata("private/dst", "TEST_CANARY", opener=fake)
+        admission.validate_metadata(parsed, "private/dst", 34)
+        self.assertEqual(parsed["id"], 34)
 
     def test_cli_missing_tokens_fails_closed_without_echoing_values(self):
         args = ["--source", "private/src", "--destination", "private/dst",

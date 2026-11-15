@@ -1,0 +1,11 @@
+// Blank input is Some(""); only EOF is None.
+pub fnc main(): void {
+  val Option<String> blank = stdio.stdin.read_line();
+  stdio.println(blank.is_some());
+  stdio.println(blank.unwrap() == "");
+  val Option<String> line = stdio.stdin.read_line();
+  stdio.println(line.unwrap());
+  val Option<String> eof = stdio.stdin.read_line();
+  stdio.println(eof.is_none());
+  return;
+}
