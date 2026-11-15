@@ -5095,6 +5095,13 @@ public final class Parser {
         if (mutableBorrow) advance();
         String operation = advance().lexeme();
         consume(BANG, "expected '!' attached to ownership operation");
+        // Canonical mutable borrow is `borrow! mut value`. Keep the earlier
+        // `mut borrow! value` form as a compatibility alias, but reject two
+        // mutable qualifiers before parsing the operand.
+        if (operation.equals("borrow") && match(MUT)) {
+            if (mutableBorrow) throw error(previous(), "duplicate mutable borrow qualifier");
+            mutableBorrow = true;
+        }
         Ast.Expr operand = parseUnary(); // postfix binds more tightly than ownership
         return mutableBorrow ? new Ast.UnaryExpr("&mut", operand)
                 : new Ast.RuntimeCallExpr(operation, List.of(operand));
