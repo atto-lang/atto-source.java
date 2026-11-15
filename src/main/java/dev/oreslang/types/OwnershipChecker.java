@@ -1674,9 +1674,21 @@ public final class OwnershipChecker {
             Ast.TypeRef element = channelElementType(channel.type);
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
-                // Channel enqueue/registration takes ownership of move-only payloads.
-                // Waiting writers and failed immediate probes conservatively retain
-                // transferred ownership until the runtime supplies a recoverable send.
+                // An immediate write returns only bool. On Full it cannot return
+                // a move-only payload to its caller, and the guest could otherwise
+                // lose the value without a successful channel admission. Fail
+                // closed before evaluating/consuming the payload expression.
+                // A future recoverable send must return the rejected owned value
+                // explicitly (including Closed), not silently pretend it is Copy.
+                if (channelOp.mode() == Ast.WaitMode.IMMEDIATE
+                        && !isCopyType(element)) {
+                    throw error("try writech cannot accept a move-only payload: "
+                            + "bool cannot recover the value on Full or Closed; "
+                            + "use a Copy payload or a recoverable send API");
+                }
+                // Blocking/async channel writes transfer the payload to the
+                // operation; their completion, failure and cancellation have
+                // separate lifecycle contracts.
                 ValueInfo payload = checkExpr(channelOp.value(), scope, true);
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
