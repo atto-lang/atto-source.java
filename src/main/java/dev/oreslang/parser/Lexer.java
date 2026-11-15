@@ -53,6 +53,13 @@ public final class Lexer {
         for (int i = 0; i < source.length(); i++) {
             char c = source.charAt(i);
             if (c == '\0') throw new IllegalArgumentException("source contains NUL byte");
+            // Trojan Source: even comments and string literals cannot conceal
+            // text-direction overrides, isolates or directional marks.
+            if (c == 0x061c || c == 0x200e || c == 0x200f ||
+                    (c >= 0x202a && c <= 0x202e) ||
+                    (c >= 0x2066 && c <= 0x2069)) {
+                throw new IllegalArgumentException("source contains bidirectional Unicode control");
+            }
             if (Character.isHighSurrogate(c)) {
                 if (++i >= source.length() || !Character.isLowSurrogate(source.charAt(i)))
                     throw new IllegalArgumentException("source contains invalid UTF-16");
