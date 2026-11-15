@@ -137,25 +137,28 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
                     execute(request, authenticatedSession, tenantId,
                             expectedGeneration, maxNodes, maxDepth, timeoutNanos));
         } catch (RuntimeException | Error error) {
-            request.result.completeExceptionally(new SnapshotFailure("CONTROL_UNAVAILABLE"));
-            // A dispatch implementation may throw after enqueueing. Claim
-            // cancellation against physical start before releasing its slot.
+            // A dispatcher may throw after enqueueing a runnable. Retire
+            // QUEUED capacity before publishing CONTROL_UNAVAILABLE, so a
+            // host waiter never sees a stale slot on immediate retry.
+            // STARTED work retains physical ownership until its finally.
             if (request.physicalTurn.abandonIfQueued()) release(request);
+            request.result.completeExceptionally(new SnapshotFailure("CONTROL_UNAVAILABLE"));
             return observed.minimalCompletionStage();
         }
         try {
             dispatch.whenCompleteRuntime((ignored, failure) -> {
                 if (failure == null) return;
+                // Report failure only after atomic QUEUED retirement. A
+                // duplicate/late physical invocation cannot run after the
+                // winning abandon; STARTED turns still own their lease.
+                if (request.physicalTurn.abandonIfQueued()) release(request);
                 request.result.completeExceptionally(
                         new SnapshotFailure("CONTROL_DISPATCH_FAILED"));
-                // The dispatcher claims non-execution on failure. If a task
-                // began anyway, only its physical finally may free the slot.
-                if (request.physicalTurn.abandonIfQueued()) release(request);
             });
         } catch (RuntimeException | Error error) {
+            if (request.physicalTurn.abandonIfQueued()) release(request);
             request.result.completeExceptionally(
                     new SnapshotFailure("CONTROL_DISPATCH_FAILED"));
-            if (request.physicalTurn.abandonIfQueued()) release(request);
         }
         return observed.minimalCompletionStage();
     }
