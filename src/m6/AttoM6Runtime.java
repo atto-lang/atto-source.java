@@ -409,7 +409,9 @@ public final class AttoM6Runtime implements AutoCloseable {
             while (!reactorStopping) {
                 drain_commands();
                 rearm_all();
-                selector.select(250);
+                // A previous budgeted pass may have left selected keys behind.
+                // Consume those first rather than sleeping for another 250ms.
+                if (selector.selectedKeys().isEmpty()) selector.select(250);
                 // Selected keys remain in the set across select() calls. They must
                 // be drained even when the subsequent select() returns zero;
                 // otherwise a >64-ready-key batch can starve its remaining keys.
