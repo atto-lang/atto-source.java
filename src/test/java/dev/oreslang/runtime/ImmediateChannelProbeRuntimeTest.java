@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -73,7 +74,7 @@ final class ImmediateChannelProbeRuntimeTest {
             writer.join(2000);
             assertFalse(writer.isAlive(), "worker must exit without retaining a channel waiter");
         }
-        assertEquals(null, workerFailure.get(), "worker exceptions must reach JUnit");
+        assertNull(workerFailure.get(), "worker exceptions must reach JUnit");
         assertEquals(1, accepted.get());
         assertTrue(channel.tryRead().isPresent());
         assertTrue(channel.tryRead().isEmpty());
