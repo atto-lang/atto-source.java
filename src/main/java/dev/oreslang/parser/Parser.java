@@ -5356,7 +5356,7 @@ public final class Parser {
 
         if (name.equals("borrow") && match(MUT)) {
             throw error(previous(),
-                    "legacy 'rt borrow mut' is not valid Oreslang; use 'rt mut borrow value'");
+                    "legacy 'rt borrow mut value' is not valid Oreslang; use 'rt mut borrow value'");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
