@@ -208,6 +208,7 @@ final class SupervisorControlSnapshotCoordinatorTest {
             worker.submit(queuedTurn.get()).get(5, TimeUnit.SECONDS);
             assertEquals("partial",
                     replacement.toCompletableFuture().get(5, TimeUnit.SECONDS).status());
+            dispatcherCompletion.get().resolve(null);
             assertEquals(0, service.activeControlRequests());
         }
     }
