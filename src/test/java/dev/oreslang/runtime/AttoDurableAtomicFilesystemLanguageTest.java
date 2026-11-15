@@ -134,6 +134,28 @@ final class AttoDurableAtomicFilesystemLanguageTest {
     }
 
     @Test
+    void exactFileGrantDoesNotAuthorizeSiblingTempCreationOrDirectoryRename()
+            throws Exception {
+        Path root = privateRoot("file-only-grant");
+        Path manifest = root.resolve("classic.meta");
+        RuntimePermissions onlyFile = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.WRITE, manifest.toString());
+        String source = program(manifest, """
+                  await fs.write_text_durable_atomic_async("__MANIFEST__", "forbidden");
+                """);
+        RuntimeException denied = assertThrows(RuntimeException.class, () ->
+                guest(root.resolve("main.atto"), source, onlyFile, rwPolicy()));
+        assertTrue(errorChain(denied).contains("permission denied"),
+                "missing parent WRITE must fail before any filesystem probe: "
+                        + errorChain(denied));
+        assertFalse(Files.exists(manifest));
+        try (var files = Files.list(root)) {
+            assertFalse(files.anyMatch(path ->
+                    path.getFileName().toString().startsWith(".oreslang-durable-")));
+        }
+    }
+
+    @Test
     void untrustedGroupReadableDirectoryCannotClaimDurableCommit() throws Exception {
         Path root = privateRoot("world-readable");
         Files.setPosixFilePermissions(root, EnumSet.of(
