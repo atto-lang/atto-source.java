@@ -45,12 +45,23 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                            boolean retired, int controlsDelivered, ControlKind lastControl,
                            int maxConcurrentReceives, int carrierIdentities, int resumePc) {}
     public record Queues(int ready, int control, int actors, int running) {}
+    // Host-level receipt: emitted only by the supervisor priority CONTROL path.
+    // Fault code 1=checked arithmetic, 101=generic guest/host panic.
+    public record SupervisorNotice(ControlKind kind, String actorName,
+          long generation, long supervisorId, long messageId, int faultCode,
+          String reason) {}
+    private record Mail(long messageId, long value) {}
 
     private static final class Actor {
         final ActorRef ref;
         final FrameFactory factory;
         final int capacity;
-        final ArrayDeque<Long> inbox = new ArrayDeque<>();
+        final long supervisorId;
+        final ArrayDeque<Mail> inbox = new ArrayDeque<>();
+        long nextMessageId = 1L;
+        long activeMessageId, lastFailedMessageId;
+        int lastFaultCode;
+        String lastFaultReason = "";
         final Set<Long> carriers = new HashSet<>();
         Frame active;
         // An accepted message remains in flight during frame construction and YIELD.
@@ -61,8 +72,10 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
         ControlKind pendingControl, lastControl;
         long accepted, completed, failed, abandoned, yielded, slices, resultSum;
         int concurrent, maxConcurrent, controlsDelivered;
-        Actor(ActorRef ref, int capacity, FrameFactory factory) {
+        Actor(ActorRef ref, int capacity, FrameFactory factory,
+              long supervisorId) {
             this.ref = ref; this.capacity = capacity; this.factory = factory;
+            this.supervisorId = supervisorId;
         }
     }
 
@@ -71,6 +84,8 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
     private final Map<String, Long> generations = new HashMap<>();
     private final ArrayDeque<Actor> ready = new ArrayDeque<>();
     private final ArrayDeque<Actor> controls = new ArrayDeque<>();
+    // Supervisor-facing, independent from DATA inboxes and scheduler ready queue.
+    private final ArrayDeque<SupervisorNotice> supervisorNotices = new ArrayDeque<>();
     private final List<Thread> carriers = new ArrayList<>();
     private final Thread supervisor;
     private final int maxActors, reductionBudget;
@@ -96,8 +111,12 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
     }
 
     public ActorRef spawn(String name, int capacity, FrameFactory factory) {
+        return spawn(name, capacity, factory, 0L);
+    }
+    public ActorRef spawn(String name, int capacity, FrameFactory factory,
+                          long supervisorId) {
         if (name == null || name.isEmpty() || name.length() > 128 || factory == null ||
-            capacity < 1 || capacity > 4096)
+            capacity < 1 || capacity > 4096 || supervisorId < 0)
             throw new IllegalArgumentException("invalid actor");
         synchronized (gate) {
             if (closing || stopping) throw new IllegalStateException("runtime closed");
@@ -109,7 +128,7 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
             long generation = Math.addExact(generations.getOrDefault(name, 0L), 1L);
             generations.put(name, generation);
             var ref = new ActorRef(name, generation);
-            actors.put(name, new Actor(ref, capacity, factory));
+            actors.put(name, new Actor(ref, capacity, factory, supervisorId));
             return ref;
         }
     }
@@ -124,7 +143,9 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
             if (actor == null) return Admission.STALE;
             if (closing || stopping || !actor.accepting || actor.fenced) return Admission.CLOSED;
             if (actor.inbox.size() >= actor.capacity) return Admission.FULL;
-            actor.inbox.addLast(value);
+            long id = Math.addExact(actor.nextMessageId, 0L);
+            actor.nextMessageId = Math.addExact(id, 1L);
+            actor.inbox.addLast(new Mail(id, value));
             actor.accepted++;
             schedule(actor);
             return Admission.ACCEPTED;
@@ -171,6 +192,9 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
             if (actor == null) return false;
             actor.accepting = false;
             actor.fenced = true;
+            actor.lastFailedMessageId = actor.activeMessageId;
+            actor.lastFaultCode = 101;
+            actor.lastFaultReason = "host requested panic";
             control(actor, ControlKind.PANIC);
             gate.notifyAll();
             return true;
@@ -197,6 +221,19 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                     actor.controlQueued = false;
                     actor.controlsDelivered++;
                     actor.lastControl = kind;
+                    long noticeId = kind == ControlKind.PANIC
+                        ? (actor.lastFailedMessageId != 0L
+                            ? actor.lastFailedMessageId : actor.activeMessageId)
+                        : 0L;
+                    int noticeFault = kind == ControlKind.PANIC
+                        ? (actor.lastFaultCode == 0 ? 101 : actor.lastFaultCode) : 0;
+                    String noticeReason = kind == ControlKind.PANIC
+                        ? (actor.lastFaultReason.isEmpty()
+                            ? "actor failed" : actor.lastFaultReason)
+                        : "graceful stop";
+                    supervisorNotices.addLast(new SupervisorNotice(kind,
+                        actor.ref.name(), actor.ref.generation(), actor.supervisorId,
+                        noticeId, noticeFault, noticeReason));
                     if (kind == ControlKind.PANIC) {
                         actor.fenced = true;
                         actor.accepting = false;
@@ -242,7 +279,9 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                         if (actor.fenced || actor.retired || actor.running) continue;
                         if (!actor.inFlight) {
                             if (actor.inbox.isEmpty()) continue;
-                            message = actor.inbox.removeFirst();
+                            Mail mail = actor.inbox.removeFirst();
+                            message = mail.value();
+                            actor.activeMessageId = mail.messageId();
                             actor.inFlight = true; // Reserve BEFORE calling guest factory.
                             create = true;
                         } else {
@@ -301,10 +340,15 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                     actor.concurrent--;
                     actor.slices++;
                     if (failure != null) {
+                        actor.lastFailedMessageId = actor.activeMessageId;
+                        actor.lastFaultCode = failure instanceof ArithmeticException ? 1 : 101;
+                        actor.lastFaultReason = actor.lastFaultCode == 1
+                            ? "checked arithmetic" : "guest callback failure";
                         // Factory / guest / result / PC failure settles exactly the
                         // one reserved message, even if PANIC was already delivered.
                         actor.failed++;
                         actor.inFlight = false;
+                        actor.activeMessageId = 0L;
                         actor.active = null;
                         actor.resumePc = -1;
                         actor.accepting = false;
@@ -317,6 +361,7 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                         // quiesced; never resume a formerly yielded continuation.
                         actor.abandoned++;
                         actor.inFlight = false;
+                        actor.activeMessageId = 0L;
                         actor.active = null;
                         actor.resumePc = -1;
                     } else if (result == Step.YIELD) {
@@ -329,6 +374,9 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                             actor.resultSum = Math.addExact(actor.resultSum, value);
                             actor.completed++;
                         } catch (ArithmeticException error) {
+                            actor.lastFailedMessageId = actor.activeMessageId;
+                            actor.lastFaultCode = 1;
+                            actor.lastFaultReason = "checked arithmetic";
                             actor.failed++;
                             actor.accepting = false;
                             actor.fenced = true;
@@ -337,6 +385,7 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                             control(actor, ControlKind.PANIC);
                         }
                         actor.inFlight = false;
+                        actor.activeMessageId = 0L;
                         actor.active = null;
                         actor.resumePc = -1;
                     }
@@ -350,6 +399,25 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
             synchronized (gate) {
                 if (!stopping) throw new AssertionError("M7 carrier interrupted", e);
             }
+        }
+    }
+    public SupervisorNotice poll_supervisor_notice() {
+        synchronized (gate) {
+            return supervisorNotices.pollFirst();
+        }
+    }
+    public SupervisorNotice await_supervisor_notice(long timeoutMillis)
+            throws InterruptedException {
+        if (timeoutMillis < 1 || timeoutMillis > 60_000)
+            throw new IllegalArgumentException("invalid notice deadline");
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        synchronized (gate) {
+            while (supervisorNotices.isEmpty()) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) return null;
+                TimeUnit.NANOSECONDS.timedWait(gate, remaining);
+            }
+            return supervisorNotices.removeFirst();
         }
     }
     public Snapshot snapshot(ActorRef ref) {
