@@ -39,7 +39,9 @@ jobs:
        || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == ''
        || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == ''
        || inputs.source_commit != vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA
-       || inputs.source_tree != vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
+       || inputs.source_tree != vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE
+       || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE == ''
+       || inputs.suite != vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -58,7 +60,9 @@ jobs:
        && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != ''
        && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != ''
        && inputs.source_commit == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA
-       && inputs.source_tree == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
+       && inputs.source_tree == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE
+       && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE != ''
+       && inputs.suite == vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE }}
     # Runner groups must be admin-restricted to this private source repo;
     # labels alone are not an isolation or runner-ownership boundary.
     runs-on:
@@ -66,6 +70,16 @@ jobs:
       labels: [self-hosted, linux, x64, oreslang-private-ephemeral]
     timeout-minutes: 45
     steps:
+      - name: Prove approved suite and selected profile before checkout
+        shell: bash
+        env:
+          APPROVED_SUITE: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE }}
+          SELECTED_SUITE: ${{ inputs.suite }}
+        run: |
+          set -euo pipefail
+          case "$APPROVED_SUITE" in baseline|durable_manifest) ;; *) echo "::error::Unapproved suite"; exit 1;; esac
+          test "$SELECTED_SUITE" = "$APPROVED_SUITE"
+          echo "APPROVED_PRIVATE_SUITE=$SELECTED_SUITE"
       - name: Validate approved immutable refs before any source checkout
         shell: bash
         env:
