@@ -5509,9 +5509,9 @@ public final class TypeChecker {
         }
         // A channel is an execution-domain-local handle, but its payload is
         // still transferred between independently resumed continuations.
-        // Only statically Sendable data is admissible: a function, bound
-        // method, closure or an object containing one must never carry its
-        // lexical environment into channel storage or select registrations.
+        // A function, bound method, closure or an object containing one must
+        // never carry its lexical environment into channel storage or select
+        // registrations.
         // Serializable<Format> is a separate, stricter wire/codec contract.
         if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
@@ -5526,11 +5526,9 @@ public final class TypeChecker {
         if (element == Unknown.INSTANCE) {
             throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
         }
-        if (!isSendSafe(element, new LinkedHashSet<>(), Map.of())) {
-            throw new IllegalArgumentException(
-                    where + " requires concrete Sendable data; runtime capabilities, unresolved types, "
-                            + "and non-Sendable mutable state cannot be channel payloads");
-        }
+        // Non-Send (but callable-free) payloads remain legal in a local
+        // channel: per #3044 such a Channel<T> is itself non-Send, so the
+        // async task boundary check rejects it before it can cross tasks.
     }
 
     private boolean containsChannelCallable(

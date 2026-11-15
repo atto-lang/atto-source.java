@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -100,15 +101,20 @@ final class ChannelCallableTransportTest {
     }
 
     @Test
-    void nonSendableRuntimeCapabilitiesCannotBeChannelPayloads() {
-        for (String type : new String[] {"Future<int>", "Rc<int>"}) {
-            IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(
-                            "fnc bad(Channel<" + type + "> value): void { return; }")));
-            assertTrue(error.getMessage().contains("requires concrete Sendable data"),
-                    () -> "expected Sendable diagnostic for " + type + ", got: " + error.getMessage());
-        }
+    void nonSendablePayloadChannelsStayLocalAndCannotCrossTasks() {
+        // Main (#3044): Channel<T> is Send only when T is Send. A channel of a
+        // non-Send runtime capability is a legal local handle but is rejected
+        // at the async task boundary with the task-safe diagnostic.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "fnc ok(Channel<Future<int>> value): void { return; }")));
+        RuntimeException error = assertThrows(
+                RuntimeException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub async fnc bad(Channel<Future<int>> value): void { return; }
+                        pub async routine main(): void { return; }
+                        """));
+        assertTrue(error.getMessage().contains("task-safe"),
+                () -> "expected task-safe diagnostic, got: " + error.getMessage());
     }
 
     @Test
