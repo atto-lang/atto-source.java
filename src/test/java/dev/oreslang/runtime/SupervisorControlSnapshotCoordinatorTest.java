@@ -360,14 +360,28 @@ final class SupervisorControlSnapshotCoordinatorTest {
              var service = new SupervisorControlSnapshotCoordinator(runtime);
              ExecutorService worker = Executors.newSingleThreadExecutor()) {
             Object session = new Object();
-            for (int i = 0; i < 8; i++)
+            var first = grant(service, runtime, session);
+            read(service, first, session);
+            for (int i = 1; i < 8; i++)
                 read(service, grant(service, runtime, session), session);
             assertEquals(8, service.activeControlRequests());
             var extra = grant(service, runtime, session);
             var error = assertThrows(SupervisorControlSnapshotCoordinator.SnapshotFailure.class,
                     () -> read(service, extra, session));
             assertEquals("CONTROL_OBSERVATION_BUSY", error.code());
-            for (int i = 0; i < 8; i++) worker.submit(queue.next()).get(5, TimeUnit.SECONDS);
+
+            // The first queued observation has never started. Revocation
+            // must atomically release its lease and make room for a ninth
+            // (distinct) grant without trusting queue execution or timeout.
+            service.revoke(first);
+            assertEquals(7, service.activeControlRequests());
+            read(service, extra, session);
+            assertEquals(8, service.activeControlRequests());
+
+            // Nine dispatcher callbacks remain queued: the revoked one must
+            // be rejected by tryStart, and the other eight retire normally.
+            for (int i = 0; i < 9; i++)
+                worker.submit(queue.next()).get(5, TimeUnit.SECONDS);
             assertEquals(0, service.activeControlRequests());
         }
     }
