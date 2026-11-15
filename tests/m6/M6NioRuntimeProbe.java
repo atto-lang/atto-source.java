@@ -1,6 +1,9 @@
 // Executed host-JVM / Native Image M6 NIO+carrier+supervisor conformance subset.
 import java.nio.ByteBuffer;
 import java.nio.channels.Pipe;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -53,6 +56,32 @@ public final class M6NioRuntimeProbe {
             require(rt.request_stop(target) && rt.await_terminal(target, 10_000), "NIO actor stop");
             AttoM6Runtime.check_conservation(rt.snapshot(target));
             System.out.println("M6_NIO_READ_ONE_SHOT_BACKPRESSURE=PASS");
+        }
+    }
+
+    private static void nio_loopback_socket_eof() throws Exception {
+        try (var rt = new AttoM6Runtime(2, 8);
+             var server = ServerSocketChannel.open()) {
+            server.bind(new InetSocketAddress("127.0.0.1", 0));
+            try (var client = SocketChannel.open(server.getLocalAddress());
+                 var accepted = server.accept()) {
+                AtomicLong sum = new AtomicLong();
+                var target = rt.spawn("loopback", 4, sum::addAndGet);
+                rt.register_read(accepted, target);
+                ByteBuffer body = ByteBuffer.wrap(new byte[] {20, 22});
+                while (body.hasRemaining()) client.write(body);
+                until(() -> rt.snapshot(target).completed() == 2, "TCP loopback delivery");
+                client.close();
+                until(() -> rt.reactor_snapshot().eof() == 1, "TCP EOF cancellation");
+                var io = rt.reactor_snapshot();
+                require(io.registrations() == 0 && io.bytesAdmitted() == 2 &&
+                    io.bytesRejected() == 0 && sum.get() == 42,
+                    "TCP readiness/EOF/resource close failed: " + io);
+                require(!accepted.isOpen(), "EOF left host descriptor registered");
+                require(rt.request_stop(target) && rt.await_terminal(target, 10_000), "TCP actor STOP");
+                AttoM6Runtime.check_conservation(rt.snapshot(target));
+            }
+            System.out.println("M6_NIO_LOOPBACK_SOCKET_EOF=PASS");
         }
     }
 
@@ -191,6 +220,7 @@ public final class M6NioRuntimeProbe {
     public static void main(String[] args) throws Exception {
         require(args.length == 0, "no external guest source accepted");
         nio_and_backpressure();
+        nio_loopback_socket_eof();
         strict_control_before_data_resume();
         control_and_shutdown();
         pooled_serial_actor_and_neighbor();
