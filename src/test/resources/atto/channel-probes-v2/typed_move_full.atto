@@ -1,0 +1,15 @@
+// Full returns the very same move-only owner. Original binding has moved.
+pub routine main(): void {
+  val Channel<Array<int>> ch = Channel.new<Array<int>>(1);
+  writech ch, [1, 2];
+  val Array<int> payload = [7, 8];
+  val TryWriteResult<Array<int>> result = try writech ch, rt take payload;
+  match result over
+    on Full(recovered) -> {
+      stdio.stdout.write(recovered[0]);
+    }
+    on Accepted -> { stdio.stdout.write("bad-accepted"); }
+    on Closed(recovered) -> { stdio.stdout.write("bad-closed"); }
+  end
+  return;
+}
