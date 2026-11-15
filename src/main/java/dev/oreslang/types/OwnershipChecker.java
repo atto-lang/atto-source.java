@@ -604,6 +604,9 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(value.type)) {
                 throw error("guard-bearing values cannot be discarded; bind the result with val and release/await it");
             }
+            if (isTryWriteResult(value.type)) {
+                throw error("try writech result cannot be discarded: Full/Closed must preserve the rejected owned payload; bind and match the result");
+            }
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
