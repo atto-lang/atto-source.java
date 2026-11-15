@@ -34,6 +34,7 @@ final class OwnershipBangAliasesTest {
         sameAst("rt share foo", "share! foo", "share!foo");
         sameAst("rt mut borrow foo", "mut borrow! foo", "mut borrow!foo");
         sameAst("rt mut borrow foo", "borrow! mut foo", "borrow!mut foo");
+        sameAst("rt mut borrow(foo)", "borrow! mut (foo)", "borrow!mut(foo)");
         sameAst("rt borrow mut foo", "borrow! mut foo", "borrow!mut foo");
         sameAst("rt mut borrow foo.bar", "borrow! mut foo.bar", "borrow!mut foo.bar");
         assertThrows(RuntimeException.class, () -> source("mut borrow! mut foo"),
