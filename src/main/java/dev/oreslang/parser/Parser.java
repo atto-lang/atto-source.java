@@ -1186,6 +1186,22 @@ public final class Parser {
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
+        // 'receives' and 'sends' are contextual actor-header keywords. Do
+        // not steal existing method, local or field identifiers in unrelated
+        // syntax; declaration order is arbitrary but duplicates are errors.
+        Ast.TypeRef receives = null;
+        Ast.TypeRef sends = null;
+        while (isContextualIdentifier("receives") || isContextualIdentifier("sends")) {
+            Token clause = advance();
+            Ast.TypeRef declared = parseTypeRef();
+            if (clause.lexeme().equals("receives")) {
+                if (receives != null) throw error(clause, "duplicate actor receives clause");
+                receives = declared;
+            } else {
+                if (sends != null) throw error(clause, "duplicate actor sends clause");
+                sends = declared;
+            }
+        }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
@@ -1449,7 +1465,7 @@ public final class Parser {
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency),
-                sealedStateFields);
+                sealedStateFields, new Ast.ActorMessageContract(receives, sends));
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
