@@ -67,6 +67,78 @@ final class OwnershipBangAliasesTest {
     }
 
     @Test
+    void bangCopyAndShareCannotCloneMoveOnlyOwners() {
+        String source = """
+                define class Item as
+                  pub val int value = 42;
+                end
+                fnc main(): int {
+                  val Item item = new Item();
+                  return %s.value;
+                }
+                """;
+        for (String operation : new String[]{"copy", "share"}) {
+            for (String spelling : new String[]{"rt " + operation + " item",
+                    operation + "! item", operation + "!item"}) {
+                RuntimeException error = assertThrows(RuntimeException.class,
+                        () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
+                        spelling);
+                assertTrue(error.getMessage().contains("move-only")
+                                || error.getMessage().contains("non-Copy"),
+                        spelling + ": " + error.getMessage());
+            }
+        }
+    }
+
+    @Test
+    void bangTakeMustInvalidateTheMovedOwner() {
+        String source = """
+                define class Item as
+                  pub val int value = 42;
+                end
+                fnc main(): int {
+                  let Item item = new Item();
+                  val Item moved = %s;
+                  return item.value;
+                }
+                """;
+        for (String spelling : new String[]{"rt take item", "take! item", "take!item"}) {
+            RuntimeException error = assertThrows(RuntimeException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
+                    spelling);
+            assertTrue(error.getMessage().toLowerCase().contains("mov"),
+                    spelling + ": " + error.getMessage());
+        }
+    }
+
+    @Test
+    void bangBorrowCannotEscapeItsLocalLifetime() {
+        String source = """
+                define class Item as
+                  pub val int value = 42;
+                end
+                fnc leak(): borrow Item {
+                  let Item item = new Item();
+                  return %s;
+                }
+                """;
+        for (String spelling : new String[]{"rt borrow item", "borrow! item", "borrow!item"}) {
+            RuntimeException error = assertThrows(RuntimeException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
+                    spelling);
+            assertTrue(error.getMessage().toLowerCase().contains("outlive")
+                            || error.getMessage().toLowerCase().contains("borrow"),
+                    spelling + ": " + error.getMessage());
+        }
+    }
+
+    @Test
+    void contiguousInequalityIsNotAnOwnershipPrefix() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                "fnc main(): bool { val int copy = 1; return copy!eq 2; }"));
+    }
+
+    @Test
     void bangMutBorrowDoesNotBypassAliasingCheck() {
         String source = """
                 define class Item as
