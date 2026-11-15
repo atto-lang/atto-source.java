@@ -3241,8 +3241,13 @@ public final class ActorRuntime implements AutoCloseable {
                 M message,
                 ActorRouteCoordinatorV1<HotRoutePhysical<M>>.PhysicalCompletion receipt) {
             requireSupervisorContext("dispatch a managed physical actor route");
-            Objects.requireNonNull(receipt, "exact physical completion receipt")
-                    .claimPhysicalAdmission(this);
+            // A missing receipt is an attempt to mint physical admission without
+            // the coordinator: deny it as an authority failure, not a bug.
+            if (receipt == null) {
+                throw new SecurityException(
+                        "managed physical route dispatch requires the exact coordinator completion receipt");
+            }
+            receipt.claimPhysicalAdmission(this);
             sendWithHotRoutePermit(ref, message, permit);
         }
 
