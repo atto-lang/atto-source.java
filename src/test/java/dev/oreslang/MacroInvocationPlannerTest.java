@@ -1718,13 +1718,13 @@ final class MacroInvocationPlannerTest {
                             return quote(value);
                         }
                         fnc answer() -> int {
-                            return literal!(const 7 % 0);
+                            return literal!(const 7 / 0);
                         }
                         """));
 
         assertTrue(failure.getMessage().contains("not a valid compile-time constant"),
                 failure::toString);
-        assertTrue(failure.getMessage().contains("remainder by zero"),
+        assertTrue(failure.getMessage().contains("non-finite compile-time arithmetic"),
                 failure::toString);
         assertTrue(failure.getMessage().contains("runtime evaluation fallback is forbidden"),
                 failure::toString);

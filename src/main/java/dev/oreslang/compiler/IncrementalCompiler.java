@@ -29,6 +29,8 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    // Never reuse a legacy-checked unit as strict-AOT source admission evidence.
+    private final Map<String, CompiledUnit> strictAttoCache = new LinkedHashMap<>();
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -37,8 +39,31 @@ public final class IncrementalCompiler {
     public synchronized BuildResult compile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
+        return compileWithProfile(sources, importResolutions, false);
+    }
+
+    /**
+     * Full-graph strict AttoLang front-end admission, not machine-code emission.
+     * Every supplied unit is parsed under the same profile. Imported external
+     * units with no supplied strict source are rejected, not trusted by name.
+     */
+    public synchronized BuildResult compileStrictAtto(Map<String, String> sources) {
+        return compileStrictAtto(sources, Map.of());
+    }
+
+    public synchronized BuildResult compileStrictAtto(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions) {
+        return compileWithProfile(sources, importResolutions, true);
+    }
+
+    private BuildResult compileWithProfile(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            boolean strictAtto) {
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
         if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
+        Map<String, CompiledUnit> selectedCache = strictAtto ? strictAttoCache : cache;
 
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
@@ -57,13 +82,40 @@ public final class IncrementalCompiler {
         // neither unit is recursively compiled while discovering the other.
         for (Map.Entry<String, String> entry : normalized.entrySet()) {
             hashes.put(entry.getKey(), digest(entry.getValue()));
-            Ast.Program program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
+            final Ast.Program program;
+            try {
+                program = AnnotationExpander.expand(strictAtto
+                        ? Parser.parseStrictAtto(entry.getValue())
+                        : Parser.parse(entry.getValue()));
+            } catch (IllegalArgumentException invalid) {
+                throw new SourceUnitDiagnosticException(entry.getKey(), "", "", invalid);
+            }
             parsed.put(entry.getKey(), program);
             abiHashes.put(entry.getKey(), abiDigest(program));
         }
 
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
+        if (strictAtto) {
+            for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
+                String unitId = entry.getKey();
+                for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                    final String target;
+                    try {
+                        target = ImportGraph.resolveImportUnitId(
+                                unitId, imported, parsed.keySet(), normalizedImportResolutions);
+                    } catch (IllegalArgumentException invalid) {
+                        throw new SourceUnitDiagnosticException(unitId, "", "", invalid);
+                    }
+                    if (target == null) {
+                        throw new SourceUnitDiagnosticException(unitId, "", "",
+                                new IllegalArgumentException(
+                                        "ATTO_STRICT_IMPORT_GRAPH_UNVERIFIED: unresolved import '"
+                                        + imported.path() + "' needs a supplied strict-profile source unit"));
+                    }
+                }
+            }
+        }
         ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
         Map<String, Set<String>> dependencies =
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
@@ -72,7 +124,7 @@ public final class IncrementalCompiler {
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
-            CompiledUnit previous = cache.get(id);
+            CompiledUnit previous = selectedCache.get(id);
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
             if (sourceChanged || depsChanged) dirty.add(id);
@@ -101,8 +153,8 @@ public final class IncrementalCompiler {
         LinkedHashSet<String> reused = new LinkedHashSet<>();
 
         for (String id : normalized.keySet()) {
-            if (!dirty.contains(id) && cache.containsKey(id)) {
-                next.put(id, cache.get(id));
+            if (!dirty.contains(id) && selectedCache.containsKey(id)) {
+                next.put(id, selectedCache.get(id));
                 reused.add(id);
                 continue;
             }
@@ -116,14 +168,20 @@ public final class IncrementalCompiler {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
                                 MacroSourceUnitIdentity.attach(
-                                        Parser.parse(normalized.get(id)), id),
-                                linked.classes(), linked.aliases(), contracts);
+                                        strictAtto
+                                                ? Parser.parseStrictAtto(normalized.get(id))
+                                                : Parser.parse(normalized.get(id)),
+                                        id),
+                                linked.classes(), linked.aliases(), contracts, strictAtto);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
-                        checked, linked.classes(), analysis.shortInferredAliases());
+                        checked, linked.ownershipClasses(), analysis.shortInferredAliases());
             } catch (IllegalArgumentException invalid) {
-                throw new IllegalArgumentException(
-                        "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
+                Ast.Program sourceProgram = parsed.get(id);
+                String moduleName = sourceProgram.modules().size() == 1
+                        ? sourceProgram.modules().get(0).name() : "";
+                throw new SourceUnitDiagnosticException(
+                        id, moduleName, sourceProgram.namespace(), invalid);
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
@@ -138,8 +196,8 @@ public final class IncrementalCompiler {
             rebuilt.add(id);
         }
 
-        cache.keySet().retainAll(normalized.keySet());
-        cache.putAll(next);
+        selectedCache.keySet().retainAll(normalized.keySet());
+        selectedCache.putAll(next);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
@@ -149,7 +207,8 @@ public final class IncrementalCompiler {
 
     private record LinkedClasses(
             Map<String, Ast.ClassDecl> classes,
-            Map<String, Map<String, Ast.TypeAliasDecl>> aliases) { }
+            Map<String, Map<String, Ast.TypeAliasDecl>> aliases,
+            Map<String, Ast.ClassDecl> ownershipClasses) { }
 
     private static LinkedClasses linkedPublicClasses(
             String unitId,
@@ -158,14 +217,49 @@ public final class IncrementalCompiler {
             Map<String, Map<String, String>> importResolutions) {
         LinkedHashMap<String, Ast.ClassDecl> linked = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, Ast.TypeAliasDecl>> aliases = new LinkedHashMap<>();
+        LinkedHashMap<String, Ast.ClassDecl> ownershipClasses = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : importer.imports()) {
-            if (imported.kind() != Ast.ImportKind.CLASS || imported.wildcard()) continue;
+            if (imported.wildcard() || (imported.kind() != Ast.ImportKind.CLASS
+                    && imported.kind() != Ast.ImportKind.MODULE)) continue;
             String sourceId = ImportGraph.resolveImportUnitId(
                     unitId, imported, parsed.keySet(), importResolutions);
             if (sourceId == null) continue; // external resolution remains opaque
             Ast.Program source = parsed.get(sourceId);
             if (source == null) {
                 throw new IllegalArgumentException("missing linked class source '" + sourceId + "'");
+            }
+            if (imported.kind() == Ast.ImportKind.MODULE) {
+                // The validated import graph establishes source-unit identity.
+                // Link public non-actor layouts only under the explicit module
+                // qualifier; never expose a short class name or a sibling module.
+                for (String moduleName : imported.names()) {
+                    Ast.ModuleDecl selected = null;
+                    for (Ast.ModuleDecl module : source.modules()) {
+                        if (!module.name().equals(moduleName)) continue;
+                        if (selected != null) {
+                            throw new IllegalArgumentException(
+                                    "ambiguous linked module '" + moduleName + "'");
+                        }
+                        selected = module;
+                    }
+                    if (selected == null) {
+                        throw new IllegalArgumentException(
+                                "missing linked module '" + moduleName + "'");
+                    }
+                    String prefix = ImportRules.localName(imported, moduleName) + ".";
+                    for (Ast.Decl declaration : selected.declarations()) {
+                        if (declaration instanceof Ast.ClassDecl klass
+                                && klass.visibility() == Ast.Visibility.PUBLIC
+                                && klass.actorKind() == Ast.ActorKind.NONE) {
+                            String qualified = prefix + klass.name();
+                            if (ownershipClasses.putIfAbsent(qualified, klass) != null) {
+                                throw new IllegalArgumentException(
+                                        "ambiguous linked public module class '" + qualified + "'");
+                            }
+                        }
+                    }
+                }
+                continue;
             }
             for (String name : imported.names()) {
                 Ast.ClassDecl resolved = null;
@@ -198,13 +292,19 @@ public final class IncrementalCompiler {
                                     + "' in source unit '" + unitId + "'");
                 }
                 aliases.put(name, classAliases);
+                if (ownershipClasses.putIfAbsent(name, resolved) != null) {
+                    throw new IllegalArgumentException(
+                            "ambiguous linked ownership class '" + name + "'");
+                }
             }
         }
-        return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
+        return new LinkedClasses(
+                Map.copyOf(linked), Map.copyOf(aliases), Map.copyOf(ownershipClasses));
     }
 
     public synchronized void clear() {
         cache.clear();
+        strictAttoCache.clear();
     }
 
     /**
@@ -447,6 +547,10 @@ public final class IncrementalCompiler {
             for (Ast.InterfaceMember member : iface.members()) {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
                     memberEntries.add(interfaceFunctionAbi(fn));
+                } else if (member instanceof Ast.InterfaceActorDecl actor) {
+                    // A required nominal actor is contract ABI even though it
+                    // contributes no ordinary module-value member.
+                    memberEntries.add(" contract-actor " + actor.name() + "\n");
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
                     String requirement = iface.moduleContract()
                             ? (field.bindingKind() == null ? "readable"

@@ -597,4 +597,48 @@ final class TreeShakerTest {
                 Ast.CheckedStructuralFieldDomain.lookup(indexed.receiver()),
                 "optimizer must transfer the checked structural field domain");
     }
+
+    @Test
+    void treeShakingPreservesTypedValueMatchArmResultAndPrefix() {
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc helper(): int {
+                  return match<int> true over
+                    on true -> ::
+                      val int base = 41;
+                      return base + 1;
+                    end
+                    on false -> 0;
+                  end;
+                }
+
+                pub fnc entry(): int {
+                  return helper();
+                }
+                """, BuildOptions.library(Map.of()));
+
+        assertTrue(result.retained(Parser.ROOT_MODULE + ".helper"),
+                "block value-match helpers must not be constant-inlined until statement-aware substitution is proven");
+
+        Ast.FunctionDecl helper = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("helper"))
+                .findFirst()
+                .orElseThrow();
+
+        Ast.ReturnStmt returned = assertInstanceOf(
+                Ast.ReturnStmt.class, helper.body().getFirst());
+        Ast.MatchExpr matched = assertInstanceOf(
+                Ast.MatchExpr.class, returned.value());
+        Ast.MatchValueArm selected = matched.arms().getFirst();
+
+        assertEquals(1, selected.prefixStatements().size());
+        assertInstanceOf(Ast.BindingStmt.class, selected.prefixStatements().getFirst());
+        assertInstanceOf(Ast.BinaryExpr.class, selected.value());
+        assertTrue(selected.prefixStatements().stream()
+                        .noneMatch(Ast.ReturnStmt.class::isInstance),
+                "ARM_RESULT must remain a typed MatchValueArm value, not an ordinary ReturnStmt");
+    }
+
 }
