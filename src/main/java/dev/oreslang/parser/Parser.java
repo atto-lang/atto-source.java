@@ -5102,6 +5102,12 @@ public final class Parser {
             if (mutableBorrow) throw error(previous(), "duplicate mutable borrow qualifier");
             mutableBorrow = true;
         }
+        // Check explicitly before descending into the operand. Otherwise a
+        // malformed borrow! mut mut item can fail as unrelated unary syntax
+        // and masquerade as a targeted borrow-checker negative test.
+        if (mutableBorrow && check(MUT)) {
+            throw error(peek(), "duplicate mutable borrow qualifier");
+        }
         Ast.Expr operand = parseUnary(); // postfix binds more tightly than ownership
         return mutableBorrow ? new Ast.UnaryExpr("&mut", operand)
                 : new Ast.RuntimeCallExpr(operation, List.of(operand));
