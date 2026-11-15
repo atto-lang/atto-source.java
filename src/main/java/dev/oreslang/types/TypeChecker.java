@@ -1966,11 +1966,6 @@ public final class TypeChecker {
                 continue; // Static factory witness is not an instance shape.
             }
             if (interfaceRef.name().equals("StreamOperator")) {
-                if (klass.actorKind() == Ast.ActorKind.NONE) {
-                    throw new IllegalArgumentException(
-                            "StreamOperator<I,O> is an actor-only implements marker; class '"
-                                    + klass.name() + "' cannot claim actor transport capabilities");
-                }
                 streamPortsForClass(klass, nominalClassType(klass));
                 continue;
             }

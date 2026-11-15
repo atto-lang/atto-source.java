@@ -14,6 +14,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * it does not introduce a second actor state, mailbox or scheduler.
  */
 final class ActorHierarchyAdmissionTest {
+    private static void assertLexicalBoundary(org.junit.jupiter.api.function.Executable check) {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, check);
+        assertTrue(error.getMessage().contains("cannot use same-file"), error.getMessage());
+    }
+
+    /**
+     * A callable/stateful contract must never become an actor RPC surface. On
+     * main the same-file actor lexical boundary rejects it first; the
+     * transitive marker-shape diagnostic is the fallback once imported
+     * contracts reach actor conformance.
+     */
+    private static void assertActorContractRejected(IllegalArgumentException error) {
+        String message = error.getMessage();
+        assertTrue(message.contains("cannot use same-file")
+                        || message.contains("marker traits/interfaces"),
+                message);
+    }
+
     @Test
     void emptyActorDeclarationAndSingleActorParentAreAdmitted() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
@@ -28,9 +46,15 @@ final class ActorHierarchyAdmissionTest {
                 """)));
     }
 
+    // Main's actor lexical boundary (commits e195703979, f0f75ad8a1) forbids an actor
+    // from naming any same-file interface/trait, and imported interfaces are
+    // not yet linkable as actor conformance targets. Until they are, even a
+    // marker contract fails closed at the boundary before the transitive
+    // marker-shape check below can admit it; the shape check stays as
+    // defense in depth for when imported actor contracts are lowered.
     @Test
-    void actorMayConformToMarkerInterfaceAndTraitWithoutExtraSuperclass() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+    void sameFileMarkerInterfaceAndTraitStayBehindActorLexicalBoundary() {
+        assertLexicalBoundary(() -> TypeChecker.check(Parser.parse("""
                 define interface Identified as
                 end
                 define trait Traced as
@@ -53,8 +77,7 @@ final class ActorHierarchyAdmissionTest {
                           pub ping(): int { return 1; }
                         end
                         """)));
-        assertTrue(error.getMessage().contains("marker traits/interfaces"),
-                error.getMessage());
+        assertActorContractRejected(error);
     }
 
     @Test
@@ -68,8 +91,7 @@ final class ActorHierarchyAdmissionTest {
                           pub ping(): int { return 1; }
                         end
                         """)));
-        assertTrue(error.getMessage().contains("marker traits/interfaces"),
-                error.getMessage());
+        assertActorContractRejected(error);
     }
 
     @Test
@@ -82,8 +104,7 @@ final class ActorHierarchyAdmissionTest {
                         define actor A1 implements HasField as
                         end
                         """)));
-        assertTrue(error.getMessage().contains("marker traits/interfaces"),
-                error.getMessage());
+        assertActorContractRejected(error);
     }
 
     @Test
@@ -99,13 +120,12 @@ final class ActorHierarchyAdmissionTest {
                           pub ping(): int { return 1; }
                         end
                         """)));
-        assertTrue(error.getMessage().contains("including inherited members"),
-                error.getMessage());
+        assertActorContractRejected(error);
     }
 
     @Test
-    void inheritedEmptyMarkerInterfacesRemainValid() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+    void inheritedEmptyMarkerInterfacesStayBehindActorLexicalBoundary() {
+        assertLexicalBoundary(() -> TypeChecker.check(Parser.parse("""
                 define interface Parent as
                 end
                 define interface Child extends Parent as
@@ -184,7 +204,7 @@ final class ActorHierarchyAdmissionTest {
                         define class Pretender implements StreamOperator<int,int> as
                         end
                         """)));
-        assertTrue(error.getMessage().contains("actor-only implements marker"),
+        assertTrue(error.getMessage().contains("can only be implemented by actors"),
                 error.getMessage());
     }
 
