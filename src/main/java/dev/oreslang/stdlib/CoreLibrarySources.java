@@ -52,6 +52,14 @@ public final class CoreLibrarySources {
 
     private CoreLibrarySources() { }
 
+    /** Name the namespace the caller actually spelled; legacy aliases keep their diagnostic. */
+    private static String libraryDiagnostic(String importPath, String layer) {
+        String normalized = importPath.replace('\\', '/');
+        return normalized.startsWith("atto." + layer + "/")
+                ? "unknown compiler-owned atto." + layer + " module: "
+                : "unknown compiler-owned ores." + layer + " module (legacy alias of atto." + layer + "): ";
+    }
+
     /** Canonical atto.core namespace, retaining the ores.core alias. */
     public static boolean isOresCoreImport(String importPath) {
         if (importPath == null) return false;
@@ -118,7 +126,7 @@ public final class CoreLibrarySources {
         String relative = canonicalCoreRelativePath(importPath);
         if (!CORE_SOURCES.contains(relative)) {
             throw new IllegalArgumentException(
-                    "unknown compiler-owned atto.core module (or legacy ores.core alias): " + importPath);
+                    libraryDiagnostic(importPath, "core") + importPath);
         }
         return readPackagedSource(CORE_RESOURCE_PREFIX + relative, importPath);
     }
@@ -140,7 +148,7 @@ public final class CoreLibrarySources {
                         "unknown Oreslang core-library module: " + importPath);
             }
             throw new IllegalArgumentException(
-                    "unknown compiler-owned atto.std module (or legacy ores.std alias): " + importPath);
+                    libraryDiagnostic(importPath, "std") + importPath);
         }
         return readPackagedSource(STD_RESOURCE_PREFIX + relative, importPath);
     }
