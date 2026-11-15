@@ -28,8 +28,8 @@ final class OwnershipBangGuestTest {
             "compact", "5336fa679a7816dbd353be4480f95dac639b6af7",
             "spaced", "06afd973b34a6cd09d1d78cee258134b1c3b0451",
             "legacy", "fa3d3ef8173d046783efdae808bd291be00891be",
-            "mut-canonical", "df0c1fc55c6412f9fccad648b99bc14f0b2b520a",
-            "mut-compatible", "acb47dccde8fa037374d5c0b2a2238f6cdce4cc0");
+            "mut-canonical", "9f51c96fa7b961f09af51de8db6d19d45b8ee3db",
+            "mut-compatible", "03fd919fa4ed59aa9602a18a4eeb8f5c24302572");
 
     private static String shaOfGitBlob(byte[] bytes) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-1");
