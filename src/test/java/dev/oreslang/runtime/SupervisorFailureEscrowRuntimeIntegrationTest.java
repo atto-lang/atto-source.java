@@ -16,6 +16,65 @@ final class SupervisorFailureEscrowRuntimeIntegrationTest {
             new AtomicReference<>();
 
     @Test
+    void childFailureReachesEscrowWhileSupervisorDataMailboxIsFull() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var processed = new java.util.concurrent.atomic.AtomicInteger();
+        var defaults = IsolatePolicy.developer();
+        var policy = new IsolatePolicy(defaults.capabilities(), defaults.maxHeapBytes(),
+                2, defaults.maxWallTime());
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var bridge = new SupervisorFailureEscrowRuntimeBridgeV1(runtime);
+            ActorRuntime.ActorRef<String> supervisor = runtime.spawnPrivateTrusted(
+                    policy, ignored -> (message, turn) -> {
+                        if (message.equals("hold")) {
+                            entered.countDown();
+                            if (!release.await(10, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("test did not release DATA turn");
+                            }
+                        } else {
+                            processed.incrementAndGet();
+                        }
+                    });
+            ActorRuntime.ActorRef<String> child = runtime.spawnPrivate(
+                    ignored -> (message, turn) -> {
+                        throw new IllegalStateException("child failed");
+                    });
+            long parentId = bridge.attach(supervisor, null);
+            long childId = bridge.attach(child, supervisor);
+            try {
+                supervisor.send("hold");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                supervisor.send("data1");
+                supervisor.send("data2");
+                assertThrows(ActorRuntime.ActorMailboxFullException.class,
+                        () -> supervisor.send("overflow"));
+
+                child.send("fail");
+                assertThrows(ExecutionException.class, () -> child.done().get(5, TimeUnit.SECONDS));
+                assertEquals(1, bridge.pendingCount());
+                var delivery = bridge.deliver(childId);
+                assertNotNull(delivery);
+                assertEquals(parentId, delivery.controllerId());
+                assertEquals(supervisor.generation(), delivery.controllerGeneration());
+                assertEquals(childId, delivery.notice().failedId());
+                assertEquals(child.generation(), delivery.notice().failedGeneration());
+                assertEquals(0, processed.get());
+                assertThrows(ActorRuntime.ActorMailboxFullException.class,
+                        () -> supervisor.send("still-full"));
+                var commits = new java.util.concurrent.atomic.AtomicInteger();
+                assertTrue(bridge.commitAndAcknowledge(delivery, commits::incrementAndGet));
+                assertFalse(bridge.commitAndAcknowledge(delivery, commits::incrementAndGet));
+                assertEquals(1, commits.get());
+                assertEquals(0, bridge.pendingCount());
+                assertNull(bridge.deliver(childId));
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test
     void failedSupervisorPreservesDeliveredChildFailureAndFencesDescendants()
             throws Exception {
         CountDownLatch siblingSignal = new CountDownLatch(1);
