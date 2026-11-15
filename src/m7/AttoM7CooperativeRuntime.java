@@ -309,7 +309,7 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                 actor.inbox.size(), actor.active != null, actor.running,
                 actor.accepting, actor.retired, actor.controlsDelivered,
                 actor.lastControl, actor.maxConcurrent, actor.carriers.size(),
-                actor.active == null ? -1 : actor.active.resume_pc());
+                actor.active == null ? -1 : actor.running ? -2 : actor.active.resume_pc());
         }
     }
     public Queues queues() {
