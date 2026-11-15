@@ -127,6 +127,22 @@ public final class ChannelRuntime {
      * Write-only channel capability. It cannot read, close, or expose the
      * underlying bidirectional channel.
      */
+    /**
+     * Recoverable, non-registering write probe. A rejected payload remains
+     * owned by the caller. The compiler must move its ownership into this
+     * result only on Full/Closed, and into the channel only on Accepted.
+     */
+    public sealed interface TryWriteResult<T>
+            permits TryWriteResult.Accepted, TryWriteResult.Full, TryWriteResult.Closed {
+        record Accepted<T>() implements TryWriteResult<T> { }
+        record Full<T>(T value) implements TryWriteResult<T> {
+            public Full { Objects.requireNonNull(value, "rejected payload"); }
+        }
+        record Closed<T>(T value) implements TryWriteResult<T> {
+            public Closed { Objects.requireNonNull(value, "rejected payload"); }
+        }
+    }
+
     public static final class WriteChannel<T> {
         private final Channel<T> channel;
 
@@ -136,6 +152,10 @@ public final class ChannelRuntime {
 
         public boolean tryWrite(T value) {
             return channel.tryWrite(value);
+        }
+
+        public TryWriteResult<T> tryWriteResult(T value) {
+            return channel.tryWriteResult(value);
         }
 
         public OresFuture<Void> writeAsync(T value) {
@@ -296,6 +316,29 @@ public final class ChannelRuntime {
             return SelectSet.of(write(this, value))
                     .trySelect(SelectPolicy.PRIORITY)
                     .isPresent();
+        }
+
+        /**
+         * Typed immediate send result, sharing the existing linearizable
+         * select admission and returning the original payload on rejection.
+         * No waiter or pending write survives Full/Closed. Closed is decoded
+         * only from ChannelClosedException, not from arbitrary failures.
+         *
+         * This is the Java host primitive; source-level try writech currently
+         * uses the compatibility bool path until typed sum lowering lands.
+         */
+        public TryWriteResult<T> tryWriteResult(T value) {
+            requireValue(value);
+            try {
+                return tryWrite(value)
+                        ? new TryWriteResult.Accepted<>()
+                        : new TryWriteResult.Full<>(value);
+            } catch (java.util.concurrent.CompletionException failure) {
+                if (failure.getCause() instanceof ChannelClosedException) {
+                    return new TryWriteResult.Closed<>(value);
+                }
+                throw failure;
+            }
         }
 
         /**
