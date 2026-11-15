@@ -41,8 +41,10 @@ final class OwnershipBangGuestTest {
             Path file = ROOT.resolve(variant + ".atto");
             assertTrue(Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS), variant);
             assertFalse(Files.isSymbolicLink(file), variant);
+            long size = Files.size(file);
+            assertTrue(size <= 4096 && size > 20, "bounded .atto fixture: " + variant);
             byte[] bytes = Files.readAllBytes(file);
-            assertTrue(bytes.length <= 4096 && bytes.length > 20, variant);
+            assertEquals(size, bytes.length, "fixture size changed during read: " + variant);
             assertEquals(PINS.get(variant), shaOfGitBlob(bytes),
                     "reviewed Git blob drift for " + variant);
             String text = new String(bytes, StandardCharsets.UTF_8);
