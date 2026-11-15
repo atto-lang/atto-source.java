@@ -3,6 +3,7 @@
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.CancelledKeyException;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
@@ -303,19 +304,28 @@ public final class AttoM6Runtime implements AutoCloseable {
                 completion.complete(null);
             } catch (Throwable e) { completion.completeExceptionally(e); }
         };
-        if (!nioCommands.offer(request)) throw new IllegalStateException("NIO command queue full");
-        wake_reactor();
+        synchronized (gate) {
+            if (closing || stopping || reactorStopping || !reactor.isAlive())
+                throw new IllegalStateException("reactor stopping");
+            if (!nioCommands.offer(request))
+                throw new IllegalStateException("NIO command queue full");
+            wake_reactor();
+        }
         completion.get(5, TimeUnit.SECONDS);
     }
 
     public void cancel_read(SelectableChannel channel) throws Exception {
         CompletableFuture<Void> completion = new CompletableFuture<>();
-        if (!nioCommands.offer(() -> {
-            Registration reg = registrations.remove(channel);
-            if (reg != null) detach(reg);
-            completion.complete(null);
-        })) throw new IllegalStateException("NIO command queue full");
-        wake_reactor();
+        synchronized (gate) {
+            if (closing || stopping || reactorStopping || !reactor.isAlive())
+                throw new IllegalStateException("reactor stopping");
+            if (!nioCommands.offer(() -> {
+                Registration reg = registrations.remove(channel);
+                if (reg != null) detach(reg);
+                completion.complete(null);
+            })) throw new IllegalStateException("NIO command queue full");
+            wake_reactor();
+        }
         completion.get(5, TimeUnit.SECONDS);
     }
     private void detach(Registration r) {
@@ -358,7 +368,14 @@ public final class AttoM6Runtime implements AutoCloseable {
                 }
             }
             int interest = r.heldByte == null && has_space(r) ? SelectionKey.OP_READ : 0;
-            if (r.key.interestOps() != interest) r.key.interestOps(interest);
+            // An application may close a channel concurrently with readiness rearming.
+            // A cancelled key must retire only this registration, not kill the reactor.
+            try {
+                if (r.key.interestOps() != interest) r.key.interestOps(interest);
+            } catch (CancelledKeyException cancelled) {
+                detach(r);
+                it.remove();
+            }
         }
     }
     private void on_read(Registration r) {
@@ -392,16 +409,25 @@ public final class AttoM6Runtime implements AutoCloseable {
             while (!reactorStopping) {
                 drain_commands();
                 rearm_all();
-                int n = selector.select(250);
-                if (n > 0) {
-                    Iterator<SelectionKey> it = selector.selectedKeys().iterator();
-                    int budget = 64;
-                    while (it.hasNext()) {
-                        SelectionKey key = it.next(); it.remove();
-                        if (key.isValid() && key.isReadable()) on_read((Registration) key.attachment());
-                        if (--budget == 0) { selector.wakeup(); break; }
+                selector.select(250);
+                // Selected keys remain in the set across select() calls. They must
+                // be drained even when the subsequent select() returns zero;
+                // otherwise a >64-ready-key batch can starve its remaining keys.
+                Iterator<SelectionKey> it = selector.selectedKeys().iterator();
+                int budget = 64;
+                while (it.hasNext() && budget-- > 0) {
+                    SelectionKey key = it.next();
+                    it.remove();
+                    try {
+                        if (key.isValid() && key.isReadable())
+                            on_read((Registration) key.attachment());
+                    } catch (CancelledKeyException cancelled) {
+                        Registration r = (Registration) key.attachment();
+                        if (r != null && registrations.remove(r.channel) == r)
+                            detach(r);
                     }
                 }
+                if (it.hasNext()) selector.wakeup();
             }
         } catch (IOException e) { throw new IllegalStateException("reactor I/O failure", e); }
         finally {
@@ -412,12 +438,15 @@ public final class AttoM6Runtime implements AutoCloseable {
         }
     }
     public ReactorSnapshot reactor_snapshot() {
-        if (reactorStopping) throw new IllegalStateException("reactor already stopping");
         // Registration count is inspected through a selector-owner command.
         CompletableFuture<Integer> number = new CompletableFuture<>();
-        if (!nioCommands.offer(() -> number.complete(registrations.size())))
-            throw new IllegalStateException("NIO command queue full");
-        wake_reactor();
+        synchronized (gate) {
+            if (closing || stopping || reactorStopping || !reactor.isAlive())
+                throw new IllegalStateException("reactor stopping");
+            if (!nioCommands.offer(() -> number.complete(registrations.size())))
+                throw new IllegalStateException("NIO command queue full");
+            wake_reactor();
+        }
         try {
             return new ReactorSnapshot(ioAdmitted.get(), ioHeld.get(), ioEof.get(),
                 ioErrors.get(), wakes.get(), ioRejected.get(),
@@ -445,9 +474,12 @@ public final class AttoM6Runtime implements AutoCloseable {
             if (!await_terminal(ref, 30_000))
                 throw new IllegalStateException("refusing to reclaim live actor " + ref.name());
         }
-        synchronized (gate) { stopping = true; gate.notifyAll(); }
-        reactorStopping = true;
-        wake_reactor();
+        synchronized (gate) {
+            stopping = true;
+            reactorStopping = true;
+            gate.notifyAll();
+            wake_reactor();
+        }
         reactor.join(10_000);
         supervisor.join(10_000);
         for (Thread worker : carriers) worker.join(10_000);
