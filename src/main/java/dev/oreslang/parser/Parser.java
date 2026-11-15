@@ -4101,10 +4101,10 @@ public final class Parser {
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseConditionalBraceBody();
-            // Canonical brace-style statements end at '}', while legacy source
-            // retains its historical mandatory 'fi' delimiter.
-            if (strictConditionalSyntax) match(FI);
-            else consume(FI, "expected 'fi' to close if");
+            // Canonical brace-style statements end at '}' and MUST NOT
+            // consume the fi belonging to any enclosing keyword-delimited
+            // do-if. Legacy entry points still require their historical fi.
+            if (!strictConditionalSyntax) consume(FI, "expected 'fi' to close if");
             return lowerConditionBindings(branches, bindings, elseBody);
         }
 
@@ -4145,6 +4145,13 @@ public final class Parser {
 
     private List<Ast.Stmt> parseConditionalBraceBody() {
         consume(LBRACE, "expected '{' before conditional branch");
+        // The canonical brace spelling owns its own delimiter. Never accept
+        // a surrounding do-if's 'fi' as a substitute for a missing '}'.
+        if (strictConditionalSyntax) {
+            List<Ast.Stmt> body = parseUntil(RBRACE);
+            consume(RBRACE, "expected '}' to close brace-style if branch");
+            return body;
+        }
         List<Ast.Stmt> body = parseUntil(RBRACE, FI);
         if (match(RBRACE) && check(FI)) {
             Token redundant = previous();
