@@ -49,6 +49,14 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public interface Callback<T> {
         void resolve(T value);
+        /**
+         * Atomically publish a resource-bearing result. False means consumer
+         * cancellation won and caller must retire the unpublished resource.
+         */
+        default boolean tryResolve(T value) {
+            resolve(value);
+            return true;
+        }
         void reject(Throwable failure);
         void cancel();
         boolean isDone();
@@ -227,8 +235,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public static <T> OresFuture<T> fromCallback(
             Consumer<? super Callback<T>> registrar) {
+        return fromCallback(registrar, () -> { });
+    }
+
+    /**
+     * External async operation adapter with an exact-once physical
+     * cancellation hook. A NIO socket operation closes the owning channel
+     * when its future is cancelled, rather than leaving a dangling read/write.
+     * Late completion is ignored by the same single-shot callback gate.
+     */
+    public static <T> OresFuture<T> fromCallback(
+            Consumer<? super Callback<T>> registrar, Runnable cancelHook) {
         Objects.requireNonNull(registrar, "registrar");
-        OresFuture<T> future = new OresFuture<>();
+        Objects.requireNonNull(cancelHook, "cancelHook");
+        OresFuture<T> future = new OresFuture<>(cancelHook);
         AtomicBoolean callbackClaimed = new AtomicBoolean();
 
         Callback<T> completion = new Callback<>() {
@@ -248,11 +268,18 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
             @Override
             public void resolve(T value) {
-                if (!claim("resolve")) return;
-                if (!future.completeFromRuntime(value) && !future.isCancelled()) {
+                tryResolve(value);
+            }
+
+            @Override
+            public boolean tryResolve(T value) {
+                if (!claim("resolve")) return false;
+                boolean accepted = future.completeFromRuntime(value);
+                if (!accepted && !future.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before resolve");
                 }
+                return accepted;
             }
 
             @Override
