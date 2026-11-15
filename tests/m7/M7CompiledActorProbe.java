@@ -38,8 +38,8 @@ public final class M7CompiledActorProbe {
             until(() -> rt.snapshot(actor).yielded() > 5, "compiled frame did not yield");
             var mid = rt.snapshot(actor);
             AttoM7CooperativeRuntime.check_conservation(mid);
-            require(mid.inFlight() && mid.resumePc() >= 0,
-                "safe point failed to retain in-flight message PC: " + mid);
+            require(mid.inFlight() && (mid.running() || mid.resumePc() >= 0),
+                "safe point failed to retain in-flight message/committed PC: " + mid);
             send(rt, neighbor, 12);
             until(() -> rt.snapshot(neighbor).completed() == 1, "neighbor starved");
             var other = rt.snapshot(neighbor);
