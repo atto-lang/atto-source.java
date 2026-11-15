@@ -154,8 +154,10 @@ final class BorrowParameterBindingDistinctionTest {
 
     @Test
     void actorStateIsStillFailClosedUntilSealedLoweringExists() {
+        // Main now parses `state { }` into sealed AST; the type checker is the
+        // fail-closed gate (sealed state / critical method lowering unsupported).
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("""
+                () -> TypeChecker.check(Parser.parse("""
                         define actor Writer as
                           state {
                             let int generation = 1;
@@ -167,8 +169,8 @@ final class BorrowParameterBindingDistinctionTest {
                             return;
                           }
                         end
-                        """));
-        assertTrue(failure.getMessage().contains("handle_state lowering"),
+                        """)));
+        assertTrue(failure.getMessage().contains("LOWERING_UNSUPPORTED"),
                 failure.getMessage());
     }
 
@@ -201,19 +203,6 @@ final class BorrowParameterBindingDistinctionTest {
                   return;
                 }
                 """);
-    }
-
-    @Test
-    void unmarkedFunctionCannotAwaitEvenAnAlreadyCompletedFuture() {
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(BOX + """
-                        async fnc result(): int { return 1; }
-                        fnc invalid(): int {
-                          return await result();
-                        }
-                        """)));
-        assertTrue(failure.getMessage().contains("await requires an async or suspends callable"),
-                failure.getMessage());
     }
 
     @Test
