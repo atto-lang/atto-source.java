@@ -335,6 +335,106 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void qualifiedModuleImportCanConstructPublicClass() throws Exception {
+        Path library = temp.resolve("module-library.ores");
+        Files.writeString(library, """
+                define module model as
+                  pub define class PublicBox as
+                    val int value;
+                    pub constructor(int value) {
+                      self.value = value;
+                    }
+                    pub get(): int {
+                      return self.value;
+                    }
+                  end
+
+                  pub define class FactoryOnly as
+                    val int value = 1;
+                    private constructor() {
+                      return;
+                    }
+                  end
+
+                  define class HiddenBox as
+                    val int value = 2;
+                  end
+                end
+                """);
+
+        Path publicMain = temp.resolve("qualified-module-public.ores");
+        Files.writeString(publicMain, """
+                import module model from "./module-library.ores";
+
+                pub routine main(): void {
+                  val box = new model.PublicBox(42);
+                  stdio.stdout.write(box.get());
+                  return;
+                }
+                """);
+        assertEquals("42", runLinked(publicMain));
+
+        Path privateConstructorMain = temp.resolve("qualified-module-private-constructor.ores");
+        Files.writeString(privateConstructorMain, """
+                import module model from "./module-library.ores";
+
+                pub routine main(): void {
+                  val box = new model.FactoryOnly();
+                  return;
+                }
+                """);
+        Exception privateConstructor = assertThrows(
+                Exception.class,
+                () -> runLinked(privateConstructorMain));
+        assertTrue(privateConstructor.getMessage().contains("constructor")
+                || (privateConstructor.getCause() != null
+                    && String.valueOf(privateConstructor.getCause().getMessage()).contains("constructor")));
+
+        Path privateClassMain = temp.resolve("qualified-module-private-class.ores");
+        Files.writeString(privateClassMain, """
+                import module model from "./module-library.ores";
+
+                pub routine main(): void {
+                  val box = new model.HiddenBox();
+                  return;
+                }
+                """);
+        Exception privateClass = assertThrows(
+                Exception.class,
+                () -> runLinked(privateClassMain));
+        String privateClassMessage = privateClass.getMessage() + " "
+                + (privateClass.getCause() == null ? "" : privateClass.getCause().getMessage());
+        assertTrue(privateClassMessage.contains("HiddenBox"));
+        assertTrue(privateClassMessage.contains("public")
+                || privateClassMessage.contains("export")
+                || privateClassMessage.contains("unknown type"));
+    }
+
+    @Test
+    void explicitNewableFactoryExecutesOnTheStaticClassPath() throws Exception {
+        String output = run("""
+                define pub class Cart implements Newable[Cart] as
+                  val int quantity = 42;
+
+                  pub fnc new(): Cart {
+                    return new Cart();
+                  }
+
+                  pub get(): int {
+                    return self.quantity;
+                  }
+                end
+
+                pub routine main(): void {
+                  val cart = Cart.new();
+                  stdio.stdout.write(cart.get());
+                  return;
+                }
+                """);
+        assertEquals("42", output);
+    }
+
+    @Test
     void actorsRejectClassConstructors() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
