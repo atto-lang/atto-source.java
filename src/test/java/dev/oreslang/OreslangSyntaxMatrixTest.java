@@ -78,6 +78,8 @@ final class OreslangSyntaxMatrixTest {
         new Sample("control/defer", "fnc f():void{defer stdio.println(\"done\");return;}"),
         new Sample("channels/read-write", "fnc f():void{val Channel<int> c=Channel.new<int>(1);writech c,1;val n=readch c;return;}"),
         new Sample("channels/select-default", "fnc f():void{do select {default: {return;}}return;}"),
+        new Sample("control/match-default", "fnc f(int n):void{match n over on 1 -> {return;} default -> {return;} end}"),
+        new Sample("control/match-wildcard", "fnc f(int n):void{match n over on 1 -> {return;} on _ -> {return;} end}"),
         new Sample("destructure/tuple", "fnc f():void{[const a,_,let b]=(1,2,3);return;}")
     );
     private static final List<Sample> PARSE_BAD = List.of(
@@ -91,7 +93,6 @@ final class OreslangSyntaxMatrixTest {
         new Sample("bindings/infer-unsupported", "fnc f():void{const T x=infer<T> bad();return;}"),
         new Sample("bindings/reserved-new", "fnc f():void{val new=1;return;}"),
         new Sample("control/if-end", "fnc f():void{if true; then return; end}"),
-        new Sample("control/match-default", "fnc f(int n):void{match n over default -> {return;} end}"),
         new Sample("control/match-no-on", "fnc f(int n):void{match n over 1 -> {return;} end}"),
         new Sample("control/match-list", "fnc f(List<int> xs):void{match xs over on [_,_] -> {return;} end}")
     );

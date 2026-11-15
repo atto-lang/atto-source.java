@@ -878,7 +878,18 @@ public final class OresScheduler implements AutoCloseable {
                 boolean timedAdmission, Runnable onNotificationDrained) {
             this.task = task;
             long execution = allocatePositiveId(nextExecution, "execution");
-            this.executionContext = ExecutionContext.task(schedulerDomain, execution);
+            // Capture ancestry ONLY from this scheduler's active guest turn.
+            // A foreign Future completion, timer, or raw host thread may
+            // enqueue work, but cannot impersonate an admitted Task parent.
+            // Parentage is causal metadata, not actor/allocation authority.
+            ThreadState admitting = peek();
+            ExecutionContext active = admitting.current == OresScheduler.this
+                    ? admitting.executionContext : null;
+            long parentExecution = active != null
+                    && active.id().runtimeDomain() == schedulerDomain
+                    ? active.id().execution() : 0L;
+            this.executionContext =
+                    ExecutionContext.task(schedulerDomain, execution, parentExecution);
             // Capture from the creating logical task, not its transient carrier identity.
             this.traceContext = TraceContext.current();
             this.onQuiescent = onQuiescent;
