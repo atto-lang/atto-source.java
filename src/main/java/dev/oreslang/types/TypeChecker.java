@@ -3455,6 +3455,22 @@ public final class TypeChecker {
                             env, generics, self);
                 }
             }
+            // A lexical local that shadows an instance method wins, and implicit
+            // self never falls back to the method. Calling a non-callable local
+            // must therefore fail closed instead of typing as Unknown.
+            if (call.callee() instanceof Ast.NameExpr shadowing
+                    && currentClassOwner != null && self != null
+                    && env.lookup("self") != null
+                    && env.lookup(shadowing.name()) != null
+                    && !(typeOf(shadowing, env, generics, self) instanceof Function)
+                    && findMethodTarget(
+                            currentClassOwner, nominalClassType(currentClassOwner),
+                            shadowing.name(), call.arguments().size(), new LinkedHashSet<>()) != null) {
+                throw new IllegalArgumentException(
+                        "local '" + shadowing.name() + "' shadows instance method '" + shadowing.name()
+                                + "' and is not callable; implicit self never falls back past a lexical binding, "
+                                + "write self." + shadowing.name() + "(...)");
+            }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
                 int arity = fixedCallArity(
