@@ -511,6 +511,46 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void synchronousFreeFunctionCpuLoopRemainsScalarAcrossActorCall()
+            throws Exception {
+        // A free synchronous helper reached from receive must not run its CPU
+        // backedges inline or implicitly change its scalar return to Future.
+        String output = runAtto("""
+                fnc count_in_helper(n: int): int {
+                  let value = 0;
+                  while value < n do
+                    value = value + 1;
+                  done
+                  return value;
+                }
+
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.send(count_in_helper(4096));
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("count");
+                  val result = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(result.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  await worker.get_done();
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("4096|"),
+                "synchronous source helper did not preserve scalar result: " + output);
+        assertTrue(Long.parseLong(output.substring("4096|".length())) > 0,
+                "free synchronous CPU loop must yield from actor SourceTask");
+    }
+
+    @Test
     void twoInfiniteNestedHelperActorsCannotStarveSingleCarrierPeer()
             throws Exception {
         // Both same-class actor instances run nested synchronous CPU loops.
