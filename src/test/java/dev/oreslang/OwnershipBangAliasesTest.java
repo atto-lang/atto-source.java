@@ -49,6 +49,22 @@ final class OwnershipBangAliasesTest {
     }
 
     @Test
+    void deepPrefixChainsFailDeterministicallyInsteadOfOverflowingTheJvmStack() {
+        for (String prefix : new String[]{"copy!", "borrow!", "take!",
+                "share!", "mut borrow!", "!"}) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> source(prefix.repeat(200) + "foo"), prefix);
+            assertTrue(error.getMessage().contains("unary expression nesting exceeds 128"),
+                    prefix + ": " + error.getMessage());
+        }
+        // The same boundary applies to legacy spelling, rather than allowing
+        // an attacker to avoid the guard with a mixture of aliases.
+        IllegalArgumentException legacy = assertThrows(IllegalArgumentException.class,
+                () -> source("rt take ".repeat(200) + "foo"));
+        assertTrue(legacy.getMessage().contains("unary expression nesting exceeds 128"));
+    }
+
+    @Test
     void bangBorrowRunsTheExistingOwnershipChecker() {
         String base = """
                 define class Item as
