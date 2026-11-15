@@ -5,6 +5,7 @@ import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.ActorRuntime;
@@ -176,14 +177,20 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
 
+        final boolean canonicalAtto = codeUnitId.endsWith(".atto");
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
+        if (program != null && canonicalAtto) {
+            // The lease preserves type/ownership proof and cross-unit AST
+            // identities, but is not evidence that legacy source syntax was
+            // never admitted. Recheck *syntax only*, not the linked AST.
+            // This prevents a host from laundering imperative value-if or
+            // deprecated equality tokens through a prechecked .atto lease.
+            Parser.parseStrictAtto(text);
+        }
         if (program == null) {
-            // Canonical .atto units enter the production strict admission
-            // boundary before Truffle creates any guest CallTarget. Legacy
-            // .ores and unnamed snippets retain the compatibility parser.
-            // A trusted prechecked lease was already type/ownership checked
-            // across its linked unit graph, so it is not reparsed here.
-            program = codeUnitId.endsWith(".atto")
+            // Strict .atto parses and typechecks from the same byte snapshot.
+            // Legacy .ores and unnamed snippets intentionally stay compatible.
+            program = canonicalAtto
                     ? OresCompiler.parseAndTypeCheckStrictAtto(text)
                     : OresCompiler.parseAndTypeCheck(text);
         }
