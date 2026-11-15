@@ -195,6 +195,49 @@ public final class OresEvalRootNode extends RootNode {
                 new java.util.concurrent.ConcurrentHashMap<>();
         private final java.util.concurrent.ConcurrentHashMap<NodeId, Boolean> callableSuspensionCache =
                 new java.util.concurrent.ConcurrentHashMap<>();
+        // Transitive synchronous CPU loops are scheduling boundaries only on
+        // an actor carrier (so a helper cannot monopolize it). Outside actor
+        // execution an ordinary helper call stays a direct synchronous call,
+        // so the suspension caches are kept separately per context.
+        private final java.util.concurrent.ConcurrentHashMap<NodeId, Boolean> actorInlineStatementCache =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        private final java.util.concurrent.ConcurrentHashMap<NodeId, Boolean> actorExpressionSuspensionCache =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        private final java.util.concurrent.ConcurrentHashMap<NodeId, Boolean> actorCallableSuspensionCache =
+                new java.util.concurrent.ConcurrentHashMap<>();
+
+        // MutexGuard admission stays conservative everywhere: a helper that
+        // hides a CPU loop may become a resumable child, so it is analysed
+        // with transitive loops even outside an actor carrier.
+        private static final ThreadLocal<Boolean> GUARD_ADMISSION_ANALYSIS =
+                ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+        private static boolean transitiveLoopsSuspend() {
+            return GUARD_ADMISSION_ANALYSIS.get() || ActorRuntime.inActorExecution();
+        }
+
+        private static boolean underGuardAdmissionAnalysis(
+                java.util.function.BooleanSupplier check) {
+            boolean previous = GUARD_ADMISSION_ANALYSIS.get();
+            GUARD_ADMISSION_ANALYSIS.set(Boolean.TRUE);
+            try {
+                return check.getAsBoolean();
+            } finally {
+                GUARD_ADMISSION_ANALYSIS.set(previous);
+            }
+        }
+
+        private java.util.concurrent.ConcurrentHashMap<NodeId, Boolean> inlineStatementCache() {
+            return transitiveLoopsSuspend() ? actorInlineStatementCache : inlineStatementCache;
+        }
+
+        private java.util.concurrent.ConcurrentHashMap<NodeId, Boolean> expressionSuspensionCache() {
+            return transitiveLoopsSuspend() ? actorExpressionSuspensionCache : expressionSuspensionCache;
+        }
+
+        private java.util.concurrent.ConcurrentHashMap<NodeId, Boolean> callableSuspensionCache() {
+            return transitiveLoopsSuspend() ? actorCallableSuspensionCache : callableSuspensionCache;
+        }
         private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> declarationModules =
                 new IdentityHashMap<>();
@@ -2025,39 +2068,39 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.FunctionDecl function) {
             if (function.suspends()) return true;
             NodeId key = new NodeId(function);
-            Boolean cached = callableSuspensionCache.get(key);
+            Boolean cached = callableSuspensionCache().get(key);
             if (cached != null) return cached;
             boolean result = functionContainsPotentialSuspension(
                     function,
                     java.util.Collections.newSetFromMap(
                             new IdentityHashMap<>()));
-            callableSuspensionCache.put(key, result);
+            callableSuspensionCache().put(key, result);
             return result;
         }
 
         /** Cached: may this statement run on the synchronous fast path? */
         private boolean statementRunsInline(Ast.Stmt stmt) {
             NodeId key = new NodeId(stmt);
-            Boolean cached = inlineStatementCache.get(key);
+            Boolean cached = inlineStatementCache().get(key);
             if (cached != null) return cached;
             boolean inline = !(stmt instanceof Ast.ReturnStmt)
                     && !containsSourceLoop(stmt)
                     && !statementContainsPotentialSuspension(
                             stmt,
                             java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
-            inlineStatementCache.put(key, inline);
+            inlineStatementCache().put(key, inline);
             return inline;
         }
 
         /** Cached top-level expression suspension analysis. */
         private boolean expressionMaySuspend(Ast.Expr expr) {
             NodeId key = new NodeId(expr);
-            Boolean cached = expressionSuspensionCache.get(key);
+            Boolean cached = expressionSuspensionCache().get(key);
             if (cached != null) return cached;
             boolean result = expressionContainsPotentialSuspension(
                     expr,
                     java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
-            expressionSuspensionCache.put(key, result);
+            expressionSuspensionCache().put(key, result);
             return result;
         }
 
@@ -2069,7 +2112,7 @@ public final class OresEvalRootNode extends RootNode {
                 // An ordinary synchronous CPU loop is also a safe-point
                 // boundary once enclosed in a heap-owned SourceTask. Do not
                 // let a transitive helper monopolize an actor's carrier.
-                if (containsSourceLoop(stmt)
+                if ((transitiveLoopsSuspend() && containsSourceLoop(stmt))
                         || statementContainsPotentialSuspension(stmt, seen)) {
                     return true;
                 }
@@ -2268,7 +2311,7 @@ public final class OresEvalRootNode extends RootNode {
                                     && seen.add(method)) {
                                 if (method.async() || method.suspends()) return true;
                                 for (Ast.Stmt statement : method.body()) {
-                                    if (containsSourceLoop(statement)
+                                    if ((transitiveLoopsSuspend() && containsSourceLoop(statement))
                                             || statementContainsPotentialSuspension(statement, seen)) return true;
                                 }
                             }
@@ -5450,6 +5493,14 @@ public final class OresEvalRootNode extends RootNode {
         private void requireGuardedMemberAdmission(
                 Env env, Object receiver, String name, int arity) {
             if (!env.hasLiveMutexGuards()) return;
+            underGuardAdmissionAnalysis(() -> {
+                requireGuardedMemberAdmissionUnderAnalysis(receiver, name, arity);
+                return true;
+            });
+        }
+
+        private void requireGuardedMemberAdmissionUnderAnalysis(
+                Object receiver, String name, int arity) {
             final String denied =
                     "cannot launch or suspend an unverified member source callable while holding a live MutexGuard";
             // Future combinators are INVOKABLE builtins, not METHOD calls.
@@ -5526,7 +5577,8 @@ public final class OresEvalRootNode extends RootNode {
                     || imported.declaration().kind() != Ast.ImportKind.FUNCTION) return;
             Evaluator owner = importedTarget(imported.declaration());
             Ast.FunctionDecl fn = owner.findFunction(imported.sourceName(), arity);
-            if (fn == null || fn.async() || owner.functionContainsPotentialSuspension(fn)) {
+            if (fn == null || fn.async() || underGuardAdmissionAnalysis(
+                    () -> owner.functionContainsPotentialSuspension(fn))) {
                 throw new IllegalStateException(
                         "cannot launch or suspend an imported source callable while holding a live MutexGuard");
             }
@@ -5612,7 +5664,8 @@ public final class OresEvalRootNode extends RootNode {
                     // the no-yield guard remains live.
                     if (env.hasLiveMutexGuards()
                             && (direct.async()
-                                    || functionContainsPotentialSuspension(direct))) {
+                                    || underGuardAdmissionAnalysis(
+                                            () -> functionContainsPotentialSuspension(direct)))) {
                         continuation.accept(
                                 task,
                                 null,
@@ -5779,7 +5832,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (env.hasLiveMutexGuards()
                         && (invocation.kind() != InvocationKind.INVOKABLE
                                 || !declaredFuture)
-                        && invocationMayLaunchSourceTask(invocation)) {
+                        && underGuardAdmissionAnalysis(
+                                () -> invocationMayLaunchSourceTask(invocation))) {
                     throw new IllegalStateException(
                             "cannot launch or suspend a source callable while holding a live MutexGuard");
                 }
@@ -6701,16 +6755,16 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method) {
             if (method.suspends()) return true;
             NodeId key = new NodeId(method);
-            Boolean cached = callableSuspensionCache.get(key);
+            Boolean cached = callableSuspensionCache().get(key);
             if (cached != null) return cached;
             boolean result = methodBodyMaySuspend(method);
-            callableSuspensionCache.put(key, result);
+            callableSuspensionCache().put(key, result);
             return result;
         }
 
         private boolean methodBodyMaySuspend(Ast.MethodDecl method) {
             for (Ast.Stmt stmt : method.body()) {
-                if (containsSourceLoop(stmt)
+                if ((transitiveLoopsSuspend() && containsSourceLoop(stmt))
                         || statementContainsPotentialSuspension(
                                 stmt,
                                 java.util.Collections.newSetFromMap(
@@ -8454,7 +8508,8 @@ public final class OresEvalRootNode extends RootNode {
                                 findFunction(name.name(), call.arguments().size());
                         if (declared != null
                                 && (declared.async()
-                                        || functionContainsPotentialSuspension(declared))) {
+                                        || underGuardAdmissionAnalysis(
+                                                () -> functionContainsPotentialSuspension(declared)))) {
                             // Check before evaluating even the arguments:
                             // they may themselves commit effects or launch
                             // independently owned continuations.
@@ -8466,7 +8521,8 @@ public final class OresEvalRootNode extends RootNode {
                 Invocation invocation = prepareInvocation(call, env);
                 if (env.hasLiveMutexGuards()
                         && invocation.kind() != InvocationKind.INVOKABLE
-                        && invocationMayLaunchSourceTask(invocation)) {
+                        && underGuardAdmissionAnalysis(
+                                () -> invocationMayLaunchSourceTask(invocation))) {
                     throw new IllegalStateException(
                             "cannot launch or suspend a source callable while holding a live MutexGuard");
                 }
