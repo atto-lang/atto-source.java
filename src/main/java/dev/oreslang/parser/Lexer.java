@@ -48,6 +48,14 @@ public final class Lexer {
     public Lexer(String source) { this.source = source == null ? "" : source; }
 
     public List<Token> scan() {
+        // A Lexer instance may be scanned more than once (including after a
+        // rejected source). Never retain the previous cursor, line or tokens.
+        tokens.clear();
+        start = 0;
+        current = 0;
+        line = 1;
+        column = 1;
+        startColumn = 1;
         // Validate ignored comments and string contents as well as tokens.
         // Embedders can pass malformed UTF-16 without a UTF-8 file decoder.
         for (int i = 0; i < source.length(); i++) {
