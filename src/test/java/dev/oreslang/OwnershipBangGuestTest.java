@@ -6,6 +6,7 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -48,7 +49,15 @@ final class OwnershipBangGuestTest {
             }
             long size = Files.size(file);
             assertTrue(size <= 4096 && size > 20, "bounded .atto fixture: " + variant);
-            byte[] bytes = Files.readAllBytes(file);
+            // Files.readAllBytes would allocate beyond the preflight budget if
+            // a file grows after Files.size. Open the leaf without following a
+            // symlink and cap the actual read at budget + 1 for drift detection.
+            byte[] bytes;
+            try (InputStream stream = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+                bytes = stream.readNBytes(4097);
+            }
+            assertTrue(bytes.length <= 4096 && bytes.length > 20,
+                    "fixture exceeded read budget: " + variant);
             assertEquals(size, bytes.length, "fixture size changed during read: " + variant);
             assertEquals(PINS.get(variant), shaOfGitBlob(bytes),
                     "reviewed Git blob drift for " + variant);
