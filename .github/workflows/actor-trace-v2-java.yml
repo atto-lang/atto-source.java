@@ -26,6 +26,9 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           git rev-parse 'HEAD^{tree}'
+          test "$(git hash-object scripts/check_actor_trace_v2.py)" = '02a42b5781947b87af0ee868aab177031d48d41a'
+          test "$(git hash-object contracts/actor-trace-v2.json)" = '732cf613c10a49bc75280f31ecfe6559614d4702'
+          echo 'CANONICAL_V2_CONTRACT_AND_CHECKER_SHA_MATCH=PASS'
       - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
         with:
           distribution: temurin
@@ -34,7 +37,8 @@ jobs:
       - name: Execute real JVM actor JUnit ingress and retirement probe
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=ActorTraceContractIntegrationTest,ActorDistinctCarriersOverlapV2Test test
+          mvn -B -ntp -Dtest=ActorTraceContractIntegrationTest,ActorDistinctCarriersOverlapV2Test \
+            -Dores.runtime.carriers=java -Dores.actor.affinity=none test
           test -s target/actor-trace-graal-v2.json
           python3 scripts/check_actor_trace_v2.py \
             --require-backend java --require-subject runtime_host \
