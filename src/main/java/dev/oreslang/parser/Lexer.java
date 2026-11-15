@@ -53,6 +53,8 @@ public final class Lexer {
         for (int i = 0; i < source.length(); i++) {
             char c = source.charAt(i);
             if (c == '\0') throw new IllegalArgumentException("source contains NUL byte");
+            if (c == '\u001b' || c == '\u007f')
+                throw new IllegalArgumentException("source contains terminal control at offset " + i);
             if (Character.isHighSurrogate(c)) {
                 if (++i >= source.length() || !Character.isLowSurrogate(source.charAt(i)))
                     throw new IllegalArgumentException("source contains invalid UTF-16");
