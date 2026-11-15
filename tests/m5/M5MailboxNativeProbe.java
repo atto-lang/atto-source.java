@@ -3,6 +3,7 @@
 // Not a compiled .atto guest, untrusted code sandbox, or production scheduler.
 import java.lang.management.ManagementFactory;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class M5MailboxNativeProbe {
     private static void require(boolean condition, String message) {
@@ -28,7 +29,7 @@ public final class M5MailboxNativeProbe {
     }
     private static void mustBeAccounted(M5BoundedActorMailbox.Snapshot s) {
         require(s.accepted() == s.processed() + s.abandoned() +
-                s.failedTurns() + s.remaining(), "mailbox lost or duplicated an admitted message");
+                s.failedTurns() + s.remaining() + s.inFlight(), "mailbox lost or duplicated an admitted message");
         require(s.maxDepth() <= s.capacity(), "mailbox over capacity");
     }
     public static void main(String[] args) throws Exception {
@@ -51,6 +52,38 @@ public final class M5MailboxNativeProbe {
         var afterClose = blocked.snapshot();
         require(afterClose.rejectedClosed() >= 1, "stale-handle rejection not accounted");
         blocked.close();
+        blocked.close(); // Closing twice must not release the same Arena twice.
+        var closedSnapshot = blocked.snapshot();
+        mustBeAccounted(closedSnapshot);
+        require(closedSnapshot.closed() && closedSnapshot.finalState() == 17 &&
+                closedSnapshot.inFlight() == 0,
+                "snapshot attempted to read retired off-heap actor memory");
+
+        // Simultaneous closes and snapshot observations must not race with
+        // native arena release or abandon an already-admitted turn.
+        var closing = new M5BoundedActorMailbox(2, 3, true);
+        require(closing.try_send(4), "close-race setup send failed");
+        var closeError = new AtomicReference<Throwable>();
+        Runnable stop = () -> {
+            try { closing.close(); }
+            catch (Throwable t) { closeError.compareAndSet(null, t); }
+        };
+        Thread closer1 = new Thread(stop, "atto-m5-closer-1");
+        Thread closer2 = new Thread(stop, "atto-m5-closer-2");
+        closer1.start();
+        closer2.start();
+        while (closer1.isAlive() || closer2.isAlive()) {
+            mustBeAccounted(closing.snapshot());
+            Thread.onSpinWait();
+        }
+        closer1.join(30_000);
+        closer2.join(30_000);
+        require(closeError.get() == null, "concurrent actor close failed: " + closeError.get());
+        var closedRace = closing.snapshot();
+        mustBeAccounted(closedRace);
+        require(closedRace.closed() && closedRace.accepted() == 1 &&
+                closedRace.processed() == 1 && closedRace.finalState() == 7,
+                "concurrent close corrupted final state or retirement");
 
         // Independently scheduled MPSC stress; 100k accepted turns on first
         // actor, 1k on a second actor. No boxed message/envelope allocations.
@@ -67,6 +100,7 @@ public final class M5MailboxNativeProbe {
         Thread p2 = new Thread(produce, "atto-m5-producer-2");
         p1.start();
         p2.start();
+        for (int i = 0; i < 1024; i++) mustBeAccounted(target.snapshot());
         for (int i = 0; i < 1000; i++) sendUntilAdmitted(neighbor, 2);
         p1.join(30_000);
         p2.join(30_000);
@@ -124,6 +158,8 @@ public final class M5MailboxNativeProbe {
                            (heapBoundQualified ? "PASS" : "NOT_QUALIFIED"));
 
         System.out.println("M5_MAILBOX_CAPACITY_REFUSAL=PASS");
+        System.out.println("M5_MAILBOX_RETIREMENT_SNAPSHOT_AND_CONCURRENT_CLOSE=PASS");
+        System.out.println("M5_MAILBOX_IN_FLIGHT_ACCOUNTING=PASS");
         System.out.println("M5_MAILBOX_CONCURRENT_ACCEPTED=100000");
         System.out.println("M5_MAILBOX_NEIGHBOR_ACCEPTED=1000");
         System.out.println("M5_MAILBOX_ACTOR_STATE=100000");
