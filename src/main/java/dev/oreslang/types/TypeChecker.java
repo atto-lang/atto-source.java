@@ -4,6 +4,8 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.ast.CheckedDispatchPlansV1;
+import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
@@ -136,6 +138,28 @@ public final class TypeChecker {
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
+    /** Identity-indexed call proofs, published only on successful type checking. */
+    private final IdentityHashMap<Ast.CallExpr, CheckedDispatchPlansV1.Plan> checkedDispatchPlans =
+            new IdentityHashMap<>();
+
+    private void recordCheckedDispatch(
+            Ast.CallExpr call, AotDispatchPlannerV1.CallKind kind,
+            String name, int arity, Ast.FunctionDecl function,
+            Ast.ClassDecl receiverClass, Ast.MethodDecl method) {
+        AotDispatchPlannerV1.Strategy strategy = AotDispatchPlannerV1.classify(
+                new AotDispatchPlannerV1.Evidence(
+                        kind, AotDispatchPlannerV1.ReceiverProof.NONE,
+                        AotDispatchPlannerV1.Linkage.FROZEN_CODE_GENERATION, true));
+        CheckedDispatchPlansV1.Plan plan = new CheckedDispatchPlansV1.Plan(
+                kind, strategy, name, arity, function, receiverClass, method);
+        plan.requireCallShape(call);
+        CheckedDispatchPlansV1.Plan previous = checkedDispatchPlans.putIfAbsent(call, plan);
+        if (previous != null && !plan.sameTargets(previous)) {
+            throw new IllegalStateException(
+                    "same checker call identity acquired incompatible dispatch targets");
+        }
+    }
+
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
     public record TypeCheckResult(
@@ -301,6 +325,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -463,6 +488,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
+        CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -3493,6 +3519,14 @@ public final class TypeChecker {
                         checkStrictNumericCallArguments(target, call.arguments(), env);
                     }
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
+                    // This target is a checked local function declaration in the
+                    // immutable, macro-expanded program. A runtime lexical value
+                    // still wins if the identifier is shadowed.
+                    if (target.genericParameters().isEmpty()
+                            && CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                        recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
+                                target.name(), arity, target, null, null);
+                    }
                     return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
             }
@@ -4124,6 +4158,14 @@ public final class TypeChecker {
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
                 if (collectionBuiltin != null) {
+                    if (member.member().equals("get_copy")
+                            && !(member.receiver() instanceof Ast.NameExpr)) {
+                        // The first scalar Copy lane requires an explicit
+                        // compiler-checked named owner. Nested projections
+                        // and temporaries need stronger root provenance.
+                        throw new IllegalArgumentException(
+                                "get_copy requires a named builtin Array<int>/List<int> receiver");
+                    }
                     if (receiver instanceof Named map && map.name().equals("Map")
                             && (member.member().equals("set")
                                     || member.member().equals("delete"))) {
@@ -4318,6 +4360,13 @@ public final class TypeChecker {
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
                     requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
+                    // Only the exact class identity can consume this direct
+                    // target: a new code generation has different AST owners.
+                    if (klass.genericParameters().isEmpty() && fn.genericParameters().isEmpty()
+                            && CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                        recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.STATIC_METHOD,
+                                fn.name(), staticArity, null, klass, fn);
+                    }
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
@@ -4421,7 +4470,7 @@ public final class TypeChecker {
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type result = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -4430,6 +4479,16 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
+                        // No sealed/final proof exists here. Record an open
+                        // method slot, not a direct-call assertion. Runtime may
+                        // skip the slot lookup only if the receiver's *actual*
+                        // class identity equals the checked class identity.
+                        if (klass.genericParameters().isEmpty() && method.genericParameters().isEmpty()
+                                && CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                            recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.INSTANCE_METHOD,
+                                    method.name(), methodArity, null, klass, method);
+                        }
+                        return result;
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
@@ -9105,6 +9164,18 @@ public final class TypeChecker {
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), list.element());
+                case "get_copy" -> {
+                    // Candidate safe-collection-access-v1: only concrete Copy<int>
+                    // is admitted until generic Copy and provenance obligations
+                    // are implemented. Legacy get(int) remains direct-value.
+                    if (!list.element().equals(Primitive.INT)) {
+                        throw new IllegalArgumentException(
+                                "collection get_copy requires a proven Copy<int> element; "
+                                        + "other element types are not admitted yet");
+                    }
+                    yield new Function(List.of(Primitive.INT),
+                            new Named("Option", List.of(Primitive.INT)));
+                }
                 case "add" -> new Function(List.of(list.element()), Primitive.VOID);
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),

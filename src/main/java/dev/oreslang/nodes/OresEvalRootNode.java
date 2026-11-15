@@ -8,6 +8,8 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.ast.CheckedDispatchPlansV1;
+import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
@@ -163,6 +165,8 @@ public final class OresEvalRootNode extends RootNode {
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
                 java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        /** Immutable, AST-identity-indexed proof snapshot; no global lock in guest call hot paths. */
+        private final Map<Ast.CallExpr, CheckedDispatchPlansV1.Plan> checkedDispatchPlans;
 
         private int checkedOptionDepth(Ast.CallExpr call) {
             synchronized (optionDepthCache) {
@@ -268,6 +272,44 @@ public final class OresEvalRootNode extends RootNode {
             indexImports();
             indexDeclarations();
             indexCallableSlots();
+            this.checkedDispatchPlans = verifyCheckedDispatchPlans();
+        }
+
+        /**
+         * Bind checked targets to this exact code image once, before actor
+         * publication. Foreign/imported declarations and mismatched slots
+         * receive no fast-path authority, preserving virtual fallback.
+         */
+        private Map<Ast.CallExpr, CheckedDispatchPlansV1.Plan> verifyCheckedDispatchPlans() {
+            Map<Ast.CallExpr, CheckedDispatchPlansV1.Plan> source =
+                    CheckedDispatchPlansV1.forProgram(program);
+            IdentityHashMap<Ast.CallExpr, CheckedDispatchPlansV1.Plan> verified =
+                    new IdentityHashMap<>();
+            for (Map.Entry<Ast.CallExpr, CheckedDispatchPlansV1.Plan> entry : source.entrySet()) {
+                CheckedDispatchPlansV1.Plan plan = entry.getValue();
+                boolean localTarget = switch (plan.kind()) {
+                    case FREE_FUNCTION -> {
+                        LinkedHashMap<Integer, Ast.FunctionDecl> overloads = functions.get(plan.name());
+                        yield !ambiguousFunctions.contains(plan.name())
+                                && overloads != null
+                                && overloads.get(plan.arity()) == plan.function()
+                                && declarationModules.containsKey(plan.function());
+                    }
+                    case STATIC_METHOD, INSTANCE_METHOD -> {
+                        Map<CallableSelector, Ast.MethodDecl> slots =
+                                callableSlots.get(plan.receiverClass());
+                        CallableSelector selector = plan.kind() == AotDispatchPlannerV1.CallKind.STATIC_METHOD
+                                ? CallableSelector.staticFunction(plan.name(), plan.arity())
+                                : CallableSelector.instance(plan.name(), plan.arity());
+                        yield slots != null
+                                && slots.get(selector) == plan.method()
+                                && methodOwners.containsKey(plan.method());
+                    }
+                    default -> false;
+                };
+                if (localTarget) verified.put(entry.getKey(), plan);
+            }
+            return java.util.Collections.unmodifiableMap(verified);
         }
 
         private void indexImports() {
@@ -7459,6 +7501,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            CheckedDispatchPlansV1.Plan plan = checkedDispatchPlans.get(call);
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr) {
                 // A pipeline is value-first. Constructing a closure can read
@@ -7484,7 +7527,16 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
+                // Immutable checked target within this evaluator's code image.
+                // Lexical shadowing wins; imports and other generations retain
+                // ordinary resolution and never share stale declarations.
+                Ast.FunctionDecl direct = plan != null
+                        && plan.kind() == AotDispatchPlannerV1.CallKind.FREE_FUNCTION
+                        && plan.strategy() == AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL
+                        && plan.name().equals(directName.name())
+                        && plan.arity() == call.arguments().size()
+                        ? plan.function()
+                        : findFunction(directName.name(), call.arguments().size());
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
@@ -7548,8 +7600,20 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of());
                     }
 
-                    Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()));
+                    // Only the exact checked class and code owner may avoid
+                    // one virtual-slot lookup. A subclass or hot-loaded
+                    // generation retains the existing vtable dispatch path.
+                    Ast.MethodDecl method = plan != null
+                            && plan.kind() == AotDispatchPlannerV1.CallKind.INSTANCE_METHOD
+                            && plan.strategy() == AotDispatchPlannerV1.Strategy.METHOD_SLOT
+                            && plan.receiverClass() == object.klass
+                            && object.owner == this
+                            && plan.name().equals(methodCall.member())
+                            && plan.arity() == args.size()
+                            ? plan.method()
+                            : object.owner.findMethod(
+                                    object.klass,
+                                    CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -7590,8 +7654,16 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ClassFacade klass) {
-                    Ast.MethodDecl fn = klass.owner().findStaticFunction(
-                            klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
+                    Ast.MethodDecl fn = plan != null
+                            && plan.kind() == AotDispatchPlannerV1.CallKind.STATIC_METHOD
+                            && plan.strategy() == AotDispatchPlannerV1.Strategy.DIRECT_SYMBOL
+                            && plan.receiverClass() == klass.klass()
+                            && klass.owner() == this
+                            && plan.name().equals(methodCall.member())
+                            && plan.arity() == args.size()
+                            ? plan.method()
+                            : klass.owner().findStaticFunction(
+                                    klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
                     if (fn == null) {
                         throw new IllegalArgumentException(
                                 "no static function " + klass.klass().name() + "." + methodCall.member()
@@ -9577,6 +9649,34 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "List.get");
                         Object index = args.getFirst();
                         return rawList.get(checkedSequenceIndex(index, rawList.size()));
+                    };
+                    case "get_copy" -> (Invokable) args -> {
+                        requireOne(args, "List.get_copy");
+                        // Check signed i64 before ANY narrowing to a 32-bit
+                        // slot. Unlike legacy get(), a miss is tagged None.
+                        // Invalid host values must not be coerced into indices.
+                        Object input = args.getFirst();
+                        if (!(input instanceof Byte || input instanceof Short
+                                || input instanceof Integer || input instanceof Long)) {
+                            throw new IllegalArgumentException(
+                                    "List.get_copy index must be an integer");
+                        }
+                        long index = ((Number) input).longValue();
+                        if (index < 0 || index >= rawList.size()) {
+                            return new OptionValue(false, null);
+                        }
+                        Object value = rawList.get((int) index);
+                        if (!(value instanceof Byte || value instanceof Short
+                                || value instanceof Integer || value instanceof Long)) {
+                            throw new IllegalArgumentException(
+                                    "List.get_copy requires a Copy<int> element");
+                        }
+                        // Canonical source int is signed i64. Never leak a
+                        // host boxed Byte/Short/Integer identity or infer a
+                        // smaller scalar type from the list's representation.
+                        // Only the immutable scalar VALUE crosses this call;
+                        // no interior array pointer or ReadLoan escapes.
+                        return new OptionValue(true, ((Number) value).longValue());
                     };
                     case "add" -> (Invokable) args -> {
                         requireOne(args, "List.add");

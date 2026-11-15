@@ -52,6 +52,8 @@ public final class OwnershipChecker {
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    /** Opt-in in-pass trace; never permits guest code emission. */
+    private BorrowMirAuditV1.Collector borrowMirAudit;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -96,6 +98,26 @@ public final class OwnershipChecker {
         checker.validate(program);
         checker.publishTaskAdmissions();
         return program;
+    }
+
+    /**
+     * Opt-in, compiler-originated straight-line shadow ownership trace.
+     * The ordinary OwnershipChecker still validates the complete program.
+     * Unsupported constructs yield NOT_PROVEN; never treat this output
+     * as Rust equivalence, compiled AttoLang guest, or emitted-code proof.
+     */
+    public static BorrowMirAuditV1.Report checkWithBorrowMirAuditV1(Ast.Program program) {
+        return checkWithBorrowMirAuditV1(program, Map.of());
+    }
+
+    /** Must use TypeChecker-validated short aliases when invoked by OresCompiler. */
+    public static BorrowMirAuditV1.Report checkWithBorrowMirAuditV1(
+            Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
+        checker.borrowMirAudit = new BorrowMirAuditV1.Collector();
+        checker.validate(program);
+        checker.publishTaskAdmissions();
+        return checker.borrowMirAudit.finishReport();
     }
 
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
@@ -214,8 +236,20 @@ public final class OwnershipChecker {
 
     private void checkFunction(Ast.FunctionDecl fn) {
         Scope scope = new Scope(null, fn.nonLexical());
+        if (borrowMirAudit != null) {
+            borrowMirAudit.beginFunction(fn.name(),
+                    fn.kind() == Ast.CallableKind.FNC
+                    && fn.actorKind() == Ast.ActorKind.NONE
+                    && !fn.async() && !fn.suspends() && !fn.generator()
+                    && !fn.structural() && !fn.nonLexical()
+                    && !fn.trapped() && fn.effects().isEmpty());
+        }
         for (Ast.Param param : fn.parameters()) {
-            scope.define(param.name(), stateForParam(param));
+            VarState value = stateForParam(param);
+            scope.define(param.name(), value);
+            if (borrowMirAudit != null) {
+                borrowMirAudit.parameter(value, value.kind == ValueKind.COPY);
+            }
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
@@ -225,6 +259,9 @@ public final class OwnershipChecker {
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
             scope.close();
+            if (borrowMirAudit != null) {
+                borrowMirAudit.finishFunction();
+            }
         }
     }
 
@@ -412,6 +449,10 @@ public final class OwnershipChecker {
     private boolean discardingSelectReturn;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
+        if (borrowMirAudit != null
+                && !(stmt instanceof Ast.ReturnStmt ret && ret.value() instanceof Ast.NameExpr)) {
+            borrowMirAudit.unsupported("statement outside the linear parameter-return profile");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
             return;
@@ -515,11 +556,18 @@ public final class OwnershipChecker {
                         throw error("actor self cannot escape its mailbox turn as a returned borrow");
                     }
                 }
+                if (borrowMirAudit != null && ret.value() instanceof Ast.NameExpr named
+                        && scope.lookup(named.name()) == null) {
+                    borrowMirAudit.unsupported("return refers to an untracked global or module");
+                }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
                 validateReturnedBorrow(ret.value(), returned);
+            }
+            if (borrowMirAudit != null) {
+                borrowMirAudit.returned();
             }
             return;
         }
@@ -873,9 +921,13 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.ForStmt loop) {
             Scope loopScope = new Scope(scope);
+            // An initializer executes once; the predicate and update may
+            // execute repeatedly. Snapshot BEFORE the predicate, or a MOVE
+            // inside that predicate will be misclassified as pre-loop state
+            // and permitted again on the next iteration.
             if (loop.initializer() != null) checkStatement(loop.initializer(), loopScope, returnType);
-            if (loop.condition() != null) checkExpr(loop.condition(), loopScope, false);
             Map<VarState,Boolean> before = movedSnapshot(scope);
+            if (loop.condition() != null) checkExpr(loop.condition(), loopScope, false);
             checkLoopBlock(loop.body(), loopScope, returnType);
             if (loop.update() != null) checkExpr(loop.update(), loopScope, false);
             rejectLoopMoves(before, scope);
@@ -1122,6 +1174,13 @@ public final class OwnershipChecker {
                 move(state, name.name());
                 transferredBorrowLease = state.borrowLease;
                 state.borrowLease = false;
+            }
+            if (borrowMirAudit != null && consuming) {
+                if (state.kind == ValueKind.COPY) {
+                    borrowMirAudit.readCopyParameter(ownershipRoot(state));
+                } else {
+                    borrowMirAudit.unsupported("affine consumption or borrowed return not modeled");
+                }
             }
             return new ValueInfo(state.type, state.kind, provenance, transferredBorrowLease);
         }
@@ -2123,6 +2182,44 @@ public final class OwnershipChecker {
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
             Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
+            // First compiler-owned Copy<int> access path. The value is owned,
+            // not a ReadLoan, and the receiver must have a stable named root.
+            // Reserve a shared loan across index-argument evaluation so a
+            // nested mutation or move cannot sneak between root validation
+            // and the eventual checked-copy read.
+            if (member.member().equals("get_copy")
+                    && memberReceiverType != null
+                    && (memberReceiverType.name().equals("Array")
+                            || memberReceiverType.name().equals("List"))) {
+                if (!(member.receiver() instanceof Ast.NameExpr receiverName)
+                        || call.arguments().size() != 1
+                        || memberReceiverType.arguments().size() != 1
+                        || !memberReceiverType.arguments().getFirst().name().equals("int")
+                        || !memberReceiverType.arguments().getFirst().arguments().isEmpty()
+                        || findClass(memberReceiverType.name()) != null
+                        || hasLocalTypeAliasNamed(memberReceiverType.name())) {
+                    throw error("get_copy requires a named builtin Array<int>/List<int> "
+                            + "receiver and one checked index");
+                }
+                VarState owner = requireState(scope, receiverName.name());
+                requireUsable(owner, receiverName.name(), false);
+                beginPersistentBorrow(owner, false);
+                VarState root = ownershipRoot(owner);
+                try {
+                    ValueInfo index = checkExpr(call.arguments().getFirst(), scope, false);
+                    if (isBorrowValue(index) || containsMutexGuardType(index.type)) {
+                        throw error("get_copy index cannot smuggle a borrowed capability");
+                    }
+                } finally {
+                    if (root.immutableBorrows <= 0) {
+                        throw new IllegalStateException("missing get_copy shared root loan");
+                    }
+                    root.immutableBorrows--;
+                }
+                Ast.TypeRef intType = Ast.TypeRef.simple("int");
+                Ast.TypeRef result = new Ast.TypeRef("Option", List.of(intType), false);
+                return new ValueInfo(result, ValueKind.COPY, null);
+            }
             if (memberReceiverType == null
                     && (member.member().equals("add") || member.member().equals("set"))
                     && (member.receiver() instanceof Ast.MemberExpr
