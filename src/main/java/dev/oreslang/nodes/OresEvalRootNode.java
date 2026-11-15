@@ -5017,27 +5017,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private GuestControlSignal guestControlSignalCause(Throwable failure) {
-            Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-            for (Throwable current = failure;
-                    current != null && seen.add(current);
-                    current = current.getCause()) {
-                if (current instanceof GuestControlSignal signal) return signal;
-            }
-            return null;
-        }
-
-        private boolean hasCause(Throwable failure, Class<? extends Throwable> type) {
-            return causeOf(failure, type) != null;
-        }
-
-        private Throwable causeOf(Throwable failure, Class<? extends Throwable> type) {
-            Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-            for (Throwable current = failure;
-                    current != null && seen.add(current);
-                    current = current.getCause()) {
-                if (type.isInstance(current)) return current;
-            }
-            return null;
+            return dev.oreslang.runtime.TrapFailurePolicy.findTrustedCause(
+                    failure, GuestControlSignal.class);
         }
 
         private String messageForPayload(Object payload) {
@@ -5094,7 +5075,8 @@ public final class OresEvalRootNode extends RootNode {
             if (signal instanceof GuestControlSignal.Panic) return 4;
             if (signal instanceof GuestControlSignal.Raise) return 3;
             if (signal instanceof GuestControlSignal.Throw) return 2;
-            if (hasCause(failure, OresPanic.class)) return 4;
+            if (dev.oreslang.runtime.TrapFailurePolicy.findTrustedCause(
+                    failure, OresPanic.class) != null) return 4;
             if (failure instanceof RuntimeException runtime && isTrappableFailure(runtime)) return 2;
             return 5; // unknown host/control failures fail closed
         }
@@ -7437,8 +7419,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "size" -> (long) rawList.size();
                     case "get" -> (Invokable) args -> {
                         requireOne(args, "List.get");
-                        Object index = args.getFirst();
-                        return rawList.get(sequenceIndex(index));
+                        return rawList.get(checkedListIndex(args.getFirst(), rawList.size()));
                     };
                     case "add" -> (Invokable) args -> {
                         requireOne(args, "List.add");
@@ -7452,10 +7433,9 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException(
                                     "List.set expects exactly 2 argument(s)");
                         }
-                        Object index = args.getFirst();
                         @SuppressWarnings("unchecked")
                         List<Object> list = (List<Object>) rawList;
-                        list.set(sequenceIndex(index), args.get(1));
+                        list.set(checkedListIndex(args.getFirst(), list.size()), args.get(1));
                         return null;
                     };
                     default -> throw new IllegalArgumentException(
@@ -7478,6 +7458,14 @@ public final class OresEvalRootNode extends RootNode {
                 return hostMember(receiver, "host object", name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private static int checkedListIndex(Object value, int size) {
+            int index = sequenceIndex(value);
+            if (index < 0 || index >= size) {
+                throw new IndexOutOfBoundsException("Index " + index + " out of bounds for length " + size);
+            }
+            return index;
         }
 
         private Object hostMember(Object receiver, String ownerName, String name) {
@@ -8962,6 +8950,11 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                if (op == '%' && y == 0) {
+                    // An explicit guest error preserves its source boundary
+                    // even when the JVM elides implicit exception traces.
+                    throw new ArithmeticException("/ by zero");
+                }
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
             }
             double x = a.doubleValue(), y = b.doubleValue();

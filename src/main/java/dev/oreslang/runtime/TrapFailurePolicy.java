@@ -7,6 +7,8 @@ import java.util.IdentityHashMap;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeoutException;
 
@@ -26,6 +28,14 @@ import java.util.concurrent.TimeoutException;
  */
 public final class TrapFailurePolicy {
     private static final int MAX_FAILURE_NODES = 64;
+    private static final Set<Class<?>> MAPPED_GUEST_FAILURE_TYPES = Set.of(
+            IllegalArgumentException.class, IllegalStateException.class,
+            ArithmeticException.class, IndexOutOfBoundsException.class,
+            ClassCastException.class, UnsupportedOperationException.class,
+            NoSuchElementException.class, NegativeArraySizeException.class,
+            ArrayStoreException.class);
+
+    private record Visit(Throwable failure, boolean primary) { }
 
     private TrapFailurePolicy() { }
 
@@ -47,13 +57,15 @@ public final class TrapFailurePolicy {
 
         // First inspect the entire causal/suppressed graph for control signals
         // that must never be downgraded into an ordinary guest error.
-        Deque<Throwable> pending = new ArrayDeque<>();
+        Deque<Visit> pending = new ArrayDeque<>();
         Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
-        pending.add(failure);
+        pending.add(new Visit(failure, true));
+        int queued = 1;
+        boolean matchedPrimary = false;
         while (!pending.isEmpty()) {
-            Throwable current = pending.removeFirst();
+            Visit visit = pending.removeFirst();
+            Throwable current = visit.failure();
             if (!seen.add(current)) return false;
-            if (seen.size() > MAX_FAILURE_NODES) return false;
             if ((panicType != null && panicType.isInstance(current))
                     || current instanceof GuestControlSignal.Raise
                     || current instanceof GuestControlSignal.Panic
@@ -67,33 +79,52 @@ public final class TrapFailurePolicy {
             if (!explicitGuestCatch && current instanceof SecurityException) {
                 return false;
             }
-            if (current.getCause() != null) pending.addLast(current.getCause());
-            for (Throwable suppressed : current.getSuppressed()) pending.addLast(suppressed);
+            // A host subtype may override getCause or getStackTrace. Admit
+            // only recognized concrete failure classes before reading either.
+            if (!hasTrustedCauseAccessor(current)) return false;
+            if (visit.primary() && (current instanceof GuestControlSignal.Throw
+                    || current.getClass() == SecurityException.class
+                    || isMappedGuestFailure(current))) {
+                matchedPrimary = true;
+            }
+            Throwable cause = current.getCause();
+            if (cause != null) {
+                if (++queued > MAX_FAILURE_NODES) return false;
+                pending.addLast(new Visit(cause, visit.primary()));
+            }
+            for (Throwable suppressed : current.getSuppressed()) {
+                if (suppressed instanceof SourceBoundaryTrace) continue;
+                if (++queued > MAX_FAILURE_NODES) return false;
+                pending.addLast(new Visit(suppressed, false));
+            }
         }
+        return matchedPrimary;
+    }
 
-        // Classification follows the primary cause chain only. A suppressed
-        // guest throw must never make an unrelated host failure trappable.
-        Set<Throwable> causeSeen = Collections.newSetFromMap(new IdentityHashMap<>());
-        for (Throwable current = failure;
-                current != null && causeSeen.add(current);
-                current = current.getCause()) {
-            if (current instanceof GuestControlSignal.Throw) return true;
-            if (current instanceof SecurityException) return explicitGuestCatch;
-            if (isMappedGuestFailure(current)) return true;
+    /** Bound evaluator cause lookup to the same concrete classes as trap. */
+    public static <T extends Throwable> T findTrustedCause(Throwable failure, Class<T> type) {
+        for (int i = 0; i < MAX_FAILURE_NODES && failure != null; i++) {
+            if (type.isInstance(failure)) return type.cast(failure);
+            if (!hasTrustedCauseAccessor(failure)) return null;
+            failure = failure.getCause();
         }
-        return false;
+        return null;
+    }
+
+    private static boolean hasTrustedCauseAccessor(Throwable failure) {
+        Class<?> type = failure.getClass();
+        return type == CompletionException.class || type == ExecutionException.class
+                || type == SecurityException.class || failure instanceof GuestControlSignal
+                || MAPPED_GUEST_FAILURE_TYPES.contains(type) || isGuestCastError(type);
+    }
+
+    private static boolean isGuestCastError(Class<?> type) {
+        return type.getClassLoader() == TrapFailurePolicy.class.getClassLoader()
+                && type.getName().equals("dev.oreslang.nodes.OresEvalRootNode$OresCastError");
     }
 
     private static boolean isMappedGuestFailure(Throwable failure) {
-        if (failure instanceof IllegalArgumentException
-                || failure instanceof IllegalStateException
-                || failure instanceof ArithmeticException
-                || failure instanceof IndexOutOfBoundsException
-                || failure instanceof ClassCastException
-                || failure instanceof UnsupportedOperationException
-                || failure instanceof NoSuchElementException
-                || failure instanceof NegativeArraySizeException
-                || failure instanceof ArrayStoreException) {
+        if (MAPPED_GUEST_FAILURE_TYPES.contains(failure.getClass())) {
             // These JDK exception types are guest errors only when they were
             // raised by the Oreslang runtime itself. A host/FFI exception with
             // the same Java class must be explicitly mapped by its adapter.
@@ -102,7 +133,6 @@ public final class TrapFailurePolicy {
                     && trace[0].getClassName().startsWith("dev.oreslang.");
         }
         // The interpreter's cast failure is a dedicated guest runtime type.
-        return failure.getClass().getName()
-                .equals("dev.oreslang.nodes.OresEvalRootNode$OresCastError");
+        return isGuestCastError(failure.getClass());
     }
 }
