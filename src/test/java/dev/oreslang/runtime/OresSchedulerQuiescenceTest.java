@@ -93,7 +93,17 @@ final class OresSchedulerQuiescenceTest {
             java.lang.reflect.Field tasksField =
                     OresScheduler.class.getDeclaredField("tasks");
             tasksField.setAccessible(true);
-            assertTrue(((java.util.Set<?>) tasksField.get(scheduler)).isEmpty());
+            // onQuiescent signals from inside the retirement callback, while
+            // OresScheduler removes the task only AFTER that callback returns.
+            // The receipt proves that cleanup was invoked, not that the outer
+            // scheduler bookkeeping is already complete at this instant.
+            long retirementDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (!((java.util.Set<?>) tasksField.get(scheduler)).isEmpty()
+                    && System.nanoTime() < retirementDeadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(((java.util.Set<?>) tasksField.get(scheduler)).isEmpty(),
+                    "physical retirement must eventually remove the task from the live set");
             carrier.shutdownNow();
             carrier.awaitTermination(3, TimeUnit.SECONDS);
         }
