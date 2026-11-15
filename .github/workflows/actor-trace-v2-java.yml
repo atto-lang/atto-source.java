@@ -11,6 +11,12 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorAsyncSendAdmissionRaceTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorStateLoansTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorSupervisorMailChannelBoundaryTest.java'
+      - 'src/test/java/dev/oreslang/SourceActorSpawnExecutionTest.java'
+      - 'src/test/java/dev/oreslang/SealedActorStateAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPhysicalTurnGateTest.java'
+      - 'src/test/java/dev/oreslang/ActorInvocationRuntimeTest.java'
+      - 'src/test/java/dev/oreslang/SourceActorEndCleanupExecutionTest.java'
+      - 'src/test/java/dev/oreslang/SourceActorNbSelectStopExecutionTest.java'
       - 'src/test/resources/atto/canonical-v1/**'
       - 'contracts/actor-trace-v2.json'
       - 'scripts/check_actor_trace_v2.py'
@@ -115,3 +121,31 @@ jobs:
           PY
           echo 'COMPILED_GUEST_EXECUTION=PASS'
           echo 'COMPILED_GUEST_ACTOR_TRACE_V2=NOT_EXECUTED'
+      - name: Test original compiler-backed actor lifecycle and physical turn-gate regressions
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=SourceActorSpawnExecutionTest,SealedActorStateAdmissionTest,ActorPhysicalTurnGateTest,ActorInvocationRuntimeTest,SourceActorEndCleanupExecutionTest,SourceActorNbSelectStopExecutionTest \
+            -Dores.runtime.carriers=java -Dores.actor.affinity=none test
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          expected = {
+            "dev.oreslang.SourceActorSpawnExecutionTest": 7,
+            "dev.oreslang.SealedActorStateAdmissionTest": 11,
+            "dev.oreslang.runtime.ActorPhysicalTurnGateTest": 15,
+            "dev.oreslang.ActorInvocationRuntimeTest": 4,
+            "dev.oreslang.SourceActorEndCleanupExecutionTest": 6,
+            "dev.oreslang.SourceActorNbSelectStopExecutionTest": 1,
+          }
+          for name, cases in expected.items():
+              path = Path("target/surefire-reports/TEST-" + name + ".xml")
+              assert path.exists(), "missing original source JUnit: " + name
+              suite = ET.parse(path).getroot()
+              assert int(suite.attrib["tests"]) == cases, "missing cases from " + name
+              assert all(int(suite.attrib[k]) == 0 for k in ("failures", "errors", "skipped")), name
+          print("ORIGINAL_ACTOR_LIFECYCLE_TURN_GATE_JUNIT_44_CASES=PASS")
+          PY
+          echo 'ACTUAL_ATTO_GUEST_LIFECYCLE=EXECUTED'
+          echo 'PHYSICAL_HOST_ACTOR_TURN_GATE=EXECUTED'
+          echo 'SEALED_STATE_PARSER_GATE=EXECUTED'
+          echo 'ONLINE_COMPILED_GUEST_ACTOR_TRACE_V2=NOT_EXECUTED'
