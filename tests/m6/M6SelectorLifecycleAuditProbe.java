@@ -18,8 +18,8 @@ public final class M6SelectorLifecycleAuditProbe {
     private static void until(java.util.function.BooleanSupplier predicate, String label)
             throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
-        while (!predicate.get() && System.nanoTime() < deadline) Thread.sleep(2);
-        require(predicate.get(), "deadline exceeded: " + label);
+        while (!predicate.getAsBoolean() && System.nanoTime() < deadline) Thread.sleep(2);
+        require(predicate.getAsBoolean(), "deadline exceeded: " + label);
     }
 
     private static void selected_key_budget_and_admission() throws Exception {
