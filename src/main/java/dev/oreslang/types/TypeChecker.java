@@ -5158,7 +5158,7 @@ public final class TypeChecker {
                 return switch (channelOp.mode()) {
                     case BLOCKING -> Primitive.VOID;
                     case NONBLOCKING -> new Named("Future", List.of(Primitive.VOID));
-                    case IMMEDIATE -> Primitive.BOOL;
+                    case IMMEDIATE -> new Named("TryWriteResult", List.of(element));
                 };
             }
 
@@ -7733,6 +7733,10 @@ public final class TypeChecker {
                         : null;
                 case "Err" -> named.name().equals("Result") && named.arguments().size() == 2
                         ? List.of(named.arguments().get(1)) : null;
+                case "Accepted" -> named.name().equals("TryWriteResult") && named.arguments().size() == 1
+                        ? List.of() : null;
+                case "Full", "Closed" -> named.name().equals("TryWriteResult") && named.arguments().size() == 1
+                        ? List.of(named.arguments().getFirst()) : null;
                 default -> null;
             };
             if (args == null) {
@@ -7962,7 +7966,9 @@ public final class TypeChecker {
                 if ((a.constructor().equals("Some") && b.constructor().equals("None"))
                         || (a.constructor().equals("None") && b.constructor().equals("Some"))
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
-                        || (a.constructor().equals("Err") && b.constructor().equals("Ok"))) return true;
+                        || (a.constructor().equals("Err") && b.constructor().equals("Ok"))
+                        || (java.util.Set.of("Accepted", "Full", "Closed").contains(a.constructor())
+                            && java.util.Set.of("Accepted", "Full", "Closed").contains(b.constructor()))) return true;
             }
             return false;
         }
@@ -8094,6 +8100,26 @@ public final class TypeChecker {
                     okPayloads, named.arguments().get(0), generics, self, depth + 1))
                     && patternsProvablyExhaustive(
                             errPayloads, named.arguments().get(1), generics, self, depth + 1);
+        }
+
+        if (subject instanceof Named named
+                && named.name().equals("TryWriteResult") && named.arguments().size() == 1) {
+            boolean accepted = false;
+            List<Ast.Pattern> fullPayloads = new ArrayList<>();
+            List<Ast.Pattern> closedPayloads = new ArrayList<>();
+            for (Ast.Pattern pattern : patterns) {
+                if (!(pattern instanceof Ast.ConstructorPattern ctor)) continue;
+                if (ctor.constructor().equals("Accepted") && ctor.arguments().isEmpty()) {
+                    accepted = true;
+                }
+                if (ctor.arguments().size() != 1) continue;
+                if (ctor.constructor().equals("Full")) fullPayloads.add(ctor.arguments().getFirst());
+                if (ctor.constructor().equals("Closed")) closedPayloads.add(ctor.arguments().getFirst());
+            }
+            Type payload = named.arguments().getFirst();
+            return accepted
+                    && patternsProvablyExhaustive(fullPayloads, payload, generics, self, depth + 1)
+                    && patternsProvablyExhaustive(closedPayloads, payload, generics, self, depth + 1);
         }
 
         // Open/infinite domains require an irrefutable pattern. More elaborate
@@ -11423,6 +11449,14 @@ public final class TypeChecker {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
                 yield new Named("Option", List.of(element));
+            }
+            case "TryWriteResult" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException("TryWriteResult<T> requires exactly one element type");
+                }
+                Type payload = resolve(ref.arguments().getFirst(), generics, self);
+                validateChannelPayloadType(payload, "TryWriteResult<T>");
+                yield new Named("TryWriteResult", List.of(payload));
             }
             case "Result" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 2) {
