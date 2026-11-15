@@ -110,7 +110,8 @@ public final class SourceLogCallsiteBindingV1 {
                 if (checkedId == null || checkedId.kind() != SourceIdentityV1.Kind.ROUTINE) {
                     throw new IllegalArgumentException("missing exact independently checked function identity");
                 }
-                visit(fn.body(), module.name(), fn, checkedId, bySelector, bindings);
+                visit(fn.body(), module.name(), fn, checkedId,
+                        bySelector, bindings, new HashSet<>());
             }
         }
         // Reject spurious/foreign routine records, even if the source has
@@ -125,23 +126,31 @@ public final class SourceLogCallsiteBindingV1 {
     }
 
     private static void requireLiteral(String message) {
-        if (message == null || message.isEmpty()
-                || message.getBytes(StandardCharsets.UTF_8).length > 96) {
-            throw new IllegalArgumentException("log.info needs a bounded static literal");
+        requireBoundedLiteral(message, 96, "log.info");
+    }
+
+    private static void requireSpanName(String name) {
+        requireBoundedLiteral(name, 256, "telemetry.span");
+    }
+
+    private static void requireBoundedLiteral(String text, int maxBytes, String operation) {
+        if (text == null || text.isEmpty()
+                || text.getBytes(StandardCharsets.UTF_8).length > maxBytes) {
+            throw new IllegalArgumentException(operation + " requires bounded source literal");
         }
-        for (int i = 0; i < message.length(); ++i) {
-            char c = message.charAt(i);
+        for (int i = 0; i < text.length(); ++i) {
+            char c = text.charAt(i);
             if (Character.isISOControl(c)) {
-                throw new IllegalArgumentException("log.info literal contains control character");
+                throw new IllegalArgumentException(operation + " literal contains control character");
             }
             if (Character.isHighSurrogate(c)) {
-                if (i + 1 >= message.length()
-                        || !Character.isLowSurrogate(message.charAt(i + 1))) {
-                    throw new IllegalArgumentException("log.info literal has invalid UTF-16 pair");
+                if (i + 1 >= text.length()
+                        || !Character.isLowSurrogate(text.charAt(i + 1))) {
+                    throw new IllegalArgumentException(operation + " literal has invalid UTF-16 pair");
                 }
                 ++i;
             } else if (Character.isLowSurrogate(c)) {
-                throw new IllegalArgumentException("log.info literal has unpaired surrogate");
+                throw new IllegalArgumentException(operation + " literal has unpaired surrogate");
             }
         }
     }
@@ -150,21 +159,31 @@ public final class SourceLogCallsiteBindingV1 {
             List<Ast.Stmt> statements, String module, Ast.FunctionDecl fn,
             SourceIdentityV1.Id checkedRoutine,
             Map<Selector, SourceIdentityV1.Site> remaining,
-            IdentityHashMap<Ast.CallExpr, SourceIdentityV1.Site> result) {
+            IdentityHashMap<Ast.CallExpr, SourceIdentityV1.Site> result,
+            HashSet<String> liveSpanAliases) {
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.UsingTelemetrySpanStmt scope) {
-                if ("log".equals(scope.binding())) {
+                if ("log".equals(scope.binding())
+                        || fn.parameters().stream().anyMatch(p -> scope.binding().equals(p.name()))
+                        || !liveSpanAliases.add(scope.binding())) {
                     throw new IllegalArgumentException(
-                            "telemetry span alias must not shadow reserved log intrinsic");
+                            "telemetry span alias shadows a live owner, parameter or reserved log intrinsic");
                 }
                 if (!(scope.name() instanceof Ast.LiteralExpr value)
-                        || !(value.value() instanceof String)) {
+                        || !(value.value() instanceof String name)) {
                     throw new IllegalArgumentException(
                             "native log v1 scoped tracing needs a literal span name");
                 }
-                visit(scope.body(), module, fn, checkedRoutine, remaining, result);
+                requireSpanName(name);
+                try {
+                    visit(scope.body(), module, fn, checkedRoutine,
+                            remaining, result, liveSpanAliases);
+                } finally {
+                    liveSpanAliases.remove(scope.binding());
+                }
             } else if (stmt instanceof Ast.BlockStmt block) {
-                visit(block.body(), module, fn, checkedRoutine, remaining, result);
+                visit(block.body(), module, fn, checkedRoutine,
+                        remaining, result, liveSpanAliases);
             } else if (stmt instanceof Ast.ExprStmt expression) {
                 if (!(expression.expression() instanceof Ast.CallExpr call)) {
                     throw new IllegalArgumentException(
