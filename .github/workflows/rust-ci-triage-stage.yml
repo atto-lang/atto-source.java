@@ -1,0 +1,43 @@
+name: Rust CI triage migration (staged, not authoritative)
+on:
+  pull_request:
+    paths:
+      - tools/ci_run_triage_core.rs
+      - tools/ci-run-triage/**
+      - .github/workflows/rust-ci-triage-stage.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-ci-triage-stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact PR source without retaining credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Execute original Rust classifier's adversarial unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          rustc --edition=2021 -D warnings --test tools/ci_run_triage_core.rs -o /tmp/ci_run_triage_core_tests
+          /tmp/ci_run_triage_core_tests
+      - name: Execute strict read-only GitHub JSON/API adapter regression tests
+        shell: bash
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          set -euo pipefail
+          cargo --version
+          cargo test --manifest-path tools/ci-run-triage/Cargo.toml --all-targets
+      - name: State scope of evidence
+        shell: bash
+        run: |
+          printf 'RUST_CI_TRIAGE_STAGE_EXECUTED source_sha=%s run=%s attempt=%s\n' \
+            "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          echo 'Staged Rust unit tests only: Python CI triage remains authoritative.'
+          echo 'No private-source transfer and no compiler or guest parity implied.'
