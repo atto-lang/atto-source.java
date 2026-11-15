@@ -1,6 +1,11 @@
-// Even a temporary move-only payload cannot be certified recoverable.
+// Owned temporaries are now recoverable without an original sender binding.
 pub routine main(): void {
   val Channel<Array<int>> channel = Channel.new<Array<int>>(1);
-  val bool accepted = try writech channel, [7, 8];
+  val TryWriteResult<Array<int>> result = try writech channel, [7, 8];
+  do match result over
+    on Accepted -> { stdio.stdout.write("ok"); }
+    on Full(payload) -> { stdio.stdout.write("unexpected-full"); }
+    on Closed(payload) -> { stdio.stdout.write("unexpected-closed"); }
+  end
   return;
 }
