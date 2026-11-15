@@ -549,7 +549,31 @@ final class TrapOptionSemanticsTest {
         assertEquals(0, causeReads.get());
     }
 
-    private static void assertPanicEscapes(String program, String expectedOutput, String diagnostic)
+    @Test
+    void recordedSourceLocationsDoNotPreventRecoveryOrHideTerminalCleanup() {
+        var raised = new dev.oreslang.runtime.GuestControlSignal.Raise("raise");
+        dev.oreslang.runtime.SourceBoundaryTrace.record(raised, "test.atto", "callee", "await");
+        var wrapped = new java.util.concurrent.CompletionException(raised);
+        dev.oreslang.runtime.SourceBoundaryTrace.record(wrapped, "test.atto", "caller", "await");
+        assertSame(raised, dev.oreslang.runtime.GuestControlSignal.recoverableRaise(wrapped));
+        raised.addSuppressed(new dev.oreslang.runtime.GuestControlSignal.Panic("cleanup panic"));
+        assertNull(dev.oreslang.runtime.GuestControlSignal.recoverableRaise(wrapped));
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(15)
+    void actorPanicAfterAwaitUnwindsCleanupAndEscapesCatch() throws Exception {
+        var fixture = java.nio.file.Path.of(
+                "src/test/resources/exception-boundaries/actor_panic_after_await.atto");
+        var failure = assertPanicEscapes(java.nio.file.Files.readString(fixture),
+                "resumed|inner|outer|", "Oreslang panic signal");
+        var trace = new java.io.StringWriter();
+        failure.printStackTrace(new java.io.PrintWriter(trace));
+        assertTrue(trace.toString().contains("resumed source task receive"), trace::toString);
+    }
+
+    private static PolyglotException assertPanicEscapes(
+            String program, String expectedOutput, String diagnostic)
             throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "panic-boundary.atto")
@@ -559,8 +583,9 @@ final class TrapOptionSemanticsTest {
                 .out(output).build()) {
             var failure = assertThrows(PolyglotException.class, () -> context.eval(source));
             assertTrue(failure.getMessage().contains(diagnostic), failure::getMessage);
+            assertEquals(expectedOutput, output.toString(StandardCharsets.UTF_8));
+            return failure;
         }
-        assertEquals(expectedOutput, output.toString(StandardCharsets.UTF_8));
     }
 
     private static String run(String program) throws Exception {

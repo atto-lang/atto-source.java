@@ -54,6 +54,10 @@ public abstract sealed class GuestControlSignal extends RuntimeException
                 pending.addLast(current.getCause());
             }
             for (Throwable suppressed : current.getSuppressed()) {
+                // Runtime-created source locations are inert, final leaf
+                // diagnostics. They are attached as suppressed exceptions
+                // when a raise crosses a function or an await boundary.
+                if (suppressed instanceof SourceBoundaryTrace) continue;
                 if (++queued > MAX_RECOVERY_NODES) return null;
                 pending.addLast(suppressed);
             }
