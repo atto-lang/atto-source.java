@@ -76,6 +76,25 @@ final class ImmediateChannelProbeHardeningTest {
     }
 
     @Test
+    void directMatchConsumesRejectedMoveOnlyPayloadExactlyOnce() throws Exception {
+        assertEquals("5", execute("typed_direct_match.atto"));
+    }
+
+    @Test
+    void immediateProbeIsUsableFromAsyncMain() throws Exception {
+        assertEquals("29", execute("typed_async_match.atto"));
+    }
+
+    @Test
+    void guardedRecoverableProbeDestructuringFailsClosed() throws Exception {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(fixture("typed_guarded_match.atto"))));
+        assertTrue(error.getMessage().contains("match guards are not supported"),
+                error::getMessage);
+    }
+
+    @Test
     void discardingRecoverableProbeIsRejected() throws Exception {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
