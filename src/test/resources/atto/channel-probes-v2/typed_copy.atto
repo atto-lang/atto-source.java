@@ -1,0 +1,25 @@
+// Typed immediate write: Accepted, Full and returned Copy payload are distinct.
+pub routine main(): void {
+  val Channel<int> ch = Channel.new<int>(1);
+  val TryWriteResult<int> first = try writech ch, 41;
+  match first over
+    on Accepted -> { }
+    on Full(unexpected) -> { stdio.stdout.write("bad-full"); }
+    on Closed(unexpected) -> { stdio.stdout.write("bad-closed"); }
+  end
+  val TryWriteResult<int> rejected = try writech ch, 42;
+  match rejected over
+    on Accepted -> { stdio.stdout.write("bad-accepted"); }
+    on Full(recovered) -> {
+      stdio.stdout.write(readch ch);
+      val TryWriteResult<int> retried = try writech ch, recovered;
+      match retried over
+        on Accepted -> { stdio.stdout.write(readch ch); }
+        on Full(unexpected) -> { stdio.stdout.write("bad-retry-full"); }
+        on Closed(unexpected) -> { stdio.stdout.write("bad-retry-closed"); }
+      end
+    }
+    on Closed(unexpected) -> { stdio.stdout.write("bad-closed"); }
+  end
+  return;
+}
