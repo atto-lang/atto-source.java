@@ -5,6 +5,13 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorTraceContractIntegrationTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorDistinctCarriersOverlapV2Test.java'
       - 'src/test/java/dev/oreslang/runtime/ActorSerialCarrierSafetyV2Test.java'
+      - 'src/test/java/dev/oreslang/AttoCanonicalFixtureGuestTest.java'
+      - 'src/test/java/dev/oreslang/AttoAsyncNioActorGuestTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorStopMailboxRaceTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorAsyncSendAdmissionRaceTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorStateLoansTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorSupervisorMailChannelBoundaryTest.java'
+      - 'src/test/resources/atto/canonical-v1/**'
       - 'contracts/actor-trace-v2.json'
       - 'scripts/check_actor_trace_v2.py'
       - '.github/workflows/actor-trace-v2-java.yml'
@@ -81,4 +88,30 @@ jobs:
           echo 'HOST_ONLY_PROVENANCE_FENCE=PASS'
           python3 -c "import json; t=json.load(open('target/actor-trace-graal-v2.json')); assert len(t['events'])==75; assert t['producer']['subject']=='runtime_host'"
           echo 'JVM_ACTOR_HOST_TRACE_V2=PASS'
-          echo 'COMPILED_ATTO_GUEST=NOT_EXECUTED'
+          echo 'COMPILED_ATTO_GUEST_TRACE_V2=NOT_EXECUTED'
+      - name: Run compiled .atto guest and adversarial original source actor tests
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=AttoCanonicalFixtureGuestTest,AttoAsyncNioActorGuestTest,ActorStopMailboxRaceTest,ActorAsyncSendAdmissionRaceTest,ActorStateLoansTest,ActorSupervisorMailChannelBoundaryTest \
+            -Dores.runtime.carriers=java -Dores.actor.affinity=none test
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          expected = {
+            "dev.oreslang.AttoCanonicalFixtureGuestTest": 3,
+            "dev.oreslang.AttoAsyncNioActorGuestTest": 1,
+            "dev.oreslang.runtime.ActorStopMailboxRaceTest": 1,
+            "dev.oreslang.runtime.ActorAsyncSendAdmissionRaceTest": 2,
+            "dev.oreslang.runtime.ActorStateLoansTest": 7,
+            "dev.oreslang.runtime.ActorSupervisorMailChannelBoundaryTest": 3,
+          }
+          for name, cases in expected.items():
+              path = Path("target/surefire-reports/TEST-" + name + ".xml")
+              assert path.exists(), "missing source JUnit run: " + name
+              suite = ET.parse(path).getroot()
+              assert int(suite.attrib["tests"]) == cases, "incomplete JUnit cases: " + name
+              assert all(int(suite.attrib[k]) == 0 for k in ("failures", "errors", "skipped")), name
+          print("SOURCE_JAVA_ACTOR_GUEST_PLUS_ADVERSARIAL_17_CASES=PASS")
+          PY
+          echo 'COMPILED_GUEST_EXECUTION=PASS'
+          echo 'COMPILED_GUEST_ACTOR_TRACE_V2=NOT_EXECUTED'
