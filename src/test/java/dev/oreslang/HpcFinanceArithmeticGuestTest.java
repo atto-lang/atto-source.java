@@ -51,7 +51,7 @@ final class HpcFinanceArithmeticGuestTest {
                         + incoming / samples;
                     } else {
                       result = result + (incoming - result) / samples;
-                    }
+                    fi
                   }
                   return result;
                 }
