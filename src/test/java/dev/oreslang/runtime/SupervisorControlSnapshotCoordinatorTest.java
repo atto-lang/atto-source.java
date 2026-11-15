@@ -159,6 +159,60 @@ final class SupervisorControlSnapshotCoordinatorTest {
     }
 
     @Test
+    void queuedDispatchFailureNotifiesOnlyAfterSlotRetirement() throws Exception {
+        var queuedTurn = new AtomicReference<Runnable>();
+        var dispatcherCompletion = new AtomicReference<OresFuture.Callback<Void>>();
+        var realCaptureCalls = new AtomicInteger();
+        ActorRuntime.ControlDispatcher dispatcher = turn ->
+                OresFuture.<Void>fromCallback(done -> {
+                    queuedTurn.set(turn);
+                    dispatcherCompletion.set(done);
+                });
+        try (var runtime = runtime(dispatcher);
+             var observer = new SupervisorRegistryObservation(
+                     runtime, System::nanoTime, () -> {
+                         realCaptureCalls.incrementAndGet();
+                         return java.time.Instant.now();
+                     });
+             var service = new SupervisorControlSnapshotCoordinator(runtime, observer);
+             ExecutorService worker = Executors.newSingleThreadExecutor()) {
+            Object session = new Object();
+            var g = grant(service, runtime, session);
+            var pending = read(service, g, session);
+            assertEquals(1, service.activeControlRequests());
+            assertNotNull(queuedTurn.get());
+            assertNotNull(dispatcherCompletion.get());
+            // Inspect accounting *in* the completion notification, not only
+            // after callback.reject() returns. Previously the dispatcher
+            // reported failure before releasing an unstarted physical slot.
+            var slotsAtFailure = new CompletableFuture<Integer>();
+            pending.whenComplete((ignored, failure) ->
+                    slotsAtFailure.complete(service.activeControlRequests()));
+            dispatcherCompletion.get().reject(
+                    new IllegalStateException("queued dispatcher rejected work"));
+            assertCode(pending, "CONTROL_DISPATCH_FAILED");
+            assertEquals(0, slotsAtFailure.get(5, TimeUnit.SECONDS).intValue(),
+                    "CONTROL_DISPATCH_FAILED was published before slot retirement");
+            assertEquals(0, service.activeControlRequests());
+            // A buggy dispatcher can still run its stale queued Runnable;
+            // the CAS-abandoned observation must neither capture nor free
+            // any subsequently admitted request's reservation.
+            Runnable stale = queuedTurn.get();
+            var replacement = read(service, grant(service, runtime, session), session);
+            assertEquals(1, service.activeControlRequests());
+            worker.submit(stale).get(5, TimeUnit.SECONDS);
+            assertEquals(0, realCaptureCalls.get());
+            assertEquals(1, service.activeControlRequests());
+            // The dispatcher has replaced its queued pointer by the second
+            // request: execute that real turn and settle the receipt.
+            worker.submit(queuedTurn.get()).get(5, TimeUnit.SECONDS);
+            assertEquals("partial",
+                    replacement.toCompletableFuture().get(5, TimeUnit.SECONDS).status());
+            assertEquals(0, service.activeControlRequests());
+        }
+    }
+
+    @Test
     void dispatchFailureWhileControlIsRunningRetainsPhysicalSlotUntilExit() throws Exception {
         var turn = new AtomicReference<Runnable>();
         var completion = new AtomicReference<OresFuture.Callback<Void>>();
