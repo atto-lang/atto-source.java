@@ -139,14 +139,15 @@ final class AttoDurableAtomicFilesystemLanguageTest {
         Path root = privateRoot("file-only-grant");
         Path manifest = root.resolve("classic.meta");
         RuntimePermissions onlyFile = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, root.toString())
                 .withAllowed(RuntimePermissions.Permission.WRITE, manifest.toString());
         String source = program(manifest, """
                   await fs.write_text_durable_atomic_async("__MANIFEST__", "forbidden");
                 """);
         RuntimeException denied = assertThrows(RuntimeException.class, () ->
                 guest(root.resolve("main.atto"), source, onlyFile, rwPolicy()));
-        assertTrue(errorChain(denied).contains("permission denied"),
-                "missing parent WRITE must fail before any filesystem probe: "
+        assertTrue(errorChain(denied).contains("fs.write_text_durable_atomic_async.parent"),
+                "must deny WRITE to directory (not an unrelated READ permission): "
                         + errorChain(denied));
         assertFalse(Files.exists(manifest));
         try (var files = Files.list(root)) {
@@ -168,11 +169,12 @@ final class AttoDurableAtomicFilesystemLanguageTest {
                   await fs.write_text_durable_atomic_async("__MANIFEST__", "escape");
                 """);
         RuntimePermissions granted = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, allowed.toString())
                 .withAllowed(RuntimePermissions.Permission.WRITE, allowed.toString());
         RuntimeException denied = assertThrows(RuntimeException.class, () ->
                 guest(allowed.resolve("main.atto"), program, granted, rwPolicy()));
-        assertTrue(errorChain(denied).contains("permission denied"),
-                "resolved parent WRITE must be checked: " + errorChain(denied));
+        assertTrue(errorChain(denied).contains("fs.write_text_durable_atomic_async.parent"),
+                "resolved parent WRITE (not source-file READ) must be denied: " + errorChain(denied));
         assertEquals("preserve-outside", Files.readString(original));
         assertTrue(Files.isSymbolicLink(alias));
     }
