@@ -1150,12 +1150,8 @@ public final class Parser {
         }
         // These are proposed *nominal* source kinds, not synonyms for class/actor.
         // Keep the spellings contextual so unrelated identifiers remain valid.
-        if (name.equals("state") && current + 1 < tokens.size()
-                && tokens.get(current + 1).lexeme().equals("container")) {
-            throw error(peek(), "source state container declarations require "
-                    + "compiler-checked private mutable storage, scoped state loans "
-                    + "and cross-backend lowering; not yet enabled");
-        }
+        // ('state container' is a first-class protected declaration on main and
+        // is parsed by parseProtectedDeclaration, which requires a sealed state block.)
         if (name.equals("grain")) {
             throw error(peek(), "source grain declarations require stable keyed identity, "
                     + "activation/passivation fencing and actor isolation; not yet enabled");

@@ -12,7 +12,9 @@ final class DeclarationKindAdmissionTest {
     @Test
     void unloweredNominalKindsFailClosedAtRootAndModuleScope() {
         String[][] kinds = {
-                {"state container", "private mutable storage"},
+                // main admits first-class protected 'state container' declarations
+                // (181ee5afd5); a body without a sealed state block still fails closed
+                {"state container", "sealed state block"},
                 {"grain", "stable keyed identity"},
                 {"model", "typed ModelGraph"},
                 {"enum", "nominal ADT case"}
