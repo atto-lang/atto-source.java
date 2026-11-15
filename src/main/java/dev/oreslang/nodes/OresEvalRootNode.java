@@ -2233,7 +2233,14 @@ public final class OresEvalRootNode extends RootNode {
                                     && seen.add(method)) {
                                 if (method.async() || method.suspends()) return true;
                                 for (Ast.Stmt statement : method.body()) {
-                                    if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                    // Calls through self.foo() must propagate
+                                    // a synchronous helper's backedges to the
+                                    // outer receive turn; otherwise actor
+                                    // mailbox dispatch is never promoted to
+                                    // a resumable continuation.
+                                    if (containsSourceLoop(statement)
+                                            || statementContainsPotentialSuspension(statement, seen))
+                                        return true;
                                 }
                             }
                         }
@@ -2355,9 +2362,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         /**
-         * Lower loops only inside already-async source tasks. Promoting every
-         * synchronous function containing a loop into an async task would
-         * silently change its return value and actor protocol.
+         * Detect guest CPU backedges in both declared async and synchronous
+         * callables. A synchronous call's result remains synchronous at its
+         * source boundary; the scheduler uses a heap-owned SourceTask only
+         * when its runtime context requires cooperative suspension.
          */
         private boolean containsSourceLoop(Ast.Stmt stmt) {
             if (stmt instanceof Ast.ForStmt
