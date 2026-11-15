@@ -83,6 +83,53 @@ final class AsyncRuntimeTest {
     }
 
     @Test
+    void taskExitReceiptWaitsForPhysicalTurnAndCannotBeCancelled() throws Exception {
+        CountDownLatch turnLeaving = new CountDownLatch(1);
+        CountDownLatch allowPhysicalExit = new CountDownLatch(1);
+
+        try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            try {
+                turn.run();
+            } finally {
+                turnLeaving.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try {
+                        allowPhysicalExit.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        })) {
+            OresFuture<Integer> task = runtime.submit(() -> 7);
+            assertTrue(turnLeaving.await(2, TimeUnit.SECONDS));
+            assertFalse(task.isDone(),
+                    "successful task completion is not published before context-exit");
+            OresFuture<Void> exit = runtime.taskExitReceipt(task);
+            assertFalse(exit.isDone(),
+                    "physical-exit receipt settled while TurnExecutor still owned the guest turn");
+            assertFalse(exit.cancel(true),
+                    "physical-exit receipt must be an irrevocable runtime observation");
+            // Cancellation may settle the exposed Future before the context
+            // adapter has left its physical turn. The uncancellable exit
+            // receipt must remain pending through that gap.
+            assertTrue(task.cancel(true));
+            assertTrue(task.isCancelled());
+            assertFalse(exit.isDone(),
+                    "logical cancellation must not fake physical guest exit");
+
+            allowPhysicalExit.countDown();
+            assertNull(exit.get(2, TimeUnit.SECONDS));
+            assertFalse(exit.isCancelled());
+        } finally {
+            allowPhysicalExit.countDown();
+        }
+    }
+
+    @Test
     void hostCompletionStageIsOneWayAdaptedIntoOresFuture() {
         CompletableFuture<Integer> host = new CompletableFuture<>();
         OresFuture<Integer> ores = OresFuture.from(host);

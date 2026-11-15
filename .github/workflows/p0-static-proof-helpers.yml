@@ -1,0 +1,57 @@
+name: P0 static proof helpers (not guest AOT evidence)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/types/TypeclassRegistry.java'
+      - 'src/main/java/dev/oreslang/types/AssociatedTypeWitnesses.java'
+      - 'src/main/java/dev/oreslang/types/SessionProtocolProof.java'
+      - 'src/main/java/dev/oreslang/types/RefinementProofs.java'
+      - 'src/test/java/dev/oreslang/AssociatedTypeWitnessesTest.java'
+      - 'src/test/java/dev/oreslang/SessionProtocolProofTest.java'
+      - 'src/test/java/dev/oreslang/RefinementProofsTest.java'
+      - '.github/workflows/p0-static-proof-helpers.yml'
+  push:
+    paths:
+      - 'src/main/java/dev/oreslang/types/TypeclassRegistry.java'
+      - 'src/main/java/dev/oreslang/types/AssociatedTypeWitnesses.java'
+      - 'src/main/java/dev/oreslang/types/SessionProtocolProof.java'
+      - 'src/main/java/dev/oreslang/types/RefinementProofs.java'
+      - 'src/test/java/dev/oreslang/AssociatedTypeWitnessesTest.java'
+      - 'src/test/java/dev/oreslang/SessionProtocolProofTest.java'
+      - 'src/test/java/dev/oreslang/RefinementProofsTest.java'
+      - '.github/workflows/p0-static-proof-helpers.yml'
+permissions:
+  contents: read
+jobs:
+  compiler-helper-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Exact-head provenance and clean checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "GUEST_COMPILER_HEAD=$EXPECTED_HEAD"
+          echo "GUEST_COMPILER_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Compile TypeChecker helpers and run the 3 exact test classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=AssociatedTypeWitnessesTest,SessionProtocolProofTest,RefinementProofsTest test
+
+# This only exercises Java compiler-helper APIs. It does NOT compile .ores
+# source, produce GraalVM program-specific guest Native Image, or prove
+# complete compiler soundness. Zero-step CI is not_executed.

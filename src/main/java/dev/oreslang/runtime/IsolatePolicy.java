@@ -49,6 +49,8 @@ public record IsolatePolicy(
         JAVA_SOURCE_INTEROP,
         FFI,
         NATIVE,
+        // Explicit guest-to-host workflow service grant; never implied by FFI.
+        WORKFLOW_STORAGE,
         REFLECTION,
         CHILD_PROCESS,
         THREAD_CREATE,
@@ -184,12 +186,26 @@ public record IsolatePolicy(
             PermissionCheckMode permissionCheckMode) {
         NativeBuildMode.requireCompatible(profile);
         Set<String> hostClasses = Set.copyOf(allowedHostClasses);
+        // Host-class lookup and accessible members are separate authorities.
+        // A narrow method selector permits class lookup but exposes only the
+        // exact manifest-approved overload to Graal HostAccess.
+        Set<String> lookupClasses = hostClasses.stream()
+                .map(grant -> SafeHostMemberManifest.isMemberSelector(grant)
+                        ? SafeHostMemberManifest.className(grant) : grant)
+                .collect(Collectors.toUnmodifiableSet());
         if (!hostClasses.isEmpty()) {
             require(Capability.JAVA_INTEROP, "Java host imports");
             if (adversarial) {
                 throw new SecurityException("Java host imports are disabled for adversarial isolates");
             }
-            for (String className : hostClasses) validateHostClassAuthority(className);
+            for (String className : lookupClasses) validateHostClassAuthority(className);
+            for (String grant : hostClasses) {
+                if (SafeHostMemberManifest.isMemberSelector(grant) &&
+                        hostClasses.contains(SafeHostMemberManifest.className(grant))) {
+                    throw new IllegalArgumentException(
+                            "class-wide and method-scoped Java grants cannot be mixed for the same class");
+                }
+            }
         }
 
         HostAccess hostAccess;
@@ -203,7 +219,7 @@ public record IsolatePolicy(
 
         Context.Builder builder = Context.newBuilder(OresLanguage.ID)
                 .allowHostAccess(hostAccess)
-                .allowHostClassLookup(hostClasses.isEmpty() ? ignored -> false : hostClasses::contains)
+                .allowHostClassLookup(lookupClasses.isEmpty() ? ignored -> false : lookupClasses::contains)
                 .allowHostClassLoading(false)
                 .allowPolyglotAccess(PolyglotAccess.NONE)
                 .allowEnvironmentAccess(EnvironmentAccess.NONE)
@@ -312,15 +328,38 @@ public record IsolatePolicy(
                 .allowAccessInheritance(false);
         ClassLoader loader = Thread.currentThread().getContextClassLoader();
 
-        for (String className : hostClasses) {
+        for (String grant : hostClasses) {
+            final Method approved = SafeHostMemberManifest.isMemberSelector(grant)
+                    ? SafeHostMemberManifest.resolve(grant) : null;
+            String className = approved == null
+                    ? grant : approved.getDeclaringClass().getName();
             final Class<?> type;
-            try {
-                type = Class.forName(className, false, loader);
-            } catch (ClassNotFoundException failure) {
-                throw new IllegalArgumentException("allowlisted Java host class is unavailable: " + className, failure);
+            if (approved != null) {
+                // Statically rooted manifest methods never run a dynamic
+                // Class.forName lookup or scan arbitrary JAR/classpath entries.
+                type = approved.getDeclaringClass();
+            } else {
+                try {
+                    type = Class.forName(className, false, loader);
+                } catch (ClassNotFoundException failure) {
+                    throw new IllegalArgumentException(
+                            "allowlisted Java host class is unavailable: " + className, failure);
+                }
             }
             if (!Modifier.isPublic(type.getModifiers())) {
                 throw new IllegalArgumentException("allowlisted Java host class must be public: " + className);
+            }
+            if (approved != null) {
+                // This branch never exposes constructors, mutable fields or
+                // non-manifested methods on the same otherwise look-upable class.
+                if (approved.getDeclaringClass() != type ||
+                        !Modifier.isPublic(approved.getModifiers()) ||
+                        !Modifier.isStatic(approved.getModifiers())) {
+                    throw new IllegalArgumentException(
+                            "Java host method grant must resolve to an exact public static method");
+                }
+                access.allowAccess(approved);
+                continue;
             }
 
             for (Constructor<?> constructor : type.getDeclaredConstructors()) {

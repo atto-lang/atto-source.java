@@ -1,0 +1,42 @@
+name: AttoLang typed physical-layout JVM host tests (NON-GUEST)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/dop/PhysicalLayoutV1.java'
+      - 'src/test/java/dev/oreslang/PhysicalLayoutV1Test.java'
+      - '.github/workflows/dop-physical-layout-v1.yml'
+      - 'pom.xml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-physical-plan-host:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Compile and test typed physical address plan on source-local JDK
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$EXPECTED_HEAD"
+          mvn -B -ntp -Dtest=PhysicalLayoutV1Test -DfailIfNoTests=true test
+          test -s target/surefire-reports/TEST-dev.oreslang.PhysicalLayoutV1Test.xml
+          echo 'DOP_JAVA_PHYSICAL_HOST_ONLY_PASS, ATTO_GUEST_NOT_EXECUTED'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: dop-physical-java-junit
+          path: target/surefire-reports/*PhysicalLayoutV1Test*
+          if-no-files-found: warn

@@ -1,0 +1,97 @@
+// P2 integrated native guest: four REAL OresLLM source modules, one training loop.
+// This is NOT a generic tape, N-D tensor, GPU kernel, or Transformer.
+// The runner must independently verify the four original source blob SHAs.
+import class Vector2, Matrix2 from '../../tensor/src/tensor2';
+import fnc dot_vector, mul_matrix_vector from '../../tensor/src/tensor2';
+import class Affine2Tape from '../../autograd/src/affine2_grad';
+import fnc vjp_weight0, vjp_bias, vjp_input0, jvp_loss from '../../autograd/src/affine2_grad';
+import class TinyState from '../../nn/src/tiny_mlp';
+import fnc relu, predict, squared_loss from '../../nn/src/tiny_mlp';
+import class SgdPolicy from '../../optim/src/scalar_sgd';
+import fnc valid_policy, update_scalar from '../../optim/src/scalar_sgd';
+
+pub routine main(): void {
+  val Matrix2 identity = new Matrix2(1.0, 0.0, 0.0, 1.0);
+  val Vector2 feature = new Vector2(2.0, 0.0);
+  val Vector2 basis = new Vector2(1.0, 0.0);
+  val Vector2 projected = mul_matrix_vector(&identity, &feature);
+  val float input = dot_vector(&projected, &basis);
+  if input != 2.0; do rt fail("tensor projection changed sample"); fi
+
+  val float target = 6.0;
+  val SgdPolicy policy = new SgdPolicy(0.01, 50.0);
+  if !valid_policy(&policy); do rt fail("SGD policy invalid"); fi
+  let float w0 = 0.5;
+  let float b0 = 0.0;
+  let float w1 = 1.0;
+  let float b1 = 0.0;
+  val TinyState initial_state = new TinyState(w0, b0, w1, b1);
+  val float starting_loss = squared_loss(&initial_state, input, target);
+  if starting_loss != 25.0; do rt fail("initial NN forward loss"); fi
+
+  // Independent finite-difference gradient against the shared autograd VJP.
+  val float activation = relu(w0 * input + b0);
+  val Affine2Tape initial_tape = new Affine2Tape(
+    activation, 0.0, w1, 0.0, b1, target
+  );
+  val float epsilon = 0.001;
+  val TinyState plus = new TinyState(w0, b0, w1 + epsilon, b1);
+  val TinyState minus = new TinyState(w0, b0, w1 - epsilon, b1);
+  // The compiler types the function results before arithmetic.
+  val float upper_loss = squared_loss(&plus, input, target);
+  val float lower_loss = squared_loss(&minus, input, target);
+  val float finite_difference = (upper_loss - lower_loss) / (2.0 * epsilon);
+  val float derivative = vjp_weight0(&initial_tape);
+  if finite_difference < derivative - 0.02 || finite_difference > derivative + 0.02; do
+    rt fail("integrated gradient mismatch");
+  fi
+  if jvp_loss(&initial_tape, 0.0, 0.0, 1.0, 0.0, 0.0) != derivative; do
+    rt fail("integrated JVP mismatch");
+  fi
+
+  // Compute every gradient from an immutable per-step NN parameter snapshot.
+  // Explicit scalar parameter locals avoid a mutable class-typed loop backedge.
+  for let step = 0; step < 20; step++ do
+    val TinyState snapshot = new TinyState(w0, b0, w1, b1);
+    val float preactivation = w0 * input + b0;
+    val float hidden_activation = relu(preactivation);
+    val Affine2Tape tape = new Affine2Tape(
+      hidden_activation, 0.0, w1, 0.0, b1, target
+    );
+    val float output = predict(&snapshot, input);
+    val float error = output - target;
+    val float grad_w1 = vjp_weight0(&tape);
+    val float grad_b1 = vjp_bias(&tape);
+    let float grad_hidden = 0.0;
+    if preactivation > 0.0; do
+      grad_hidden = vjp_input0(&tape);
+    fi
+    val float grad_w0 = grad_hidden * input;
+    val float grad_b0 = grad_hidden;
+    if error * error < 0.0; do rt fail("invalid NN loss"); fi
+
+    // Calculate all next scalar parameters before committing the new generation.
+    val float next_w0 = update_scalar(w0, grad_w0, &policy);
+    val float next_b0 = update_scalar(b0, grad_b0, &policy);
+    val float next_w1 = update_scalar(w1, grad_w1, &policy);
+    val float next_b1 = update_scalar(b1, grad_b1, &policy);
+    w0 = next_w0;
+    b0 = next_b0;
+    w1 = next_w1;
+    b1 = next_b1;
+  done
+  val TinyState final_state = new TinyState(w0, b0, w1, b1);
+  val float ending_loss = squared_loss(&final_state, input, target);
+  if !(ending_loss >= 0.0 && ending_loss < 0.00001 && ending_loss < starting_loss); do
+    rt fail("integrated training did not converge");
+  fi
+  // Held-out sample: fixed scalar rule y=3*x, not an optimization sample.
+  val float heldout_prediction = predict(&final_state, 3.0);
+  val float heldout_delta = heldout_prediction - 9.0;
+  val float heldout_loss = heldout_delta * heldout_delta;
+  if !(heldout_loss >= 0.0 && heldout_loss < 1.0); do
+    rt fail("integrated held-out loss too high");
+  fi
+  stdio.stdout.println("ORES-ML-INTEGRATED-TRAIN-NATIVE-PASS");
+  return;
+}

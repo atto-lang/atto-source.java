@@ -1,0 +1,42 @@
+name: Java capability I/O host lifecycle (reference only)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/HostCapabilityIoLifecycleV1.java'
+      - 'src/test/java/dev/oreslang/runtime/HostCapabilityIoLifecycleV1Test.java'
+      - 'src/main/java/dev/oreslang/runtime/NativeIo.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeIoPinnedTcpAuthorizationTest.java'
+      - '.github/workflows/capability-io-lifecycle-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source commit and tree
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          git diff --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+          test -z "$(git ls-files --others --ignored --exclude-standard)"
+          echo "REFERENCE_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Run exact-head host lifecycle JUnit
+        run: mvn -B -ntp -Dtest=HostCapabilityIoLifecycleV1Test,NativeIoPinnedTcpAuthorizationTest test
+      - name: Classification
+        run: echo 'HOST_REFERENCE_ONLY_NO_GUEST_OR_NETWORK_PARITY'

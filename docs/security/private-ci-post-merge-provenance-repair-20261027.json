@@ -1,0 +1,17 @@
+{
+  "schema": "ores-private-ci-provenance-snapshot-v1",
+  "source_repository": "ores-truffle-oreslang/oreslang-source.java",
+  "source_repository_id": 1400792274,
+  "source_main_sha": "9f4f4a3b75dd4b124e8509b65a88a98213c11ab5",
+  "authorizes_source_transfer": false,
+  "required_active_destinations": 0,
+  "controls": [
+    {"path": ".github/CODEOWNERS", "blob_sha": "078909add1bb1d37eefc22c11dfa8e7ceb76aace"},
+    {"path": ".github/workflows/private-ci-mirror-preflight.yml", "blob_sha": "288da01fdc0414cf9fbd3f47be459e7569927771"},
+    {"path": "scripts/test-private-ci-codeowners-contract.sh", "blob_sha": "18e531ba5a85f8276800ece0914bfa554c319bf3"},
+    {"path": "scripts/publish-private-ci-source.py", "blob_sha": "532451d1c131ed6bb90558f9491c089ed1801ce1"},
+    {"path": "scripts/publish-private-ci-source-v3.py", "blob_sha": "b813da3cff66277bce13ea9e231ef210cea1c4e0"},
+    {"path": "scripts/check-private-ci-destination.sh", "blob_sha": "ea000956404520ee2df938716b5032bb52368db1"},
+    {"path": ".github/private-ci-approved-repositories.txt", "blob_sha": "aea82279b2a1b8e2e7a8d20fd68f975046b2c4ce"}
+  ]
+}
