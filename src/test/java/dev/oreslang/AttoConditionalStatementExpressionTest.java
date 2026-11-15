@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -271,6 +272,52 @@ final class AttoConditionalStatementExpressionTest {
                     return if ready then 3 else "wrong-type" fi;
                 }
                 """)));
+    }
+
+    @Test
+    void actualTruffleAttoEntrypointAdmitsNegatedImperativeBranches() throws Exception {
+        assertEquals("2", runNamed("strict-conditional.atto", """
+                pub routine main(): void {
+                    do ifnot true then stdio.stdout.write(1); fi
+                    do unless false then stdio.stdout.write(2); fi
+                }
+                """));
+    }
+
+    @Test
+    void actualTruffleAttoEntrypointRejectsBareImperativeIf() throws Exception {
+        String oldImperative = """
+                pub routine main(): void {
+                    if true then stdio.stdout.write(3); fi
+                }
+                """;
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> runNamed("strict-conditional.atto", oldImperative));
+        assertTrue(failure.getMessage().contains("use 'do if"), failure::getMessage);
+        // Migration remains explicit: .ores callers are not silently
+        // reinterpreted as strict Atto compilation units.
+        assertEquals("3", runNamed("legacy-conditional.ores", oldImperative));
+    }
+
+    @Test
+    void strictAttoSourceNameAlsoRejectsOldEqualitySyntax() {
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> runNamed("strict-equality.atto", """
+                pub routine main(): void {
+                    do if 1 == 1 then stdio.stdout.write(1); fi
+                }
+                """));
+        assertTrue(failure.getMessage().contains("ATTO_STRICT_INVALID_EQUALITY_TOKEN"),
+                failure::getMessage);
+    }
+
+    private static String runNamed(String filename, String source) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, filename).build());
+        }
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     private static String run(String source) {
