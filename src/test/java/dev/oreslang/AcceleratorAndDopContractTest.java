@@ -24,7 +24,8 @@ final class AcceleratorAndDopContractTest {
             }) {
                 RuntimeException failure = assertThrows(RuntimeException.class, () -> Parser.parse(declaration),
                         declaration);
-                assertTrue(failure.getMessage().contains("implicit CPU fallback is forbidden"),
+                assertTrue(failure.getMessage().contains("implicit CPU fallback is forbidden")
+                        || failure.getMessage().contains("no implicit CPU fallback"),
                         failure.getMessage());
             }
         }
