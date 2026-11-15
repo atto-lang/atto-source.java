@@ -14,7 +14,7 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-/** Execute .atto probes and enforce a recoverable ownership boundary at compilation. */
+/** Compiles and executes typed .atto probes, including affine ownership diagnostics. */
 @Timeout(10)
 final class ImmediateChannelProbeHardeningTest {
     private static String fixture(String name) throws Exception {
@@ -27,44 +27,63 @@ final class ImmediateChannelProbeHardeningTest {
         }
     }
 
-    @Test
-    void immediateCopyProbesExecuteAsAttoGuest() throws Exception {
-        String guest = fixture("immediate_copy.atto");
+    private static String execute(String name) throws Exception {
+        String guest = fixture(name);
         TypeChecker.check(Parser.parse(guest));
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, guest, "immediate_copy.atto")
+        Source source = Source.newBuilder(OresLanguage.ID, guest, name)
                 .mimeType(OresLanguage.MIME_TYPE).build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).out(output).build()) {
             context.eval(source);
         }
-        assertEquals("4142", output.toString(StandardCharsets.UTF_8));
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     @Test
-    void moveOnlyLvalueCannotBeSilentlyConsumedByBooleanProbe() throws Exception {
-        assertRejectedMoveOnly("irrecoverable_move.atto");
+    void immediateCopyProbesExecuteAsAttoGuest() throws Exception {
+        assertEquals("4142", execute("immediate_copy.atto"));
     }
 
     @Test
-    void moveOnlyTemporaryCannotBeSilentlyDroppedByBooleanProbe() throws Exception {
-        assertRejectedMoveOnly("irrecoverable_literal.atto");
+    void moveOnlyTemporaryMayBeAdmitted() throws Exception {
+        assertEquals("ok", execute("irrecoverable_literal.atto"));
     }
 
     @Test
-    void explicitTakeOfCopyValueCannotBeLostOnFailedBooleanProbe() throws Exception {
+    void fullProbeReturnsOriginalOwnedArray() throws Exception {
+        assertEquals("2", execute("typed_move_full.atto"));
+    }
+
+    @Test
+    void closedProbeReturnsOriginalOwnedArray() throws Exception {
+        assertEquals("9", execute("typed_move_closed.atto"));
+    }
+
+    @Test
+    void zeroCapacityProbeReturnsFullWithoutRegistration() throws Exception {
+        assertEquals("17", execute("typed_unbuffered_full.atto"));
+    }
+
+    @Test
+    void takingMoveOnlyValueForProbeInvalidatesOriginalBinding() throws Exception {
+        assertUseAfterMove("irrecoverable_move.atto");
+    }
+
+    @Test
+    void explicitTakeOfCopyValueInvalidatesOriginalBinding() throws Exception {
+        assertUseAfterMove("irrecoverable_take_copy.atto");
+    }
+
+    @Test
+    void matchingTheAffineResultTwiceIsRejected() throws Exception {
+        assertUseAfterMove("typed_move_result_reuse.atto");
+    }
+
+    private static void assertUseAfterMove(String name) throws Exception {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(fixture("irrecoverable_take_copy.atto"))));
-        assertTrue(error.getMessage().contains("try writech cannot rt take"), error::getMessage);
-    }
-
-    private static void assertRejectedMoveOnly(String name) throws Exception {
-        String guest = fixture(name);
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(guest)));
-        assertTrue(error.getMessage().contains(
-                "try writech cannot accept a move-only payload"), error::getMessage);
+                () -> TypeChecker.check(Parser.parse(fixture(name))));
+        assertTrue(error.getMessage().contains("use of moved value"), error::getMessage);
     }
 }
