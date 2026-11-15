@@ -71,7 +71,7 @@ final class FutureObservationRetentionTest {
     }
 
     @Test
-    void allSettledCancellationDetachesEvenWhenChildRefusesCancellation() {
+    void allSettledCancellationDetachesWithoutCancellingBorrowedChildren() {
         OresFuture<Integer> uncancellable = new OresFuture<>(() -> false, () -> fail("not admitted"));
         OresFuture<Integer> cancellable = new OresFuture<>();
         OresFuture<List<OresFutures.Settled<Integer>>> aggregate =
@@ -81,8 +81,12 @@ final class FutureObservationRetentionTest {
         assertEquals(0, uncancellable.pendingRuntimeWaiterCount());
         assertEquals(0, cancellable.pendingRuntimeWaiterCount());
         assertFalse(uncancellable.isCancelled());
-        assertTrue(cancellable.isCancelled());
+        assertFalse(cancellable.isCancelled(),
+                "aggregate observation cancellation must not revoke a borrowed child");
         assertTrue(uncancellable.completeFromRuntime(42));
+        assertTrue(cancellable.completeFromRuntime(7));
+        assertEquals(42, uncancellable.getNow());
+        assertEquals(7, cancellable.getNow());
         assertTrue(aggregate.isCancelled());
     }
 }
