@@ -60,6 +60,11 @@ public final class Lexer {
                     (c >= 0x2066 && c <= 0x2069)) {
                 throw new IllegalArgumentException("source contains bidirectional Unicode control");
             }
+            // These render as line breaks in some editors, but are not line
+            // terminators in this lexer. Reject them before stripping comments.
+            if (c == 0x0085 || c == 0x2028 || c == 0x2029) {
+                throw new IllegalArgumentException("source contains Unicode line separator");
+            }
             if (Character.isHighSurrogate(c)) {
                 if (++i >= source.length() || !Character.isLowSurrogate(source.charAt(i)))
                     throw new IllegalArgumentException("source contains invalid UTF-16");
