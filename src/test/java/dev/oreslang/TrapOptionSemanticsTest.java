@@ -12,6 +12,8 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -510,6 +512,25 @@ final class TrapOptionSemanticsTest {
             assertTrue(failure.getMessage().contains(keyword
                     + " requires an owned compiler-provided Error"), failure::getMessage);
         }
+    }
+
+    @Test
+    void recoveryRejectsTerminalFailuresBehindAsyncWrappersAndCleanup() {
+        var raised = new dev.oreslang.runtime.GuestControlSignal.Raise("raise");
+        var wrapped = new java.util.concurrent.CompletionException(
+                new java.util.concurrent.ExecutionException(raised));
+        assertSame(raised, dev.oreslang.runtime.GuestControlSignal.recoverableRaise(wrapped));
+        raised.addSuppressed(new dev.oreslang.runtime.GuestControlSignal.Throw("cleanup"));
+        assertSame(raised, dev.oreslang.runtime.GuestControlSignal.recoverableRaise(wrapped));
+        raised.addSuppressed(new java.util.concurrent.CancellationException("cancelled"));
+        assertNull(dev.oreslang.runtime.GuestControlSignal.recoverableRaise(wrapped));
+
+        var panic = new dev.oreslang.runtime.GuestControlSignal.Panic("panic");
+        assertNull(dev.oreslang.runtime.GuestControlSignal.recoverableRaise(
+                new java.util.concurrent.CompletionException(panic)));
+        var primary = new dev.oreslang.runtime.GuestControlSignal.Raise("primary");
+        primary.addSuppressed(panic);
+        assertNull(dev.oreslang.runtime.GuestControlSignal.recoverableRaise(primary));
     }
 
     private static void assertPanicEscapes(String program, String expectedOutput, String diagnostic)
