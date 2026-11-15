@@ -204,6 +204,51 @@ final class SupervisorControlSnapshotCoordinatorTest {
     }
 
     @Test
+    void revokeAndCloseCannotReleaseRunningControlTurn() throws Exception {
+        var submitted = new AtomicReference<Runnable>();
+        var captureEntered = new CountDownLatch(1);
+        var finishCapture = new CountDownLatch(1);
+        ActorRuntime.ControlDispatcher dispatcher = turn ->
+                OresFuture.<Void>fromCallback(done -> submitted.set(turn));
+        try (var runtime = runtime(dispatcher);
+             var observer = new SupervisorRegistryObservation(
+                     runtime, System::nanoTime, () -> {
+                         captureEntered.countDown();
+                         try {
+                             if (!finishCapture.await(5, TimeUnit.SECONDS))
+                                 throw new IllegalStateException("test capture timed out");
+                         } catch (InterruptedException interrupted) {
+                             Thread.currentThread().interrupt();
+                             throw new IllegalStateException("test interrupted", interrupted);
+                         }
+                         return java.time.Instant.now();
+                     });
+             var service = new SupervisorControlSnapshotCoordinator(runtime, observer);
+             ExecutorService worker = Executors.newSingleThreadExecutor()) {
+            Object session = new Object();
+            var g = grant(service, runtime, session);
+            var pending = read(service, g, session);
+            assertNotNull(submitted.get());
+            var physicalTurn = worker.submit(submitted.get());
+            try {
+                assertTrue(captureEntered.await(2, TimeUnit.SECONDS),
+                        "the legitimate observation did not enter its physical turn");
+                service.revoke(g);
+                assertCode(pending, "DENIED");
+                assertEquals(1, service.activeControlRequests(),
+                        "revocation must never free an actively running CONTROL turn");
+                service.close();
+                assertEquals(1, service.activeControlRequests(),
+                        "coordinator close must wait for physical turn exit");
+            } finally {
+                finishCapture.countDown();
+            }
+            physicalTurn.get(5, TimeUnit.SECONDS);
+            assertEquals(0, service.activeControlRequests());
+        }
+    }
+
+    @Test
     void duplicateControlRunnableCannotFailItsOriginalInFlightRead() throws Exception {
         var submitted = new AtomicReference<Runnable>();
         var completion = new AtomicReference<OresFuture.Callback<Void>>();
