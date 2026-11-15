@@ -133,19 +133,44 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dores.runtime.carriers=native -Dores.private.fs.guest.approved=true -Dtest=dev.oreslang.runtime.AttoDurableAtomicFilesystemLanguageTest,dev.oreslang.runtime.AttoDurableManifestProcessKillTest test
-          for suite in AttoDurableAtomicFilesystemLanguageTest AttoDurableManifestProcessKillTest; do
-            xml="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
-            test -s "$xml" || { echo "::error::Missing guest test receipt $xml"; exit 1; }
-            grep -Eq 'tests="[1-9][0-9]*"' "$xml"
-            grep -Eq 'errors="0"' "$xml"
-            grep -Eq 'failures="0"' "$xml"
-            grep -Eq 'skipped="0"' "$xml"
-            echo "APPROVED_DURABLE_GUEST_SUITE_PASSED=$suite"
-          done
-          grep -Fq 'aCompletedAttoDurableManifestWriteSurvivesSigkillAndFreshGuestReplay' \
-            target/surefire-reports/TEST-dev.oreslang.runtime.AttoDurableManifestProcessKillTest.xml
-          echo 'ATTO_GUEST_PROCESS_KILL_REPLAY_SUITE_EXECUTED'
+          # An ephemeral workspace is required, but ensure no stale XML can
+          # masquerade as fresh executed guest-test evidence even if reused.
+          rm -rf target/surefire-reports
+          mvn -B -ntp -Dores.runtime.carriers=native -Dores.private.fs.guest.approved=true -Dsurefire.failIfNoSpecifiedTests=true -Dtest=dev.oreslang.runtime.AttoBinaryFileGuestTest,dev.oreslang.runtime.AttoDurableAtomicFilesystemLanguageTest,dev.oreslang.runtime.AttoDurableManifestProcessKillTest test
+          python3 - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          reports = pathlib.Path("target/surefire-reports")
+          suites = {
+              "AttoBinaryFileGuestTest": None,
+              "AttoDurableAtomicFilesystemLanguageTest": None,
+              "AttoDurableManifestProcessKillTest":
+                  "aCompletedAttoDurableManifestWriteSurvivesSigkillAndFreshGuestReplay",
+          }
+          for suite, required_case in suites.items():
+              path = reports / ("TEST-dev.oreslang.runtime." + suite + ".xml")
+              if not path.is_file():
+                  raise SystemExit("Missing executed guest suite: " + str(path))
+              root = ET.parse(path).getroot()
+              if root.tag != "testsuite":
+                  raise SystemExit("Unexpected JUnit XML root for " + suite)
+              observed = root.findall(".//testcase")
+              totals = {key: int(root.attrib.get(key, "-1"))
+                        for key in ("tests", "errors", "failures", "skipped")}
+              if (totals["tests"] < 1 or len(observed) != totals["tests"]
+                      or any(totals[k] != 0 for k in ("errors", "failures", "skipped"))):
+                  raise SystemExit(f"Unexecuted, skipped, or failed guest suite {suite}: {totals}")
+              for case in observed:
+                  if any(case.find(tag) is not None
+                         for tag in ("failure", "error", "skipped")):
+                      raise SystemExit("Failed/skipped guest case " + str(case.attrib))
+              if required_case and not any(case.attrib.get("name") == required_case
+                                           for case in observed):
+                  raise SystemExit(f"Missing required real SIGKILL guest test: {required_case}")
+              print(f"APPROVED_DURABLE_GUEST_SUITE_PASSED={suite} tests={totals['tests']}")
+          print("ATTO_GUEST_PROCESS_KILL_REPLAY_SUITE_EXECUTED")
+          PY
       - name: Execute existing native filesystem regression tests
         shell: bash
         run: |
