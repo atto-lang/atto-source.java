@@ -454,6 +454,133 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void synchronousReceiveHelperLoopPreservesOneLogicalMessageAndCooperates()
+            throws Exception {
+        // A nested plain synchronous function must carry its heap-owned
+        // call/loop continuation through the same actor SourceTask trampoline.
+        // This tests a transitive loop, rather than a loop directly in receive.
+        String output = run("""
+                define actor Worker as
+                  let int count;
+                  count_in_helper(n: int): int {
+                    let result = 0;
+                    for (let i = 0; i < n; i = i + 1) do
+                      result = result + 1;
+                    done
+                    return result;
+                  }
+                  on_start(): void {
+                    self.count = 0;
+                    return;
+                  }
+                  receive(ActorMail<String> mail): void {
+                    if mail.value == "first"; do
+                      self.count = self.count_in_helper(4096);
+                      self.send(self.count);
+                      return;
+                    fi
+                    if mail.value == "second"; do
+                      self.send(self.count + 1);
+                      self.end();
+                    fi
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("first");
+                  worker.send("second");
+                  val first = (await worker.outputs.next()).value.unwrap();
+                  val second = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(first.value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(second.value);
+                  await worker.get_done();
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(process.descriptor.source_loop_cooperates);
+                  return;
+                }
+                """);
+        assertTrue(output.startsWith("4096|4097|"),
+                "nested synchronous call replayed or admitted a newer message: " + output);
+        long cooperates = Long.parseLong(output.substring("4096|4097|".length()));
+        assertTrue(cooperates > 0,
+                "a nested synchronous helper loop must release the carrier without explicit await");
+    }
+
+    @Test
+    void twoInfiniteNestedHelperActorsCannotStarveSingleCarrierPeer()
+            throws Exception {
+        // Both same-class actor instances run nested synchronous CPU loops.
+        // On one SHARED carrier, neither may monopolize the scheduler;
+        // STOP/get_done must fence both physical logical continuations.
+        final String setting = "ores.runtime.actor.shared.parallelism";
+        final String before = System.getProperty(setting);
+        System.setProperty(setting, "1");
+        try {
+            String output = runAtto("""
+                    define actor Greedy as
+                      spin_forever(): void {
+                        while true do
+                          let n = 1 + 1;
+                        done
+                      }
+
+                      receive(ActorMail<String> mail): void {
+                        self.send("entered");
+                        self.spin_forever();
+                      }
+                    end
+
+                    define actor Peer as
+                      receive(ActorMail<String> mail): void {
+                        self.send("peer");
+                        self.end();
+                        return;
+                      }
+                    end
+
+                    pub async routine main(): void {
+                      val first = spawn Greedy();
+                      val second = spawn Greedy();
+                      val peer = spawn Peer();
+                      await first.get_ready();
+                      await second.get_ready();
+                      await peer.get_ready();
+
+                      first.send("start");
+                      val first_entered = (await first.outputs.next()).value.unwrap();
+                      // The second helper must be admitted even though the
+                      // first has already entered its infinite CPU loop.
+                      second.send("start");
+                      val second_entered = (await second.outputs.next()).value.unwrap();
+                      peer.send("start");
+                      val reply = (await peer.outputs.next()).value.unwrap();
+                      stdio.stdout.write(reply.value);
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(process.descriptor.source_loop_cooperates);
+
+                      first.stop();
+                      second.stop();
+                      await first.get_done();
+                      await second.get_done();
+                      await peer.get_done();
+                      return;
+                    }
+                    """);
+            assertTrue(output.startsWith("peer|"),
+                    "two nested infinite helpers starved peer actor: " + output);
+            assertTrue(Long.parseLong(output.substring("peer|".length())) > 0,
+                    "a nested synchronous loop did not yield its carrier");
+        } finally {
+            if (before == null) System.clearProperty(setting);
+            else System.setProperty(setting, before);
+        }
+    }
+
+    @Test
     void sustainedMailboxTrafficRemainsOrderedWhileInfiniteActorIsCooperating()
             throws Exception {
         String setting = "ores.runtime.actor.shared.parallelism";
@@ -547,6 +674,21 @@ final class SourceLoopSoftPreemptionTest {
         assertTrue(output.startsWith("4000|"), output);
         assertTrue(Long.parseLong(output.substring("4000|".length())) > 0,
                 "while must lower to the same resumable budgeted backedge");
+    }
+
+    private static String runAtto(String sourceText) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, sourceText, "two-infinite-actors.atto")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     private static String run(String sourceText) throws Exception {
