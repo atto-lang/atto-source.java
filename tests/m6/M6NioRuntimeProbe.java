@@ -101,12 +101,15 @@ public final class M6NioRuntimeProbe {
             require(entered.await(5, TimeUnit.SECONDS), "first bad handler never started");
             require(rt.try_send(bad, -1) == AttoM6Runtime.Admission.ACCEPTED, "fault send");
             require(rt.try_send(bad, 99) == AttoM6Runtime.Admission.ACCEPTED, "queued after fault");
+            require(rt.try_send(bad, 123) == AttoM6Runtime.Admission.ACCEPTED, "full panic mailbox setup");
+            require(rt.try_send(bad, 500) == AttoM6Runtime.Admission.FULL,
+                "saturated DATA mailbox illegally admitted another turn");
             send(rt, neighbor, 41);
             release.countDown();
             require(rt.await_terminal(bad, 10_000), "panic CONTROL not delivered");
             var s = rt.snapshot(bad);
-            require(s.accepted() == 3 && s.completed() == 1 && s.failed() == 1 &&
-                s.abandoned() == 1 && s.controlsDelivered() == 1 &&
+            require(s.accepted() == 4 && s.completed() == 1 && s.failed() == 1 &&
+                s.abandoned() == 2 && s.controlsDelivered() == 1 &&
                 s.lastControl() == AttoM6Runtime.ControlKind.PANIC && badSum.get() == 1,
                 "PANIC failure/abandon or supervisor CONTROL count mismatch: " + s);
             require(rt.try_send(bad, 7) == AttoM6Runtime.Admission.STALE, "retired actor ref admitted");
