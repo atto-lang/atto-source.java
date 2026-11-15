@@ -3074,12 +3074,12 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(GUARD)) return parseGuard();
-        if (check(DO) && checkNext(IF)) {
+        if (check(DO) && (checkNext(IF) || checkNext(IFNOT) || checkNext(UNLESS))) {
             advance(); // do
-            advance(); // if
-            return parseIf(true);
+            Token head = advance(); // if / ifnot / unless
+            return parseIf(true, head.type() != IF);
         }
-        if (match(IF)) return parseIf(false);
+        if (match(IF, IFNOT, UNLESS)) return parseIf(false, previous().type() != IF);
         if ((check(NB)
                 || (check(IDENT) && peek().lexeme().equals("task")))
                 && current + 2 < tokens.size()
@@ -4080,12 +4080,13 @@ public final class Parser {
         return false;
     }
 
-    private Ast.Stmt parseIf(boolean explicitImperative) {
+    private Ast.Stmt parseIf(boolean explicitImperative, boolean inverted) {
         List<Ast.IfBranch> branches = new ArrayList<>();
         List<Ast.BindingStmt> bindings = new ArrayList<>();
         ConditionHead head = parseConditionHead(false);
         bindings.add(head.binding());
-        Ast.Expr condition = head.predicate();
+        Ast.Expr condition = inverted
+                ? new Ast.UnaryExpr("!", head.predicate()) : head.predicate();
 
         // '{' is the braced spelling of 'then'. Intermediate branches close
         // with '} elif/else'; fi closes the final branch and the whole chain.
@@ -4914,8 +4915,10 @@ public final class Parser {
     }
 
     /** A value-producing 'if' lowers through the already checked ternary AST. */
-    private Ast.Expr parseValueIf() {
-        Ast.Expr condition = parseCondition();
+    private Ast.Expr parseValueIf(boolean inverted) {
+        Ast.Expr predicate = parseCondition();
+        Ast.Expr condition = inverted
+                ? new Ast.UnaryExpr("!", predicate) : predicate;
         consume(THEN, "value-producing 'if' requires 'then'");
         Ast.Expr whenTrue = parseConditionalValueArm();
         consume(ELSE, "value-producing 'if' requires an 'else' value; use 'do if' for statements");
@@ -5580,7 +5583,7 @@ public final class Parser {
         return switch (type) {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
-                    TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
+                    TRY, CATCH, FINALLY, END, FI, IF, IFNOT, UNLESS, DO, ELSE, THEN,
                     NEW, SPAWN, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
                     INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
@@ -5628,7 +5631,7 @@ public final class Parser {
                     + "no host fallback is allowed");
         }
         if (match(MATCH)) return parseValueMatch();
-        if (match(IF)) return parseValueIf();
+        if (match(IF, IFNOT, UNLESS)) return parseValueIf(previous().type() != IF);
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
