@@ -38,6 +38,9 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
                 new CompletableFuture<>();
         private final ControlObservationTurnGate physicalTurn = new ControlObservationTurnGate();
         private final AtomicBoolean released = new AtomicBoolean();
+        // Completing a successful observation must follow *physical* lease
+        // retirement. Exceptional timeouts/cancellation still notify promptly.
+        private final CompletableFuture<Void> retired = new CompletableFuture<>();
         private Request(SupervisorRegistryObservation.Grant grant, Thread callerThread) {
             this.grant = grant;
             this.callerThread = callerThread;
@@ -120,12 +123,21 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         // ordinary waiters before executing independent whenComplete actions,
         // so return the dependent completion stage rather than the raw result.
         CompletableFuture<SupervisorRegistryObservation.Snapshot> observed =
-                request.result.whenComplete((ignored, failure) -> {
-                    if (failure instanceof TimeoutException
-                            && request.physicalTurn.abandonIfQueued()) {
-                        release(request);
-                    }
-                });
+                new CompletableFuture<>();
+        request.result.whenComplete((snapshot, failure) -> {
+            if (failure instanceof TimeoutException
+                    && request.physicalTurn.abandonIfQueued()) {
+                release(request);
+            }
+            if (failure != null) {
+                observed.completeExceptionally(failure);
+            } else {
+                // The underlying completion may happen in the CONTROL turn
+                // before its finally runs. Do not expose SUCCESS to callers
+                // until pending.remove() has actually retired its lease.
+                request.retired.thenRun(() -> observed.complete(snapshot));
+            }
+        });
         request.result.orTimeout(timeoutNanos, TimeUnit.NANOSECONDS);
         // A deadline may have expired before dispatch admission. Do not
         // schedule a runnable that has already lost its start authority.
@@ -201,6 +213,9 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         synchronized (admissionLock) {
             pending.remove(request.grant, request);
         }
+        // Publish retirement only after the admission map was updated.
+        // Dependents then see a released physical CONTROL turn on SUCCESS.
+        request.retired.complete(null);
     }
 
     public int activeControlRequests() {
