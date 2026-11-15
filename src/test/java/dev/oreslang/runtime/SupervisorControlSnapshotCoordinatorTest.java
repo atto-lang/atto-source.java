@@ -94,9 +94,21 @@ final class SupervisorControlSnapshotCoordinatorTest {
                 var root = runtime.rootSupervisor();
                 var child = runtime.createChildSupervisor(root);
                 Object session = new Object();
-                var result = read(service, grant(service, runtime, session), session)
-                        .toCompletableFuture().get(5, TimeUnit.SECONDS);
+                var pending = read(service, grant(service, runtime, session), session);
+                // SUCCESS must not be published while its physical CONTROL
+                // turn is still holding an accounting reservation. Observe
+                // inside completion rather than sampling after get() returns.
+                var slotsAtSuccess = new CompletableFuture<Integer>();
+                pending.whenComplete((snapshot, failure) -> {
+                    if (failure == null)
+                        slotsAtSuccess.complete(service.activeControlRequests());
+                    else
+                        slotsAtSuccess.completeExceptionally(failure);
+                });
+                var result = pending.toCompletableFuture().get(5, TimeUnit.SECONDS);
                 assertEquals("partial", result.status());
+                assertEquals(0, slotsAtSuccess.get(5, TimeUnit.SECONDS).intValue(),
+                        "successful CONTROL completion preceded physical retirement");
                 assertEquals(2, result.supervisors().size());
                 assertTrue(result.supervisors().stream().anyMatch(n ->
                         n.id().equals(child.id().value().toString())));
