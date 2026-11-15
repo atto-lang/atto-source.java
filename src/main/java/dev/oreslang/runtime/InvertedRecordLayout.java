@@ -51,10 +51,10 @@ public final class InvertedRecordLayout {
 
     public static InvertedRecordLayout fromType(Ast.TypeRef type) {
         Objects.requireNonNull(type, "record type");
-        if (!type.isRecordType() || type.inferArguments()) {
+        if (!type.isClosedAggregateType() || type.inferArguments()) {
             throw new IllegalArgumentException("expected a fixed-layout structural record type");
         }
-        Map<String, Ast.TypeRef> recordMembers = type.recordMembers();
+        Map<String, Ast.TypeRef> recordMembers = type.aggregateMembers();
         if (recordMembers.size() > MAX_RECORD_MEMBERS) {
             throw new IllegalArgumentException("inverted record has too many members");
         }

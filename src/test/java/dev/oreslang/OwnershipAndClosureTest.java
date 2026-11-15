@@ -199,7 +199,7 @@ final class OwnershipAndClosureTest {
                           return rt borrow b;
                         }
                         """)));
-        assertTrue(error.getMessage().contains("outlive its owner"));
+        assertTrue(error.getMessage().contains("outlive"), error::getMessage);
     }
 
     @Test

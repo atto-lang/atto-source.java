@@ -207,6 +207,15 @@ public final class InvertedColumnStore implements AutoCloseable {
             newColumns[i] = Arrays.copyOf(columns[i], bytes);
             newBuffers[i] = ByteBuffer.wrap(newColumns[i]).order(ByteOrder.LITTLE_ENDIAN);
         }
+        // Capture the pre-growth backing only after all new column
+        // allocations have succeeded. Failure before publication preserves
+        // every live row and handle without destructive side effects.
+        byte[][] retiredColumns = columns;
+        int[] retiredRowSlots = rowSlots;
+        int[] retiredSlotRows = slotRows;
+        long[] retiredGenerations = generations;
+        boolean[] retiredLive = live;
+        int[] retiredReusable = reusable;
         int[] newRowSlots = Arrays.copyOf(rowSlots, required);
         int[] newSlotRows = Arrays.copyOf(slotRows, required);
         long[] newGenerations = Arrays.copyOf(generations, required);
@@ -220,6 +229,16 @@ public final class InvertedColumnStore implements AutoCloseable {
         live = newLive;
         reusable = newReusable;
         capacity = required;
+        // Physical columns contain private row data. Copy-on-growth must not
+        // leave stale tenant payload/handle metadata in abandoned JVM arrays.
+        // The synchronized owner and unborrowed() prevent concurrent access
+        // while these old arrays are scrubbed after successful publication.
+        for (byte[] retired : retiredColumns) Arrays.fill(retired, (byte) 0);
+        Arrays.fill(retiredRowSlots, 0);
+        Arrays.fill(retiredSlotRows, 0);
+        Arrays.fill(retiredGenerations, 0L);
+        Arrays.fill(retiredLive, false);
+        Arrays.fill(retiredReusable, 0);
     }
 
     private static void validateValue(ColumnSpec spec, Object value) {

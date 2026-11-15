@@ -1,0 +1,13 @@
+define class Box as
+  pub let int value = 1;
+end
+pub async fnc main(): void {
+  let original = new Box();
+  let Future<int> task_handle = task {
+    original.value = 99;
+    return original.value;
+  };
+  stdio.stdout.write(original.value);
+  stdio.stdout.write(await task_handle);
+  return;
+}

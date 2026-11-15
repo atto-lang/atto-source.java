@@ -281,14 +281,14 @@ final class PointerlessFncOwnershipTest {
                 fnc update(borrow mut Array<int> values): void { values.add(7); return; }
                 fnc ok(): void {
                   val Array<int> values = new Array<int>();
-                  update(rt borrow mut values);
+                  update(rt mut borrow values);
                   return;
                 }
                 """)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
                   val Array<int> values = new Array<int>();
-                  val first = rt borrow mut values;
+                  val first = rt mut borrow values;
                   val second = rt borrow values;
                   return;
                 }

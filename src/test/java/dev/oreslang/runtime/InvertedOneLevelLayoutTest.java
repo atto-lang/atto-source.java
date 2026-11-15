@@ -203,12 +203,17 @@ final class InvertedOneLevelLayoutTest {
                         Ast.TypeRef.simple("i32"), Ast.TypeRef.simple("i32"))),
                 Ast.TypeRef.union(java.util.List.of(
                         Ast.TypeRef.simple("i32"), Ast.TypeRef.simple("f64"))),
-                Ast.TypeRef.borrowed(Ast.TypeRef.simple("i32"), false),
-                Ast.TypeRef.structType(Map.of("x", Ast.TypeRef.simple("i32"))))) {
+                Ast.TypeRef.borrowed(Ast.TypeRef.simple("i32"), false))) {
             assertThrows(IllegalArgumentException.class,
                     () -> InvertedArray.Schema.fromClass(withType.apply(unsupported)),
                     unsupported.toString());
         }
+
+        // Main parses source struct{...} as a distinct closed $struct$ aggregate;
+        // it uses the same fixed one-level record column layout.
+        assertEquals(InvertedColumnStore.Kind.RECORD,
+                InvertedArray.Schema.fromClass(withType.apply(Ast.TypeRef.structType(
+                        Map.of("x", Ast.TypeRef.simple("f64"))))).fields().getFirst().kind());
 
         Ast.TypeRef readonlyRecord = Ast.TypeRef.readonlyRecordType(
                 Map.of("x", Ast.TypeRef.simple("i32")));

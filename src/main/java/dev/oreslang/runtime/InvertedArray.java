@@ -99,7 +99,7 @@ public final class InvertedArray implements AutoCloseable {
                         throw new IllegalArgumentException("only direct fixed-layout record aliases are supported");
                     }
                 }
-                if (type.isRecordType()) {
+                if (type.isClosedAggregateType()) {
                     ordered.add(new Field(field.name(), InvertedColumnStore.Kind.RECORD,
                             InvertedRecordLayout.fromType(type)));
                 } else {
