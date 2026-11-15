@@ -20,15 +20,15 @@ final class LexerSourceAdmissionPositionTest {
     }
 
     @Test void reportsUnpairedHighSurrogateAtEndOfSource() {
-        rejectsAt("a\r\n\uD800", "2:1", "source contains invalid UTF-16");
+        rejectsAt("a\r\n" + (char) 0xd800, "2:1", "source contains invalid UTF-16");
     }
 
     @Test void reportsUnpairedLowSurrogateAfterValidSupplementaryCharacter() {
-        rejectsAt("a\uD83D\uDE00\uDC00", "1:4", "source contains invalid UTF-16");
+        rejectsAt("a" + Character.toString(0x1f600) + (char) 0xdc00, "1:4", "source contains invalid UTF-16");
     }
 
     @Test void reportsHighSurrogateBeforeNonLowSurrogateWithoutConsumingLocation() {
-        rejectsAt("\r\na\uD800b", "2:2", "source contains invalid UTF-16");
+        rejectsAt("\r\na" + (char) 0xd800 + "b", "2:2", "source contains invalid UTF-16");
     }
 
     @Test void treatsLoneCrAndLfAsDistinctLineEndings() {
@@ -36,7 +36,8 @@ final class LexerSourceAdmissionPositionTest {
     }
 
     @Test void acceptsValidSupplementaryUnicodeAndPreservesLexerLocations() {
-        var result = new Lexer("/* \uD83D\uDE00 */\r\npub fnc main(): int { return 42; }").scan();
+        var result = new Lexer("/* " + Character.toString(0x1f600)
+                + " */\r\npub fnc main(): int { return 42; }").scan();
         assertEquals(Token.Type.PUB, result.getFirst().type());
         assertEquals(2, result.getFirst().line());
         assertEquals(1, result.getFirst().column());
