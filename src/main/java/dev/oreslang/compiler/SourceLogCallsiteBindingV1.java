@@ -3,7 +3,6 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.SourceIdentityV1;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -125,34 +124,14 @@ public final class SourceLogCallsiteBindingV1 {
         return Collections.unmodifiableMap(bindings);
     }
 
+    // Cold-path validation is shared only inside the Java frontend.
+    // LLVM and Rust retain independent implementations and test suites.
     private static void requireLiteral(String message) {
-        requireBoundedLiteral(message, 96, "log.info");
+        SourceTelemetryLiteralV1.requireLogMessage(message);
     }
 
     private static void requireSpanName(String name) {
-        requireBoundedLiteral(name, 256, "telemetry.span");
-    }
-
-    private static void requireBoundedLiteral(String text, int maxBytes, String operation) {
-        if (text == null || text.isEmpty()
-                || text.getBytes(StandardCharsets.UTF_8).length > maxBytes) {
-            throw new IllegalArgumentException(operation + " requires bounded source literal");
-        }
-        for (int i = 0; i < text.length(); ++i) {
-            char c = text.charAt(i);
-            if (Character.isISOControl(c)) {
-                throw new IllegalArgumentException(operation + " literal contains control character");
-            }
-            if (Character.isHighSurrogate(c)) {
-                if (i + 1 >= text.length()
-                        || !Character.isLowSurrogate(text.charAt(i + 1))) {
-                    throw new IllegalArgumentException(operation + " literal has invalid UTF-16 pair");
-                }
-                ++i;
-            } else if (Character.isLowSurrogate(c)) {
-                throw new IllegalArgumentException(operation + " literal has unpaired surrogate");
-            }
-        }
+        SourceTelemetryLiteralV1.requireSpanName(name);
     }
 
     private static void visit(
