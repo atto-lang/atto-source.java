@@ -37,6 +37,20 @@ final class OwnershipBangAliasesTest {
     }
 
     @Test
+    void unicodeBmpIdentifierAfterEqPrefixDoesNotBecomeInequality() {
+        // Java's lexical identifier continuation admits Unicode letters.
+        // '!eq' is atomic only at the actual identifier boundary, not at
+        // JavaScript's narrower ASCII \\b word boundary.
+        String program = "fnc main(): int { val int eqé = 7; return %s; }";
+        assertEquals(Parser.parse(program.formatted("rt copy eqé")),
+                Parser.parse(program.formatted("copy!eqé")));
+        String neq = "fnc main(): bool { val int copy = 1; " +
+                "val int é = 2; return %s; }";
+        assertEquals(Parser.parse(neq.formatted("copy neq é")),
+                Parser.parse(neq.formatted("copy!eq é")));
+    }
+
+    @Test
     void rejectsWhitespaceBeforeBangRatherThanReinterpretingItAsOwnership() {
         for (String invalid : new String[]{"copy !foo", "take !foo", "borrow !foo",
                 "mut borrow !foo", "share !foo", "copy!", "mut borrow!"}) {
