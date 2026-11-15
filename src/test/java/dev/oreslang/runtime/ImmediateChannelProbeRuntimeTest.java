@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -48,6 +49,7 @@ final class ImmediateChannelProbeRuntimeTest {
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(8);
         AtomicInteger accepted = new AtomicInteger();
+        AtomicReference<Throwable> workerFailure = new AtomicReference<>();
         List<Thread> writers = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
             final int value = i + 1;
@@ -55,8 +57,9 @@ final class ImmediateChannelProbeRuntimeTest {
                 try {
                     start.await();
                     if (channel.tryWrite(value)) accepted.incrementAndGet();
-                } catch (InterruptedException interruption) {
-                    Thread.currentThread().interrupt();
+                } catch (Throwable failure) {
+                    if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+                    workerFailure.compareAndSet(null, failure);
                 } finally {
                     done.countDown();
                 }
@@ -66,7 +69,11 @@ final class ImmediateChannelProbeRuntimeTest {
         }
         start.countDown();
         assertTrue(done.await(5, TimeUnit.SECONDS));
-        for (Thread writer : writers) writer.join();
+        for (Thread writer : writers) {
+            writer.join(2000);
+            assertFalse(writer.isAlive(), "worker must exit without retaining a channel waiter");
+        }
+        assertEquals(null, workerFailure.get(), "worker exceptions must reach JUnit");
         assertEquals(1, accepted.get());
         assertTrue(channel.tryRead().isPresent());
         assertTrue(channel.tryRead().isEmpty());
