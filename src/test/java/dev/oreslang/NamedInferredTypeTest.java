@@ -88,7 +88,7 @@ final class NamedInferredTypeTest {
                   moved.id = "changed";
                   return;
                 }
-                """, "readonly");
+                """, "read-only");
     }
 
     @Test

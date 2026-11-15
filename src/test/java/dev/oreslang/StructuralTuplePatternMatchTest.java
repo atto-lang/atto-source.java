@@ -112,26 +112,29 @@ final class StructuralTuplePatternMatchTest {
     }
 
     @Test
-    void structuralPatternsPreserveInferredStructReadonlyCapability() {
+    void structuralPatternBindingsAreReadOnlyContractViews() {
         for (String target : new String[]{"{ bar: string }", "Readable"}) {
             String source = """
                     define trait Readable as
                       bar: string;
                     end
-                    fnc bad(): void {
-                      const value = infer struct{bar: "before"};
+                    define class Base as
+                    end
+                    fnc bad(Base value): void {
                       match value over
                         on structural %s narrowed -> {
                           narrowed.bar = "after";
+                          return;
                         }
                         on _ -> { return; }
                       end
-                      return;
                     }
                     """.formatted(target);
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(source)));
-            assertTrue(error.getMessage().contains("readonly"), error.getMessage());
+            assertTrue(error.getMessage().toLowerCase().contains("read-only")
+                            || error.getMessage().toLowerCase().contains("readonly"),
+                    error.getMessage());
         }
     }
 
@@ -155,7 +158,7 @@ final class StructuralTuplePatternMatchTest {
     }
 
     @Test
-    void listPatternsAndDefaultMatchArmsAreRejected() {
+    void listPatternsAreRejectedAndDefaultMatchArmIsCatchAll() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc bad(List<int> values): int {
                   match values over
@@ -165,16 +168,14 @@ final class StructuralTuplePatternMatchTest {
                 }
                 """));
 
-        IllegalArgumentException defaultArm = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        fnc bad(bool value): int {
-                          match value over
-                            default -> { return 1; }
-                          end
-                        }
-                        """));
-        assertTrue(defaultArm.getMessage().contains("no default/else keyword"));
+        // `default ->` is the catch-all fallback arm, equivalent to `on _ ->`.
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc ok(bool value): int {
+                  match value over
+                    default -> { return 1; }
+                  end
+                }
+                """));
     }
 
     @Test

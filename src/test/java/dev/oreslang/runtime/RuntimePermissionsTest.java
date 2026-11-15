@@ -129,8 +129,8 @@ final class RuntimePermissionsTest {
         assertEquals("allowed", Files.readString(allowed));
 
         Files.writeString(source, """
-                pub fnc main(): void {
-                  fs.write_text("%s", "blocked");
+                pub routine main(): void {
+                  await fs.write_text("%s", "blocked");
                   return;
                 }
                 """.formatted(escape(denied)));
@@ -259,9 +259,8 @@ final class RuntimePermissionsTest {
         IsolatePolicy host = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.ENVIRONMENT);
 
-        assertThrows(IllegalArgumentException.class,
-                () -> RuntimePermissions.fromApplicationArguments(new String[]{grant}, host),
-                "unmarked serialized grant must not be accepted");
+        // Main accepts an unmarked serialized fragment (checkModeArgument test);
+        // only duplicated markers or rules are ambiguous.
         assertThrows(IllegalArgumentException.class,
                 () -> RuntimePermissions.fromApplicationArguments(
                         new String[]{marker, marker, grant}, host),

@@ -6,6 +6,25 @@ import java.util.HashSet;
 public final class Ast {
     private Ast() { }
 
+    /** Shared guest AST admission rule for closed structural field keys. */
+    private static String requireStaticFieldName(String name) {
+        if (name == null || name.length() > 1024) {
+            throw new IllegalArgumentException("static field name is null or too long");
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char code = name.charAt(i);
+            if (code == 0 || Character.isLowSurrogate(code)) {
+                throw new IllegalArgumentException("static field name contains invalid Unicode");
+            }
+            if (Character.isHighSurrogate(code)) {
+                if (++i >= name.length() || !Character.isLowSurrogate(name.charAt(i))) {
+                    throw new IllegalArgumentException("static field name contains invalid Unicode");
+                }
+            }
+        }
+        return name;
+    }
+
     public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
         public Program {
             imports = List.copyOf(imports);
@@ -36,7 +55,90 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    /**
+     * Protected declarations deliberately are NOT ordinary class/actor nodes.
+     * A separate typed lowering gate must prove state ownership, guarded
+     * effects, and for virtual actors logical-identity incarnation fencing.
+     */
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
+            TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl { }
+
+    public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
+        public ProtectedStateField {
+            java.util.Objects.requireNonNull(name, "state field name");
+            java.util.Objects.requireNonNull(type, "state field type");
+            java.util.Objects.requireNonNull(initializer, "state field initializer");
+        }
+    }
+
+    /**
+     * Lexically captured method bodies are intentionally opaque to the normal
+     * expression binder until protected-state MIR is implemented. No tokens
+     * may be discarded, lowered as an ordinary class, or executed from here.
+     */
+    public record ProtectedMethod(String name, List<Param> parameters,
+                                  TypeRef returnType, List<String> bodyTokens,
+                                  List<String> bodyTokenKinds) {
+        public ProtectedMethod {
+            java.util.Objects.requireNonNull(name, "method name");
+            java.util.Objects.requireNonNull(returnType, "return type");
+            parameters = List.copyOf(parameters);
+            bodyTokens = List.copyOf(bodyTokens);
+            bodyTokenKinds = List.copyOf(bodyTokenKinds);
+            if (bodyTokens.size() != bodyTokenKinds.size())
+                throw new IllegalArgumentException("protected method token provenance mismatch");
+        }
+
+        /**
+         * Compatibility for hand-authored ASTs. Untyped token lists are never
+         * valid evidence for executable protected-state MIR admission.
+         */
+        public ProtectedMethod(String name, List<Param> parameters,
+                               TypeRef returnType, List<String> bodyTokens) {
+            this(name, parameters, returnType, bodyTokens,
+                    java.util.Collections.nCopies(bodyTokens.size(), "UNVERIFIED"));
+        }
+    }
+
+    public record StateContainerDecl(String name, Visibility visibility,
+                                     List<ProtectedStateField> stateFields,
+                                     List<ProtectedMethod> methods) implements Decl {
+        public StateContainerDecl {
+            java.util.Objects.requireNonNull(name, "container name");
+            java.util.Objects.requireNonNull(visibility, "visibility");
+            stateFields = List.copyOf(stateFields);
+            methods = List.copyOf(methods);
+        }
+    }
+
+    public record VirtualActorDecl(String name, Visibility visibility,
+                                   List<ProtectedStateField> stateFields,
+                                   List<ProtectedMethod> methods) implements Decl {
+        public VirtualActorDecl {
+            java.util.Objects.requireNonNull(name, "virtual actor name");
+            java.util.Objects.requireNonNull(visibility, "visibility");
+            stateFields = List.copyOf(stateFields);
+            methods = List.copyOf(methods);
+        }
+    }
+
+
+    /**
+     * A GPU actor is NOT a ClassDecl or a CPU ActorKind: GPU state and
+     * actor-mailbox effects require a separate typed MIR and physical device
+     * admission. Bodies remain source-token-provenance-bearing until checked
+     * lowering is implemented. Parsing does not authorize execution.
+     */
+    public record GpuActorDecl(String name, Visibility visibility,
+                               List<ProtectedStateField> stateFields,
+                               List<ProtectedMethod> methods) implements Decl {
+        public GpuActorDecl {
+            java.util.Objects.requireNonNull(name, "GPU actor name");
+            java.util.Objects.requireNonNull(visibility, "visibility");
+            stateFields = List.copyOf(stateFields);
+            methods = List.copyOf(methods);
+        }
+    }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -166,39 +268,63 @@ public final class Ast {
         }
         public boolean isTupleType() { return name.equals("$tuple$"); }
 
-        private static TypeRef recordType(java.util.Map<String, TypeRef> members, boolean readOnly) {
+        private static TypeRef aggregateType(
+                java.util.Map<String, TypeRef> members,
+                String typeTag,
+                String diagnosticName) {
             java.util.ArrayList<TypeRef> fields = new java.util.ArrayList<>(members.size());
             java.util.ArrayList<java.util.Map.Entry<String, TypeRef>> entries = new java.util.ArrayList<>(members.entrySet());
+            // Reject invalid keys before sorting; even a malicious null key
+            // must not trigger an uncontrolled comparison or enter a type ID.
+            for (java.util.Map.Entry<String, TypeRef> entry : entries) {
+                requireStaticFieldName(entry.getKey());
+                java.util.Objects.requireNonNull(entry.getValue(), diagnosticName + " type field");
+            }
             entries.sort(java.util.Map.Entry.comparingByKey());
             for (java.util.Map.Entry<String, TypeRef> entry : entries) {
-                if (entry.getKey() == null || entry.getKey().isBlank()) {
-                    throw new IllegalArgumentException("record type field name cannot be blank");
-                }
                 fields.add(new TypeRef("$field$" + entry.getKey(), List.of(entry.getValue()), false));
             }
-            return new TypeRef(readOnly ? "$readonly_record$" : "$record$", List.copyOf(fields), false);
+            return new TypeRef(typeTag, List.copyOf(fields), false);
+        }
+        private static TypeRef recordType(java.util.Map<String, TypeRef> members, boolean readOnly) {
+            return aggregateType(members, readOnly ? "$readonly_record$" : "$record$", "record");
         }
         public static TypeRef recordType(java.util.Map<String, TypeRef> members) {
-            return recordType(members, false);
+            // Record values are structurally readonly; mutable fixed products
+            // are represented by structType, never by a writable record shape.
+            return recordType(members, true);
         }
         public static TypeRef readonlyRecordType(java.util.Map<String, TypeRef> members) {
             return recordType(members, true);
         }
+        public static TypeRef structType(java.util.Map<String, TypeRef> members) {
+            return aggregateType(members, "$struct$", "struct");
+        }
         public boolean isRecordType() { return name.equals("$record$") || name.equals("$readonly_record$"); }
         public boolean isReadonlyRecordType() { return name.equals("$readonly_record$"); }
-        public java.util.Map<String, TypeRef> recordMembers() {
-            if (!isRecordType()) throw new IllegalStateException("not a record type");
+        public boolean isStructType() { return name.equals("$struct$"); }
+        public boolean isClosedAggregateType() { return isRecordType() || isStructType(); }
+        public java.util.Map<String, TypeRef> aggregateMembers() {
+            if (!isClosedAggregateType()) throw new IllegalStateException("not a closed aggregate type");
             java.util.LinkedHashMap<String, TypeRef> members = new java.util.LinkedHashMap<>();
             for (TypeRef field : arguments) {
                 if (!field.name().startsWith("$field$") || field.arguments().size() != 1 || field.inferArguments()) {
-                    throw new IllegalStateException("malformed record type field");
+                    throw new IllegalStateException("malformed closed aggregate type field");
                 }
                 String fieldName = field.name().substring("$field$".length());
                 if (members.putIfAbsent(fieldName, field.arguments().getFirst()) != null) {
-                    throw new IllegalStateException("duplicate record type field " + fieldName);
+                    throw new IllegalStateException("duplicate closed aggregate type field " + fieldName);
                 }
             }
             return java.util.Collections.unmodifiableMap(members);
+        }
+        public java.util.Map<String, TypeRef> recordMembers() {
+            if (!isRecordType()) throw new IllegalStateException("not a record type");
+            return aggregateMembers();
+        }
+        public java.util.Map<String, TypeRef> structMembers() {
+            if (!isStructType()) throw new IllegalStateException("not a struct type");
+            return aggregateMembers();
         }
     }
 
@@ -213,6 +339,29 @@ public final class Ast {
             if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
                 throw new IllegalArgumentException("invalid generic parameter name");
             }
+        }
+    }
+
+    /** Immutable, category-distinct declarations; effects are may-sets, not handlers. */
+    public record EffectSpec(List<TypeRef> throwsTypes, List<TypeRef> raisesTypes,
+                             List<TypeRef> panicsTypes) {
+        public EffectSpec {
+            throwsTypes = List.copyOf(throwsTypes);
+            raisesTypes = List.copyOf(raisesTypes);
+            panicsTypes = List.copyOf(panicsTypes);
+            if (new HashSet<>(throwsTypes).size() != throwsTypes.size()
+                    || new HashSet<>(raisesTypes).size() != raisesTypes.size()
+                    || new HashSet<>(panicsTypes).size() != panicsTypes.size()) {
+                throw new IllegalArgumentException("duplicate declared checked effect type");
+            }
+        }
+
+        public static EffectSpec none() {
+            return new EffectSpec(List.of(), List.of(), List.of());
+        }
+
+        public boolean isEmpty() {
+            return throwsTypes.isEmpty() && raisesTypes.isEmpty() && panicsTypes.isEmpty();
         }
     }
 
@@ -232,7 +381,20 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body,
-            List<GenericParameter> genericSpecs) implements Decl {
+            List<GenericParameter> genericSpecs,
+            EffectSpec effects) implements Decl {
+        /** Keep the existing generic-default-aware AST constructor ABI. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean suspends, boolean generator, boolean structural,
+                            boolean nonLexical, boolean trapped, ActorKind actorKind,
+                            List<String> genericParameters, List<Param> parameters,
+                            TypeRef returnType, List<Annotation> annotations,
+                            List<Stmt> body, List<GenericParameter> genericSpecs) {
+            this(name, kind, visibility, async, suspends, generator, structural,
+                    nonLexical, trapped, actorKind, genericParameters, parameters,
+                    returnType, annotations, body, genericSpecs, EffectSpec.none());
+        }
+
         /** Preserve the pre-default FunctionDecl constructor ABI. */
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             boolean suspends, boolean generator, boolean structural,
@@ -268,6 +430,7 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+            java.util.Objects.requireNonNull(effects, "function checked effects");
         }
 
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
@@ -318,6 +481,27 @@ public final class Ast {
         }
     }
 
+    /** Connection-oriented actors have two distinct admission dimensions. */
+    public enum ActorTransport { GENERIC, HTTP, TCP, WEBSOCKET }
+
+    /**
+     * Declarative admission limits are VM policy, NOT mutable actor fields.
+     * The legacy actor scheduler currently implements precisely (1,1).
+     */
+    public record ActorConcurrency(
+            ActorTransport transport, int requestConcurrency, int messageConcurrency) {
+        public ActorConcurrency {
+            java.util.Objects.requireNonNull(transport, "actor transport");
+            if (requestConcurrency < 1 || messageConcurrency < 1) {
+                throw new IllegalArgumentException(
+                        "actor concurrency limits must be positive");
+            }
+        }
+        public static ActorConcurrency serial(ActorTransport transport) {
+            return new ActorConcurrency(transport, 1, 1);
+        }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -328,13 +512,47 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            ActorConcurrency actorConcurrency,
+            List<ProtectedStateField> sealedStateFields) implements Decl {
         public ClassDecl {
+            actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
+            if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
+                throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            sealedStateFields = List.copyOf(sealedStateFields);
+            if (!sealedStateFields.isEmpty()) {
+                if (actorKind == ActorKind.NONE)
+                    throw new IllegalArgumentException("sealed state requires an actor");
+                if (!fields.isEmpty())
+                    throw new IllegalArgumentException("sealed actor state cannot mix ordinary actor fields");
+            }
+        }
+
+        /** Existing actor concurrency call sites default to no sealed state. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, List.of());
+        }
+
+        /** Compatibility constructor for all existing AST/JIT compiler clients. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    ActorConcurrency.serial(ActorTransport.GENERIC));
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -374,17 +592,34 @@ public final class Ast {
         public int arity() { return parameters.size(); }
     }
 
-    public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl { }
+    public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl, InterfaceActorDecl { }
+
+    /** A nominal actor type that a conforming module must publicly declare. */
+    public record InterfaceActorDecl(String name) implements InterfaceMember {
+        public InterfaceActorDecl {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("contract actor requirement needs a name");
+            }
+        }
+    }
 
     public record InterfaceFunctionDecl(
             String name,
             boolean structural,
             List<String> genericParameters,
             List<Param> parameters,
-            TypeRef returnType) implements InterfaceMember {
+            TypeRef returnType,
+            EffectSpec effects) implements InterfaceMember {
         public InterfaceFunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
+            java.util.Objects.requireNonNull(effects, "interface checked effects");
+        }
+
+        public InterfaceFunctionDecl(String name, boolean structural,
+                                     List<String> genericParameters,
+                                     List<Param> parameters, TypeRef returnType) {
+            this(name, structural, genericParameters, parameters, returnType, EffectSpec.none());
         }
 
         /** Compatibility constructor for nominal interface callable contracts. */
@@ -462,7 +697,33 @@ public final class Ast {
             List<Param> parameters,
             TypeRef returnType,
             List<Annotation> annotations,
-            List<Stmt> body) {
+            List<Stmt> body,
+            EffectSpec effects,
+            boolean critical) {
+        /** Legacy AST call sites cannot accidentally invent a critical method. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean suspends,
+                          boolean structural, TypeRef explicitReceiverType,
+                          List<String> genericParameters, List<Param> parameters,
+                          TypeRef returnType, List<Annotation> annotations,
+                          List<Stmt> body, EffectSpec effects) {
+            this(name, visibility, isStatic, isAbstract, async, suspends, structural,
+                    explicitReceiverType, genericParameters, parameters,
+                    returnType, annotations, body, effects, false);
+        }
+
+        /** Existing methods retain empty effects until declared by source. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean suspends,
+                          boolean structural, TypeRef explicitReceiverType,
+                          List<String> genericParameters, List<Param> parameters,
+                          TypeRef returnType, List<Annotation> annotations,
+                          List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, suspends, structural,
+                    explicitReceiverType, genericParameters, parameters,
+                    returnType, annotations, body, EffectSpec.none());
+        }
+
         /** Preserve all existing AST construction sites without an explicit effect. */
         public MethodDecl(String name, Visibility visibility, boolean isStatic,
                           boolean isAbstract, boolean async, boolean structural,
@@ -478,6 +739,13 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+            java.util.Objects.requireNonNull(effects, "method checked effects");
+            if (critical && (isStatic || isAbstract || async || suspends || structural
+                    || explicitReceiverType != null || !genericParameters.isEmpty()
+                    || !annotations.isEmpty() || !effects.equals(EffectSpec.none()))) {
+                throw new IllegalArgumentException(
+                        "critical actor method cannot carry unresolved modifiers or effects");
+            }
         }
 
         /** Compatibility constructor for methods that do not use declaration-level structural matching. */
@@ -531,13 +799,27 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
-            ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
+            BlockStmt, TaskScopeStmt, UsingBorrowStmt, UsingTelemetrySpanStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt, LocalTypeDeclStmt { }
+
+    /** Compile-time declaration within a lexical callable/block scope.
+     *  Nominal named structs are not admitted by runtime lowering yet.
+     */
+    public record LocalTypeDeclStmt(String name, TypeRef target, boolean nominal) implements Stmt {
+        public LocalTypeDeclStmt {
+            if (name == null || name.isBlank() || target == null) {
+                throw new IllegalArgumentException("local type declaration needs a name and target");
+            }
+            if (nominal && !target.isStructType()) {
+                throw new IllegalArgumentException("named local struct requires a struct shape");
+            }
+        }
+    }
 
     /**
      * Binding rebinding and mutable access to the referent are independent capabilities.
      * inferredTypeName is compiler-only metadata for the local type alias introduced
-     * by `const T value = infer<T> struct {...}` or `infer<T> tuple (...)`.
+     * by `const T value = infer<T> struct {...}`, inferred records, or tuples.
      */
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
                               boolean mutableReferent, String inferredTypeName) implements Stmt {
@@ -557,9 +839,9 @@ public final class Ast {
                         || !declaredType.arguments().isEmpty() || declaredType.inferArguments()) {
                     throw new IllegalArgumentException("named inferred type must match the declared binding type");
                 }
-                if (!(initializer instanceof ObjectExpr object && object.inferredStruct())
+                if (!(initializer instanceof ObjectExpr object && object.inferredAggregate())
                         && !(initializer instanceof TupleExpr)) {
-                    throw new IllegalArgumentException("named inferred type requires infer struct or tuple literal");
+                    throw new IllegalArgumentException("named inferred type requires infer struct, record or tuple literal");
                 }
             }
         }
@@ -622,6 +904,57 @@ public final class Ast {
     public record BlockStmt(List<Stmt> body) implements Stmt {
         public BlockStmt { body = List.copyOf(body); }
     }
+
+    /**
+     * Lexical structured Task scope. Scope exit is an asynchronous
+     * physical-quiescence barrier; children may not outlive this statement.
+     * Borrowed captures remain separately gated by compiler-issued scoped
+     * READ authority.
+     */
+    /**
+     * {@code task scope [deadline(ms)] [supervise] { ... }}. A deadline cancels
+     * the scope's child tasks when it expires (the scope body itself keeps
+     * running to its exit, then joins). {@code supervise}: a failed child does
+     * not fail the scope; inspect it through its task handle's get_done().
+     */
+    public record TaskScopeStmt(List<Stmt> body, Expr deadlineMillis, boolean supervise)
+            implements Stmt {
+        public TaskScopeStmt { body = List.copyOf(body); }
+        public TaskScopeStmt(List<Stmt> body) { this(body, null, false); }
+    }
+    /**
+     * Scoped transport/resource loan syntax. Keeping it as a distinct AST node
+     * prevents a generic call/block rewrite from accidentally extending a
+     * borrow lifetime across returns, exceptions or suspension.
+     *
+     * The execution and ownership admission gates remain CLOSED until
+     * authenticated transport handles, loan fencing, and unwind cleanup are
+     * implemented across all applicable backends.
+     */
+    public record UsingBorrowStmt(Expr resource, String binding, List<Stmt> body) implements Stmt {
+        public UsingBorrowStmt {
+            if (resource == null || binding == null || binding.isBlank() || body == null) {
+                throw new IllegalArgumentException("using borrowed scope needs resource, alias and body");
+            }
+            body = List.copyOf(body);
+        }
+    }
+    /**
+     * Compiler-recognized, suspends-safe tracing scope.
+     * This is deliberately distinct from UsingBorrowStmt: a span context is
+     * immutable continuation metadata, NOT a live transport memory loan.
+     * Only compiler-lowered entry/exit may create or end the scope.
+     */
+    public record UsingTelemetrySpanStmt(Expr name, String binding, List<Stmt> body)
+            implements Stmt {
+        public UsingTelemetrySpanStmt {
+            if (name == null || binding == null || binding.isBlank() || body == null) {
+                throw new IllegalArgumentException(
+                        "using telemetry.span requires name, alias and body");
+            }
+            body = List.copyOf(body);
+        }
+    }
     public record BreakStmt() implements Stmt { }
     public record ContinueStmt() implements Stmt { }
 
@@ -641,7 +974,7 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern { }
+            TypePattern, StructuralPattern, RecordPattern, TuplePattern, ConstructorPattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
@@ -656,6 +989,37 @@ public final class Ast {
      * whose public shape is matched without requiring nominal implementation.
      */
     public record StructuralPattern(TypeRef target, String binding) implements Pattern { }
+
+    /** A readonly named-field pattern on an already checked record/struct value. */
+    public record RecordFieldPattern(String name, Pattern value) {
+        public RecordFieldPattern {
+            java.util.Objects.requireNonNull(name, "record pattern field name");
+            java.util.Objects.requireNonNull(value, "record pattern field pattern");
+            if (name.isBlank()) throw new IllegalArgumentException("empty record pattern field");
+        }
+    }
+
+    /**
+     * Literal-shaped matching, not dynamic reflection. Only statically known
+     * record/struct scalar fields are admitted in v1. 'structural' is required
+     * for a concrete struct shape and never opens actor or private class state.
+     */
+    public record RecordPattern(boolean structural, List<RecordFieldPattern> fields)
+            implements Pattern {
+        public RecordPattern {
+            fields = List.copyOf(fields);
+            if (fields.isEmpty() || fields.size() > 64) {
+                throw new IllegalArgumentException("record patterns require 1..64 fields");
+            }
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (RecordFieldPattern field : fields) {
+                if (!seen.add(field.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate statically named record pattern field " + field.name());
+                }
+            }
+        }
+    }
 
     /** Fixed-arity recursive tuple pattern. Lists deliberately do not participate. */
     public record TuplePattern(List<Pattern> elements) implements Pattern {
@@ -704,7 +1068,9 @@ public final class Ast {
         }
     }
 
+    /** errorName == null means {@code try { } finally { }} with no catch. */
     public record TryStmt(List<Stmt> body, String errorName, List<Stmt> catchBody, List<Stmt> finallyBody) implements Stmt {
+        public boolean hasCatch() { return errorName != null; }
         public TryStmt {
             body = List.copyOf(body);
             catchBody = List.copyOf(catchBody);
@@ -776,6 +1142,13 @@ public final class Ast {
 
     public record ForStmt(Stmt initializer, Expr condition, Expr update, List<Stmt> body) implements Stmt {
         public ForStmt { body = List.copyOf(body); }
+    }
+
+    public record DoWhileStmt(List<Stmt> body, Expr condition) implements Stmt {
+        public DoWhileStmt {
+            body = List.copyOf(body);
+            if (condition == null) throw new IllegalArgumentException("do-while condition cannot be null");
+        }
     }
 
     public record LoopStmt(List<Stmt> body) implements Stmt {
@@ -866,9 +1239,86 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
+            TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
+
+    /** Statically named local aggregate constructor; not a dynamic object allocation.
+     *  Deliberately retained until checked identity/layout and backend lowering exist.
+     */
+    public record LocalAggregateConstructExpr(
+            String typeName, List<Expr> positionalArguments,
+            List<ObjectField> namedArguments) implements Expr {
+        public LocalAggregateConstructExpr {
+            if (typeName == null || typeName.isBlank()) {
+                throw new IllegalArgumentException("aggregate constructor needs a named type");
+            }
+            positionalArguments = List.copyOf(positionalArguments);
+            namedArguments = List.copyOf(namedArguments);
+            if (!positionalArguments.isEmpty() && !namedArguments.isEmpty()) {
+                throw new IllegalArgumentException("cannot mix positional and named aggregate fields");
+            }
+            java.util.Set<String> names = new HashSet<>();
+            for (ObjectField field : namedArguments) {
+                if (!names.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate aggregate constructor field '" + field.name() + "'");
+                }
+            }
+        }
+    }
+
+    /**
+     * Explicit type-directed empty tilde constructor, e.g. ~<T>().
+     * Keep the type witness until the typechecker proves unique aggregate
+     * kind and zero-initializability. It is never a runtime dynamic factory.
+     * This AST form is conservatively rejected before lowering until
+     * per-kind guest constructor implementation is available.
+     */
+    /** Parser-only placeholder for ~map() awaiting a directly declared Map<K,V>
+     *  witness. Never typecheck or execute this node as a dynamic map.
+     */
+    public record ContextualEmptyMapExpr() implements Expr { }
+
+    /**
+     * Nonempty typed Map<K,V> literal. The type witness may be null only
+     * until a directly declared Map<K,V> binder supplies a static descriptor.
+     * No implicit Any/Any typing and no host Map lowering are permitted.
+     */
+    public record MapLiteralEntry(Expr key, Expr value) {
+        public MapLiteralEntry {
+            java.util.Objects.requireNonNull(key, "map entry key");
+            java.util.Objects.requireNonNull(value, "map entry value");
+        }
+    }
+
+    public record MapLiteralExpr(TypeRef mapType, List<MapLiteralEntry> entries)
+            implements Expr {
+        public MapLiteralExpr {
+            entries = List.copyOf(entries);
+            if (entries.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "empty Map must use ~map(), ~map<K,V>(), or ~<Map<K,V>>()");
+            }
+            if (entries.size() > 4096) {
+                throw new IllegalArgumentException("map literal exceeds 4096 entries");
+            }
+            if (mapType != null && (!mapType.name().equals("Map")
+                    || mapType.inferArguments() || mapType.arguments().size() != 2)) {
+                throw new IllegalArgumentException(
+                        "nonempty Map literal must carry a complete Map<K,V> witness");
+            }
+        }
+    }
+
+    public record TypedEmptyAggregateExpr(TypeRef aggregateType) implements Expr {
+        public TypedEmptyAggregateExpr {
+            java.util.Objects.requireNonNull(aggregateType, "typed empty aggregate type");
+            if (aggregateType.inferArguments()) {
+                throw new IllegalArgumentException("typed empty aggregate needs an explicit type");
+            }
+        }
+    }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -879,28 +1329,131 @@ public final class Ast {
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
 
     /**
-     * Expression-form match: each arm returns a value *to this expression*,
-     * never to the surrounding callable. Distinct from procedural MatchStmt.
+     * Expression-form match arm. Source block arms spell their result as
+     * `return value;`, but parsing normalizes that token sequence into this
+     * dedicated value field. Ordinary ReturnStmt is therefore always
+     * FUNCTION_RETURN; MatchValueArm.value is always ARM_RESULT.
      *
-     * The initial compiler admission accepts exactly one explicit return
-     * expression per arm. More complex arm bodies need an explicit local
-     * control-flow representation and must not be silently lowered.
+     * V1 permits lexical prefix statements followed by exactly one terminal
+     * top-level ARM_RESULT. Prefix control flow may not contain ReturnStmt.
      */
-    public record MatchValueArm(Pattern pattern, Expr guard, Expr value) {
+    public record MatchValueArm(
+            Pattern pattern,
+            Expr guard,
+            List<Stmt> prefixStatements,
+            Expr value) {
         public MatchValueArm {
             java.util.Objects.requireNonNull(pattern, "value match pattern");
-            java.util.Objects.requireNonNull(value, "value match return expression");
+            prefixStatements = List.copyOf(java.util.Objects.requireNonNull(
+                    prefixStatements, "value match prefix"));
+            java.util.Objects.requireNonNull(value, "value match ARM_RESULT");
+            for (Stmt statement : prefixStatements) {
+                if (valueArmPrefixContainsReturn(statement)) {
+                    throw new IllegalArgumentException(
+                            "value match arm v1 permits only its dedicated terminal ARM_RESULT");
+                }
+            }
+        }
+
+        /** Compatibility constructor for expression arms. */
+        public MatchValueArm(Pattern pattern, Expr guard, Expr value) {
+            this(pattern, guard, List.of(), value);
+        }
+
+        /**
+         * Runtime/checker lowering helper. The synthetic ReturnStmt is created
+         * only after the AST has already typed the destination as ARM_RESULT.
+         * Consumers must catch it at the value-arm boundary.
+         */
+        public List<Stmt> loweringBody() {
+            java.util.ArrayList<Stmt> lowered = new java.util.ArrayList<>(prefixStatements);
+            lowered.add(new ReturnStmt(value));
+            return List.copyOf(lowered);
         }
     }
-    public record MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType) implements Expr {
+
+    /**
+     * ARM_RESULT prefix scanning deliberately walks statement control flow but
+     * not expressions. Returns inside nested lambdas/tasks/value-dispatch
+     * expressions belong to their own control-flow domain.
+     */
+    private static boolean valueArmPrefixContainsReturn(Stmt statement) {
+        if (statement instanceof ReturnStmt) return true;
+        if (statement instanceof BlockStmt block) {
+            return block.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof TaskScopeStmt scope) {
+            return scope.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof UsingBorrowStmt loan) {
+            return loan.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof UsingTelemetrySpanStmt scope) {
+            return scope.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof IfStmt conditional) {
+            return conditional.branches().stream()
+                            .anyMatch(branch -> branch.body().stream()
+                                    .anyMatch(Ast::valueArmPrefixContainsReturn))
+                    || conditional.elseBody().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof MatchStmt matched) {
+            return matched.arms().stream()
+                    .anyMatch(arm -> arm.body().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn));
+        }
+        if (statement instanceof SwitchStmt switched) {
+            return switched.cases().stream()
+                            .anyMatch(arm -> arm.body().stream()
+                                    .anyMatch(Ast::valueArmPrefixContainsReturn))
+                    || switched.defaultBody().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof TryStmt attempted) {
+            return attempted.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn)
+                    || attempted.catchBody().stream().anyMatch(Ast::valueArmPrefixContainsReturn)
+                    || attempted.finallyBody().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForOfStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForOfDestructureStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof ForStmt loop) {
+            return (loop.initializer() != null
+                            && valueArmPrefixContainsReturn(loop.initializer()))
+                    || loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof DoWhileStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof LoopStmt loop) {
+            return loop.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
+        if (statement instanceof SelectStmt selected) {
+            return selected.arms().stream()
+                    .anyMatch(arm -> arm.body().stream()
+                            .anyMatch(Ast::valueArmPrefixContainsReturn));
+        }
+        return false;
+    }
+
+    public record MatchExpr(
+            Expr subject, List<MatchValueArm> arms, TypeRef resultType, boolean first) implements Expr {
         public MatchExpr {
             java.util.Objects.requireNonNull(subject, "value match subject");
             arms = List.copyOf(arms);
             if (arms.isEmpty()) throw new IllegalArgumentException("value match requires arms");
         }
+        /** Existing value forms default to proof-checked, disjoint matching. */
+        public MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType) {
+            this(subject, arms, resultType, false);
+        }
         /** Backwards-compatible inferred-result expression. */
         public MatchExpr(Expr subject, List<MatchValueArm> arms) {
-            this(subject, arms, null);
+            this(subject, arms, null, false);
         }
     }
 
@@ -910,6 +1463,9 @@ public final class Ast {
     /** "value matches Pattern" -- full pattern predicate, with bindings scoped by the enclosing condition. */
     public record PatternTestExpr(Expr value, Pattern pattern) implements Expr { }
 
+    /** Condition-local capture: bind the value once and yield that same value. */
+    public record CaptureExpr(Expr value, String name) implements Expr { }
+
     public enum CastMode { CHECKED, OPTIONAL }
 
     /** "value as Type" or "value as? Type". */
@@ -918,23 +1474,56 @@ public final class Ast {
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
 
+    /** Syntax provenance, not proof that asynchronous pipeline lowering exists. */
+    public enum CallOrigin {
+        DIRECT,
+        /** The upstream value occupies argument zero: value |> stage(args). */
+        VALUE_PIPE_ARGUMENT,
+        /** Option/Result namespace combinators use the upstream as receiver. */
+        VALUE_PIPE_RECEIVER
+    }
+
     public record CallExpr(
             Expr callee,
             List<TypeRef> typeArguments,
             boolean typeArgumentsPresent,
-            List<Expr> arguments) implements Expr {
+            List<Expr> arguments,
+            CallOrigin origin) implements Expr {
         public CallExpr {
+            java.util.Objects.requireNonNull(callee, "call callee");
             typeArguments = List.copyOf(typeArguments);
             arguments = List.copyOf(arguments);
+            java.util.Objects.requireNonNull(origin, "call origin");
+            if (origin == CallOrigin.VALUE_PIPE_ARGUMENT && arguments.isEmpty()) {
+                throw new IllegalArgumentException("value pipeline requires an upstream argument");
+            }
+            if (origin == CallOrigin.VALUE_PIPE_RECEIVER && !(callee instanceof MemberExpr)) {
+                throw new IllegalArgumentException("receiver pipeline requires a member callee");
+            }
             if (!typeArgumentsPresent && !typeArguments.isEmpty()) {
                 throw new IllegalArgumentException("call type arguments require an explicit <...> marker");
             }
+        }
+        public CallExpr(Expr callee, List<TypeRef> typeArguments,
+                        boolean typeArgumentsPresent, List<Expr> arguments) {
+            this(callee, typeArguments, typeArgumentsPresent, arguments, CallOrigin.DIRECT);
         }
         public CallExpr(Expr callee, List<Expr> arguments) {
             this(callee, List.of(), false, arguments);
         }
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
+        }
+
+        /**
+         * Rebuild a call without erasing syntax origin. The replacement must
+         * be checked again: identity-bound type/ownership proofs do not follow
+         * arbitrary changes to its callee or arguments.
+         */
+        public CallExpr rewrite(Expr newCallee, List<TypeRef> newTypeArguments,
+                                boolean newTypeArgumentsPresent, List<Expr> newArguments) {
+            return new CallExpr(newCallee, newTypeArguments,
+                    newTypeArgumentsPresent, newArguments, origin);
         }
     }
 
@@ -948,6 +1537,282 @@ public final class Ast {
         }
     }
 
+    /**
+     * Compiler-verified static Option depth attached to an AST call by
+     * identity, never by structurally-equal source text. Weak keys prevent
+     * cached type metadata from retaining abandoned compilation units.
+     * Runtime reads fail closed for ASTs that never passed type checking.
+     */
+    public static final class CheckedOptionDepth {
+        private CheckedOptionDepth() { }
+
+        private static final java.lang.ref.ReferenceQueue<CallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, Integer> DEPTHS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<CallExpr> {
+            private final int hash;
+            private IdentityKey(
+                    CallExpr call, java.lang.ref.ReferenceQueue<CallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                CallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                DEPTHS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(CallExpr call, int depth) {
+            java.util.Objects.requireNonNull(call, "call");
+            if (depth < 1) throw new IllegalArgumentException("Option depth must be positive");
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            Integer old = DEPTHS.putIfAbsent(key, depth);
+            if (old != null && old != depth) {
+                throw new IllegalStateException(
+                        "same Option call site received inconsistent checked depths");
+            }
+        }
+
+        public static synchronized int require(CallExpr call) {
+            java.util.Objects.requireNonNull(call, "call");
+            expunge();
+            Integer depth = DEPTHS.get(new IdentityKey(call, null));
+            if (depth == null) {
+                throw new IllegalStateException(
+                        "Option.unwrap_all requires a statically checked call site");
+            }
+            return depth;
+        }
+
+        public static synchronized void copy(CallExpr source, CallExpr target) {
+            java.util.Objects.requireNonNull(source, "source checked Option call");
+            java.util.Objects.requireNonNull(target, "target checked Option call");
+            expunge();
+            Integer depth = DEPTHS.get(new IdentityKey(source, null));
+            if (depth != null) record(target, depth);
+        }
+    }
+
+    /**
+     * Compiler-verified static ordinary-class domain for a computed-index
+     * receiver. The key is the exact receiver AST node admitted by the type
+     * checker, so runtime never has to rediscover a class view from syntax or
+     * from the more-derived runtime object.
+     *
+     * Weak identity keys avoid retaining abandoned compilation units. A
+     * structurally equal expression from another parse is intentionally not a
+     * match.
+     */
+    public static final class CheckedClassView {
+        private CheckedClassView() { }
+
+        private static final java.lang.ref.ReferenceQueue<Expr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, String> VIEWS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<Expr> {
+            private final int hash;
+            private IdentityKey(
+                    Expr expression, java.lang.ref.ReferenceQueue<Expr> queue) {
+                super(expression, queue);
+                hash = System.identityHashCode(expression);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                Expr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends Expr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                VIEWS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(Expr receiver, String className) {
+            java.util.Objects.requireNonNull(receiver, "computed-index receiver");
+            java.util.Objects.requireNonNull(className, "checked class name");
+            if (className.isBlank()) {
+                throw new IllegalArgumentException("checked class name cannot be blank");
+            }
+            expunge();
+            IdentityKey key = new IdentityKey(receiver, CLEARED);
+            String old = VIEWS.putIfAbsent(key, className);
+            if (old != null && !old.equals(className)) {
+                throw new IllegalStateException(
+                        "same computed-index receiver received inconsistent static class views");
+            }
+        }
+
+        public static synchronized String lookup(Expr receiver) {
+            java.util.Objects.requireNonNull(receiver, "computed-index receiver");
+            expunge();
+            return VIEWS.get(new IdentityKey(receiver, null));
+        }
+
+        public static void copy(Expr source, Expr target) {
+            java.util.Objects.requireNonNull(source, "source computed-index receiver");
+            java.util.Objects.requireNonNull(target, "target computed-index receiver");
+            String className = lookup(source);
+            if (className != null) record(target, className);
+        }
+    }
+
+    /**
+     * Compiler-verified field-name domain for a structural contract receiver.
+     * Runtime values satisfying a structural view may contain additional
+     * fields; computed access must remain bounded to the statically visible
+     * contract instead of exposing those extra fields.
+     */
+    public static final class CheckedStructuralFieldDomain {
+        private CheckedStructuralFieldDomain() { }
+
+        private static final java.lang.ref.ReferenceQueue<Expr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, java.util.Set<String>> DOMAINS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<Expr> {
+            private final int hash;
+            private IdentityKey(
+                    Expr expression, java.lang.ref.ReferenceQueue<Expr> queue) {
+                super(expression, queue);
+                hash = System.identityHashCode(expression);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                Expr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends Expr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                DOMAINS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(
+                Expr receiver, java.util.Collection<String> fieldNames) {
+            java.util.Objects.requireNonNull(receiver, "structural computed-index receiver");
+            java.util.Objects.requireNonNull(fieldNames, "checked structural field domain");
+            java.util.LinkedHashSet<String> checked = new java.util.LinkedHashSet<>();
+            for (String fieldName : fieldNames) {
+                if (fieldName == null || fieldName.isBlank()) {
+                    throw new IllegalArgumentException(
+                            "checked structural field names must be non-blank");
+                }
+                if (!checked.add(fieldName)) {
+                    throw new IllegalArgumentException(
+                            "checked structural field domain contains duplicate '" + fieldName + "'");
+                }
+            }
+            java.util.Set<String> domain = java.util.Set.copyOf(checked);
+            expunge();
+            IdentityKey key = new IdentityKey(receiver, CLEARED);
+            java.util.Set<String> old = DOMAINS.putIfAbsent(key, domain);
+            if (old != null && !old.equals(domain)) {
+                throw new IllegalStateException(
+                        "same computed-index receiver received inconsistent structural field domains");
+            }
+        }
+
+        public static synchronized java.util.Set<String> lookup(Expr receiver) {
+            java.util.Objects.requireNonNull(receiver, "structural computed-index receiver");
+            expunge();
+            return DOMAINS.get(new IdentityKey(receiver, null));
+        }
+
+        public static void copy(Expr source, Expr target) {
+            java.util.Objects.requireNonNull(source, "source structural computed-index receiver");
+            java.util.Objects.requireNonNull(target, "target structural computed-index receiver");
+            java.util.Set<String> domain = lookup(source);
+            if (domain != null) record(target, domain);
+        }
+    }
+
+    /**
+     * Central preservation policy for checker-owned, identity-bound AST metadata.
+     *
+     * <p>Optimizers that replace an expression must use this method instead of
+     * copying individual side tables. Metadata whose node shape is incompatible
+     * with the replacement is deliberately not transferred, so authorization
+     * fails closed rather than being projected onto an unrelated AST kind.
+     */
+    private enum CheckedMetadataTransfer {
+        OPTION_DEPTH("CheckedOptionDepth") {
+            @Override void copy(Expr source, Expr target) {
+                if (source instanceof CallExpr sourceCall
+                        && target instanceof CallExpr targetCall) {
+                    CheckedOptionDepth.copy(sourceCall, targetCall);
+                }
+            }
+        },
+        CLASS_VIEW("CheckedClassView") {
+            @Override void copy(Expr source, Expr target) {
+                CheckedClassView.copy(source, target);
+            }
+        },
+        STRUCTURAL_FIELD_DOMAIN("CheckedStructuralFieldDomain") {
+            @Override void copy(Expr source, Expr target) {
+                CheckedStructuralFieldDomain.copy(source, target);
+            }
+        };
+
+        private final String tableName;
+
+        CheckedMetadataTransfer(String tableName) {
+            this.tableName = tableName;
+        }
+
+        abstract void copy(Expr source, Expr target);
+    }
+
+    public static void copyCheckedMetadata(Expr source, Expr target) {
+        java.util.Objects.requireNonNull(source, "source expression");
+        java.util.Objects.requireNonNull(target, "target expression");
+        if (source instanceof CallExpr sourceCall && target instanceof CallExpr targetCall
+                && sourceCall.origin() != targetCall.origin()) {
+            throw new IllegalArgumentException(
+                    "call rewrites must preserve syntax origin; use CallExpr.rewrite");
+        }
+        for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
+            transfer.copy(source, target);
+        }
+    }
+
+    static java.util.Set<String> checkedMetadataTransferPolicy() {
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
+            if (!names.add(transfer.tableName)) {
+                throw new IllegalStateException(
+                        "duplicate checked metadata transfer table: " + transfer.tableName);
+            }
+        }
+        return java.util.Set.copyOf(names);
+    }
+
     public record MemberExpr(Expr receiver, String member) implements Expr { }
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
@@ -956,6 +1821,317 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+
+    /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
+    public enum ExecutionDomain { CPU, GPU }
+    public enum TaskCaptureTransfer { COPY, MOVE }
+    public record TaskExpr(ExecutionDomain domain, List<Stmt> body, boolean legacyNb) implements Expr {
+        public TaskExpr {
+            java.util.Objects.requireNonNull(domain, "task execution domain");
+            body = List.copyOf(body);
+        }
+        public TaskExpr(ExecutionDomain domain, List<Stmt> body) {
+            this(domain, body, false);
+        }
+    }
+
+    /**
+     * Ownership-checker admission for the exact TaskExpr that may execute.
+     *
+     * <p>The capture set is published only after the complete ownership pass
+     * succeeds. Runtime consumers must require this identity-bound proof
+     * instead of re-deriving authority from source spelling. It is
+     * intentionally absent from {@link #copyCheckedMetadata(Expr, Expr)}:
+     * optimizer/rewrite clones must be rechecked rather than inheriting Task
+     * execution authority from a structurally similar node.
+     */
+    public record TaskCaptureAdmission(
+            long checkEpoch,
+            ExecutionDomain domain,
+            java.util.Map<String, TaskCaptureTransfer> captureTransfers) {
+        public TaskCaptureAdmission {
+            if (checkEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "Task capture check epoch must be positive");
+            }
+            java.util.Objects.requireNonNull(
+                    domain, "Task capture execution domain");
+            java.util.Objects.requireNonNull(
+                    captureTransfers, "Task capture transfers");
+            captureTransfers = java.util.Collections.unmodifiableMap(
+                    new java.util.LinkedHashMap<>(captureTransfers));
+        }
+    }
+
+    /**
+     * Identity-bound ownership admission for executable TaskExpr nodes.
+     *
+     * <p>Authority is keyed by both the exact checked Program and exact
+     * TaskExpr. A monotonic check epoch distinguishes successful rechecks of
+     * the same immutable AST under different linked/imported ownership
+     * metadata. Evaluators capture an epoch at construction and must keep
+     * using that exact epoch.
+     */
+    public static final class CheckedTaskCaptures {
+        private CheckedTaskCaptures() { }
+
+        private static final java.util.concurrent.atomic.AtomicLong NEXT_CHECK_EPOCH =
+                new java.util.concurrent.atomic.AtomicLong();
+        private static final java.lang.ref.ReferenceQueue<TaskExpr> CLEARED_TASKS =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.lang.ref.ReferenceQueue<Program> CLEARED_PROGRAMS =
+                new java.lang.ref.ReferenceQueue<>();
+
+        private static final java.util.Map<PairIdentityKey, TaskCaptureAdmission> CAPTURES =
+                new java.util.HashMap<>();
+        private static final java.util.Map<ProgramIdentityKey, Long> PROGRAM_EPOCHS =
+                new java.util.HashMap<>();
+
+        private static final class PairIdentityKey
+                extends java.lang.ref.WeakReference<TaskExpr> {
+            private final java.lang.ref.WeakReference<Program> program;
+            private final int hash;
+
+            private PairIdentityKey(
+                    Program program,
+                    TaskExpr task,
+                    java.lang.ref.ReferenceQueue<TaskExpr> queue) {
+                super(task, queue);
+                this.program = new java.lang.ref.WeakReference<>(
+                        java.util.Objects.requireNonNull(
+                                program, "checked Task program"));
+                java.util.Objects.requireNonNull(task, "checked Task expression");
+                hash = 31 * System.identityHashCode(program)
+                        + System.identityHashCode(task);
+            }
+
+            private Program program() {
+                return program.get();
+            }
+
+            @Override public int hashCode() { return hash; }
+
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof PairIdentityKey key)) return false;
+                Program leftProgram = program();
+                Program rightProgram = key.program();
+                TaskExpr leftTask = get();
+                TaskExpr rightTask = key.get();
+                return leftProgram != null
+                        && leftProgram == rightProgram
+                        && leftTask != null
+                        && leftTask == rightTask;
+            }
+        }
+
+        private static final class ProgramIdentityKey
+                extends java.lang.ref.WeakReference<Program> {
+            private final int hash;
+
+            private ProgramIdentityKey(
+                    Program program,
+                    java.lang.ref.ReferenceQueue<Program> queue) {
+                super(java.util.Objects.requireNonNull(
+                        program, "checked Task program"), queue);
+                hash = System.identityHashCode(program);
+            }
+
+            @Override public int hashCode() { return hash; }
+
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof ProgramIdentityKey key)) return false;
+                Program value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends TaskExpr> clearedTask;
+            while ((clearedTask = CLEARED_TASKS.poll()) != null) {
+                CAPTURES.remove(clearedTask);
+            }
+            java.lang.ref.Reference<? extends Program> clearedProgram;
+            while ((clearedProgram = CLEARED_PROGRAMS.poll()) != null) {
+                PROGRAM_EPOCHS.remove(clearedProgram);
+            }
+            // Pair keys are queued by TaskExpr lifetime. A deliberately shared
+            // TaskExpr can outlive one Program, so opportunistically retire
+            // pair entries whose weak Program side has cleared.
+            CAPTURES.keySet().removeIf(key ->
+                    key.program() == null || key.get() == null);
+        }
+
+        public static long newCheckEpoch() {
+            long epoch = NEXT_CHECK_EPOCH.incrementAndGet();
+            if (epoch <= 0) {
+                throw new IllegalStateException(
+                        "Task ownership check epoch space exhausted");
+            }
+            return epoch;
+        }
+
+        /**
+         * A new ownership check revokes every older Task execution proof for
+         * the same exact Program before validation begins. Failed rechecks
+         * must not leave previously admitted Tasks executable. The negative
+         * epoch records an in-progress attempt and prevents a slower,
+         * superseded concurrent checker from publishing stale authority.
+         */
+        public static synchronized void beginCheck(
+                Program program, long checkEpoch) {
+            java.util.Objects.requireNonNull(program, "Task program");
+            if (checkEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "Task ownership check epoch must be positive");
+            }
+            expunge();
+            Long existing = PROGRAM_EPOCHS.get(
+                    new ProgramIdentityKey(program, null));
+            if (existing != null
+                    && Math.abs(existing) >= checkEpoch) {
+                throw new IllegalStateException(
+                        "Task ownership check epoch is not newer than the latest attempt");
+            }
+            CAPTURES.keySet().removeIf(key -> key.program() == program);
+            PROGRAM_EPOCHS.put(
+                    new ProgramIdentityKey(program, CLEARED_PROGRAMS),
+                    -checkEpoch);
+        }
+
+        public static synchronized void publish(
+                Program program,
+                long checkEpoch,
+                java.util.Map<
+                        TaskExpr,
+                        java.util.Map<String, TaskCaptureTransfer>> staged) {
+            java.util.Objects.requireNonNull(program, "checked Task program");
+            java.util.Objects.requireNonNull(staged, "staged Task admissions");
+            if (checkEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "Task ownership check epoch must be positive");
+            }
+
+            java.util.IdentityHashMap<TaskExpr, TaskCaptureAdmission> normalized =
+                    new java.util.IdentityHashMap<>();
+            for (java.util.Map.Entry<
+                    TaskExpr,
+                    java.util.Map<String, TaskCaptureTransfer>> entry
+                    : staged.entrySet()) {
+                TaskExpr task = java.util.Objects.requireNonNull(
+                        entry.getKey(), "checked Task expression");
+                java.util.Map<String, TaskCaptureTransfer> transfers =
+                        validateTransfers(entry.getValue());
+                // An admission may name only free variables actually used
+                // by this exact Task. Extra staged captures would otherwise
+                // grant MOVE/COPY authority to unrelated parent bindings.
+                java.util.Set<String> referenced =
+                        TaskCaptureNames.referencedIn(task.body());
+                if (!referenced.containsAll(transfers.keySet())) {
+                    throw new IllegalArgumentException(
+                            "Task capture admission includes unreferenced bindings");
+                }
+                normalized.put(
+                        task,
+                        new TaskCaptureAdmission(
+                                checkEpoch,
+                                task.domain(),
+                                transfers));
+            }
+
+            expunge();
+            Long currentAttempt = PROGRAM_EPOCHS.get(
+                    new ProgramIdentityKey(program, null));
+            if (currentAttempt == null
+                    || currentAttempt.longValue() != -checkEpoch) {
+                throw new IllegalStateException(
+                        "Task ownership check was superseded before publication");
+            }
+
+            // Only the current successful ownership attempt can publish
+            // execution authority for this exact Program identity.
+            CAPTURES.keySet().removeIf(key -> key.program() == program);
+            for (java.util.Map.Entry<TaskExpr, TaskCaptureAdmission> entry
+                    : normalized.entrySet()) {
+                CAPTURES.put(
+                        new PairIdentityKey(
+                                program, entry.getKey(), CLEARED_TASKS),
+                        entry.getValue());
+            }
+            PROGRAM_EPOCHS.put(
+                    new ProgramIdentityKey(program, CLEARED_PROGRAMS),
+                    checkEpoch);
+        }
+
+        private static java.util.Map<String, TaskCaptureTransfer> validateTransfers(
+                java.util.Map<String, TaskCaptureTransfer> captureTransfers) {
+            java.util.Objects.requireNonNull(
+                    captureTransfers, "checked Task capture transfers");
+            java.util.LinkedHashMap<String, TaskCaptureTransfer> checked =
+                    new java.util.LinkedHashMap<>();
+            for (java.util.Map.Entry<String, TaskCaptureTransfer> entry
+                    : captureTransfers.entrySet()) {
+                String name = entry.getKey();
+                TaskCaptureTransfer transfer = entry.getValue();
+                if (name == null || name.isBlank() || transfer == null) {
+                    throw new IllegalArgumentException(
+                            "checked Task capture admission requires non-blank names and transfer modes");
+                }
+                if (checked.putIfAbsent(name, transfer) != null) {
+                    throw new IllegalArgumentException(
+                            "checked Task capture set contains duplicate '"
+                                    + name + "'");
+                }
+            }
+            return java.util.Collections.unmodifiableMap(checked);
+        }
+
+        public static synchronized long requireProgramEpoch(Program program) {
+            java.util.Objects.requireNonNull(program, "Task program");
+            expunge();
+            Long epoch = PROGRAM_EPOCHS.get(
+                    new ProgramIdentityKey(program, null));
+            if (epoch == null || epoch <= 0) {
+                throw new IllegalStateException(
+                        "Task execution requires the latest successfully ownership-checked Program");
+            }
+            return epoch;
+        }
+
+        public static synchronized TaskCaptureAdmission require(
+                Program program,
+                TaskExpr task,
+                long expectedCheckEpoch) {
+            java.util.Objects.requireNonNull(program, "Task program");
+            java.util.Objects.requireNonNull(task, "Task expression");
+            if (expectedCheckEpoch <= 0) {
+                throw new IllegalArgumentException(
+                        "expected Task ownership check epoch must be positive");
+            }
+            expunge();
+
+            Long currentProgramEpoch = PROGRAM_EPOCHS.get(
+                    new ProgramIdentityKey(program, null));
+            if (currentProgramEpoch == null
+                    || currentProgramEpoch.longValue() != expectedCheckEpoch) {
+                throw new IllegalStateException(
+                        "Task Program ownership admission is stale or was superseded by a recheck");
+            }
+
+            TaskCaptureAdmission admission = CAPTURES.get(
+                    new PairIdentityKey(program, task, null));
+            if (admission == null
+                    || admission.checkEpoch() != expectedCheckEpoch
+                    || admission.domain() != task.domain()) {
+                throw new IllegalStateException(
+                        "Task execution requires the exact Program/TaskExpr ownership admission; "
+                                + "reparsed, cloned, unchecked, or stale Tasks are not executable");
+            }
+            return admission;
+        }
+    }
+
     /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
     public record TrapExpr(Expr expression) implements Expr { }
 
@@ -1020,8 +2196,14 @@ public final class Ast {
         }
     }
 
-    public record ListExpr(List<Expr> elements) implements Expr {
+    /**
+     * Array-shaped expression. A bare legacy [...] literal may be interpreted
+     * contextually as a finite tuple. The explicit ~array(...) constructor
+     * must remain an array even when the expected return type is Tuple[...].
+     */
+    public record ListExpr(List<Expr> elements, boolean explicitArrayConstructor) implements Expr {
         public ListExpr { elements = List.copyOf(elements); }
+        public ListExpr(List<Expr> elements) { this(elements, false); }
     }
 
     public record TupleExpr(List<Expr> elements) implements Expr {
@@ -1034,33 +2216,52 @@ public final class Ast {
      * <p>The field name is part of the compile-time struct shape. Runtime or
      * computed field names are intentionally not representable in the AST.</p>
      */
-    public record ObjectField(String name, Expr value) {
+    public record ObjectField(String name, Expr value, boolean spread) {
         public ObjectField {
-            if (name == null || name.isBlank()) {
-                throw new IllegalArgumentException("struct field name cannot be blank");
+            if (spread) {
+                if (name != null) {
+                    throw new IllegalArgumentException("aggregate spread must not carry a field name");
+                }
+            } else {
+                requireStaticFieldName(name);
             }
             java.util.Objects.requireNonNull(value, "value");
         }
+        /** Preserve the named-field AST builder for existing source and tests. */
+        public ObjectField(String name, Expr value) {
+            this(name, value, false);
+        }
         public static ObjectField named(String name, Expr value) {
-            return new ObjectField(java.util.Objects.requireNonNull(name, "name"), value);
+            return new ObjectField(java.util.Objects.requireNonNull(name, "name"), value, false);
+        }
+        /** Statically checked aggregate spread operand; not call-argument spread. */
+        public static ObjectField spreading(Expr value) {
+            return new ObjectField(null, value, true);
         }
     }
 
-    public enum ObjectKind { INFERRED_STRUCT, EXPLICIT_STRUCT }
+    public enum ObjectKind { RECORD, INFERRED_STRUCT, INFERRED_RECORD, EXPLICIT_STRUCT }
 
     /** A field declaration in the closed shape of an explicit anonymous struct. */
     public record StructFieldSpec(String name, TypeRef type) {
         public StructFieldSpec {
-            if (name == null || name.isBlank()) throw new IllegalArgumentException("struct field name cannot be blank");
+            requireStaticFieldName(name);
             java.util.Objects.requireNonNull(type, "struct field type");
         }
     }
 
     /**
-     * Anonymous struct expression.
+     * Anonymous closed aggregate expression.
      *
-     * <p>INFERRED_STRUCT is a closed, permanently readonly shape inferred
-     * entirely from its initializer. EXPLICIT_STRUCT carries a separately
+     * <p>RECORD is the canonical structural record value and carries no
+     * type-capture intent. INFERRED_RECORD is the compatibility infer-record
+     * spelling and may participate in an explicit/short inferred alias.
+     * Both are closed structural readonly value shapes. INFERRED_STRUCT is a
+     * concrete closed struct shape whose field types are
+     * inferred from the initializer; mutation authority remains a property of
+     * the binding/borrow, not of the {@code infer} keyword. The distinct tags
+     * therefore survive semantic lowering instead of collapsing to one record type.
+     * EXPLICIT_STRUCT carries a separately
      * declared closed shape so declared fields may be initialized after
      * construction under an owned mutable binding. Oreslang has no open-ended
      * dynamic struct/object shape.</p>
@@ -1076,6 +2277,23 @@ public final class Ast {
             if (kind != ObjectKind.EXPLICIT_STRUCT && !declaredFields.isEmpty()) {
                 throw new IllegalArgumentException("only explicit structs may carry a declared field shape");
             }
+            // Direct AST builders and post-parse transforms are equally trusted
+            // by codegen. Prevent ambiguous or overwritten field identities at
+            // construction, not merely during parser/type-checker traversal.
+            java.util.Set<String> fieldNames = new java.util.HashSet<>();
+            for (ObjectField field : fields) {
+                if (!field.spread() && !fieldNames.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate struct field '" + field.name() + "'");
+                }
+            }
+            java.util.Set<String> declaredNames = new java.util.HashSet<>();
+            for (StructFieldSpec field : declaredFields) {
+                if (!declaredNames.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate struct field declaration '" + field.name() + "'");
+                }
+            }
+            // Repetition across the two sets is intentional: an explicit
+            // initializer supplies the value of a declared field.
         }
         public ObjectExpr(List<ObjectField> fields) {
             this(fields, ObjectKind.INFERRED_STRUCT, List.of());
@@ -1090,11 +2308,23 @@ public final class Ast {
             }
             return ObjectKind.INFERRED_STRUCT;
         }
+        /** True only when the source explicitly used infer and may introduce a captured type alias. */
+        public boolean inferredAggregate() {
+            return kind == ObjectKind.INFERRED_STRUCT || kind == ObjectKind.INFERRED_RECORD;
+        }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
+        public boolean inferredRecord() { return kind == ObjectKind.INFERRED_RECORD; }
+        public boolean plainRecord() { return kind == ObjectKind.RECORD; }
+        public boolean structuralRecord() { return plainRecord() || inferredRecord(); }
+        /** All non-explicit aggregate literals infer their field types from initializer values. */
+        public boolean inferredFieldTypes() { return kind != ObjectKind.EXPLICIT_STRUCT; }
+        /** Compatibility helper: structural records carry the readonly record capability. */
+        public boolean readonlyInferredAggregate() { return structuralRecord(); }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
-    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
+    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
+                             boolean nonLexical, TypeRef declaredReturnType) implements Expr {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
@@ -1102,9 +2332,18 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "lambda requires exactly one expression body or block body");
             }
+            if (declaredReturnType != null && blockBody == null) {
+                throw new IllegalArgumentException(
+                        "explicit lambda return types require a braced block body");
+            }
+        }
+        public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
+                          boolean nonLexical) {
+            this(parameters, expressionBody, blockBody, nonLexical, null);
         }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
-            this(parameters, expressionBody, blockBody, false);
+            this(parameters, expressionBody, blockBody, false, null);
         }
     }
 }
+
