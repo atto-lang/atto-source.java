@@ -56,7 +56,7 @@ final class TypedImmediateChannelWriteTest {
 
         assertSame(first, ch.tryRead().orElseThrow());
         assertInstanceOf(ChannelRuntime.TryWriteResult.Accepted.class,
-                writer.tryWriteResult(full.value()));
+                writer.tryWriteResult((Payload) full.value()));
         assertSame(retried, ch.tryRead().orElseThrow());
         assertTrue(ch.tryRead().isEmpty());
         assertEquals(0, ch.pendingRegistrations());
@@ -72,7 +72,7 @@ final class TypedImmediateChannelWriteTest {
         assertEquals(0, ch.pendingRegistrations());
         ch.close();
         var closed = assertInstanceOf(ChannelRuntime.TryWriteResult.Closed.class,
-                ch.tryWriteResult(full.value()));
+                ch.tryWriteResult((Payload) full.value()));
         assertSame(payload, closed.value());
         assertEquals(0, ch.pendingRegistrations());
     }
