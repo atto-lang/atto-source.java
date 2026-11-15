@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -309,6 +310,26 @@ final class AttoConditionalStatementExpressionTest {
                 """));
         assertTrue(failure.getMessage().contains("ATTO_STRICT_INVALID_EQUALITY_TOKEN"),
                 failure::getMessage);
+    }
+
+    @Test
+    void trustedPrecheckedLeaseCannotLaunderLegacyAttoConditional() throws Exception {
+        String legacy = """
+                pub routine main(): void {
+                    if true then stdio.stdout.write(3); fi
+                }
+                """;
+        var checkedLegacy = OresCompiler.parseAndTypeCheck(legacy);
+        try (var lease = OresLanguage.openPrecheckedProgram(
+                "prechecked-conditional.atto", legacy, checkedLegacy);
+                Context context = Context.newBuilder(OresLanguage.ID)
+                        .allowAllAccess(false).build()) {
+            RuntimeException rejected = assertThrows(RuntimeException.class,
+                    () -> context.eval(Source.newBuilder(OresLanguage.ID,
+                            legacy, "prechecked-conditional.atto").build()));
+            assertTrue(rejected.getMessage().contains("use 'do if"),
+                    rejected::getMessage);
+        }
     }
 
     private static String runNamed(String filename, String source) throws Exception {
