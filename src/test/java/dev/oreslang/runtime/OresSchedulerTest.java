@@ -276,6 +276,56 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void cooperateCannotResumeUntilPriorGuestTurnFullyUnwinds() throws Exception {
+        ExecutorService carriers = Executors.newFixedThreadPool(2);
+        CountDownLatch firstTurnBodyReturned = new CountDownLatch(1);
+        CountDownLatch allowFirstGuestExit = new CountDownLatch(1);
+        AtomicInteger guestAdmissions = new AtomicInteger();
+        AtomicInteger resumes = new AtomicInteger();
+
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "cooperate-unwind-proof",
+                2,
+                carriers,
+                turn -> {
+                    int admission = guestAdmissions.incrementAndGet();
+                    turn.run();
+                    if (admission == 1) {
+                        firstTurnBodyReturned.countDown();
+                        try {
+                            if (!allowFirstGuestExit.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("timed out holding first guest turn open");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                    }
+                })) {
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int pc = resumes.getAndIncrement();
+                if (pc == 0) return OresScheduler.cooperate();
+                return OresScheduler.done(42);
+            });
+
+            assertTrue(firstTurnBodyReturned.await(5, TimeUnit.SECONDS));
+            Thread.sleep(100);
+            assertEquals(1, resumes.get(),
+                    "cooperate must not admit the continuation while the old guest turn is unwinding");
+            assertEquals(1, guestAdmissions.get());
+
+            allowFirstGuestExit.countDown();
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, resumes.get());
+            assertEquals(2, guestAdmissions.get());
+        } finally {
+            allowFirstGuestExit.countDown();
+            carriers.shutdownNow();
+            assertTrue(carriers.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void runtimeOwnedCompletionPublishesOnlyAfterGuestTurnAdmissionExits() throws Exception {
         ExecutorService carrier = Executors.newSingleThreadExecutor();
         AtomicBoolean insideGuestTurn = new AtomicBoolean();

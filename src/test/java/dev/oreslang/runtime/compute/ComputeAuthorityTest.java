@@ -15,8 +15,10 @@ final class ComputeAuthorityTest {
     void handlesExposeNoPublicConstructors() {
         for (Class<?> type : new Class<?>[] {
                 ComputeDeviceHandle.class,
+                ComputeQueueHandle.class,
                 ComputeBufferHandle.class,
-                ComputeFenceHandle.class
+                ComputeFenceHandle.class,
+                ComputeFencePair.class
         }) {
             for (var constructor : type.getDeclaredConstructors()) {
                 assertFalse(Modifier.isPublic(constructor.getModifiers()),
@@ -167,6 +169,76 @@ final class ComputeAuthorityTest {
         assertThrows(IllegalStateException.class,
                 () -> ComputeAuthority.abortBeforeEnqueue(buffer, next));
         ComputeAuthority.complete(buffer, next, true);
+    }
+
+    @Test
+    void atomicKernelPairCannotHalfClaimMixOrBypassPairTransitions() {
+        var gpu = device("gpu0", 8);
+        var input = ComputeAuthority.<Byte>bindBuffer(
+                gpu, 31, 128, 16, "u8", "actor:7");
+        var output = ComputeAuthority.<Byte>bindBuffer(
+                gpu, 32, 128, 16, "u8", "actor:7");
+
+        var pair = ComputeAuthority.beginKernelPair(
+                input, output, gpu, "actor:7", 128);
+        assertEquals(ComputeBufferHandle.State.IN_FLIGHT, input.state());
+        assertEquals(ComputeBufferHandle.State.IN_FLIGHT, output.state());
+
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.markSubmitted(input, pair.input()));
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.complete(input, pair.input(), true));
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.completePair(input, output, pair, true));
+
+        ComputeAuthority.abortPairBeforeEnqueue(input, output, pair);
+        assertEquals(ComputeBufferHandle.State.IDLE, input.state());
+        assertEquals(ComputeBufferHandle.State.IDLE, output.state());
+
+        var pair2 = ComputeAuthority.beginKernelPair(
+                input, output, gpu, "actor:7", 128);
+        ComputeAuthority.markPairSubmitted(input, output, pair2);
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.abortPairBeforeEnqueue(input, output, pair2));
+        ComputeAuthority.completePair(input, output, pair2, true);
+        assertEquals(ComputeBufferHandle.State.IDLE, input.state());
+        assertEquals(ComputeBufferHandle.State.IDLE, output.state());
+
+        var pair3 = ComputeAuthority.beginKernelPair(
+                input, output, gpu, "actor:7", 128);
+        ComputeAuthority.markPairSubmitted(input, output, pair3);
+        ComputeAuthority.cancelPair(input, output, pair3);
+        assertEquals(ComputeBufferHandle.State.POISONED, input.state());
+        assertEquals(ComputeBufferHandle.State.POISONED, output.state());
+        assertThrows(IllegalStateException.class,
+                () -> ComputeAuthority.retire(input, gpu, "actor:7"));
+        ComputeAuthority.acknowledgeCancelledPair(input, output, pair3);
+        ComputeAuthority.retire(input, gpu, "actor:7");
+        ComputeAuthority.retire(output, gpu, "actor:7");
+    }
+
+    @Test
+    void kernelPairAdmissionIsFailureAtomic() {
+        var gpu = device("gpu0", 9);
+        var foreign = device("gpu0", 9);
+        var input = ComputeAuthority.<Byte>bindBuffer(
+                gpu, 41, 64, 8, "u8", "actor:1");
+        var output = ComputeAuthority.<Byte>bindBuffer(
+                gpu, 42, 32, 8, "u8", "actor:1");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ComputeAuthority.beginKernelPair(
+                        input, output, gpu, "actor:1", 64));
+        assertEquals(ComputeBufferHandle.State.IDLE, input.state());
+        assertEquals(ComputeBufferHandle.State.IDLE, output.state());
+
+        var exactOutput = ComputeAuthority.<Byte>bindBuffer(
+                gpu, 43, 64, 8, "u8", "actor:1");
+        assertThrows(IllegalArgumentException.class,
+                () -> ComputeAuthority.beginKernelPair(
+                        input, exactOutput, foreign, "actor:1", 64));
+        assertEquals(ComputeBufferHandle.State.IDLE, input.state());
+        assertEquals(ComputeBufferHandle.State.IDLE, exactOutput.state());
     }
 
     @Test

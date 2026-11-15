@@ -81,6 +81,29 @@ define module compute as
     return layout.byte_length > 0;
   }
 
+
+  // Stronger *portable* arithmetic preflight than valid_buffer_layout.
+  // Neither predicate grants allocation/transfer authority; the runtime must
+  // additionally verify device limits, alignment and real handle provenance.
+  // Branch on positive length before dividing. Prove the multiplication is
+  // representable in signed i64 before ever evaluating it.
+  pub fnc valid_exact_buffer_layout(borrow BufferLayout layout): bool {
+    if layout.element_bytes <= 0 || layout.length < 0; do
+      return false;
+    fi
+    if layout.alignment <= 0 || layout.byte_length < 0; do
+      return false;
+    fi
+    if layout.length == 0; do
+      return layout.byte_length == 0;
+    fi
+    if layout.element_bytes > 9223372036854775807 / layout.length; do
+      return false;
+    fi
+    return layout.byte_length == layout.element_bytes * layout.length;
+  }
+
+
   pub fnc valid_dispatch(borrow DispatchShape shape): bool {
     if shape.global_x <= 0 || shape.global_y <= 0 || shape.global_z <= 0; do
       return false;

@@ -1,0 +1,7 @@
+// MUST fail typechecking: numeric multiply rejects an actual string field.
+pub routine main(): void {
+  val string label = "not-a-number";
+  val float wrong = label * 2.0;
+  stdio.stdout.println("UNREACHABLE-NONNUMERIC-MULTIPLY");
+  return;
+}

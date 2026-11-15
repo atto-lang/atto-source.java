@@ -1,9 +1,9 @@
 # Expression `trap` and `unwrap()` — shared source contract
 
-**Status:** Approved language-design target / **not implemented** as expression syntax.
-The Java/GraalVM frontend currently implements synchronous **callable** `trap`,
-not `trap expression`. The LLVM frontend reserves `trap` and rejects the
-unsupported syntax. This file does not claim executable cross-backend parity.
+**Status:** Java/GraalVM main represents expression-level `trap` in its
+parser, type checker and evaluator, alongside callable `trap`. LLVM still
+reserves and rejects the unsupported syntax. This reconciliation preserves
+the Java implementation; it does not establish executable backend parity.
 
 ## One rule: catch ordinary `throw`, never panic
 
@@ -106,3 +106,24 @@ conversion of panic to throw; no global host exception catch.
 
 Also see the Java/GraalVM `docs/TRAP.md` callable-trap contract and
 `docs/LANGUAGE.md` Option/Result semantics.
+
+## Current-main cleanup reconciliation (2026-10-20)
+
+A trap boundary does not roll back writes or I/O. Successful guard values remain
+owned Option payloads and require explicit extraction before use.
+
+The Java runtime retains the shared `TrapFailurePolicy`: explicit guest
+catch and trap have distinct admission rules, including bounded inspection
+of wrapped/suppressed failures. This integration does not replace that policy
+with the older cast-only catch rule. Terminal panic, cancellation and process
+exit precedence remains the current-main policy.
+
+Each resumed expression delivers a terminal completion at most once. A failure
+thrown by its consumer is not delivered to the same consumer again. The block
+statement walker finalizes its environment once. Cleanup diagnostics are capped
+at 64 suppressed entries with an atomic check/add under the primary failure
+monitor. Existing process-exit precedence and newer match/select lowering remain.
+
+The reconciled snapshot requires exact-head Maven/GraalVM execution, including
+trap-expression, failure-policy and process-exit suites. Historical checks on
+the earlier branch are not validation of this integration.
