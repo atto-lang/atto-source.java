@@ -1,0 +1,87 @@
+name: Source actor nested-loop fairness — current main forward-port
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java'
+      - '.github/workflows/source-actor-loop-fairness-forwardport.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jvm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR head without retained credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pinned v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source commit, tree, and test blob
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          printf 'SOURCE_SHA=%s\nSOURCE_TREE=%s\n' \
+            "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')"
+          git hash-object src/main/java/dev/oreslang/nodes/OresEvalRootNode.java
+          git hash-object src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java
+      - name: Configure GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Execute source actor loop tests with bounded wall time
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          timeout --signal=TERM --kill-after=10s 900s \
+            mvn -B -ntp \
+              -Dtest=SourceLoopSoftPreemptionTest \
+              -DfailIfNoTests=true \
+              -Dsurefire.failIfNoSpecifiedTests=true test \
+            | tee target/source-loop-forwardport-junit.log
+      - name: Enforce 19 actual guest JUnit receipts including both new tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java
+          report=target/surefire-reports/TEST-dev.oreslang.SourceLoopSoftPreemptionTest.xml
+          expected="$(grep -Ec '^[[:space:]]*@Test' "$file")"
+          test "$expected" = 19 || {
+            echo "EXPECTED_19_TEST_DECLARATIONS got=$expected" >&2
+            exit 1
+          }
+          test -s "$report" || {
+            echo 'MISSING_JVM_GUEST_JUNIT_RECEIPT' >&2
+            exit 1
+          }
+          grep -Fq "tests=\"$expected\"" "$report"
+          if grep -Eq '(<skipped|<failure|<error|skipped="[1-9]|failures="[1-9]|errors="[1-9])' "$report"; then
+            echo 'JVM_GUEST_FAILURE_OR_SKIP' >&2
+            exit 1
+          fi
+          for name in \
+            synchronousReceiveHelperLoopPreservesOneLogicalMessageAndCooperates \
+            twoInfiniteNestedHelperActorsCannotStarveSingleCarrierPeer; do
+            grep -Fq "name=\"$name\"" "$report" || {
+              echo "MISSING_JVM_GUEST_CASE $name" >&2
+              exit 1
+            }
+          done
+          echo 'SOURCE_LOOP_19_JVM_GUEST_PASS'
+      - name: Evidence boundaries
+        if: always()
+        run: |
+          echo 'JVM_TRUFFLE_SOURCE_GUEST_ONLY'
+          echo 'GRAALVM_NATIVE_IMAGE_NOT_EXECUTED'
+          echo 'FIVE_BACKEND_PARITY_NOT_CERTIFIED'
