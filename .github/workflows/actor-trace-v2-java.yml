@@ -4,6 +4,7 @@ on:
     paths:
       - 'src/test/java/dev/oreslang/runtime/ActorTraceContractIntegrationTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorDistinctCarriersOverlapV2Test.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorSerialCarrierSafetyV2Test.java'
       - 'contracts/actor-trace-v2.json'
       - 'scripts/check_actor_trace_v2.py'
       - '.github/workflows/actor-trace-v2-java.yml'
@@ -37,8 +38,19 @@ jobs:
       - name: Execute real JVM actor JUnit ingress and retirement probe
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=ActorTraceContractIntegrationTest,ActorDistinctCarriersOverlapV2Test \
+          mvn -B -ntp -Dtest=ActorTraceContractIntegrationTest,ActorDistinctCarriersOverlapV2Test,ActorSerialCarrierSafetyV2Test \
             -Dores.runtime.carriers=java -Dores.actor.affinity=none test
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          for name in ("ActorTraceContractIntegrationTest", "ActorDistinctCarriersOverlapV2Test", "ActorSerialCarrierSafetyV2Test"):
+              path = Path("target/surefire-reports/TEST-dev.oreslang.runtime." + name + ".xml")
+              assert path.is_file(), f"missing executed JUnit receipt: {name}"
+              receipt = ET.parse(path).getroot()
+              assert int(receipt.attrib["tests"]) == 1, f"test not executed: {name}"
+              assert all(int(receipt.attrib[k]) == 0 for k in ("errors", "failures", "skipped")), name
+          print("THREE_REAL_JVM_JUNIT_TESTS_EXECUTED=PASS")
+          PY
           test -s target/actor-trace-graal-v2.json
           python3 scripts/check_actor_trace_v2.py \
             --require-backend java --require-subject runtime_host \
