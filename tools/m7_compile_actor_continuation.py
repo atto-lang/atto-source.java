@@ -93,6 +93,64 @@ class Parser:
         return dict(name=name, amount=amount, total=total, index=index,
                     initial_total=initial_total, initial_index=initial_index)
 
+def make_m8_ir(spec):
+    """Bounded typed IR receipt for the restricted compiled actor profile.
+
+    Ownership/borrow claims here are valid ONLY because Parser.parse() admits
+    two plain i64 locals and no borrow, critical, await, select or FFI.
+    This is not the production Java or LLVM type checker.
+    """
+    return {
+        "schema": "atto.m8.cooperative-ir.v1",
+        "scope": "RESTRICTED_PYTHON_ACTOR_COMPILER_NOT_CANONICAL_FRONTEND",
+        "actor": spec["name"],
+        "parameter": {"name": spec["amount"], "type": "owned:i64"},
+        "live_slots": [
+            {"name": spec["total"], "type": "owned:i64",
+             "initial": spec["initial_total"]},
+            {"name": spec["index"], "type": "owned:i64",
+             "initial": spec["initial_index"]}
+        ],
+        "instructions": [
+            {"pc": 0, "op": "ENTRY", "next": 1},
+            {"pc": 1, "op": "LOOP_GUARD", "on_true": 2, "on_false": 4},
+            {"pc": 2, "op": "CHECKED_ACCUMULATE_AND_INCREMENT", "next": 3},
+            {"pc": 3, "op": "COOPERATE", "resume_pc": 1},
+            {"pc": 4, "op": "DONE"}
+        ],
+        "budget_reductions": {"min": 1, "max": 65536},
+        "borrow_across_suspend": False,
+        "critical_loan_across_suspend": False,
+        "frame_generation_required": True
+    }
+
+
+def validate_m8_ir(ir):
+    """Reject malformed typed plans before any executable output is produced."""
+    if ir["schema"] != "atto.m8.cooperative-ir.v1":
+        raise CompileError("unknown M8 safe-point IR schema")
+    instructions = ir["instructions"]
+    if [item["pc"] for item in instructions] != list(range(5)):
+        raise CompileError("missing or duplicate safe-point PC")
+    if [item["op"] for item in instructions] != [
+            "ENTRY", "LOOP_GUARD", "CHECKED_ACCUMULATE_AND_INCREMENT",
+            "COOPERATE", "DONE"]:
+        raise CompileError("invalid M8 safe-point IR operations")
+    if instructions[3]["resume_pc"] != 1:
+        raise CompileError("M8 must save resume PC before returning YIELD")
+    if ir["budget_reductions"] != {"min": 1, "max": 65536}:
+        raise CompileError("unbounded M8 reductions")
+    if ir["borrow_across_suspend"] or ir["critical_loan_across_suspend"]:
+        raise CompileError("unproven borrow/critical loan across suspension")
+    if not ir["frame_generation_required"]:
+        raise CompileError("missing continuation incarnation fence")
+    slots = ir["live_slots"]
+    if len(slots) != 2 or slots[0]["name"] == slots[1]["name"]:
+        raise CompileError("aliased M8 live slots")
+    if any(s["type"] != "owned:i64" for s in slots):
+        raise CompileError("unsupported M8 continuation ownership/type")
+
+
 def render(spec, sha):
     # Every identifier was validated as an ASCII Java identifier without injection.
     # All other generated source is constant and strictly typed.
@@ -163,16 +221,23 @@ def main():
         data = options.source.read_bytes()
         source = data.decode("utf-8")
         parsed, sha, generated = compile_source(source)
+        typed_ir = make_m8_ir(parsed)
+        validate_m8_ir(typed_ir)
         if hashlib.sha256(data).hexdigest() != sha or sha != options.source_sha256:
             raise CompileError("pinned source SHA256 mismatch")
         options.out.mkdir(parents=True, exist_ok=True)
         output = options.out / "M7GeneratedActor.java"
         output.write_text(generated, encoding="utf-8")
+        ir_path = options.out / "m8-typed-ir.json"
+        ir_path.write_text(
+            json.dumps(typed_ir, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         manifest = {
             "schema": "atto.m7.cooperate.compiled-restricted.v1",
             "status": "GENERATED_NOT_EXECUTED",
             "source_sha256": sha,
             "java_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+            "m8_ir_sha256": hashlib.sha256(ir_path.read_bytes()).hexdigest(),
+            "m8_ir_schema": typed_ir["schema"],
             "actor_name": parsed["name"],
             "compiler_scope": "restricted signed-i64 loop/rt-cooperate actor profile",
             "canonical_compiler": False
