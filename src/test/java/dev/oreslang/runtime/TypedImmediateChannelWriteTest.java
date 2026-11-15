@@ -1,10 +1,12 @@
 package dev.oreslang.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -112,6 +114,62 @@ final class TypedImmediateChannelWriteTest {
         assertEquals(1, accepted.get());
         assertEquals(7, failed.size());
         assertEquals(1, ch.size());
+        assertEquals(0, ch.pendingRegistrations());
+    }
+
+    @Test
+    void concurrentCloseAndTryWriteProduceOneLinearizableOwnedOutcome() throws Exception {
+        for (int iteration = 0; iteration < 64; iteration++) {
+            ChannelRuntime.Channel<Payload> ch = new ChannelRuntime.Channel<>(1);
+            Payload original = new Payload(iteration);
+            CountDownLatch start = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<ChannelRuntime.TryWriteResult<Payload>>
+                    observed = new java.util.concurrent.atomic.AtomicReference<>();
+            Thread sender = new Thread(() -> {
+                try {
+                    start.await();
+                    observed.set(ch.tryWriteResult(original));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            Thread closer = new Thread(() -> {
+                try {
+                    start.await();
+                    ch.close();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            sender.start();
+            closer.start();
+            start.countDown();
+            sender.join(3000);
+            closer.join(3000);
+            assertFalse(sender.isAlive());
+            assertFalse(closer.isAlive());
+            var outcome = observed.get();
+            assertNotNull(outcome);
+            if (outcome instanceof ChannelRuntime.TryWriteResult.Accepted<?>) {
+                assertSame(original, ch.tryRead().orElseThrow());
+            } else if (outcome instanceof ChannelRuntime.TryWriteResult.Closed<?> rejected) {
+                assertSame(original, rejected.value());
+                assertEquals(0, ch.size());
+            } else {
+                throw new AssertionError("empty capacity-one channel cannot report Full during close race");
+            }
+            assertEquals(0, ch.pendingRegistrations());
+        }
+    }
+
+    @Test
+    void closedChannelCauseStillReturnsOriginalValue() {
+        ChannelRuntime.Channel<Payload> ch = new ChannelRuntime.Channel<>(1);
+        Payload payload = new Payload(31);
+        ch.close(new IllegalStateException("closed by owner"));
+        var result = assertInstanceOf(ChannelRuntime.TryWriteResult.Closed.class,
+                ch.tryWriteResult(payload));
+        assertSame(payload, result.value());
         assertEquals(0, ch.pendingRegistrations());
     }
 
