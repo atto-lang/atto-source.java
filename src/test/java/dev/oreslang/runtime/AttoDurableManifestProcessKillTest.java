@@ -82,10 +82,12 @@ final class AttoDurableManifestProcessKillTest {
         }
         assertNotEquals(0, writer.exitValue(), "writer must terminate abnormally");
         assertEquals("generation=7", Files.readString(root.resolve("classic.meta")));
+        assertEquals("record=7", Files.readString(root.resolve("classic.wal")),
+                "fsynced WAL bytes must survive actual child-JVM termination");
 
         Process replay = launch("replay", root);
         try {
-            assertEquals("ATTO_GUEST_REPLAY=generation=7",
+            assertEquals("ATTO_GUEST_REPLAY=record=7|generation=7",
                     waitForMarker(replay, "ATTO_GUEST_REPLAY="));
             assertTrue(replay.waitFor(15, TimeUnit.SECONDS), "replay guest must exit");
             assertEquals(0, replay.exitValue(), "fresh Atto guest replay must exit cleanly");
