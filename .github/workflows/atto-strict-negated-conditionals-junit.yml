@@ -1,0 +1,52 @@
+name: Atto strict ifnot/unless production JDK25 JUnit
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/**'
+      - 'src/test/java/dev/oreslang/AttoConditionalStatementExpressionTest.java'
+      - 'tests/fixtures/conditional/**'
+      - '.github/workflows/atto-strict-negated-conditionals-junit.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/main/java/dev/oreslang/**'
+      - 'src/test/java/dev/oreslang/AttoConditionalStatementExpressionTest.java'
+      - 'tests/fixtures/conditional/**'
+      - '.github/workflows/atto-strict-negated-conditionals-junit.yml'
+permissions:
+  contents: read
+jobs:
+  real-java-atto-truffle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Execute strict Atto parser, linked-program typechecker, and Truffle guest
+        shell: bash
+        env:
+          MAVEN_OPTS: "-Xmx3g"
+        run: |
+          set -euo pipefail
+          # Native-thread carrier compilation is a distinct security/runtime
+          # gate. Excluding that automatic Unix profile does NOT disable the
+          # real Parser, TypeChecker, OwnershipChecker or Truffle guest tests.
+          mvn -B -ntp '-P!native-thread-unix' \
+            -Dtest=AttoConditionalStatementExpressionTest \
+            -DfailIfNoTests=false test
+          report="target/surefire-reports/dev.oreslang.AttoConditionalStatementExpressionTest.txt"
+          test -s "$report" || { echo "MISSING_ATTO_JUNIT_REPORT" >&2; exit 1; }
+          summary="$(grep -E '^Tests run: [0-9]+, Failures: ' "$report" | tail -1)"
+          case "$summary" in
+            *"Failures: 0, Errors: 0, Skipped: 0"*) ;;
+            *) echo "INCOMPLETE_ATTO_JUNIT_EVIDENCE: $summary" >&2; exit 1;;
+          esac
+          executed="$(printf '%s' "$summary" | sed -E 's/^Tests run: ([0-9]+).*/\1/')"
+          test "$executed" -ge 22 || { echo "INSUFFICIENT_ATTO_JUNIT_CASES=$executed" >&2; exit 1; }
+          echo "ATTO_STRICT_NEGATED_CONDITIONAL_TRUFFLE_JUNIT_PASS count=$executed"
