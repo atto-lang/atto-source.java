@@ -124,6 +124,63 @@ final class AttoConditionalStatementExpressionTest {
     }
 
     @Test
+    void doIfnotAndDoUnlessInvertTheirConditionsInsideLoops() {
+        String source = """
+                pub routine main(): void {
+                    let int count = 0;
+                    loop {
+                        count = count + 1;
+                        do ifnot true then break; fi
+                        do unless true then break; fi
+                        do ifnot false then break; fi
+                    }
+                    loop {
+                        count = count + 1;
+                        do unless false then break; fi
+                    }
+                    stdio.stdout.write(count);
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parseStrictAtto(source)));
+        assertEquals("2", run(source));
+    }
+
+    @Test
+    void negatedValueIfsAndBracedAliasesReturnTheExpectedResults() {
+        String source = """
+                pub routine main(): void {
+                    val a = ifnot false then 7 else 9 fi;
+                    val b = unless true then 7 else 9 fi;
+                    ifnot false { stdio.stdout.write(a); }
+                    unless false { stdio.stdout.write(b); }
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parseStrictAtto(source)));
+        assertEquals("79", run(source));
+    }
+
+    @Test
+    void negatedDoIfStillForbidsBreakOutsideLoops() {
+        for (String head : new String[] { "ifnot", "unless" }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parseStrictAtto(
+                            "pub routine main(): void { do " + head
+                            + " false then break; fi }")));
+        }
+    }
+
+    @Test
+    void negatedExpressionBranchesCannotBeControlStatements() {
+        for (String head : new String[] { "ifnot", "unless" }) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parseStrictAtto(
+                            "fnc main(): int { return " + head
+                            + " true then break; else 5 fi; }"));
+            assertTrue(failure.getMessage().contains("must produce a value"));
+        }
+    }
+
+    @Test
     void canonicalBracesAreImperativeAndNeedNoFi() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parseStrictAtto("""
                 fnc choose(bool ready): int {
