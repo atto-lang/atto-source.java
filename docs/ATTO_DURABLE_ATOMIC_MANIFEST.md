@@ -1,0 +1,55 @@
+# Durable atomic manifest primitive (Java/GraalVM guest vertical slice)
+
+**Scope: a linked `.atto` guest API, not a durable actor/WAL or AMQP confirm.**
+
+`fs.write_text_durable_atomic_async(path, text)` is a deliberately small
+privileged OS primitive. The guest issues a single awaited call; the Java
+runtime's bounded `AsyncNativeIo` pool dispatches actual filesystem work on
+an off-carrier worker. It refuses values above 1 MiB (UTF-8 bytes) before I/O.
+
+On Linux/POSIX with a **pre-created private directory** (mode 0700, trusted
+against replacement by other processes), it:
+
+1. checks WRITE against the *lexical* destination before a path probe;
+2. canonicalizes its parent and rechecks WRITE against the resolved target;
+3. refuses the final symlink and group/world-accessible directories;
+4. writes a newly created private sibling temp and `FileChannel.force(true)`;
+5. replaces the destination using same-directory `ATOMIC_MOVE`;
+6. syncs the containing directory via `FileChannel.force(true)`;
+7. reports the returned Future as successful only after step 6.
+
+The method intentionally fails closed when atomic rename or directory sync is
+unsupported. Failure *after rename* means **outcome unknown**, not rollback.
+No success receipt or AMQP confirm may be inferred from a failed Future.
+The present path-based design is NOT secure against a hostile process capable
+of replacing the parent or files in a shared namespace while this code runs.
+A production actor storage implementation should instead use platform-aware
+directory descriptors and trusted custody, with inode checks or `openat2`
+as required by its threat model.
+
+The companion `AttoDurableAtomicFilesystemLanguageTest` compiles and executes
+linked `.atto` programs through `LinkedProgramRunner`, exercising successful
+replace, subsequent read, reopening, symlink denial, denial-before-metadata
+and directory permissions. It is not an independent JVM SIGKILL/restart test,
+nor an OS power-loss guarantee. The separate WAL-backed Rust host model in
+`atto-poc/atto-rmq-clone.atto` PR #36 already tests real process SIGKILL, but
+does not compile or run the Java Atto guest.
+
+## Private CI approval
+
+Because this source repository is private, the expanded suite is wired into
+`.github/workflows/private-fs-guest-execution.yml` only. That workflow is
+deliberately gated by an explicitly approved source commit/tree and a
+source-local ephemeral runner. A PR check without the approved execution
+cannot be called guest evidence. Never mirror this private source tree into
+another GitHub organization merely to borrow Actions minutes.
+
+The required downstream steps remain: true Atto `ClassicQueueActor`
+command serialization, off-carrier append/fsync, durable queue generation,
+journal replay, fsync-then-state commit, ambiguous receipt reconciliation,
+Linux process kill/restart with an independent AMQP client, and Java/LLVM/.NET
+runtime parity.
+
+This primitive writes a **manifest** only. `BinaryFile.append_async` and
+`BinaryFile.sync_async` already exist; correctness of a full atomic
+WAL+manifest transaction and actor admission is not established here.
