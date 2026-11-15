@@ -8,7 +8,6 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -51,8 +50,6 @@ final class PlatformCoreV1ScalarGuestParityTest {
         new Case("reject-xor-operator.ores","e7f5e47a28219f1f43cb1e18c7f50d45c089a6c4",null),
         new Case("reject-no-value-return.ores","8cce1a3e24bec592834089d228f1047d61f510f0",null)
     };
-    @TempDir Path temp;
-
     private static String gitBlob(byte[] bytes) throws Exception {
         MessageDigest sha=MessageDigest.getInstance("SHA-1");
         sha.update(("blob "+bytes.length+"\0").getBytes(StandardCharsets.US_ASCII));
@@ -101,8 +98,7 @@ final class PlatformCoreV1ScalarGuestParityTest {
             String original=source(c);
             // This is real Java compiler/source validation of the ORIGINAL fixture.
             assertDoesNotThrow(()->OresCompiler.parseAndTypeCheck(original));
-            Path entry=temp.resolve(c.name());
-            Files.writeString(entry,original,StandardCharsets.UTF_8);
+            Path entry=ROOT.resolve(c.name());
             assertEquals(1,LinkedProgramRunner.validate(entry,Map.of()).units().size());
             String wrapped=transformedStdoutGuest(c,original);
             assertDoesNotThrow(()->OresCompiler.parseAndTypeCheck(wrapped));
