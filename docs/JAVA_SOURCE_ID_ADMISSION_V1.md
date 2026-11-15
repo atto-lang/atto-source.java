@@ -149,3 +149,22 @@ source-identity admission logic executes in a bounded host-level fixture.
 `Parser.parse` AST or Maven/JUnit execution. No Truffle guest logging node
 or GraalVM AOT/JIT probe has been run. The exact project parser and
 `SourceLogCallsiteBindingV1Test` must still pass on an approved real runner.
+
+### Follow-up audit: public routine-ID proof boundary
+
+The `SourceLogCallsiteBindingV1.bind` **public API** now requires
+`List<SourceRoutineBindingV1.Entry>` and invokes the independent
+`SourceRoutineBindingV1.bind` itself. It no longer accepts an arbitrary
+caller-constructed `Map<Ast.FunctionDecl, Id>` as evidence of verified
+routine identity. Internally, the binder uses the resulting unmodifiable
+`IdentityHashMap` for O(1) exact AST-reference lookup.
+
+The **exact Git blob** `97ee5aa236eda10f62e095ea15098ba8f8c9b8b1`
+for the revised site binder, plus exact routine binder
+`5eb0724239b4027d76a4a6a82336f21f033c6ceb` and source ID parser
+`fc2c579220437d5ab0c409be266123eb550a939f`,
+were compiled with `javac --release 21 -Xlint:all -Werror`. A
+synthetic-AST host harness then passed a two-site positive fixture and
+**16** rejection checks (`JAVA_EXACT_GIT_BLOBS_BINDER_HOST_PASS:negative=16`).
+The actual repository Parser, Maven/JUnit, Truffle guest-node and JIT
+tests have **not** executed and remain mandatory before merge.
