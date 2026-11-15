@@ -103,7 +103,7 @@ jobs:
       - name: Execute actual linked filesystem .atto guest test suites
         shell: bash
         run: |
-          mvn -B -ntp -Dores.runtime.carriers=native -Dtest=dev.oreslang.runtime.AsyncFilesystemAtomicLanguageTest,dev.oreslang.runtime.BoundedFilesystemReadLanguageTest,dev.oreslang.runtime.AttoDurableAtomicFilesystemLanguageTest,dev.oreslang.runtime.AttoDurableManifestProcessKillTest test
+          mvn -B -ntp -Dores.runtime.carriers=native -Dores.private.fs.guest.approved=true -Dtest=dev.oreslang.runtime.AsyncFilesystemAtomicLanguageTest,dev.oreslang.runtime.BoundedFilesystemReadLanguageTest,dev.oreslang.runtime.AttoDurableAtomicFilesystemLanguageTest,dev.oreslang.runtime.AttoDurableManifestProcessKillTest test
       - name: Execute existing native filesystem regression tests
         shell: bash
         run: |
