@@ -30,10 +30,15 @@ as required by its threat model.
 The companion `AttoDurableAtomicFilesystemLanguageTest` compiles and executes
 linked `.atto` programs through `LinkedProgramRunner`, exercising successful
 replace, subsequent read, reopening, symlink denial, denial-before-metadata
-and directory permissions. It is not an independent JVM SIGKILL/restart test,
-nor an OS power-loss guarantee. The separate WAL-backed Rust host model in
-`atto-poc/atto-rmq-clone.atto` PR #36 already tests real process SIGKILL, but
-does not compile or run the Java Atto guest.
+and directory permissions. A second approved-only JUnit class
+(`AttoDurableManifestProcessKillTest`) starts a **child JVM which compiles
+and executes real .atto guest source**, waits for its awaited I/O completion
+receipt, issues real OS SIGKILL, and starts a fresh child JVM to read the
+manifest via another actual .atto guest. **That test has been authored, not
+yet executed on the approved private runner.** It is a manifest-only crash
+test, not WAL recovery, actor state recovery or OS power-loss proof.
+The separate Rust WAL model in `atto-poc/atto-rmq-clone.atto` PR #36
+does not compile or run Java Atto guest code.
 
 ## Private CI approval
 
