@@ -207,6 +207,39 @@ final class AttoConditionalStatementExpressionTest {
     }
 
     @Test
+    void strictBracesCannotStealAnEnclosingDoIfFi() {
+        String source = """
+                pub routine main(): void {
+                    do if true then
+                        ifnot false { stdio.stdout.write(1); }
+                    fi
+                    do unless true then
+                        if true { stdio.stdout.write(2); }
+                    fi
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parseStrictAtto(source)));
+    }
+
+    @Test
+    void strictBracesRequireTheirOwnClosingBrace() {
+        IllegalArgumentException missingBrace = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parseStrictAtto("""
+                pub routine main(): void {
+                    do if true then
+                        ifnot false { return;
+                    fi
+                }
+                """));
+        assertTrue(missingBrace.getMessage().contains("expression")
+                || missingBrace.getMessage().contains("expected '}'"),
+                missingBrace::getMessage);
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parseStrictAtto(
+                "pub routine main():void{if true {return;} fi}"));
+    }
+
+    @Test
     void canonicalBracesAreImperativeAndNeedNoFi() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parseStrictAtto("""
                 fnc choose(bool ready): int {
