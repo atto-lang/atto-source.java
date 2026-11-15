@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'src/test/java/dev/oreslang/runtime/ActorTraceContractIntegrationTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorDistinctCarriersOverlapV2Test.java'
       - 'contracts/actor-trace-v2.json'
       - 'scripts/check_actor_trace_v2.py'
       - '.github/workflows/actor-trace-v2-java.yml'
@@ -33,7 +34,7 @@ jobs:
       - name: Execute real JVM actor JUnit ingress and retirement probe
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=ActorTraceContractIntegrationTest test
+          mvn -B -ntp -Dtest=ActorTraceContractIntegrationTest,ActorDistinctCarriersOverlapV2Test test
           test -s target/actor-trace-graal-v2.json
           python3 scripts/check_actor_trace_v2.py \
             --require-backend java --require-subject runtime_host \
