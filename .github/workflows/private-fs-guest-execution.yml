@@ -14,6 +14,14 @@ on:
         description: "Approved 40-hex Git tree of the source_commit"
         required: true
         type: string
+      suite:
+        description: "Approved test profile on the explicitly pinned private source tree"
+        required: true
+        type: choice
+        default: baseline
+        options:
+          - baseline
+          - durable_manifest
 
 permissions:
   contents: read
@@ -100,10 +108,30 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-      - name: Execute actual linked filesystem .atto guest test suites
+      - name: Execute baseline approved filesystem guest test suites
+        if: ${{ inputs.suite == 'baseline' }}
         shell: bash
         run: |
+          set -euo pipefail
           mvn -B -ntp -Dores.runtime.carriers=native -Dtest=dev.oreslang.runtime.AsyncFilesystemAtomicLanguageTest,dev.oreslang.runtime.BoundedFilesystemReadLanguageTest test
+      - name: Execute approved durability guest and process-kill profile
+        if: ${{ inputs.suite == 'durable_manifest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dores.runtime.carriers=native -Dores.private.fs.guest.approved=true -Dtest=dev.oreslang.runtime.AttoDurableAtomicFilesystemLanguageTest,dev.oreslang.runtime.AttoDurableManifestProcessKillTest test
+          for suite in AttoDurableAtomicFilesystemLanguageTest AttoDurableManifestProcessKillTest; do
+            xml="target/surefire-reports/TEST-dev.oreslang.runtime.${suite}.xml"
+            test -s "$xml" || { echo "::error::Missing guest test receipt $xml"; exit 1; }
+            grep -Eq 'tests="[1-9][0-9]*"' "$xml"
+            grep -Eq 'errors="0"' "$xml"
+            grep -Eq 'failures="0"' "$xml"
+            grep -Eq 'skipped="0"' "$xml"
+            echo "APPROVED_DURABLE_GUEST_SUITE_PASSED=$suite"
+          done
+          grep -Fq 'aCompletedAttoDurableManifestWriteSurvivesSigkillAndFreshGuestReplay' \
+            target/surefire-reports/TEST-dev.oreslang.runtime.AttoDurableManifestProcessKillTest.xml
+          echo 'ATTO_GUEST_PROCESS_KILL_REPLAY_SUITE_EXECUTED'
       - name: Execute existing native filesystem regression tests
         shell: bash
         run: |
@@ -111,5 +139,6 @@ jobs:
       - name: Report limited test scope
         shell: bash
         run: |
-          echo "FS_GUEST_EXECUTED: linked .atto filesystem JUnit suites on source-local GraalVM runner"
-          echo "NOT_EXECUTED: cross-backend parity, full native-image AOT and REST HTTP integration"
+          echo "FS_GUEST_PROFILE=${{ inputs.suite }}"
+          echo "FS_GUEST_EXECUTED: exact-source-checkout linked .atto filesystem JUnit suites on approved private runner"
+          echo "NOT_EXECUTED: cross-backend parity, full native-image AOT, broker AMQP durability and REST HTTP integration"
