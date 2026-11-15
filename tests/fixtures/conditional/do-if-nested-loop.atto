@@ -1,0 +1,23 @@
+// Canonical AttoLang conditional forms: imperative do-if, value if.
+pub routine main(): void {
+    let started = false;
+    let p = 0;
+    let total = 0;
+
+    loop {
+        do if p eq 3 then break; fi
+        let digit = 0;
+        loop {
+            do if digit >= p then break; fi
+            digit = digit + 1;
+        }
+        do if digit > 0 || started || p eq 2 then
+            total = total + digit;
+            started = true;
+        fi
+        p = p + 1;
+    }
+
+    val answer = if started then total else 0 fi;
+    stdio.stdout.write(answer);
+}
