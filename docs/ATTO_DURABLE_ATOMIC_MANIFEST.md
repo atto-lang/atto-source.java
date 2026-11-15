@@ -44,12 +44,18 @@ does not compile or run Java Atto guest code.
 
 ## Private CI approval
 
-Because this source repository is private, the expanded suite is wired into
-`.github/workflows/private-fs-guest-execution.yml` only. That workflow is
-deliberately gated by an explicitly approved source commit/tree and a
-source-local ephemeral runner. A PR check without the approved execution
-cannot be called guest evidence. Never mirror this private source tree into
-another GitHub organization merely to borrow Actions minutes.
+Because this source repository is private, a separately reviewable
+[private workflow-only PR #3121](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/3121)
+adds a `suite=durable_manifest` selection to the existing
+`.github/workflows/private-fs-guest-execution.yml` trusted workflow.
+That workflow remains on the **main ref** and still requires independent
+administrator approval of this feature PR's exact source commit and tree,
+plus a private source-local ephemeral runner. The feature branch itself does
+not alter private-runner admission policy. No guest test execution may be
+claimed before PR #3121 is separately reviewed/merged and the approved
+source-local job actually completes with non-skipped JUnit receipts.
+Never mirror this private source tree into another GitHub organization merely
+to borrow Actions minutes.
 
 The required downstream steps remain: true Atto `ClassicQueueActor`
 command serialization, off-carrier append/fsync, durable queue generation,
