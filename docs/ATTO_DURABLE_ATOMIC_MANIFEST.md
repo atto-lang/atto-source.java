@@ -10,8 +10,10 @@ an off-carrier worker. It refuses values above 1 MiB (UTF-8 bytes) before I/O.
 On Linux/POSIX with a **pre-created private directory** (mode 0700, trusted
 against replacement by other processes), it:
 
-1. checks WRITE against the *lexical* destination before a path probe;
-2. canonicalizes its parent and rechecks WRITE against the resolved target;
+1. checks WRITE against the *lexical* destination AND its lexical parent
+   before metadata lookup (an exact-file grant cannot authorize a temp file);
+2. canonicalizes the parent and separately checks WRITE on the resolved
+   parent and destination, preventing permission bypass via ancestor symlinks;
 3. refuses the final symlink and group/world-accessible directories;
 4. writes a newly created private sibling temp and `FileChannel.force(true)`;
 5. replaces the destination using same-directory `ATOMIC_MOVE`;
@@ -29,8 +31,8 @@ as required by its threat model.
 
 The companion `AttoDurableAtomicFilesystemLanguageTest` compiles and executes
 linked `.atto` programs through `LinkedProgramRunner`, exercising successful
-replace, subsequent read, reopening, symlink denial, denial-before-metadata
-and directory permissions. A second approved-only JUnit class
+replace, subsequent read, reopening, symlink denial, denial-before-metadata,
+file-only WRITE denial (no sibling-temp authority), and directory permissions. A second approved-only JUnit class
 (`AttoDurableManifestProcessKillTest`) starts a **child JVM which compiles
 and executes real .atto guest source**, awaits `BinaryFile.append_async`
 and `sync_async` for a small WAL record, then writes the durable manifest,
