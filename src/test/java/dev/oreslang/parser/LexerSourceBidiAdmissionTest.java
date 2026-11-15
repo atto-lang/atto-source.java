@@ -25,6 +25,22 @@ final class LexerSourceBidiAdmissionTest {
         }
     }
 
+    @Test void rejectsUnicodeLineSeparatorsEvenWhenCommentsHideThem() {
+        for (int codepoint : new int[] { 0x0085, 0x2028, 0x2029 }) {
+            String separator = Character.toString(codepoint);
+            for (String source : new String[] {
+                    SAFE + " // hidden" + separator + "return 0;",
+                    "/* hidden" + separator + " */ " + SAFE,
+                    "pub fnc main(): int { return 42; } // " + separator }) {
+                IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new Lexer(source).scan(),
+                    "U+" + Integer.toHexString(codepoint));
+                assertTrue(error.getMessage().contains("Unicode line separator"));
+            }
+        }
+    }
+
     @Test void permitsOrdinaryNonAsciiComments() {
         assertDoesNotThrow(() -> new Lexer("/* café */ " + SAFE).scan());
     }
