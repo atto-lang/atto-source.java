@@ -43,6 +43,9 @@ final class SelectorTransportConnection implements AutoCloseable {
     private final SelectionKey key;
     private final long overallDeadlineNanos;
     private final AtomicBoolean closed = new AtomicBoolean();
+    // This per-connection selector and its TLS buffers are NOT duplex-safe.
+    // A real shared pool must arbitrate protocol operations before entry.
+    private final AtomicBoolean operationClaimed = new AtomicBoolean();
     private final Input input = new Input();
     private final Output output = new Output();
 
@@ -108,18 +111,22 @@ final class SelectorTransportConnection implements AutoCloseable {
             throws IOException {
         Objects.requireNonNull(address, "address");
         Objects.requireNonNull(connectTimeout, "connectTimeout");
-        requireOpen();
-        long connectDeadline =
-                phaseDeadline(connectTimeout);
-        if (!channel.connect(address)) {
-            while (!channel.finishConnect()) {
-                waitForUntil(
-                        SelectionKey.OP_CONNECT,
-                        connectDeadline,
-                        "connect");
+        enterOperation();
+        try {
+            long connectDeadline =
+                    phaseDeadline(connectTimeout);
+            if (!channel.connect(address)) {
+                while (!channel.finishConnect()) {
+                    waitForUntil(
+                            SelectionKey.OP_CONNECT,
+                            connectDeadline,
+                            "connect");
+                }
             }
+            clearInterestOpsAfterConnect();
+        } finally {
+            leaveOperation();
         }
-        clearInterestOpsAfterConnect();
     }
 
     void startTls(
@@ -132,32 +139,47 @@ final class SelectorTransportConnection implements AutoCloseable {
         Objects.requireNonNull(sslContext, "sslContext");
         Objects.requireNonNull(host, "host");
         Objects.requireNonNull(handshakeTimeout, "handshakeTimeout");
-        requireOpen();
-        if (engine != null) {
-            throw new IllegalStateException(
-                    "TLS already initialized");
+        enterOperation();
+        try {
+            if (engine != null) {
+                throw new IllegalStateException(
+                        "TLS already initialized");
+            }
+
+            SSLEngine created = sslContext.createSSLEngine(host, port);
+            created.setUseClientMode(true);
+            SSLParameters parameters = created.getSSLParameters();
+            parameters.setEndpointIdentificationAlgorithm("HTTPS");
+            if (sendSni) {
+                parameters.setServerNames(
+                        List.of(new SNIHostName(host)));
+            }
+            created.setSSLParameters(parameters);
+
+            SSLSession session = created.getSession();
+            netIn = emptyReadBuffer(session.getPacketBufferSize());
+            netOut = ByteBuffer.allocate(session.getPacketBufferSize());
+            appIn = emptyReadBuffer(session.getApplicationBufferSize());
+            engine = created;
+
+            created.beginHandshake();
+            driveHandshake(
+                    created.getHandshakeStatus(),
+                    phaseDeadline(handshakeTimeout));
+        } catch (IOException | RuntimeException handshakeFailure) {
+            // A failed TLS handshake may have consumed or emitted partial
+            // records and changed both SSLEngine and socket state. Never
+            // return such a connection to a future shared connection pool.
+            // Preserve the primary failure while retiring physical resources.
+            try {
+                close();
+            } catch (IOException closeFailure) {
+                handshakeFailure.addSuppressed(closeFailure);
+            }
+            throw handshakeFailure;
+        } finally {
+            leaveOperation();
         }
-
-        SSLEngine created = sslContext.createSSLEngine(host, port);
-        created.setUseClientMode(true);
-        SSLParameters parameters = created.getSSLParameters();
-        parameters.setEndpointIdentificationAlgorithm("HTTPS");
-        if (sendSni) {
-            parameters.setServerNames(
-                    List.of(new SNIHostName(host)));
-        }
-        created.setSSLParameters(parameters);
-
-        SSLSession session = created.getSession();
-        netIn = emptyReadBuffer(session.getPacketBufferSize());
-        netOut = ByteBuffer.allocate(session.getPacketBufferSize());
-        appIn = emptyReadBuffer(session.getApplicationBufferSize());
-        engine = created;
-
-        created.beginHandshake();
-        driveHandshake(
-                created.getHandshakeStatus(),
-                phaseDeadline(handshakeTimeout));
     }
 
     InputStream input() {
@@ -217,14 +239,18 @@ final class SelectorTransportConnection implements AutoCloseable {
                 throws IOException {
             Objects.checkFromIndexSize(offset, length, target.length);
             if (length == 0) return 0;
-            requireOpen();
-            ByteBuffer destination =
-                    ByteBuffer.wrap(target, offset, length);
-            long deadline = phaseDeadline(readTimeout);
-            if (engine == null) {
-                return readPlain(destination, deadline);
+            enterOperation();
+            try {
+                ByteBuffer destination =
+                        ByteBuffer.wrap(target, offset, length);
+                long deadline = phaseDeadline(readTimeout);
+                if (engine == null) {
+                    return readPlain(destination, deadline);
+                }
+                return readTls(destination, deadline);
+            } finally {
+                leaveOperation();
             }
-            return readTls(destination, deadline);
         }
     }
 
@@ -243,14 +269,18 @@ final class SelectorTransportConnection implements AutoCloseable {
                 throws IOException {
             Objects.checkFromIndexSize(offset, length, source.length);
             if (length == 0) return;
-            requireOpen();
-            ByteBuffer input =
-                    ByteBuffer.wrap(source, offset, length);
-            long deadline = phaseDeadline(writeTimeout);
-            if (engine == null) {
-                writeNetFully(input, deadline, "request write");
-            } else {
-                writeTls(input, deadline);
+            enterOperation();
+            try {
+                ByteBuffer input =
+                        ByteBuffer.wrap(source, offset, length);
+                long deadline = phaseDeadline(writeTimeout);
+                if (engine == null) {
+                    writeNetFully(input, deadline, "request write");
+                } else {
+                    writeTls(input, deadline);
+                }
+            } finally {
+                leaveOperation();
             }
         }
     }
@@ -582,7 +612,7 @@ final class SelectorTransportConnection implements AutoCloseable {
                                 + " interrupted");
             }
             long remaining =
-                    deadlineNanos - System.nanoTime();
+                    saturatingRemaining(deadlineNanos, System.nanoTime());
             if (remaining <= 0) {
                 throw new SocketTimeoutException(
                         "pinned HTTP "
@@ -592,12 +622,11 @@ final class SelectorTransportConnection implements AutoCloseable {
 
             try {
                 key.interestOps(operation);
+                // Ceil without adding to a potentially MAX nanos value.
+                long roundedMillis = remaining / 1_000_000L
+                        + (remaining % 1_000_000L == 0 ? 0 : 1);
                 long millis = Math.max(
-                        1L,
-                        Math.min(
-                                Integer.MAX_VALUE,
-                                (remaining + 999_999L)
-                                        / 1_000_000L));
+                        1L, Math.min(Integer.MAX_VALUE, roundedMillis));
                 int ready = selector.select(millis);
                 if (Thread.currentThread().isInterrupted()) {
                     throw new IOException(
@@ -651,17 +680,56 @@ final class SelectorTransportConnection implements AutoCloseable {
         } catch (ArithmeticException overflow) {
             delta = Long.MAX_VALUE;
         }
-        long phaseDeadline =
-                delta == Long.MAX_VALUE
-                        || Long.MAX_VALUE - now < delta
-                        ? Long.MAX_VALUE
-                        : now + delta;
+        long phaseDeadline = saturatingDeadline(now, delta);
         if (overallDeadlineNanos == Long.MAX_VALUE) {
             return phaseDeadline;
         }
         return Math.min(
                 phaseDeadline,
                 overallDeadlineNanos);
+    }
+
+    // nanoTime() has an arbitrary signed origin. MAX-now overflows when
+    // now is negative; saturate using the non-overflowing MAX-delta bound.
+    static long saturatingDeadline(long now, long delta) {
+        if (delta < 0) throw new IllegalArgumentException("negative phase nanos");
+        return delta == Long.MAX_VALUE || now > Long.MAX_VALUE - delta
+                ? Long.MAX_VALUE : now + delta;
+    }
+
+    // A MAX deadline is intentionally unbounded. For finite deadlines,
+    // preserve the sign on subtraction overflow rather than falsely expiring
+    // a far-future selector or waiting on an already-expired deadline.
+    static long saturatingRemaining(long deadline, long now) {
+        if (deadline == Long.MAX_VALUE) return Long.MAX_VALUE;
+        try {
+            return Math.subtractExact(deadline, now);
+        } catch (ArithmeticException overflow) {
+            return deadline > now ? Long.MAX_VALUE : Long.MIN_VALUE;
+        }
+    }
+
+    /**
+     * Fail closed if callers share this request-local selector state machine.
+     * This does not implement a connection pool or an asynchronous duplex
+     * protocol: close() may still revoke a pending operation concurrently.
+     */
+    private void enterOperation() throws IOException {
+        requireOpen();
+        if (!operationClaimed.compareAndSet(false, true)) {
+            throw new IOException(
+                    "concurrent TCP I/O requires an exclusive transport lease");
+        }
+        try {
+            requireOpen();
+        } catch (IOException failure) {
+            operationClaimed.set(false);
+            throw failure;
+        }
+    }
+
+    private void leaveOperation() {
+        operationClaimed.set(false);
     }
 
     private void requireOpen()
