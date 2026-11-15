@@ -14,11 +14,12 @@ import static org.junit.jupiter.api.Assertions.*;
 final class GpuKernelSourceLinkV1Test {
     private static final String KERNEL = """
             pub gpu fnc saxpy(
-                f32 alpha, GpuReadBuffer<f32> x, GpuReadBuffer<f32> y,
-                GpuWriteBuffer<f32> out, int n
-            ): void {
-                const int i = gpu.global_id(0);
-                if i < n { out[i] = alpha * x[i] + y[i]; } fi
+                f32 alpha, GpuArray<f32> x, GpuArray<f32> y,
+                GpuArray<f32> mut out, u64 n
+            ) -> void {
+                const u64 i = gpu.global_id(0);
+                if i >= n { return; }
+                out[i] = alpha * x[i] + y[i];
             }
             """;
 

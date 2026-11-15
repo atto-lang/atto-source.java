@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.SourceUnitDiagnosticException;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.interop.MixedInteropBridge;
@@ -16,6 +17,8 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.FilterInputStream;
 import java.io.OutputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -165,6 +168,28 @@ public final class LinkedProgramRunner {
                 PermissionCheckMode.COMPILE, profile, Set.of(), System.getenv(), out, err);
     }
 
+    /**
+     * Explicit trusted-embedding entrypoint. The service is consumed by the
+     * first OresContext initialized on the calling thread, exactly once.
+     * No class lookup, polyglot bindings or JNI pointers are exposed to guests.
+     * Guest execution still needs a typed compiler/evaluator intrinsic.
+     */
+    public static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            OutputStream out,
+            OutputStream err,
+            WorkflowHostServiceRegistry.Service trustedWorkflowService) throws IOException {
+        return runWithExitStatusInternal(entryFile, policy, permissions,
+                permissionCheckMode, executionProfile, allowedHostClasses,
+                environment, out, err, trustedWorkflowService, null);
+    }
+
     public static RunResult runWithExitStatus(
             Path entryFile,
             IsolatePolicy policy,
@@ -175,6 +200,35 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
+        return runWithExitStatusInternal(entryFile, policy, permissions,
+                permissionCheckMode, executionProfile, allowedHostClasses,
+                environment, out, err, null, null);
+    }
+
+    /** Explicit host input admission; existing embedding APIs retain empty stdin. */
+    public static RunResult runWithInput(
+            Path entryFile, IsolatePolicy policy, RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode, ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses, Map<String, String> environment,
+            InputStream input, OutputStream out, OutputStream err) throws IOException {
+        policy.require(IsolatePolicy.Capability.STDIN, "host stdin admission");
+        return runWithExitStatusInternal(entryFile, policy, permissions,
+                permissionCheckMode, executionProfile, allowedHostClasses,
+                environment, out, err, null, java.util.Objects.requireNonNull(input));
+    }
+
+    private static RunResult runWithExitStatusInternal(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            OutputStream out,
+            OutputStream err,
+            WorkflowHostServiceRegistry.Service trustedWorkflowService,
+            InputStream input) throws IOException {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -219,8 +273,20 @@ public final class LinkedProgramRunner {
                         permissionCheckMode);
                 if (out != null) builder.out(forwardingStream(out));
                 if (err != null) builder.err(forwardingStream(err));
+                if (input != null) builder.in(new FilterInputStream(input) {
+                    @Override public void close() { /* host retains ownership */ }
+                });
 
                 try (Context context = builder.build()) {
+                    // Provision only the intended Oreslang context, before any
+                    // user source is parsed/initialized. A scoped one-shot
+                    // ThreadLocal must never surround mixed-source compilation.
+                    if (trustedWorkflowService != null) {
+                        try (WorkflowHostServiceRegistry.ProvisioningScope ignored =
+                                     WorkflowHostServiceRegistry.provisionForHost(trustedWorkflowService)) {
+                            context.initialize(OresLanguage.ID);
+                        }
+                    }
                     LinkedHashMap<String, Value> parsedUnits = new LinkedHashMap<>();
                     List<String> ids = new ArrayList<>(build.units().keySet());
                     ids.sort(String::compareTo);
@@ -397,7 +463,12 @@ public final class LinkedProgramRunner {
         units.put(id, mixed);
         if (!mixed.hasOresSource()) return;
 
-        Ast.Program program = Parser.parse(mixed.oresSource());
+        final Ast.Program program;
+        try {
+            program = Parser.parse(mixed.oresSource());
+        } catch (IllegalArgumentException malformedSource) {
+            throw new SourceUnitDiagnosticException(id, "", "", malformedSource);
+        }
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
