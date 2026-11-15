@@ -32,7 +32,8 @@ as required by its threat model.
 The companion `AttoDurableAtomicFilesystemLanguageTest` compiles and executes
 linked `.atto` programs through `LinkedProgramRunner`, exercising successful
 replace, subsequent read, reopening, symlink denial, denial-before-metadata,
-file-only WRITE denial (no sibling-temp authority), and directory permissions. A second approved-only JUnit class
+file-only WRITE denial (no sibling-temp authority), symlinked-parent escapes,
+and directory permissions. A second approved-only JUnit class
 (`AttoDurableManifestProcessKillTest`) starts a **child JVM which compiles
 and executes real .atto guest source**, awaits `BinaryFile.append_async`
 and `sync_async` for a small WAL record, then writes the durable manifest,
@@ -52,6 +53,7 @@ adds a `suite=durable_manifest` selection to the existing
 `.github/workflows/private-fs-guest-execution.yml` trusted workflow.
 That workflow remains on the **main ref** and still requires independent
 administrator approval of this feature PR's exact source commit and tree,
+**and its selected suite** (`ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SUITE=durable_manifest`),
 plus a private source-local ephemeral runner. The feature branch itself does
 not alter private-runner admission policy. No guest test execution may be
 claimed before PR #3121 is separately reviewed/merged and the approved
