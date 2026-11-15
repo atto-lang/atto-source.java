@@ -51,6 +51,14 @@ final class ImmediateChannelProbeHardeningTest {
         assertRejectedMoveOnly("irrecoverable_literal.atto");
     }
 
+    @Test
+    void explicitTakeOfCopyValueCannotBeLostOnFailedBooleanProbe() throws Exception {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(fixture("irrecoverable_take_copy.atto"))));
+        assertTrue(error.getMessage().contains("try writech cannot rt take"), error::getMessage);
+    }
+
     private static void assertRejectedMoveOnly(String name) throws Exception {
         String guest = fixture(name);
         IllegalArgumentException error = assertThrows(
