@@ -502,6 +502,18 @@ public final class Ast {
         }
     }
 
+    /**
+     * Explicit actor application-message contracts. Null means the clause was
+     * omitted, NOT that it permits arbitrary messages. Supervisor CONTROL
+     * messages are outside both contracts.
+     */
+    public record ActorMessageContract(TypeRef receives, TypeRef sends) {
+        public static ActorMessageContract unspecified() {
+            return new ActorMessageContract(null, null);
+        }
+        public boolean declared() { return receives != null || sends != null; }
+    }
+
     public record ClassDecl(
             String name,
             Visibility visibility,
@@ -514,9 +526,13 @@ public final class Ast {
             ConstructorDecl constructor,
             List<MethodDecl> methods,
             ActorConcurrency actorConcurrency,
-            List<ProtectedStateField> sealedStateFields) implements Decl {
+            List<ProtectedStateField> sealedStateFields,
+            ActorMessageContract actorMessageContract) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
+            actorMessageContract = java.util.Objects.requireNonNull(actorMessageContract);
+            if (actorKind == ActorKind.NONE && actorMessageContract.declared())
+                throw new IllegalArgumentException("ordinary classes cannot declare receives/sends");
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
             genericParameters = List.copyOf(genericParameters);
@@ -531,6 +547,18 @@ public final class Ast {
                 if (!fields.isEmpty())
                     throw new IllegalArgumentException("sealed actor state cannot mix ordinary actor fields");
             }
+        }
+
+        /** Compatibility for the existing actor sealed-state AST constructor. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency,
+                         List<ProtectedStateField> sealedStateFields) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, sealedStateFields, ActorMessageContract.unspecified());
         }
 
         /** Existing actor concurrency call sites default to no sealed state. */
