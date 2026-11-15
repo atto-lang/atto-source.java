@@ -21,6 +21,11 @@ public final class Parser {
     private final List<Token> tokens;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
+    // A long chain of contextual ownership prefixes must not exhaust the JVM
+    // call stack before the compiler can issue a deterministic parse error.
+    // This budget also covers other recursive unary and parenthesized forms.
+    private static final int MAX_UNARY_NESTING = 128;
+    private int unaryNesting;
     private boolean suppressRefinementOperators;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
     private final java.util.ArrayDeque<java.util.Set<String>> localTypeScopes =
@@ -5115,6 +5120,18 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
+        if (unaryNesting >= MAX_UNARY_NESTING) {
+            throw error(peek(), "unary expression nesting exceeds " + MAX_UNARY_NESTING);
+        }
+        unaryNesting++;
+        try {
+            return parseUnaryBody();
+        } finally {
+            unaryNesting--;
+        }
+    }
+
+    private Ast.Expr parseUnaryBody() {
         if (hasBangOwnershipAlias()) return parseBangOwnershipAlias();
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
