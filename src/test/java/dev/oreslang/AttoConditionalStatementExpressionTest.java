@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -77,6 +79,14 @@ final class AttoConditionalStatementExpressionTest {
                             + control + "; else 7 fi; }"));
             assertTrue(failure.getMessage().contains("must produce a value"), failure::getMessage);
         }
+    }
+
+    @Test
+    void canonicalGuestFixtureParsesAndRuns() throws Exception {
+        String source = Files.readString(
+                Path.of("tests/fixtures/conditional/do-if-nested-loop.atto"));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parseStrictAtto(source)));
+        assertEquals("3", run(source));
     }
 
     @Test
