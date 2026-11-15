@@ -12,6 +12,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -120,6 +122,56 @@ final class TypedImmediateChannelWriteTest {
         assertEquals(7, failed.size());
         assertEquals(1, ch.size());
         assertEquals(0, ch.pendingRegistrations());
+    }
+
+    @Test
+    void hundredTwentyEightConcurrentProbesReturnEveryUnadmittedOwner() throws Exception {
+        final int contenders = 128;
+        ChannelRuntime.Channel<Payload> ch = new ChannelRuntime.Channel<>(1);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger accepted = new AtomicInteger();
+        List<Payload> rejected = java.util.Collections.synchronizedList(new ArrayList<>());
+        var pool = Executors.newFixedThreadPool(16);
+        List<Future<?>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < contenders; i++) {
+                final Payload original = new Payload(i);
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    var result = ch.tryWriteResult(original);
+                    if (result instanceof ChannelRuntime.TryWriteResult.Accepted<?>) {
+                        accepted.incrementAndGet();
+                    } else if (result instanceof ChannelRuntime.TryWriteResult.Full<?> full) {
+                        assertSame(original, full.value(), "rejection must return original owner");
+                        rejected.add(original);
+                    } else {
+                        throw new AssertionError("open channel cannot report Closed");
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            // Future.get propagates every worker exception to JUnit.
+            for (Future<?> future : futures) future.get(5, TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS),
+                    "failed immediate probes must never retain a waiting worker");
+        }
+        assertEquals(1, accepted.get(), "capacity-one channel admits one winner");
+        assertEquals(contenders - 1, rejected.size());
+        assertEquals(0, ch.pendingRegistrations());
+        assertEquals(1, ch.size());
+
+        // A rejected owner is reusable, by identity, on a different channel.
+        ChannelRuntime.Channel<Payload> recovery = new ChannelRuntime.Channel<>(1);
+        for (Payload original : rejected) {
+            assertInstanceOf(ChannelRuntime.TryWriteResult.Accepted.class,
+                    recovery.tryWriteResult(original));
+            assertSame(original, recovery.tryRead().orElseThrow());
+        }
+        assertTrue(recovery.tryRead().isEmpty());
+        assertEquals(0, recovery.pendingRegistrations());
     }
 
     @Test
