@@ -945,6 +945,76 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void twoInfiniteNestedHelperActorsCannotStarveSingleCarrierPeer()
+            throws Exception {
+        // Both same-class actor instances run nested synchronous CPU loops.
+        // On one SHARED carrier, neither may monopolize the scheduler;
+        // STOP/get_done must fence both physical logical continuations.
+        final String setting = "ores.runtime.actor.shared.parallelism";
+        final String before = System.getProperty(setting);
+        System.setProperty(setting, "1");
+        try {
+            String output = runAtto("""
+                    define actor Greedy as
+                      spin_forever(): void {
+                        while true do
+                          let n = 1 + 1;
+                        done
+                      }
+
+                      receive(ActorMail<String> mail): void {
+                        self.send("entered");
+                        self.spin_forever();
+                      }
+                    end
+
+                    define actor Peer as
+                      receive(ActorMail<String> mail): void {
+                        self.send("peer");
+                        self.end();
+                        return;
+                      }
+                    end
+
+                    pub async routine main(): void {
+                      val first = spawn Greedy();
+                      val second = spawn Greedy();
+                      val peer = spawn Peer();
+                      await first.get_ready();
+                      await second.get_ready();
+                      await peer.get_ready();
+
+                      first.send("start");
+                      val first_entered = (await first.outputs.next()).value.unwrap();
+                      // The second helper must be admitted even though the
+                      // first has already entered its infinite CPU loop.
+                      second.send("start");
+                      val second_entered = (await second.outputs.next()).value.unwrap();
+                      peer.send("start");
+                      val reply = (await peer.outputs.next()).value.unwrap();
+                      stdio.stdout.write(reply.value);
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(process.descriptor.source_loop_cooperates);
+
+                      first.stop();
+                      second.stop();
+                      await first.get_done();
+                      await second.get_done();
+                      await peer.get_done();
+                      return;
+                    }
+                    """);
+            assertTrue(output.startsWith("peer|"),
+                    "two nested infinite helpers starved peer actor: " + output);
+            assertTrue(Long.parseLong(output.substring("peer|".length())) > 0,
+                    "a nested synchronous loop did not yield its carrier");
+        } finally {
+            if (before == null) System.clearProperty(setting);
+            else System.setProperty(setting, before);
+        }
+    }
+
+    @Test
     void sustainedMailboxTrafficRemainsOrderedWhileInfiniteActorIsCooperating()
             throws Exception {
         String setting = "ores.runtime.actor.shared.parallelism";
@@ -1058,6 +1128,21 @@ final class SourceLoopSoftPreemptionTest {
                 "the pre-invocation no-yield gate must reject the call: " + rejected);
         assertEquals("", output.toString(StandardCharsets.UTF_8),
                 "a rejected nested source call evaluated an effectful argument");
+    }
+
+    private static String runAtto(String sourceText) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID, sourceText, "two-infinite-actors.atto")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     private static String run(String sourceText) throws Exception {
