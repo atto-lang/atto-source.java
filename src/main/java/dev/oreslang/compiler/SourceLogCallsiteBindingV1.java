@@ -29,11 +29,23 @@ public final class SourceLogCallsiteBindingV1 {
     private record RoutineSelector(String module, String function, int arity) { }
 
     /**
-     * Requires the separate, exact-function-identity routine binding returned
-     * by SourceRoutineBindingV1.bind for this very same parsed Program.
-     * Site entries alone never authorize a routine ID or an executable probe.
+     * The only public entrypoint takes source-controlled routine rows, not an
+     * arbitrary host-assembled Map that could forge a "verified" function ID.
+     * Resolve exact callable identities independently on this same AST before
+     * admitting any static log site. The raw identity map is never accepted
+     * across this public API boundary.
      */
     public static Map<Ast.CallExpr, SourceIdentityV1.Site> bind(
+            Ast.Program program, List<Entry> entries,
+            List<SourceRoutineBindingV1.Entry> checkedRoutines) {
+        Objects.requireNonNull(program, "Java guest compiler AST");
+        Objects.requireNonNull(entries, "source-controlled log site rows");
+        Objects.requireNonNull(checkedRoutines, "source-controlled routine rows");
+        return bindExact(program, entries,
+                SourceRoutineBindingV1.bind(program, checkedRoutines));
+    }
+
+    private static Map<Ast.CallExpr, SourceIdentityV1.Site> bindExact(
             Ast.Program program, List<Entry> entries,
             Map<Ast.FunctionDecl, SourceIdentityV1.Id> checkedRoutines) {
         Objects.requireNonNull(program, "checked native Java frontend AST");
