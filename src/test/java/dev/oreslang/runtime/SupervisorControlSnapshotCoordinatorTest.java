@@ -416,7 +416,7 @@ final class SupervisorControlSnapshotCoordinatorTest {
                     slotsAtDenial.complete(service.activeControlRequests()));
             service.revoke(g);
             assertCode(pending, "DENIED");
-            assertEquals(0, slotsAtDenial.get(5, TimeUnit.SECONDS),
+            assertEquals(0, slotsAtDenial.get(5, TimeUnit.SECONDS).intValue(),
                     "DENIED completion preceded queued slot cleanup");
             assertEquals(0, service.activeControlRequests(),
                     "revoked queued request must release via atomic abandon");
@@ -535,7 +535,7 @@ final class SupervisorControlSnapshotCoordinatorTest {
                     slotsAtClose.complete(service.activeControlRequests()));
             service.close();
             assertCode(pending, "COORDINATOR_CLOSED");
-            assertEquals(0, slotsAtClose.get(5, TimeUnit.SECONDS),
+            assertEquals(0, slotsAtClose.get(5, TimeUnit.SECONDS).intValue(),
                     "CLOSED completion preceded queued slot cleanup");
             assertEquals(0, service.activeControlRequests(),
                     "closing queued request must release via atomic abandon");
