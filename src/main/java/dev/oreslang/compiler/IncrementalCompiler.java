@@ -57,7 +57,12 @@ public final class IncrementalCompiler {
         // neither unit is recursively compiled while discovering the other.
         for (Map.Entry<String, String> entry : normalized.entrySet()) {
             hashes.put(entry.getKey(), digest(entry.getValue()));
-            Ast.Program program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
+            final Ast.Program program;
+            try {
+                program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
+            } catch (IllegalArgumentException invalid) {
+                throw new SourceUnitDiagnosticException(entry.getKey(), "", "", invalid);
+            }
             parsed.put(entry.getKey(), program);
             abiHashes.put(entry.getKey(), abiDigest(program));
         }
@@ -121,8 +126,11 @@ public final class IncrementalCompiler {
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.ownershipClasses(), analysis.shortInferredAliases());
             } catch (IllegalArgumentException invalid) {
-                throw new IllegalArgumentException(
-                        "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
+                Ast.Program sourceProgram = parsed.get(id);
+                String moduleName = sourceProgram.modules().size() == 1
+                        ? sourceProgram.modules().get(0).name() : "";
+                throw new SourceUnitDiagnosticException(
+                        id, moduleName, sourceProgram.namespace(), invalid);
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
@@ -473,6 +481,10 @@ public final class IncrementalCompiler {
             for (Ast.InterfaceMember member : iface.members()) {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
                     memberEntries.add(interfaceFunctionAbi(fn));
+                } else if (member instanceof Ast.InterfaceActorDecl actor) {
+                    // A required nominal actor is contract ABI even though it
+                    // contributes no ordinary module-value member.
+                    memberEntries.add(" contract-actor " + actor.name() + "\n");
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
                     String requirement = iface.moduleContract()
                             ? (field.bindingKind() == null ? "readable"
