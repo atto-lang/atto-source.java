@@ -95,6 +95,8 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind,
             IsolatePolicy policy,
             Object executionDomain,
+            SharedCodeImageStore.CodeImage codeImage,
+            String sourceActorType,
             /*
              * Pointer-free logical identity of this physical actor dispatch.
              * Its ACTOR allocation domain names the cell's heap/arena owner
@@ -236,6 +238,22 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object currentActorExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.executionDomain();
+    }
+
+    /**
+     * VM-internal source-code identity for a physically admitted actor turn.
+     * Only the runtime's installed execution frame can supply this image:
+     * callers cannot choose a different actor declaration or a lookalike AST.
+     */
+    static SharedCodeImageStore.CodeImage currentActorCodeImage() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.codeImage();
+    }
+
+    /** Compiler-only actor declaration name admitted for this source turn. */
+    static String currentSourceActorType() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.sourceActorType();
     }
 
     /**
@@ -2568,7 +2586,25 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) {
+            // Initial actor-task admission runs under the actor's single-writer
+            // mailbox turn. When the reserved continuation lane is already
+            // exhausted, settle THIS task with the precise capacity failure
+            // before fail-stop cancels the existing admitted scheduler tasks.
+            // Otherwise termination can race scheduler admission and replace
+            // the rejected Future's outcome with generic cancellation.
+            if (cell.sourceContinuationQuotaExhausted()) {
+                RejectedExecutionException rejected = new RejectedExecutionException(
+                        "actor source continuation mailbox capacity exhausted for "
+                                + cell.ref.id());
+                OresFuture<T> refusal = OresFuture.failed(rejected);
+                cell.fail(new IllegalStateException(
+                        "actor internal continuation queue overflow (source task cleanup) for "
+                                + cell.ref.id(), rejected));
+                return refusal;
+            }
+            return cell.sourceScheduler().start(task);
+        }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -3134,6 +3170,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
+         * Immediate mailbox admission without registering a producer waiter.
+         * A full USER mailbox returns false. All other send errors propagate.
+         */
+        public boolean trySend(M message) {
+            return ActorRuntime.this.trySend(this, message);
+        }
+
+        /**
          * Await mailbox admission without parking an actor carrier. Completion
          * means the immutable message envelope owns a mailbox slot; it is not a
          * handler-processing acknowledgement. Cancellation before admission
@@ -3231,6 +3275,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public void send(M message) { ref.send(message); }
+
+        public boolean trySend(M message) { return ref.trySend(message); }
 
         public OresFuture<Void> sendAsync(M message) { return ref.sendAsync(message); }
 
@@ -6880,6 +6926,20 @@ public final class ActorRuntime implements AutoCloseable {
 
 
     /**
+     * Immediate admission probe. Only a full mailbox returns false.
+     * No pending writer is registered, no actor carrier is parked, and other
+     * errors retain the same typed diagnostics as send().
+     */
+    public <M> boolean trySend(ActorRef<M> ref, M message) {
+        try {
+            send(ref, message);
+            return true;
+        } catch (ActorMailboxFullException full) {
+            return false;
+        }
+    }
+
+    /**
      * Awaitable actor-message admission with bounded producer retention.
      *
      * <p>The fast path is the existing fail-fast send. When the USER mailbox is
@@ -9155,6 +9215,19 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * A fail-closed preflight for source-task admission from a running
+         * actor turn. It does not reserve a slot: the canonical reservation
+         * remains in enqueueSourceTaskContinuation(), which also handles
+         * external Future completions racing this initial admission.
+         */
+        private boolean sourceContinuationQuotaExhausted() {
+            synchronized (mailboxAccountingLock) {
+                return queuedContinuations >= INTERNAL_CONTINUATION_SLOTS
+                        || queuedMessages >= mailboxCapacityWithControlHeadroom();
+            }
+        }
+
         private boolean reserveContinuationSlot() {
             synchronized (mailboxAccountingLock) {
                 if (queuedContinuations >= INTERNAL_CONTINUATION_SLOTS) return false;
@@ -9511,7 +9584,18 @@ public final class ActorRuntime implements AutoCloseable {
                 recordFinalizationFailure(failure);
             }
             staticSelectCursors.clear();
+            // A compiler-lowered sealed region may only be reclaimed after
+            // source tasks and their cleanup reached physical quiescence above.
+            // Do not release live state on the first STOP request: closing
+            // the loan arbiter fences future reads/writes and the region
+            // retains its scalar storage until every finally releases.
+            ActorOwnedGuestState retiringState = codeActorState;
             codeActorState = null;
+            if (retiringState instanceof SealedActorStateRegion sealedState) {
+                try { sealedState.close(); }
+                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+                catch (Throwable failure) { recordFinalizationFailure(failure); }
+            }
             try { outputStream.close(ref.terminationCause.get()); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
             catch (Throwable failure) {
@@ -9925,6 +10009,7 @@ public final class ActorRuntime implements AutoCloseable {
             // carrier exactly as clean as the nested-admission check does.
             ActorExecutionContext entered = new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain,
+                    codeImage, codeActorType,
                     mintActorExecutionContext(storageActorOrdinal, ref.generation()));
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(entered);
@@ -10272,6 +10357,7 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable cancellationSnapshot;
             boolean scheduleTeardown;
             Runnable failAsyncSendWaiters;
+            SealedActorStateRegion sealedRegionToFence;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -10287,6 +10373,11 @@ public final class ActorRuntime implements AutoCloseable {
                 // STOP is single-shot. Reentrant supervisor/host requests must
                 // not re-close a channel or reset the cleanup admission fence.
                 if (!stopped.compareAndSet(false, true)) return;
+                // Capture only the sealed compiler-owned region. This is a
+                // non-guest STOP fence; do not hold lifecycleLock while
+                // closing the region's loan arbiter.
+                sealedRegionToFence = codeActorState instanceof SealedActorStateRegion state
+                        ? state : null;
                 sealing = true;
                 // STOP invalidates ordinary wake receipts before draining the
                 // queue; already-admitted SourceTask cleanup retains authority.
@@ -10328,6 +10419,16 @@ public final class ActorRuntime implements AutoCloseable {
                 scheduleTeardown = gracefulTeardownPending
                         && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
+            }
+            // STOP fences new critical loans and existing views, but cannot
+            // free backing scalars yet, even if zero loans are currently
+            // active. The source scheduler must physically quiesce first.
+            // Finalization calls close() after cleanup and loan release.
+            // Never take the region/loan monitor under lifecycleLock.
+            if (sealedRegionToFence != null) {
+                try { sealedRegionToFence.sealOnStop(); }
+                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+                catch (Throwable failure) { recordFinalizationFailure(failure); }
             }
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish pending-producer failure only after lifecycleLock and
