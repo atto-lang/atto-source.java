@@ -1,0 +1,1 @@
+pub fnc main(): int { const int n = 1; return match<int> n over on 0 -> 0 on 1 -> 42 default -> 0 end; }

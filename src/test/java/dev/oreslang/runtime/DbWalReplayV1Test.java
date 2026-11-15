@@ -13,6 +13,13 @@ import static org.junit.jupiter.api.Assertions.*;
 final class DbWalReplayV1Test {
     @TempDir Path root;
 
+    // The WAL requires a physical, non-aliased directory; on macOS the JUnit
+    // temp root lives below the /var -> /private/var system alias.
+    @org.junit.jupiter.api.BeforeEach
+    void usePhysicalTempRoot() throws java.io.IOException {
+        root = root.toRealPath();
+    }
+
     private static void u16(byte[] b, int p, int v) {
         b[p] = (byte) v; b[p + 1] = (byte) (v >>> 8);
     }

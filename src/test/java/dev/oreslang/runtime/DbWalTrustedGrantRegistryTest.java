@@ -17,6 +17,13 @@ import static org.junit.jupiter.api.Assertions.*;
 final class DbWalTrustedGrantRegistryTest {
     @TempDir Path root;
 
+    // The WAL requires a physical, non-aliased directory; on macOS the JUnit
+    // temp root lives below the /var -> /private/var system alias.
+    @org.junit.jupiter.api.BeforeEach
+    void usePhysicalTempRoot() throws java.io.IOException {
+        root = root.toRealPath();
+    }
+
     @Test void abandonedOpeningReleasesOnlyAfterTrustedNonstartOrNoResource()
             throws Exception {
         try (var runtime = new ActorRuntime()) {

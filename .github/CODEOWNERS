@@ -8,6 +8,7 @@
 # Critical build and CI control plane. Broad ownership complements the
 # security-specific entries above; V3 still requires exact reviewed governance authority.
 /.github/workflows/ @ORESoftware
+/docs/security/ @ORESoftware
 /scripts/ @ORESoftware
 /pom.xml @ORESoftware
 
@@ -17,6 +18,25 @@
 /stdlib/ @ORESoftware
 /integration/ @ORESoftware
 /.oreslang/ @ORESoftware
+
+# Security ownership for exact-tree verification and source-free admission regressions.
+/tools/verify-exact-source-tree.sh @ORESoftware
+/tools/test-verify-exact-source-tree.sh @ORESoftware
+/tests/private-ci-v3-codeowners.test.mjs @ORESoftware
+
+# The exact-tree verifier and its test gate require independent security ownership.
+# Keep these immediately before the final seven exporter rules so no later
+# broad CODEOWNERS pattern can silently override them.
+/tools/verify-exact-source-tree.sh @ORESoftware
+/tools/test-verify-exact-source-tree.sh @ORESoftware
+# Formal proofs, guest tests, packaging, diagnostics and CLI permission configuration.
+/formal/ @ORESoftware
+/packaging/ @ORESoftware
+/tests/ @ORESoftware
+/tools/ @ORESoftware
+/verification/ @ORESoftware
+/docs/security/ @ORESoftware
+/.cli-flags.toml @ORESoftware
 
 # Must remain the final CODEOWNERS rules: privileged private-source exporter
 # verifies this exact order and sole independent @ORESoftware ownership.
