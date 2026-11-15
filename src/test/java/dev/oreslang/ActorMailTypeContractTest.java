@@ -128,6 +128,36 @@ final class ActorMailTypeContractTest {
     }
 
     @Test
+    void actorRefsCrossMailboxesAsCapabilitiesButSmartPointersDoNotYet() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Registry as
+                  receive(ActorMail<ActorRef<Registry>> mail): void {
+                    return;
+                  }
+                end
+
+                pub routine main(): void {
+                  val registry = spawn Registry();
+                  registry.send(registry);
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException boxed = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<Box<int>> mail): void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(boxed.getMessage().contains("Box")
+                        && boxed.getMessage().contains("actor boundary"),
+                boxed.getMessage());
+    }
+
+    @Test
     void receiveCannotBeInvokedLikeAnOrdinaryActorMethod() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
@@ -142,4 +172,101 @@ final class ActorMailTypeContractTest {
         assertTrue(failure.getMessage().contains("reserved actor lifecycle hook"),
                 failure.getMessage());
     }
+
+    @Test
+    void actorRefTrySendAndSendAsyncUseTheSameTypedMailboxDomain() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<String> mail): void { return; }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  val bool accepted = worker.try_send("hello");
+                  val Future<void> pending = worker.send_async("world");
+                  await pending;
+                  return;
+                }
+                """)));
+
+        for (String method : java.util.List.of("try_send", "send_async")) {
+            IllegalArgumentException mismatch = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define actor Worker as
+                              receive(ActorMail<String> mail): void { return; }
+                            end
+                            pub routine main(): void {
+                              val worker = spawn Worker();
+                              worker.METHOD(42);
+                              return;
+                            }
+                            """.replace("METHOD", method))));
+            assertTrue(mismatch.getMessage().contains("ActorRef." + method + " mailbox value"),
+                    mismatch.getMessage());
+        }
+    }
+
+
+    @Test
+    void immediateAndAwaitableActorSendMethodsCannotEscapeTheirCheckedCallSites() {
+        for (String method : java.util.List.of("try_send", "send_async")) {
+            IllegalArgumentException rejection = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define actor Worker as
+                              receive(ActorMail<int> mail): void { return; }
+                            end
+                            pub routine main(): void {
+                              val worker = spawn Worker();
+                              val escaped = worker.METHOD;
+                              return;
+                            }
+                            """.replace("METHOD", method))));
+            assertTrue(rejection.getMessage().contains("direct-call-only"),
+                    rejection.getMessage());
+        }
+    }
+
+
+    @Test
+    void builtinMailboxMetadataIsCopyButMutableNonCopyPayloadAliasesRemainRejected() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<List<int>> mail): void {
+                            val List<int> leaked_mutable_alias = mail.value;
+                            return;
+                          }
+                        end
+                        """)));
+        // This must fail specifically at the ownership projection gate.
+        // Accepting an unrelated sendability/parser rejection would falsely
+        // certify that a mutable reference cannot be laundered from ActorMail.
+        assertTrue(failure.getMessage().contains("mutable projected alias"),
+                failure.getMessage());
+    }
+
+
+    @Test
+    void vmActorMailboxProtocolNamesCannotBeShadowedByClassesOrTypeAliases() {
+        for (String name : java.util.List.of(
+                "ActorMail", "ActorOutput", "ActorOutputStream",
+                "ActorRef", "ActorId", "ActorKind")) {
+            IllegalArgumentException nominal = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "define class " + name + " as end")));
+            assertTrue(nominal.getMessage().contains("reserved actor protocol type"),
+                    name + ": " + nominal.getMessage());
+
+            IllegalArgumentException alias = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "type " + name + " = int;")));
+            assertTrue(alias.getMessage().contains("reserved actor protocol type"),
+                    name + ": " + alias.getMessage());
+        }
+    }
+
 }

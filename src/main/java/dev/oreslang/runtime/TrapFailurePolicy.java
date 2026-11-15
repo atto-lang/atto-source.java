@@ -62,6 +62,11 @@ public final class TrapFailurePolicy {
             Throwable cause = current.getCause();
             if (cause != null) pending.addLast(cause);
             for (Throwable suppressed : current.getSuppressed()) {
+                // Trusted source-boundary markers are stackless diagnostics, not
+                // additional throwable causes or exceptional control effects.
+                // Counting them could turn an ordinary throw into a non-trappable
+                // failure merely because source tracing was enabled.
+                if (suppressed instanceof SourceBoundaryTrace) continue;
                 pending.addLast(suppressed);
                 if (pending.size() + visited.size() > MAX_FAILURE_NODES) return false;
             }

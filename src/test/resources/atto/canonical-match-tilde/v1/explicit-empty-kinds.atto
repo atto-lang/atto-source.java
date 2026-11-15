@@ -1,0 +1,1 @@
+pub fnc main(): int { const r = ~record(); const Map<String,int> m = ~map(); return 42; }

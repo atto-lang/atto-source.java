@@ -1,0 +1,3 @@
+fnc read(): Map<string, int> {
+    return ~map();
+}
