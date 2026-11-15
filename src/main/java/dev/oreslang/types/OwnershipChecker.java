@@ -3267,10 +3267,27 @@ public final class OwnershipChecker {
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
-        if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
+        if ((isBorrowValue(argument) && !isImplicitClassReceiver(arg, scope))
+                || containsBorrowType(argument.type)) {
             throw error(callable + " argument " + position
                     + " cannot consume a borrowed value as an owned parameter");
         }
+    }
+
+    /**
+     * Main's class-method contract: passing the implicit (non-borrow-typed)
+     * class receiver explicitly, e.g. self.foo(self, 5) into 'self other', is
+     * an ordinary argument (InlineSelfReceiverArityTest). Explicit borrowed
+     * receivers and actor self stay rejected.
+     */
+    private boolean isImplicitClassReceiver(Ast.Expr arg, Scope scope) {
+        if (!(arg instanceof Ast.NameExpr name) || !name.name().equals("self")) return false;
+        VarState state = scope.lookup("self");
+        return state != null
+                && state.type != null
+                && !state.type.isBorrow()
+                && state.kind == ValueKind.IMM_BORROW
+                && !isActorConfinedBorrow(state);
     }
 
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
