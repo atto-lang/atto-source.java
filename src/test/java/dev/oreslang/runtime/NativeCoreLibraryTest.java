@@ -234,7 +234,7 @@ final class NativeCoreLibraryTest {
                 CoreLibrarySources.source("std/core.ores"));
         assertTrue(CoreLibrarySources.source("std/testing").contains("define module testing"));
         assertTrue(CoreLibrarySources.source("std/compute").contains("define module compute"));
-        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("compute.ores"));
+        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("compute.atto"));
         assertFalse(CoreLibrarySources.packagedSourcePaths().contains("phantom.ores"));
     }
 }
