@@ -5,57 +5,57 @@ import fnc valid_tensor_view_2d, valid_contiguous_tensor_2d, can_broadcast_2d fr
 
 pub routine main(): void {
   val TensorView2D dense = new TensorView2D(3, 4, 4, 1, 8, 96, true);
-  if !valid_tensor_view_2d(&dense); do
+  if !valid_tensor_view_2d(rt borrow dense); do
     rt fail("valid rank-2 dense layout rejected");
   fi
-  if !valid_contiguous_tensor_2d(&dense); do
+  if !valid_contiguous_tensor_2d(rt borrow dense); do
     rt fail("valid exact rank-2 contiguous layout rejected");
   fi
 
   // Exact contiguous capacity must equal, not merely exceed, element size.
   val TensorView2D one_exact = new TensorView2D(1, 1, 1, 1, 8, 8, true);
-  if !valid_contiguous_tensor_2d(&one_exact); do
+  if !valid_contiguous_tensor_2d(rt borrow one_exact); do
     rt fail("exact 1x1 capacity rejected");
   fi
   val TensorView2D one_oversized = new TensorView2D(1, 1, 1, 1, 8, 9, true);
-  if valid_contiguous_tensor_2d(&one_oversized); do
+  if valid_contiguous_tensor_2d(rt borrow one_oversized); do
     rt fail("oversized 1x1 incorrectly accepted as exact contiguous");
   fi
 
   val TensorView2D padded = new TensorView2D(3, 4, 8, 1, 4, 80, true);
-  if !valid_tensor_view_2d(&padded); do
+  if !valid_tensor_view_2d(rt borrow padded); do
     rt fail("valid padded row-major layout rejected");
   fi
-  if valid_contiguous_tensor_2d(&padded); do
+  if valid_contiguous_tensor_2d(rt borrow padded); do
     rt fail("padded tensor falsely accepted as exact contiguous");
   fi
 
   val TensorView2D broadcast = new TensorView2D(3, 4, 0, 0, 8, 8, false);
-  if !valid_tensor_view_2d(&broadcast); do
+  if !valid_tensor_view_2d(rt borrow broadcast); do
     rt fail("readonly broadcast rejected");
   fi
   val TensorView2D bad_alias = new TensorView2D(3, 4, 0, 0, 8, 8, true);
-  if valid_tensor_view_2d(&bad_alias); do
+  if valid_tensor_view_2d(rt borrow bad_alias); do
     rt fail("mutable broadcast incorrectly admitted");
   fi
   val TensorView2D alias_overlap = new TensorView2D(2, 2, 1, 1, 8, 24, true);
-  if valid_tensor_view_2d(&alias_overlap); do
+  if valid_tensor_view_2d(rt borrow alias_overlap); do
     rt fail("overlapping mutable view incorrectly admitted");
   fi
   val TensorView2D too_small = new TensorView2D(3, 4, 4, 1, 8, 95, true);
-  if valid_tensor_view_2d(&too_small); do
+  if valid_tensor_view_2d(rt borrow too_small); do
     rt fail("insufficient bytes incorrectly admitted");
   fi
   val TensorView2D overflow = new TensorView2D(9223372036854775807, 3, 2, 1, 8, 96, true);
-  if valid_tensor_view_2d(&overflow); do
+  if valid_tensor_view_2d(rt borrow overflow); do
     rt fail("i64 stride arithmetic overflow incorrectly admitted");
   fi
   val TensorView2D zero = new TensorView2D(0, 4, 4, 1, 8, 0, true);
-  if !valid_contiguous_tensor_2d(&zero); do
+  if !valid_contiguous_tensor_2d(rt borrow zero); do
     rt fail("zero-row tensor rejected");
   fi
   val TensorView2D negative = new TensorView2D(-1, 4, 4, 1, 8, 96, true);
-  if valid_tensor_view_2d(&negative); do
+  if valid_tensor_view_2d(rt borrow negative); do
     rt fail("negative dimension incorrectly admitted");
   fi
   if !can_broadcast_2d(3, 1, 1, 4); do

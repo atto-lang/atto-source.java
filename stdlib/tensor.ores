@@ -15,7 +15,7 @@ define module tensor as
   // This is a rank-2 non-negative-stride view, not a general tensor allocator.
   // Writable views use a conservative row-major no-overlap sufficient proof.
   // Read-only views may broadcast with zero strides.
-  pub fnc valid_tensor_view_2d(&TensorView2D view): bool {
+  pub fnc valid_tensor_view_2d(borrow TensorView2D view): bool {
     if view.rows < 0 || view.cols < 0; do
       return false;
     fi
@@ -77,8 +77,8 @@ define module tensor as
 
   // An exact row-major, canonical, owned-layout descriptor. Byte capacity
   // must match the logical matrix size exactly; no padding or hidden bytes.
-  pub fnc valid_contiguous_tensor_2d(&TensorView2D view): bool {
-    if !valid_tensor_view_2d(&view); do
+  pub fnc valid_contiguous_tensor_2d(borrow TensorView2D view): bool {
+    if !valid_tensor_view_2d(rt borrow view); do
       return false;
     fi
     if view.col_stride != 1 || view.row_stride != view.cols; do
