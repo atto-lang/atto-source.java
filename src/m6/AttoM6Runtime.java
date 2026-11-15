@@ -68,6 +68,7 @@ public final class AttoM6Runtime implements AutoCloseable {
     private final Thread reactor;
     private final Selector selector;
     private final ArrayBlockingQueue<Runnable> nioCommands = new ArrayBlockingQueue<>(128);
+    private static final int MAX_REGISTRATIONS = 512;
     // Only the reactor thread accesses these registration objects / selection keys.
     private final Map<SelectableChannel, Registration> registrations = new HashMap<>();
     private final AtomicLong ioAdmitted = new AtomicLong();
@@ -289,6 +290,8 @@ public final class AttoM6Runtime implements AutoCloseable {
         Runnable request = () -> {
             try {
                 if (registrations.containsKey(channel)) throw new IllegalStateException("already registered");
+                if (registrations.size() >= MAX_REGISTRATIONS)
+                    throw new IllegalStateException("NIO registration limit reached");
                 synchronized (gate) {
                     Actor state = resolve(actor);
                     if (state == null || !state.accepting) throw new IllegalStateException("actor stopping");
