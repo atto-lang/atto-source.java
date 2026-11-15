@@ -1,0 +1,81 @@
+name: Source actor CPU-loop fairness (compiled .atto guest)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java'
+      - '.github/workflows/source-actor-loop-fairness-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-actor-loop-fairness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR commit without retained token
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Record source tree and assert exact checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          printf 'SOURCE_HEAD=%s\nSOURCE_TREE=%s\n' \
+            "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')"
+          git hash-object src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java
+      - name: Configure GraalVM JDK 25 for JVM guest execution
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Execute all compiled source-loop guest JUnit scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          timeout --signal=TERM --kill-after=10s 900s \
+            mvn -B -ntp -Dtest=SourceLoopSoftPreemptionTest \
+            -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test \
+            | tee target/source-loop-fairness-junit.log
+      - name: Require the entire expected suite, no skips and real XML receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_file=src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java
+          report=target/surefire-reports/TEST-dev.oreslang.SourceLoopSoftPreemptionTest.xml
+          test -s "$report" || { echo 'NO_GUEST_JUNIT_XML_RECEIPT' >&2; exit 1; }
+          expected="$(grep -Ec '^[[:space:]]*@Test' "$source_file")"
+          [[ "$expected" =~ ^[1-9][0-9]*$ ]] && test "$expected" -ge 31
+          grep -Fq "tests=\"$expected\"" "$report" || {
+            echo "GUEST_JUNIT_COUNT_MISMATCH expected=$expected" >&2
+            exit 1
+          }
+          if grep -Eq '(<skipped|<failure|<error|skipped="[1-9]|failures="[1-9]|errors="[1-9])' "$report"; then
+            echo 'GUEST_JUNIT_NOT_CLEAN' >&2
+            exit 1
+          fi
+          grep -Fq 'name="twoInfiniteNestedHelperActorsCannotStarveSingleCarrierPeer"' "$report" || {
+            echo 'NESTED_INFINITE_ACTOR_TEST_NOT_EXECUTED' >&2
+            exit 1
+          }
+          printf 'JAVA_ACTOR_LOOP_GUEST_JVM_PASS executed=%s source_sha=%s\n' \
+            "$expected" "$(git rev-parse HEAD)"
+      - name: Evidence boundary (not a native-image/WCET claim)
+        if: always()
+        shell: bash
+        run: |
+          echo 'GRAALVM_JVM_SOURCE_GUEST_ONLY'
+          echo 'GRAAL_NATIVE_IMAGE_NOT_EXECUTED'
+          echo 'HARD_RT_NOT_CERTIFIED'
+          echo 'FIVE_BACKEND_PARITY_NOT_CERTIFIED'
