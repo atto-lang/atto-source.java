@@ -49,7 +49,7 @@ jobs:
           java -version
           mvn -version
           mvn -B -ntp -DfailIfNoTests=true \
-            -Dtest=AttoSourceAdmissionTest,AttoMainAdmissionTest,OresMainSourceBudgetTest,OresProjectConfigTest,AttoCacheShapeAdmissionTest,ProjectManifestImportTest,AotDispatchPlannerV1Test,CheckedDispatchPlanIntegrationV1Test,AotDispatchGuestV1Test,DispatchV1CorpusCompilerTest,MethodOverloadTest,ArityDispatchTableRuntimeTest,ArityOverloadAotTest \
+            -Dtest=AttoMqGuardedActorAdmissionTest,AttoSourceAdmissionTest,AttoMainAdmissionTest,OresMainSourceBudgetTest,OresProjectConfigTest,AttoCacheShapeAdmissionTest,ProjectManifestImportTest,AotDispatchPlannerV1Test,CheckedDispatchPlanIntegrationV1Test,AotDispatchGuestV1Test,DispatchV1CorpusCompilerTest,MethodOverloadTest,ArityDispatchTableRuntimeTest,ArityOverloadAotTest \
             clean test
       - name: Require nonempty unskipped Surefire reports
         if: always()
@@ -58,6 +58,7 @@ jobs:
           set -euo pipefail
           test -d target/surefire-reports
           for suite in \
+            dev.oreslang.AttoMqGuardedActorAdmissionTest \
             dev.oreslang.AttoSourceAdmissionTest \
             dev.oreslang.launcher.AttoMainAdmissionTest \
             dev.oreslang.launcher.OresMainSourceBudgetTest \
@@ -89,6 +90,25 @@ jobs:
             fi
             printf 'RECEIPT junit_suite=%s report=%s\n' "$suite" "$report"
           done
+          # Guarded queue owner tests are source/parser admission only. They must
+          # execute, not merely compile or be omitted by -Dtest filtering.
+          actor_report=target/surefire-reports/TEST-dev.oreslang.AttoMqGuardedActorAdmissionTest.xml
+          test -s "$actor_report"
+          for actor_case in \
+            serialActorTypedLiteralStateParsesButLoweringRemainsDisabled \
+            oldColonFieldsCannotPassForSealedActorState \
+            negativeSentinelIsNotAnApprovedScalarStateLiteral \
+            duplicateSealedStateContainersAreRejected \
+            duplicateSealedStateFieldNamesAreRejected \
+            sealedStateMustUseTheSupportedScalarTypes \
+            sealedStateInitializersMustMatchTheDeclaredType \
+            sealedStateCannotMixOrdinaryActorFields \
+            untrustedActorCodeCannotDefineHandleStateIntrinsic \
+            actorLocalPanicHandlerCannotInterceptSupervisorControl \
+            sealedStateFieldBudgetIsEnforcedAtParseTime; do
+            grep -Fq "name=\"$actor_case\"" "$actor_report"
+          done
+          echo 'RECEIPT attomq_guarded_actor_parser_negative_cases=11 lowering=DENIED'
           dispatch_report=target/surefire-reports/TEST-dev.oreslang.AotDispatchGuestV1Test.xml
           # Two named methods must be present: JIT and JIT-disabled.
           # A suite with only one executed method is not equivalent evidence.
