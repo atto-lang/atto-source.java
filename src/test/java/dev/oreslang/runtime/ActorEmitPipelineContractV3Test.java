@@ -78,6 +78,32 @@ final class ActorEmitPipelineContractV3Test {
                 () -> actor("a", "🌍".repeat(65), "int", "int"));
     }
 
+    @Test void strictUtf8IdentityBoundaryMatchesNativeAndDotNet() {
+        // 256 ASCII characters and 64 four-byte Unicode scalars are valid.
+        assertEquals(1, validate(List.of(
+                actor("x".repeat(256), "Parse", "int", "bool"),
+                actor("sink", "Sink", "bool"))).size());
+        assertEquals(1, validate(List.of(
+                actor("🌍".repeat(64), "Parse", "int", "bool"),
+                actor("sink", "Sink", "bool"))).size());
+
+        // The 257th byte, NUL and malformed UTF-16 remain rejected.
+        assertThrows(IllegalArgumentException.class,
+                () -> actor("x".repeat(257), "Parse", "int", "bool"));
+        assertThrows(IllegalArgumentException.class,
+                () -> actor("🌍".repeat(65), "Parse", "int", "bool"));
+        assertThrows(IllegalArgumentException.class,
+                () -> actor("abc\\0def", "Parse", "int", "bool"));
+        assertThrows(IllegalArgumentException.class,
+                () -> actor("x\\uD800", "Parse", "int", "bool"));
+
+        // A hostile million-character identifier must be rejected before
+        // allocating an encoder buffer proportional to the input length.
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> actor("x".repeat(1_000_000), "Parse", "int", "bool"));
+        assertTrue(failure.getMessage().startsWith("E_ACTOR_PIPE_IDENTITY:"));
+    }
+
     @Test void topologyCannotExceedTenantBudgetAndReusedArrayIsNotAuthoritative() {
         rejected(List.of(actor("a", "A", "int", "int")),
                 "E_ACTOR_PIPE_LIMIT");
