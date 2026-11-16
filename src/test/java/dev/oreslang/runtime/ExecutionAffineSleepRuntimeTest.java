@@ -206,6 +206,35 @@ final class ExecutionAffineSleepRuntimeTest {
     }
 
     @Test
+    void cancellationVersusZeroDeadlineNeverLeaksTimersOrDuplicatesResume() throws Exception {
+        try (OresTimers timers = new OresTimers(); OresScheduler scheduler = new OresScheduler(2)) {
+            int before = OresTimers.availableGlobalTimerSlots();
+            for (int i = 0; i < 64; i++) {
+                AtomicInteger turns = new AtomicInteger();
+                TaskHandle<Integer> handle = scheduler.startTracked(resume -> {
+                    int step = turns.getAndIncrement();
+                    if (step == 0) return OresScheduler.sleepNanos(timers, 0);
+                    if (step == 1) {
+                        if (resume.failure() != null) throw new IllegalStateException(
+                                "ordinary cancellation resumed user code", resume.failure());
+                        return OresScheduler.done(42);
+                    }
+                    throw new AssertionError("same continuation resumed more than once");
+                });
+                handle.cancel("racing zero-duration timer");
+                TaskHandle.TaskOutcome<Integer> outcome = handle.getDone()
+                        .get(5, TimeUnit.SECONDS);
+                assertTrue(outcome instanceof TaskHandle.Success<?>
+                        || outcome instanceof TaskHandle.Cancelled<?>,
+                        "sleep cancellation race failed unexpectedly: " + outcome);
+                assertTrue(turns.get() <= 2, "duplicate resume executed");
+            }
+            eventually(() -> timers.activeTimerCount() == 0);
+            assertEquals(before, OresTimers.availableGlobalTimerSlots());
+        }
+    }
+
+    @Test
     void standaloneSleepStepRequiresExecutionContext() {
         try (OresTimers timers = new OresTimers()) {
             assertThrows(IllegalStateException.class,
