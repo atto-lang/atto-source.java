@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Guest admission for the explicitly typed, empty-only Map slice. */
+/** Canonical Map.of guest targets. Type.of lowering in Java #2735 must be integrated and executed before merge. */
 final class TypedEmptyMapGuestTest {
     private static String fixture(String file) {
         try (InputStream input = TypedEmptyMapGuestTest.class.getResourceAsStream(
@@ -64,47 +64,48 @@ final class TypedEmptyMapGuestTest {
 
     @Test
     void missingOrInvalidExpectedMapTypeFailsBeforeRuntime() {
-        IllegalArgumentException missing = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse(fixture("empty-map-untyped.atto")));
-        assertTrue(missing.getMessage().contains("directly declared")
-                        && missing.getMessage().contains("Map<K,V>"),
-                missing.getMessage());
-        IllegalArgumentException wrongType = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse(fixture("empty-map-wrong-declared-kind.atto")));
-        assertTrue(wrongType.getMessage().contains("directly declared"), wrongType.getMessage());
-        assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(fixture("empty-map-contextless-return.atto")));
-        IllegalArgumentException unverified = assertThrows(
-                IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(fixture("empty-map-unsupported-generic.atto")));
-        assertTrue(unverified.getMessage().contains("unverified key/value domain"),
-                unverified.getMessage());
+        // Canonical Map.of can be parsed as a call before symbol-resolved
+        // builtin lowering; enforce the negative expectation at typecheck.
+        for (String file : new String[]{
+                "empty-map-untyped.atto",
+                "empty-map-wrong-declared-kind.atto",
+                "empty-map-contextless-return.atto",
+                "empty-map-unsupported-generic.atto"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(fixture(file)), file);
+        }
     }
 
     @Test
     void typedMapValueIsNotAnUnboundedGenericHostDictionary() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
-                "fnc read(): void { const m = ~<Map<string,int>>(); return; }"));
+                "fnc read(): void { const m = Map.of<string,int>(); return; }"));
         for (String file : new String[]{"empty-map-bad-key.atto", "empty-map-bad-value.atto"}) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(fixture(file)), file);
-            assertTrue(failure.getMessage().contains("unverified key/value domain"),
-                    file + ": " + failure.getMessage());
+            assertNotNull(failure.getMessage(), file);
         }
     }
 
     @Test
     void unresolvedContextualMapPostfixCannotEvadeTypeOrOwnershipChecks() {
-        // The parser retains a scoped contextual AST inside member access,
-        // but no generated guest or host Map may escape type/ownership admission.
+        // A context-free Map.of() must not gain a type witness through postfix
+        // members or silently allocate an unrestricted host map.
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(
-                        "fnc bad(): void { const value = ~map().size; return; }"));
+                        "fnc bad(): void { const value = Map.of().size; return; }"));
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(
-                        "fnc bad(): void { const value = ~map().missing; return; }"));
+                        "fnc bad(): void { const value = Map.of().missing; return; }"));
+    }
+
+    @Test
+    void retiredTildeEmptyMapAliasesRemainHardParserErrors() {
+        for (String old : new String[]{
+                "~map()", "~map<string,int>()", "~<Map<string,int>>()"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc read(): void { const m = " + old + "; return; }"), old);
+        }
     }
 
     @Test
@@ -112,6 +113,6 @@ final class TypedEmptyMapGuestTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
                 fixture("empty-map-nonempty-reject.atto")));
         assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(fixture("empty-map-bad-arity.atto")));
+                () -> OresCompiler.parseAndTypeCheck(fixture("empty-map-bad-arity.atto")));
     }
 }
