@@ -130,6 +130,81 @@ final class DistinctPipeSyntaxTest {
         assertTrue(failure.getMessage().contains("callable name"), failure::getMessage);
     }
 
+    @Test
+    void reverseApplicationIsRightAssociativeAndExecutesGuestCalls() throws Exception {
+        assertEquals("4242", run("""
+                pub fnc increment(int x): int { return x + 1; }
+                pub fnc twice(int x): int { return x * 2; }
+                pub routine main(): void {
+                    val int forward = 20 |> increment |> twice;
+                    val int reverse = twice <| increment <| 20;
+                    stdio.stdout.write(forward);
+                    stdio.stdout.write(reverse);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void reverseApplicationKeepsNamedCallArgumentsInFrontOfTheValue() throws Exception {
+        assertEquals("21", run("""
+                pub fnc add(int x, int delta): int { return x + delta; }
+                pub fnc triple(int x): int { return x * 3; }
+                pub routine main(): void {
+                    val int result = triple <| add(4) <| 3;
+                    stdio.stdout.write(result);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void reverseApplicationLexesAsOneTokenWithoutChangingComparisonOrLambdaBar() {
+        var lexed = new Lexer("f <| x; x <= 5; x < 7; x |> f; |n| -> n;").scan();
+        assertEquals(1, lexed.stream().filter(t -> t.type() == Token.Type.PIPE_REVERSE).count());
+        assertEquals(1, lexed.stream().filter(t -> t.type() == Token.Type.PIPE_FORWARD).count());
+        assertEquals(1, lexed.stream().filter(t -> t.type() == Token.Type.LTE).count());
+        assertEquals(1, lexed.stream().filter(t -> t.type() == Token.Type.LT).count());
+        assertEquals(2, lexed.stream().filter(t -> t.type() == Token.Type.PIPE).count());
+    }
+
+    @Test
+    void reverseApplicationDoesNotAutoCorrectAmbiguousMixedDirections() {
+        for (String expression : new String[] {
+                "20 |> increment <| twice",
+                "twice <| 20 |> increment"
+        }) {
+            String code = "fnc increment(int x): int { return x+1; } "
+                    + "fnc twice(int x): int { return x*2; } "
+                    + "fnc main(): int { return " + expression + "; }";
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(code), expression);
+            assertTrue(failure.getMessage().contains("E_VALUE_PIPE_DIRECTION"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
+    void rpipeDoesNotAccidentallyLowerAsAnOrdinaryCallOrComparison() {
+        for (String expr : new String[] {
+                "readable rpipe writable",
+                "writable rpipe transform rpipe readable",
+                "spawn Sink() rpipe spawn Producer()"
+        }) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc main(): int { val graph = " + expr
+                            + "; return 0; }"), expr);
+            assertTrue(failure.getMessage().contains("E_ACTOR_PIPE_BACKEND_UNSUPPORTED"),
+                    failure::getMessage);
+        }
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): int {
+                    val int rpipe = 7;
+                    return rpipe;
+                }
+                """));
+    }
+
     private static String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, code, "pipe-syntax.ores")
