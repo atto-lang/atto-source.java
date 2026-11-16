@@ -5231,6 +5231,10 @@ public final class TypeChecker {
             return new Named("Future", List.of(Primitive.VOID));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (awaited.coreAdapter() && env.lookup("std") != null) {
+                throw new IllegalArgumentException(
+                        "std.await core adapter cannot resolve through a shadowed 'std' binding");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
