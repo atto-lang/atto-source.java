@@ -46,7 +46,7 @@ class NativeHttpTest {
                   for (let int i = 0; i < 8; i = i + 1) {
                     val request = await server.accept();
                     val completion = request.completion;
-                    handler.dispatch(rt borrow mut request);
+                    handler.dispatch(rt mut borrow request);
                     await completion;
                   }
                   await server.shutdown(0);
@@ -128,7 +128,7 @@ class NativeHttpTest {
               for (let int i = 0; i < 2; i = i + 1) {
                 val request = await server.accept();
                 val completion = request.completion;
-                handler.dispatch(rt borrow mut request);
+                handler.dispatch(rt mut borrow request);
                 await completion;
               }
               await server.shutdown(0);
@@ -204,7 +204,7 @@ class NativeHttpTest {
                   for (let int i = 0; i < 3; i = i + 1) {
                     val request = await server.accept();
                     val completion = request.completion;
-                    handler.dispatch(rt borrow mut request);
+                    handler.dispatch(rt mut borrow request);
                     await completion;
                   }
                   await server.shutdown(0);
@@ -246,7 +246,7 @@ class NativeHttpTest {
                   stdio.println(server.port);
                   for (let int i = 0; i < 32; i = i + 1) {
                     val request = await server.accept();
-                    handler.dispatch(rt borrow mut request);
+                    handler.dispatch(rt mut borrow request);
                   }
                   await server.shutdown(3000);
                   stdio.println(handler.created);
@@ -345,7 +345,7 @@ class NativeHttpTest {
               stdio.println(server.port);
               val request = await server.accept();
               val completion = request.completion;
-              http.handler("Owner").dispatch(rt borrow mut request);
+              http.handler("Owner").dispatch(rt mut borrow request);
               try { request.completion; } catch (err) { stdio.println("moved-observer-rejected"); }
               val int status = await completion;
               stdio.println(status);
@@ -398,7 +398,7 @@ class NativeHttpTest {
                   stdio.println(server.port);
                   val request = await server.accept();
                   val done = request.completion;
-                  http.handler("Hello").dispatch(rt borrow mut request);
+                  http.handler("Hello").dispatch(rt mut borrow request);
                   stdio.println(await done);
                   await server.shutdown(0);
                   return;
@@ -441,7 +441,7 @@ class NativeHttpTest {
               for (let int i = 0; i < 3; i = i + 1) {
                 val request = await server.accept();
                 val completion = request.completion;
-                http.handler("Hello").dispatch(rt borrow mut request);
+                http.handler("Hello").dispatch(rt mut borrow request);
                 await completion;
               }
               await server.shutdown(0);
