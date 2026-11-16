@@ -6081,6 +6081,13 @@ public final class OresEvalRootNode extends RootNode {
                             created.type().name()
                                     + "<T> constructor takes no positional arguments");
                 }
+                // A real Array<T>/List<T> constructor is a compiler-originated
+                // proof of its element type. Preserve that witness so a later
+                // explicit root copy never has to guess T from Java elements.
+                if (!created.type().inferArguments()
+                        && created.type().arguments().size() == 1) {
+                    return new TypedGuestSequence(created.type(), 0);
+                }
                 return new ArrayList<>();
             }
             if (created.type().name().equals("DynamicStruct")) {
@@ -7874,10 +7881,25 @@ public final class OresEvalRootNode extends RootNode {
          * shallow map copy or user-defined copy() calls are permitted in v1.
          */
         private Object copyOwnedValueV1(Object value) {
+            // An actor object currently lacks runtime provenance proving that
+            // the source and destination allocations belong to the same actor
+            // heap. Do not duplicate it under an evaluator-global owner tag.
+            if (ActorRuntime.inActorExecution() && value instanceof OresObject) {
+                throw new IllegalArgumentException(
+                        "E_COPY_DOMAIN: actor-heap copy requires a generation/arena ownership proof");
+            }
+            if (value instanceof TypedGuestSequence sequence) {
+                dev.oreslang.types.DerivedCopyPlanV1.Plan plan =
+                        dev.oreslang.types.DerivedCopyPlanV1.derive(sequence.type, this::findClass);
+                if (!(plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Sequence)) {
+                    throw new IllegalArgumentException("E_COPY_UNPROVEN: typed sequence copy plan missing");
+                }
+                return executeDerivedCopyV1(plan, sequence,
+                        new java.util.IdentityHashMap<>(),
+                        new java.util.IdentityHashMap<>(), new int[]{0}, 0);
+            }
             if (!(value instanceof OresObject original)) {
-                // The checker already admits only its existing Copy value kinds
-                // here (scalars and explicitly copyable builtin handles).
-                return value;
+                return copyExplicitImmutableV1(value);
             }
             if (original.owner != this) {
                 throw new IllegalArgumentException(
@@ -7892,6 +7914,26 @@ public final class OresEvalRootNode extends RootNode {
             return executeDerivedCopyV1(plan, original,
                     new java.util.IdentityHashMap<>(),
                     new java.util.IdentityHashMap<>(), new int[]{0}, 0);
+        }
+
+        /**
+         * Runtime defense in depth. Older ownership rules classify a few
+         * mutable *handles* as trivially Copy, but that is not a logical copy
+         * of the owned pointee. Never silently turn explicit copy into share.
+         */
+        private Object copyExplicitImmutableV1(Object value) {
+            if (value == null || value instanceof Number
+                    || value instanceof Boolean || value instanceof String) return value;
+            if (value instanceof OptionValue option) {
+                return option.present()
+                        ? new OptionValue(true, copyExplicitImmutableV1(option.value()))
+                        : new OptionValue(false, null);
+            }
+            if (value instanceof ResultValue result) {
+                return new ResultValue(result.ok(), copyExplicitImmutableV1(result.value()));
+            }
+            throw new IllegalArgumentException(
+                    "E_COPY_UNPROVEN: explicit copy cannot alias a mutable guest handle or untyped collection");
         }
 
         private Object executeDerivedCopyV1(
@@ -7933,7 +7975,21 @@ public final class OresEvalRootNode extends RootNode {
                 if (source.size() > 8192 || source.size() > 16384 - visited[0]) {
                     throw new IllegalArgumentException("E_COPY_BUDGET: copy sequence budget exceeded");
                 }
-                ArrayList<Object> result = new ArrayList<>(source.size());
+                // Preserve the element-type witness for explicitly typed
+                // guest sequences. Other class-field sequences are copied as
+                // an independent List, never shallow-copied.
+                ArrayList<Object> result;
+                if (value instanceof TypedGuestSequence typed) {
+                    dev.oreslang.types.DerivedCopyPlanV1.Plan exact =
+                            dev.oreslang.types.DerivedCopyPlanV1.derive(typed.type, this::findClass);
+                    if (!exact.equals(sequence)) {
+                        throw new IllegalArgumentException(
+                                "E_COPY_TYPE: typed sequence witness disagrees with compiler plan");
+                    }
+                    result = new TypedGuestSequence(typed.type, source.size());
+                } else {
+                    result = new ArrayList<>(source.size());
+                }
                 copied.put(value, result);
                 for (Object element : source) {
                     result.add(executeDerivedCopyV1(
@@ -12342,6 +12398,27 @@ public final class OresEvalRootNode extends RootNode {
                         "source actor type name cannot be blank");
             }
             Objects.requireNonNull(object, "object");
+        }
+    }
+
+    /**
+     * Existing collections use the List ABI. The extra metadata is only a
+     * guest compiler type witness, never Java reflection of element values.
+     * Untagged literals/host lists stay noncopyable at the root until source
+     * type evidence is carried through their lowering.
+     */
+    private static final class TypedGuestSequence extends ArrayList<Object> {
+        private final Ast.TypeRef type;
+
+        private TypedGuestSequence(Ast.TypeRef type, int capacity) {
+            super(capacity);
+            if (type == null || type.inferArguments()
+                    || (!type.name().equals("Array") && !type.name().equals("List"))
+                    || type.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        "E_COPY_UNPROVEN: typed sequence requires exact Array<T>/List<T> declaration");
+            }
+            this.type = type;
         }
     }
 
