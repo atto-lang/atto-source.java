@@ -212,6 +212,22 @@ final class ImportsQualifiedCallTest {
                   }
                 end
                 """)));
+
+        // An unqualified actor call cannot borrow the intrinsic's reserved
+        // spelling to invoke a cross-file fnc. Only the explicit import scope
+        // is a normal callable; actual critical state lowering is still gated.
+        IllegalArgumentException bare = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        import fnc handle_state from "./lib.ores";
+                        define actor Worker as
+                          pub ping(): void {
+                            handle_state();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(bare.getMessage().contains("ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED"),
+                bare::getMessage);
     }
 
     @Test
