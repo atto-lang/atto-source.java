@@ -50,6 +50,34 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
+    void copyBangAndLegacyRuntimeCopyProduceEquivalentOwnershipAst() {
+        String template = "fnc main(): int { val int x = 7; return %s; }";
+        assertEquals(Parser.parse(template.formatted("rt copy x")),
+                Parser.parse(template.formatted("copy! x")));
+        assertEquals(Parser.parse(template.formatted("rt copy x")),
+                Parser.parse(template.formatted("copy!x")));
+    }
+
+    @Test
+    void copyBangExecutesRealClassAndNestedArrayDuplication() throws Exception {
+        assertEquals("10|66", run("""
+                define class Person as
+                  pub val Array<int> scores = new Array<int>();
+                end
+                pub fnc main(): void {
+                  let mut Person original = new Person();
+                  original.scores.add(10);
+                  let mut Person copy = copy!original;
+                  copy.scores.set(0, 66);
+                  stdio.stdout.write(original.scores.get(0));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(copy.scores.get(0));
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void rootTypedArrayCopyIsIndependentAndRetainsTypeForFurtherCopy() throws Exception {
         assertEquals("10|99|7", run("""
                 pub fnc main(): void {
