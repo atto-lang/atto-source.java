@@ -2126,6 +2126,32 @@ public final class ActorRuntime implements AutoCloseable {
             return channel.isClosed() && channel.isEmpty();
         }
 
+        /**
+         * Non-parking, immediate output poll. Empty means no committed record
+         * is available at this instant; use isDone() to distinguish drained
+         * terminal EOF from an open, temporarily empty stream.
+         *
+         * A successful poll transfers the frozen output value to the caller
+         * and releases exactly one queued envelope reservation, just like
+         * next(). No select waiter is registered on a failed poll.
+         */
+        public Optional<ActorOutput<M>> tryNext() {
+            Optional<ActorOutputEnvelope> candidate = channel.tryRead();
+            if (candidate.isEmpty()) {
+                if (isDone()) actorOutputStreams.remove(this);
+                return Optional.empty();
+            }
+            ActorOutputEnvelope envelope = candidate.orElseThrow();
+            try {
+                @SuppressWarnings("unchecked")
+                ActorOutput<M> output = (ActorOutput<M>) envelope.output();
+                return Optional.of(output);
+            } finally {
+                envelope.close();
+                if (isDone()) actorOutputStreams.remove(this);
+            }
+        }
+
         public OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> next() {
             OresFuture<ActorOutputEnvelope> read = channel.readAsync();
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
