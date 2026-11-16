@@ -4905,27 +4905,27 @@ public final class Parser {
     /** Lower one functional stage, retaining checked AST call provenance. */
     private Ast.Expr applyValuePipelineStage(Ast.Expr value, Ast.Expr stage, Token operator) {
         if (stage instanceof Ast.CallExpr call) {
-                if (call.callee() instanceof Ast.MemberExpr member
-                        && member.receiver() instanceof Ast.NameExpr namespace
-                        && (namespace.name().equals("Option") || namespace.name().equals("Result"))) {
-                    value = new Ast.CallExpr(new Ast.MemberExpr(value, member.member()),
-                            call.typeArguments(), call.typeArgumentsPresent(),
-                            call.arguments(), Ast.CallOrigin.VALUE_PIPE_RECEIVER);
-                } else if (isPipelineCallable(call.callee())) {
-                    List<Ast.Expr> args = new ArrayList<>();
-                    args.add(value);
-                    args.addAll(call.arguments());
-                    value = new Ast.CallExpr(call.callee(), call.typeArguments(),
-                            call.typeArgumentsPresent(), args, Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
-                } else {
-                    throw error(operator, "pipeline stage must call a named function or Option/Result combinator");
-                }
-            } else if (isPipelineCallable(stage)) {
-                value = new Ast.CallExpr(stage, List.of(), false, List.of(value),
-                        Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr namespace
+                    && (namespace.name().equals("Option") || namespace.name().equals("Result"))) {
+                value = new Ast.CallExpr(new Ast.MemberExpr(value, member.member()),
+                        call.typeArguments(), call.typeArgumentsPresent(),
+                        call.arguments(), Ast.CallOrigin.VALUE_PIPE_RECEIVER);
+            } else if (isPipelineCallable(call.callee())) {
+                List<Ast.Expr> args = new ArrayList<>();
+                args.add(value);
+                args.addAll(call.arguments());
+                value = new Ast.CallExpr(call.callee(), call.typeArguments(),
+                        call.typeArgumentsPresent(), args, Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
             } else {
-                throw error(operator, "pipeline stage must be a named callable");
+                throw error(operator, "pipeline stage must call a named function or Option/Result combinator");
             }
+        } else if (isPipelineCallable(stage)) {
+            value = new Ast.CallExpr(stage, List.of(), false, List.of(value),
+                    Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
+        } else {
+            throw error(operator, "pipeline stage must be a named callable");
+        }
         return value;
     }
 
