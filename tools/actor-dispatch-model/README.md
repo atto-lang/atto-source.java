@@ -32,3 +32,13 @@ format receipts before promoting the draft. This model does not modify the
 Java runtime, establish JVM guest execution or certify unbounded generation
 wraparound. Wraparound and production mailbox integration require separate
 implementation-level evidence.
+
+### Reference implementation versus production Java
+
+The current Java ActorRuntime uses a fresh `new Object()` per scheduled
+dispatch and compares the exact object by identity in `runBatch`.
+It does **not** reuse numeric dispatch slots. The generation-reuse test
+describes a *future alternative scheduler design* and MUST NOT be taken as
+evidence of a production Java bug or an already-deployed slot/epoch ABI.
+Production callback-replay tests are tracked separately in
+[Java #3136](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/3136).
