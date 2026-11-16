@@ -33,7 +33,7 @@ final class DerivedCopyPlanGuestTest {
         assertEquals("10|99", run("""
                 define class Person as
                   pub let string name = "Alice";
-                  pub let Array<int> scores = new Array<int>();
+                  pub val Array<int> scores = new Array<int>();
                 end
 
                 pub fnc main(): void {
@@ -95,7 +95,7 @@ final class DerivedCopyPlanGuestTest {
                   let mut Array<Child> children = new Array<Child>();
                   children.add(new Child());
                   let mut Array<Child> clone = rt copy children;
-                  clone.get(0).value = 88;
+                  clone[0].value = 88;
                   stdio.stdout.write(children.get(0).value);
                   stdio.stdout.write("|");
                   stdio.stdout.write(clone.get(0).value);
@@ -138,7 +138,7 @@ final class DerivedCopyPlanGuestTest {
                   pub let int value = 7;
                 end
                 define class Parent as
-                  pub let Child child = new Child();
+                  pub val Child child = new Child();
                 end
 
                 pub fnc main(): void {
