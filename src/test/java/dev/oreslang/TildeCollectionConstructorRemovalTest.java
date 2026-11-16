@@ -2,6 +2,8 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -120,6 +122,31 @@ final class TildeCollectionConstructorRemovalTest {
                     """.formatted(qualifier);
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), qualifier);
         }
+    }
+
+    @Test
+    void isTildeTypeCheckPreservesReadonlyStructuralView() {
+        String positive = """
+                define trait Point as
+                    x: int;
+                end
+                fnc read(Point value): int {
+                    match value over
+                        on is ~Point as val p -> { return p.x; }
+                        on _ -> { return 0; }
+                    end
+                }
+                """;
+        var typed = assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(positive)));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+
+        String mutableProjection = positive.replace(
+                "return p.x;", "p.x = 2; return p.x;");
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(mutableProjection)));
+        assertTrue(rejected.getMessage().toLowerCase().contains("read")
+                        || rejected.getMessage().toLowerCase().contains("mutab"),
+                rejected::getMessage);
     }
 
     @Test
