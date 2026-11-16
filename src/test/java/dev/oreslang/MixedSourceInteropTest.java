@@ -20,6 +20,17 @@ final class MixedSourceInteropTest {
     @TempDir Path temp;
 
     @Test
+    void canonicalAttoIsAdmittedAsAnOresPrimarySourceUnit() {
+        for (String extension : new String[] {".atto", ".ores"}) {
+            String name = "main" + extension;
+            MixedSourceUnit unit = MixedSourceUnit.parse("/tmp/" + name, name,
+                    "pub routine main(): void { return; }");
+            assertEquals(MixedSourceUnit.PrimaryLanguage.ORES, unit.primaryLanguage());
+            assertDoesNotThrow(() -> Parser.parse(unit.oresSource()));
+        }
+    }
+
+    @Test
     void splitsOresJavaIslandsWithoutInventingAnOresModule() {
         MixedSourceUnit unit = MixedSourceUnit.parse("/tmp/demo.ores", "demo.ores", """
                 pub fnc main(): void {
@@ -522,4 +533,31 @@ final class MixedSourceInteropTest {
                 IsolatePolicy.Capability.JAVA_INTEROP,
                 IsolatePolicy.Capability.JAVA_SOURCE_INTEROP);
     }
+
+    @Test
+    void attoExtensionPreservesNativeGuestExecutionAndLegacyOres() throws Exception {
+        String guest = """
+                pub fnc main(): void {
+                  stdio.println("atto-ok");
+                  return;
+                }
+                """;
+        Path atto = temp.resolve("native.atto");
+        Files.writeString(atto, guest);
+        assertEquals(MixedSourceUnit.PrimaryLanguage.ORES,
+                MixedSourceUnit.parse(atto, guest).primaryLanguage());
+        assertEquals(MixedSourceUnit.PrimaryLanguage.ORES,
+                MixedSourceUnit.parse("/tmp/legacy.ores", "legacy.ores", guest).primaryLanguage());
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                atto,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                out,
+                new ByteArrayOutputStream());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("atto-ok"));
+    }
+
 }

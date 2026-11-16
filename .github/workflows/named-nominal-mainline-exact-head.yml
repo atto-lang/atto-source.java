@@ -1,0 +1,59 @@
+name: AttoLang named nominal mainline exact-head JUnit
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/test/java/dev/oreslang/NamedNominalSlotIntegrationTest.java'
+      - '.github/workflows/named-nominal-mainline-exact-head.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  named-nominal-mainline-junit:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact same-repository PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source SHA, tree and worktree
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "ATTO_NOMINAL_HEAD=$EXPECTED_SHA"
+          echo "ATTO_NOMINAL_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Install GraalVM 25 for parser, type and ownership tests
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute declaration-order nominal binder JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=NamedNominalSlotIntegrationTest -DfailIfNoTests=true test
+          report=target/surefire-reports/TEST-dev.oreslang.NamedNominalSlotIntegrationTest.xml
+          test -s "$report"
+          grep -q '<testcase ' "$report"
+          if grep -Eq '(<failure|<error|<skipped)' "$report"; then
+            echo "::error::Nominal JUnit must not contain failures, errors or skips" >&2
+            exit 1
+          fi
+          echo "ATTO_NOMINAL_JAVA_JUNIT=EXECUTED"
