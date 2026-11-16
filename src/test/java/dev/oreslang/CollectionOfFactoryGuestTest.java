@@ -165,6 +165,18 @@ final class CollectionOfFactoryGuestTest {
     }
 
     @Test
+    void contractAndIsolatedActorDeclarationsPreserveUserOwnedOfCalls() {
+        // These are nominal declarations too. Without the collision scan,
+        // Tuple.of / Map.of would be stolen by the built-in AST factory.
+        assertInstanceOf(Ast.CallExpr.class, firstFactoryInitializer(
+                "define contract Tuple as end\\n"
+                        + program("const tuple = Tuple.of(1, 2);")));
+        assertInstanceOf(Ast.CallExpr.class, firstFactoryInitializer(
+                "define isoactor Map as end\\n"
+                        + program("const map = Map.of<string,int>();")));
+    }
+
+    @Test
     void appliedGenericTypeArgumentsDoNotShadowUnrelatedBuiltinFactories() {
         // A type *use* is not a declaration of a generic parameter.
         // The old '<T>' lexical heuristic suppressed these valid calls
