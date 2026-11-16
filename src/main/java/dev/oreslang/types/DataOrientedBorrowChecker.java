@@ -55,6 +55,12 @@ public final class DataOrientedBorrowChecker {
             requireNonBlankIfPresent(component, "component");
             requireNonBlankIfPresent(field, "field");
             if (epoch < 0) throw new IllegalArgumentException("negative storage epoch");
+            // Logical place hierarchy is strict. A component without an
+            // archetype must not look independent of a whole-archetype loan.
+            // Rooted projection proof is separate from physical AoS/SoA layout.
+            if (archetype == null && component != null) {
+                throw new IllegalArgumentException("component requires archetype");
+            }
             if (archetype == null && component != null) {
                 throw new IllegalArgumentException("component requires archetype");
             }
@@ -69,6 +75,27 @@ public final class DataOrientedBorrowChecker {
             Objects.requireNonNull(place, "place");
             Objects.requireNonNull(access, "access");
         }
+    }
+
+    /**
+     * Conservative source-level collection loan policy (candidate v1).
+     *
+     * <p>A collection element is rooted at its allocating collection archetype,
+     * never at a syntactically different row/field. DOP's proven disjoint-row
+     * scheduling is a separate capability and must NOT be inferred from
+     * collection indices. The compiler must provide authenticated allocation
+     * and actor identity in the store/root; this host helper does not prove it.
+     */
+    public static Loan conservativeCollectionRootLoan(Place projection, Access access) {
+        Objects.requireNonNull(projection, "projection");
+        Objects.requireNonNull(access, "access");
+        if (projection.archetype() == null) {
+            throw new IllegalArgumentException(
+                    "collection source loan requires rooted collection identity");
+        }
+        Place root = new Place(projection.layout(), projection.store(),
+                projection.archetype(), null, null, null, projection.epoch());
+        return new Loan(root, access);
     }
 
     public static void requireCurrentEpoch(Place place, long currentEpoch) {

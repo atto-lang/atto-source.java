@@ -165,6 +165,42 @@ final class NativeHttpFramingAdmissionTest {
     }
 
     @Test
+    void rejectsMalformedHostAuthorityPortsAndLiterals() {
+        for (String host : new String[] {
+                "example.test:abc", ":8080", "localhost:65536", "[gggg]",
+                "localhost:", "::1", "example.test%20attacker", "localhost/other",
+                "[:]", "[2001:::db8]", "[1::2::3]", "[1:2:3:4:5:6:7:8::]",
+                "[::ffff:999.1.1.1]", "[::ffff:01.1.1.1]",
+                "localhost:12:34", "[::1]extra", "localhost:-1",
+                "999.1.1.1", "127.1", "127.0.1", "2130706433",
+                "127.000.0.1", "192.0.2.256", "1.2.3.4.5",
+                "999.1.1.1:8080", "127.1:80", "2130706433:443"
+        }) {
+            Headers headers = valid();
+            headers.set("Host", host);
+            assertThrows(IllegalArgumentException.class,
+                    () -> NativeHttp.validateHeadersForAdmission(headers, "HTTP/1.1", 1024),
+                    "unexpected Host authority admission: " + host);
+        }
+    }
+
+    @Test
+    void acceptsUnambiguousHostAuthoritiesWithoutDns() {
+        for (String host : new String[] {
+                "localhost", "example.test", "localhost:0", "example.test:65535",
+                "[::1]", "[::1]:8080", "[2001:db8::1]",
+                "[1:2:3:4:5:6:7:8]", "[::ffff:192.0.2.1]",
+                "127.0.0.1", "127.0.0.1:8443", "192.0.2.1:443"
+        }) {
+            Headers headers = valid();
+            headers.set("Host", host);
+            assertDoesNotThrow(
+                    () -> NativeHttp.validateHeadersForAdmission(headers, "HTTP/1.1", 1024),
+                    "valid Host authority rejected: " + host);
+        }
+    }
+
+    @Test
     void mapsMalformedRequestBodyStreamToClientErrorOnly() {
         IOException malformedChunk = new IOException("invalid chunk size");
         assertEquals(400, NativeHttp.operationFailureStatus(malformedChunk, true));

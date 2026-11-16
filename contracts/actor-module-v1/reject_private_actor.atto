@@ -1,0 +1,9 @@
+// EXPECT: compile error containing "missing required public actor".
+define contract CartApi as
+  actor Cart;
+end
+
+define module cart_mod conforms CartApi as
+  define actor Cart as
+  end
+end
