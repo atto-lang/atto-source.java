@@ -38,6 +38,22 @@ final class TildeCollectionConstructorRemovalTest {
     }
 
     @Test
+    void bareTildeAggregateConstructorsAreRejectedButUnaryTildeRemainsSeparate() {
+        for (String expression : new String[]{
+                "~(ready: true)", "~(\"a\" => 1)", "~(1 => 2)", "~(...items)"
+        }) {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("pub fnc main(): void { const value = "
+                            + expression + "; return; }"), expression);
+            assertTrue(ex.getMessage().contains("removed"), ex::getMessage);
+        }
+        // Unary '~' is a distinct existing operator: this parser-level test
+        // is not authorization for a collection constructor or runtime cast.
+        assertDoesNotThrow(() -> Parser.parse(
+                "pub fnc main(): void { const number = ~(1); return; }"));
+    }
+
+    @Test
     void oldTypedEmptyConstructorIsRemoved() {
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("pub fnc main(): void { const value = ~<Map<string,int>>(); return; }"));
