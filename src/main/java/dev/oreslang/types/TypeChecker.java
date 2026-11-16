@@ -111,6 +111,9 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    // Compiler-owned lexical instance context, never synthesized from a variable
+    // merely named self (constructors and static methods do not qualify).
+    private Ast.ClassDecl currentInstanceMethodOwner;
     // Only an actual constructor may initialize an otherwise fixed, initially
     // absent class field. Class methods never inherit constructor privileges.
     private Ast.ClassDecl currentConstructorOwner;
@@ -1935,9 +1938,11 @@ public final class TypeChecker {
             }
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Ast.ClassDecl previousInstanceMethodOwner = currentInstanceMethodOwner;
             Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             currentClassOwner = klass;
+            currentInstanceMethodOwner = method.isStatic() ? null : klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
             Ast.TypeRef previousStrictReturnSource = strictCallableReturnSource;
@@ -1949,6 +1954,7 @@ public final class TypeChecker {
                 strictCallableReturnSource = previousStrictReturnSource;
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                currentInstanceMethodOwner = previousInstanceMethodOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
             }
@@ -3425,51 +3431,39 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
             }
-            // Unqualified instance calls are lexical self calls, never ambient
-            // dynamic lookup. Reuse the exact explicit-self member checker so
-            // ownership, visibility, generics and suspension checks cannot drift.
-            if (call.callee() instanceof Ast.NameExpr unqualified
-                    && currentClassOwner != null && self != null
+            // A direct unqualified call selects the entire *lexical* method
+            // family before arity selection or file-root/import fallback.
+            // The explicit self.method checker enforces all inherited visibility,
+            // generic, actor-turn, loan and suspension requirements.
+            if (currentInstanceMethodOwner != null
+                    && currentClassOwner == currentInstanceMethodOwner
+                    && call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr implicit
+                    && !CallableSelector.reservedImplicitReceiverCallName(implicit.name())
+                    && env.lookup(implicit.name()) == null
                     && env.lookup("self") != null
-                    && env.lookup(unqualified.name()) == null
-                    && !Set.of("init", "Some", "Ok", "Err", "And", "Or", "Xor",
-                            "print", "task_context", "task_cancel_requested",
-                            "$task_context_enter", "$task_context_exit").contains(unqualified.name())) {
-                int implicitArity = fixedCallArity(
-                        call.arguments(), env, generics, self,
-                        "implicit method " + unqualified.name());
-                ResolvedMethod implicit = findMethodTarget(
-                        currentClassOwner, nominalClassType(currentClassOwner),
-                        unqualified.name(), implicitArity, new LinkedHashSet<>());
-                if (implicit != null) {
-                    if (findFunction(unqualified.name(), implicitArity) != null
-                            || importedValues.contains(unqualified.name())) {
-                        throw new IllegalArgumentException(
-                                "ambiguous unqualified call '" + unqualified.name()
-                                        + "': both a self method and a free/imported callable match; "
-                                        + "write self." + unqualified.name() + "(...) or qualify the function");
-                    }
-                    return typeOf(call.rewrite(
-                            new Ast.MemberExpr(new Ast.NameExpr("self"), unqualified.name()),
-                            call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
-                            env, generics, self);
-                }
+                    && !findMethodsByName(
+                            currentInstanceMethodOwner, implicit.name(),
+                            new LinkedHashSet<>()).isEmpty()) {
+                return typeOf(call.rewrite(
+                                new Ast.MemberExpr(new Ast.NameExpr("self"), implicit.name()),
+                                call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                        env, generics, self);
             }
-            // A lexical local that shadows an instance method wins, and implicit
-            // self never falls back to the method. Calling a non-callable local
-            // must therefore fail closed instead of typing as Unknown.
-            if (call.callee() instanceof Ast.NameExpr shadowing
-                    && currentClassOwner != null && self != null
-                    && env.lookup("self") != null
+            // A lexical value shadows all method overloads. A non-callable
+            // shadow is an error, not a reason to search another namespace.
+            if (currentInstanceMethodOwner != null
+                    && call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr shadowing
                     && env.lookup(shadowing.name()) != null
+                    && !CallableSelector.reservedImplicitReceiverCallName(shadowing.name())
                     && !(typeOf(shadowing, env, generics, self) instanceof Function)
-                    && findMethodTarget(
-                            currentClassOwner, nominalClassType(currentClassOwner),
-                            shadowing.name(), call.arguments().size(), new LinkedHashSet<>()) != null) {
+                    && !findMethodsByName(
+                            currentInstanceMethodOwner, shadowing.name(),
+                            new LinkedHashSet<>()).isEmpty()) {
                 throw new IllegalArgumentException(
-                        "local '" + shadowing.name() + "' shadows instance method '" + shadowing.name()
-                                + "' and is not callable; implicit self never falls back past a lexical binding, "
-                                + "write self." + shadowing.name() + "(...)");
+                        "local '" + shadowing.name() + "' shadows an instance method "
+                                + "and is not callable; write self." + shadowing.name() + "(...)");
             }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
