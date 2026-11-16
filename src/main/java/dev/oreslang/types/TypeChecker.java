@@ -3472,6 +3472,19 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
             }
+            // Until compiler-owned sealed-state MIR exists on main, a bare
+            // actor handle_state cannot bind an imported/root function. The
+            // explicit imports::handle_state target remains a different symbol.
+            if (call.origin() == Ast.CallOrigin.DIRECT
+                    && currentInstanceMethodOwner != null
+                    && currentInstanceMethodOwner.actorKind() != Ast.ActorKind.NONE
+                    && call.callee() instanceof Ast.NameExpr reservedState
+                    && reservedState.name().equals("handle_state")) {
+                throw new IllegalArgumentException(
+                        "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare handle_state "
+                                + "requires the compiler-owned current-actor critical loan; "
+                                + "use imports::handle_state(...) for an imported ordinary fnc");
+            }
             // A direct unqualified call selects the entire *lexical* method
             // family before arity selection or file-root/import fallback.
             // The explicit self.method checker enforces all inherited visibility,
