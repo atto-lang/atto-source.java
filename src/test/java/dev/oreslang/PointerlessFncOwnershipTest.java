@@ -88,9 +88,8 @@ final class PointerlessFncOwnershipTest {
     }
 
     @Test
-    void moveOnlyCopyAndShareFailClosedUntilTheirFullContractsConverge() {
-        IllegalArgumentException copied = assertThrows(
-                IllegalArgumentException.class,
+    void derivedClassCopyIsExplicitlyAdmittedButUnprovedSharingStillFailsClosed() {
+        assertDoesNotThrow(
                 () -> TypeChecker.check(Parser.parse("""
                         define class Box as
                           pub let int value = 7;
@@ -103,7 +102,8 @@ final class PointerlessFncOwnershipTest {
                           return;
                         }
                         """)));
-        assertTrue(copied.getMessage().contains("rt copy"), copied.getMessage());
+        // A generated, proven class copy is now legal; ordinary argument
+        // passing is still not a copy and rt share remains a distinct right.
 
         IllegalArgumentException shared = assertThrows(
                 IllegalArgumentException.class,
