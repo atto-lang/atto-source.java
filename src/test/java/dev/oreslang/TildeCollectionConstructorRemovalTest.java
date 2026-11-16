@@ -150,6 +150,38 @@ final class TildeCollectionConstructorRemovalTest {
     }
 
     @Test
+    void structuralSigilWhitespaceIsInsignificantInTypeTests() {
+        for (String spelling : new String[]{"~Point", "~ Point"}) {
+            String source = """
+                    define trait Point as x: int; end
+                    fnc read(Point value): int {
+                        match value over
+                            on is %s as val p -> { return p.x; }
+                            on _ -> { return 0; }
+                        end
+                    }
+                    """.formatted(spelling);
+            var typed = assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+            assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+        }
+    }
+
+    @Test
+    void structuralValuePatternCannotMasqueradeAsStructuralTypeTest() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define trait Point as x: int; end
+                        fnc classify(Point value): int {
+                            match value over
+                                on ~Point as val p -> { return 1; }
+                                on _ -> { return 0; }
+                            end
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("intersection lowering"), error::getMessage);
+    }
+
+    @Test
     void ordinaryCanonicalFactoryCallsKeepNormalCallParsing() {
         for (String expression : new String[]{
                 "Map.of()",
