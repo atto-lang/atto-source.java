@@ -57,6 +57,12 @@ jobs:
         run: |
           set -euo pipefail
           java -version
+          javac -version
+          mvn -version
+          test "$(javac -version 2>&1 | awk '{print $2}' | cut -d. -f1)" = 25 || {
+            echo "::error::Exact-head guest evidence requires JDK 25"
+            exit 1
+          }
           mvn -B -ntp '-P!native-thread-unix' '-Dtest=TildeCollectionConstructorRemovalTest,TildeAggregateTypeAliasCompilerTest,TildeRecordAndDefaultMatchSyntaxTest,TildeArrayTupleValueGuestTest,CollectionOfFactoryGuestTest,NonemptyTildeMapGuestTest,TypedEmptyMapGuestTest,TildeRecordLiteralGuestTest,TupleReturnTypeContractTest' -DfailIfNoTests=true test
       - name: Fail unless each targeted suite actually executed without skips
         shell: bash
