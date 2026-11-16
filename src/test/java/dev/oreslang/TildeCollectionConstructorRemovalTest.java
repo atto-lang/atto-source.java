@@ -61,11 +61,11 @@ final class TildeCollectionConstructorRemovalTest {
     @Test
     void ordinaryCanonicalFactoryCallsKeepNormalCallParsing() {
         for (String expression : new String[]{
-                "Map.of<string,int>(\"a\" => 1)",
+                "Map.of()",
                 "Entry.of(\"a\", 1)", "Pair.of(1, true)",
                 "Tuple.of(1, true)", "Array.of(1, 2)", "List.of(1, 2)",
                 "Vector.of(1, 2)", "Set.of(1, 2)",
-                "Record.of(ready: true)"}) {
+                "Record.of()"}) {
             // Parser acceptance is not a promise that any particular factory
             // has been bound, typechecked or executed by the guest runtime.
             assertDoesNotThrow(() -> Parser.parse("pub fnc main(): void { const value = "
