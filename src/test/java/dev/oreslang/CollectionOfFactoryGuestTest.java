@@ -165,6 +165,33 @@ final class CollectionOfFactoryGuestTest {
     }
 
     @Test
+    void appliedGenericTypeArgumentsDoNotShadowUnrelatedBuiltinFactories() {
+        // A type *use* is not a declaration of a generic parameter.
+        // The old '<T>' lexical heuristic suppressed these valid calls
+        // across an entire source file simply because the type was named.
+        assertInstanceOf(Ast.TupleExpr.class, firstFactoryInitializer(
+                program("""
+                        const Map<string, Tuple> typed = Map.of<string, Tuple>();
+                        const tuple = Tuple.of(1, 2);
+                        """)));
+        assertInstanceOf(Ast.MapLiteralExpr.class, firstFactoryInitializer(
+                program("""
+                        const Wrapper<Map> hint = 0;
+                        const map = Map.of<string,int>("key" => 1);
+                        """)));
+    }
+
+    @Test
+    void declaredGenericFormalsStillShadowCanonicalFactoryNames() {
+        assertInstanceOf(Ast.CallExpr.class, firstFactoryInitializer(
+                "pub fnc build<Tuple>(): void { "
+                        + "const tuple = Tuple.of(1,2); return; }"));
+        assertInstanceOf(Ast.CallExpr.class, firstFactoryInitializer(
+                "pub fnc build<Map>(): void { "
+                        + "const map = Map.of<string,int>(); return; }"));
+    }
+
+    @Test
     void explicitArrayFactoryCannotSatisfyTupleReturnType() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
