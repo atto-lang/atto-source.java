@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Canonical Map.of guest targets. Type.of lowering in Java #2735 must be integrated and executed before merge. */
+/** Canonical Map.of guest targets stacked on the integrated #2735/#3140 parser.\n * Positive guest behavior and JDK25 JUnit execution remain unverified. */
 final class TypedEmptyMapGuestTest {
     private static String fixture(String file) {
         try (InputStream input = TypedEmptyMapGuestTest.class.getResourceAsStream(
@@ -83,7 +83,9 @@ final class TypedEmptyMapGuestTest {
         for (String file : new String[]{"empty-map-bad-key.atto", "empty-map-bad-value.atto"}) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(fixture(file)), file);
-            assertNotNull(failure.getMessage(), file);
+            assertTrue(failure.getMessage().contains("unverified key/value domain"),
+                    "must reject an unsupported Map.of<K,V> domain, not factory syntax: "
+                            + file + ": " + failure.getMessage());
         }
     }
 
@@ -112,7 +114,11 @@ final class TypedEmptyMapGuestTest {
     void newlyAdmittedNonemptyMapStillRequiresTypedAndBoundedSyntax() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
                 fixture("empty-map-nonempty-reject.atto")));
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException arityError = assertThrows(
+                IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(fixture("empty-map-bad-arity.atto")));
+        assertTrue(arityError.getMessage().contains("exactly two positional type witnesses"),
+                "Map.of<K,V> arity must fail in the compiler-owned parser: "
+                        + arityError.getMessage());
     }
 }
