@@ -87,14 +87,12 @@ public final class Parser {
                         || prior == MUT || prior == IDENT);
             boolean formalName = (next == COMMA || next == RPAREN
                     || next == PIPE) && (prior == IDENT || prior == PIPE);
-            // A generic formal named Tuple/Map/etc. hides the compiler's
-            // nominal owner. Conservatively deny intrinsic rewriting even
-            // if the lexical form could also be a type argument elsewhere;
-            // the fallback remains an ordinary call for later resolution.
-            boolean genericFormalCandidate =
-                    (prior == LT && (next == GT || next == COMMA
-                            || next == EQUAL))
-                    || (prior == COMMA && next == GT);
+            // Only *declaration* type parameters shadow canonical factories.
+            // A type reference such as Result<Map> or Map<string, Tuple> is
+            // NOT a declaration of Map/Tuple; scanning '<Foo>' substrings
+            // without tracking the declaration owner incorrectly suppresses
+            // compiler-owned .of calls elsewhere in the compilation unit.
+            boolean genericFormalCandidate = isDeclarationGenericParameter(i);
             boolean forBindingName = next == OF
                     && (prior == CONST || prior == LET || prior == VAL);
             boolean contextualTypeAlias = prior == IDENT
@@ -106,6 +104,38 @@ public final class Parser {
                 shadowedOfTypes.add(token.lexeme());
             }
         }
+    }
+
+    /**
+     * Distinguish a declaration's generic *formal* from an applied type
+     * argument. This remains a conservative lexical safeguard, not final
+     * symbol resolution. Only recognizable declaration heads may hide the
+     * intrinsic owner; unrelated uses of '<Map>' or '<Tuple>' must not.
+     */
+    private boolean isDeclarationGenericParameter(int tokenIndex) {
+        int depth = 0;
+        int opening = -1;
+        for (int j = tokenIndex - 1; j >= 0; j--) {
+            Token.Type t = tokens.get(j).type();
+            if (t == GT) {
+                depth++;
+            } else if (t == LT) {
+                if (depth == 0) {
+                    opening = j;
+                    break;
+                }
+                depth--;
+            } else if (depth == 0 && (t == SEMICOLON || t == LBRACE
+                    || t == RBRACE || t == LPAREN || t == RPAREN)) {
+                return false;
+            }
+        }
+        if (opening < 2 || tokens.get(opening - 1).type() != IDENT) return false;
+        Token.Type head = tokens.get(opening - 2).type();
+        return head == FNC || head == ROUTINE || head == CLASS
+                || head == STRUCT || head == ACTOR || head == ISOACTOR
+                || head == INTERFACE || head == TRAIT || head == MODULE
+                || head == TYPE || head == TYPES || head == CONTRACT;
     }
 
     public static Ast.Program parse(String source) {
@@ -3795,7 +3825,7 @@ public final class Parser {
         if (declaredType == null || !declaredType.name().equals("Map")
                 || declaredType.inferArguments() || declaredType.arguments().size() != 2) {
             throw error(previous(),
-                    "~map() requires a directly declared, fully typed Map<K,V> binding");
+                    "Map.of() requires a directly declared, fully typed Map<K,V> binding");
         }
         // Never lose the exact key/value witness. TypeChecker and
         // OwnershipChecker still independently validate both domains.
