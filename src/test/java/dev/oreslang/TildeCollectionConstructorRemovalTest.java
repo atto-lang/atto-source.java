@@ -182,17 +182,38 @@ final class TildeCollectionConstructorRemovalTest {
     }
 
     @Test
-    void ordinaryCanonicalFactoryCallsKeepNormalCallParsing() {
+    void supportedCanonicalFactoriesLowerToTheCheckedAggregateAst() {
         for (String expression : new String[]{
                 "Map.of()",
-                "Entry.of(\"a\", 1)", "Pair.of(1, true)",
-                "Tuple.of(1, true)", "Array.of(1, 2)", "List.of(1, 2)",
-                "Vector.of(1, 2)", "Set.of(1, 2)",
+                "Tuple.of(1, true)",
+                "Array.of(1, 2)",
                 "Record.of()"}) {
-            // Parser acceptance is not a promise that any particular factory
-            // has been bound, typechecked or executed by the guest runtime.
-            assertDoesNotThrow(() -> Parser.parse("pub fnc main(): void { const value = "
-                    + expression + "; return; }"), expression);
+            assertDoesNotThrow(() -> Parser.parse(
+                    "pub fnc main(): void { const value = " + expression + "; return; }"),
+                    expression);
         }
+    }
+
+    @Test
+    void pendingFactoriesRequireCheckedGuestLoweringBeforeParserAdmission() {
+        for (String kind : new String[]{"Entry", "Pair", "List", "Vector", "Set"}) {
+            String expression = kind + ".of(1, 2)";
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(
+                            "pub fnc main(): void { const value = "
+                                    + expression + "; return; }"), expression);
+            assertTrue(failure.getMessage().contains("unsupported: " + kind + ".of"),
+                    failure::getMessage);
+        }
+        // A nominal class with the same name is not a compiler-owned
+        // collection factory, so its call remains ordinary source syntax.
+        assertDoesNotThrow(() -> Parser.parse("""
+                define class Pair as end
+                pub fnc main(): void {
+                    const value = Pair.of(1, 2);
+                    return;
+                }
+                """));
     }
 }
