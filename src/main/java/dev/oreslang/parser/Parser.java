@@ -21,6 +21,9 @@ public final class Parser {
     private final List<Token> tokens;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
+    // Bound stacked ownership prefixes before recursive descent overflows.
+    private static final int MAX_UNARY_NESTING = 128;
+    private int unaryNesting;
     private boolean suppressRefinementOperators;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
     private final java.util.ArrayDeque<java.util.Set<String>> localTypeScopes =
@@ -5078,7 +5081,64 @@ public final class Parser {
         };
     }
 
+    private Ast.Expr parseBangOwnershipAlias() {
+        // This is a contextual unary operator, not a macro and not a new
+        // ownership semantic path. The lexer still emits IDENT / MUT / BANG.
+        boolean mutableBorrow = check(MUT);
+        if (mutableBorrow) advance();
+        String operation = advance().lexeme();
+        consume(BANG, "expected '!' attached to ownership operation");
+        // Canonical mutable borrow is `borrow! mut value`. Keep the earlier
+        // `mut borrow! value` form as a compatibility alias, but reject two
+        // mutable qualifiers before parsing the operand.
+        if (operation.equals("borrow") && match(MUT)) {
+            if (mutableBorrow) throw error(previous(), "duplicate mutable borrow qualifier");
+            mutableBorrow = true;
+        }
+        // Check explicitly before descending into the operand. Otherwise a
+        // malformed borrow! mut mut item can fail as unrelated unary syntax
+        // and masquerade as a targeted borrow-checker negative test.
+        if (mutableBorrow && check(MUT)) {
+            throw error(peek(), "duplicate mutable borrow qualifier");
+        }
+        Ast.Expr operand = parseUnary(); // postfix binds more tightly than ownership
+        return mutableBorrow ? new Ast.UnaryExpr("&mut", operand)
+                : new Ast.RuntimeCallExpr(operation, List.of(operand));
+    }
+
+    private boolean hasBangOwnershipAlias() {
+        // Only the operation verb must be adjacent to '!'. Whitespace after
+        // '!' is valid; no ordinary identifier's trailing ! becomes a macro.
+        int verbIndex = current;
+        if (check(MUT)) {
+            verbIndex++;
+            if (verbIndex >= tokens.size() || tokens.get(verbIndex).type() != IDENT
+                    || !tokens.get(verbIndex).lexeme().equals("borrow")) return false;
+        } else if (!check(IDENT)) {
+            return false;
+        }
+        String verb = tokens.get(verbIndex).lexeme();
+        if (!verb.equals("copy") && !verb.equals("take")
+                && !verb.equals("borrow") && !verb.equals("share")) return false;
+        if (verbIndex + 1 >= tokens.size()) return false;
+        Token marker = tokens.get(verbIndex + 1);
+        return marker.type() == BANG && adjacent(tokens.get(verbIndex), marker);
+    }
+
     private Ast.Expr parseUnary() {
+        if (unaryNesting >= MAX_UNARY_NESTING) {
+            throw error(peek(), "unary expression nesting exceeds " + MAX_UNARY_NESTING);
+        }
+        unaryNesting++;
+        try {
+            return parseUnaryBody();
+        } finally {
+            unaryNesting--;
+        }
+    }
+
+    private Ast.Expr parseUnaryBody() {
+        if (hasBangOwnershipAlias()) return parseBangOwnershipAlias();
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
         // token sequence as a single negative literal, without broadening
