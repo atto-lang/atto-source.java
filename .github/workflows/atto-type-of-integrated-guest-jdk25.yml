@@ -44,11 +44,12 @@ jobs:
           }
           echo "JAVA_TREE=$(git rev-parse HEAD:src/main/java)"
           echo "FACTORY_GUEST_TEST=$(git rev-parse HEAD:src/test/java/dev/oreslang/CollectionOfFactoryGuestTest.java)"
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
           cache: maven
+          cache-read-only: true
       - name: Compile compiler and run nine JUnit / Truffle guest suites
         shell: bash
         env:
