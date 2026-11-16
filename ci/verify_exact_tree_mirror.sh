@@ -5,8 +5,8 @@
 set -euo pipefail
 
 fail() { printf 'EXACT_TREE_MIRROR_REJECTED: %s\n' "$*" >&2; exit 1; }
-: "\${EXPECTED_SOURCE_TREE_SHA:?pin a 40-character source tree SHA}"
-: "\${EXPECTED_SOURCE_MANIFEST_SHA256:?pin a separately reviewed ls-tree manifest SHA-256}"
+: "${EXPECTED_SOURCE_TREE_SHA:?pin a 40-character source tree SHA}"
+: "${EXPECTED_SOURCE_MANIFEST_SHA256:?pin a separately reviewed ls-tree manifest SHA-256}"
 [[ "$EXPECTED_SOURCE_TREE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'malformed source tree SHA'
 [[ "$EXPECTED_SOURCE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail 'malformed manifest SHA-256'
 command -v git >/dev/null || fail 'git missing'
@@ -23,9 +23,9 @@ manifest="$(git ls-tree -r -z "$actual_tree" | sha256sum | awk '{print $1}')" ||
 
 blobs=0
 while IFS= read -r -d '' entry; do
-  metadata="\${entry%%$'\t'*}"
+  metadata="${entry%%$'\t'*}"
   [[ "$metadata" != "$entry" ]] || fail 'ls-tree entry without path'
-  path="\${entry#*$'\t'}"
+  path="${entry#*$'\t'}"
   [[ -n "$path" ]] || fail 'empty tree entry path'
   read -r mode type oid <<< "$metadata"
   [[ "$type" == blob ]] || fail "unsupported nonblob entry at $path ($type)"
