@@ -29,11 +29,13 @@ It supplies non-recording `span()` and `span(name)` factories, a
 The source fixture and `NativeTelemetryScopeGuestTest` that compile and run
 this module have been authored but **NOT EXECUTED**.
 
-The true recording `span.attribute` API, trusted `TelemetrySpanScope` type,
-automatic logical active-context activation and OTLP exporter are still
-**NOT IMPLEMENTED**. Separate `UsingTelemetrySpanScopeTest` cases use a small
-user-defined guest `Telemetry` class to exercise lexical cleanup semantics,
-not OTel export.
+Main (#2994) now provides the lexical `using telemetry.span(...)` scope as the
+distinct `UsingTelemetrySpanStmt` intrinsic backed by the trusted
+`TelemetrySpanScope` (handle API `recording()`, `trace_id()`, `attribute()`),
+covered by main's `TelemetryUsingSpanLanguageTest`. The intrinsic never
+consults a guest `telemetry` binding, so the earlier user-defined-`Telemetry`
+desugaring test was dropped. The module `Span` above stays a manual span.
+The OTLP exporter is still **NOT IMPLEMENTED**.
 
 The parser must not reinterpret `using resource.borrow() as view` as a span
 scope: borrowed views retain their distinct AST node and fail-closed lifetime
@@ -44,8 +46,10 @@ signature-level `using` effect clauses.
 
 - `using` evaluates the span factory once, binds its result for one lexical
   scope, then calls cleanup at most once even when exiting by return, throw,
-  raise, panic, cancellation or suspended task teardown. Current lowering
-  inherits the implemented `try/finally` behavior for the cases in the test.
+  raise, panic, cancellation or suspended task teardown. Main (#2994) now
+  parses this into the distinct `Ast.UsingTelemetrySpanStmt` contextual
+  intrinsic (no guest `telemetry` binding or user `end()` is consulted); the
+  earlier `try/finally` desugaring proposed here was superseded by it.
 - **Do not infer effects away:** calling a user-defined `end()` may throw or
   suspend. The future type checker must require a trusted
   `TelemetrySpanScope` cleanup protocol with non-suspending, no-throw,
@@ -53,8 +57,8 @@ signature-level `using` effect clauses.
   or panic CONTROL messages. Current AST lowering has not proved that.
 - Creating a `Span` and activating it in logical context are distinct
   operations. The `using` construct should activate context on entry and
-  restore the previous context on exit; the existing `Span.end()` desugaring
-  does not yet implement that activation.
+  restore the previous context on exit; main's `UsingTelemetrySpanStmt`
+  (TelemetrySpanScope) implements that activation across await turns.
 - A live mutable span remains actor-owned. Only immutable trace context
   crosses `await`, channel and actor envelopes, with incarnation and tenant
   checks. No host thread-local identity serves as semantic authority.
@@ -96,8 +100,8 @@ be enabled.
 
 ## Immediate actual guest gates
 
-1. Run `UsingTelemetrySpanScopeTest` with the exact compiler source branch.
-   Confirm its emitted `try/finally` cleanup and no borrow regression.
+1. Run main's `TelemetryUsingSpanLanguageTest` with the exact compiler source
+   branch (the intrinsic `UsingTelemetrySpanStmt` replaced the desugaring).
 2. Run `TraceProbeEpochTest` with JDK 25, including deopt/reoptimization
    instrumentation (current unit tests only verify the policy results).
 3. Preserve all previous `NativeTraceStdlibTest` execution checks and run
