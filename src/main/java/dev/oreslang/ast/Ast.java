@@ -1848,7 +1848,16 @@ public final class Ast {
         public NewExpr { arguments = List.copyOf(arguments); }
     }
 
-    public record AwaitExpr(Expr expression) implements Expr { }
+    /**
+     * The std.await value-pipeline stage reuses ordinary await semantics.
+     * Preserve the compiler-owned spelling for lexical namespace validation.
+     */
+    public record AwaitExpr(Expr expression, boolean coreAdapter) implements Expr {
+        public AwaitExpr {
+            java.util.Objects.requireNonNull(expression, "await expression");
+        }
+        public AwaitExpr(Expr expression) { this(expression, false); }
+    }
 
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }
