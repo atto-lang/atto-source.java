@@ -8392,7 +8392,10 @@ public final class OresEvalRootNode extends RootNode {
                                 created.type().name()
                                         + "<T> constructor takes no positional arguments");
                     }
-                    return new ArrayList<>();
+                    // The synchronous path must use the SAME typed guest
+                    // constructor as suspendable evaluation. Returning a raw
+                    // ArrayList here erased T and broke checked root copying.
+                    return instantiateEvaluated(created, List.of(), env);
                 }
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(
