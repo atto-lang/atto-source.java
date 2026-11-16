@@ -106,16 +106,30 @@ final class CopyPolicyCompilerTest {
     }
 
     @Test
-    void copyableClassFailsClosedUntilVerifiedCopyLoweringExists() {
+    void copyableClassOptInUsesTheSameDerivedCopyProofAsAnUnannotatedClass() {
         String source = """
                 @Copyable
                 define class Config as
                   pub val int version = 1;
                 end
+                fnc duplicate(Config original): Config {
+                  return rt copy original;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+    }
+
+    @Test
+    void copyableAnnotationDoesNotBypassUncopyableResourceFields() {
+        String source = """
+                @Copyable
+                define class Config as
+                  pub let Channel<int> connection;
+                end
                 """;
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(ex.getMessage().contains("E_COPY_UNPROVEN"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("E_COPY_TRANSITIVE"), ex.getMessage());
     }
 
     @Test
