@@ -22,7 +22,7 @@ define module telemetry as
       return self.ended;
     }
 
-    pub fnc end(mut self)(): void {
+    pub fnc finish(mut self)(): void {
       if self.ended; do
         return;
       fi

@@ -93,7 +93,7 @@ define module Trace as
   // Completed observations are handed to an actor-owned bounded collector.
   // False means disabled, invalid input, or a full buffer. This is not OTLP
   // and does not automatically propagate distributed trace context.
-  pub fnc finish_span(Buffer buffer, int correlation_id, int phase_id, int started_ns): bool {
+  pub fnc finish_span(borrow mut Buffer buffer, int correlation_id, int phase_id, int started_ns): bool {
     if started_ns <= 0 || correlation_id < 0 || phase_id <= 0; do
       return false;
     fi

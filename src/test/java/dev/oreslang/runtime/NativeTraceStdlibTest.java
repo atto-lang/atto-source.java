@@ -98,21 +98,21 @@ final class NativeTraceStdlibTest {
                     pub routine main(): void {
                       val buffer = Trace.buffer(2);
                       val int off = Trace.begin_span(false);
-                      stdio.println(Trace.finish_span(buffer, 12, Trace.phase_function_call(), off));
+                      stdio.println(Trace.finish_span(rt mut borrow buffer, 12, Trace.phase_function_call(), off));
                       stdio.println(buffer.count());
 
                       val int first = Trace.begin_span(true);
-                      stdio.println(Trace.finish_span(buffer, 12, Trace.phase_http_server(), first));
+                      stdio.println(Trace.finish_span(rt mut borrow buffer, 12, Trace.phase_http_server(), first));
                       val int second = Trace.begin_span(true);
-                      stdio.println(Trace.finish_span(buffer, 12, Trace.phase_tcp_write(), second));
+                      stdio.println(Trace.finish_span(rt mut borrow buffer, 12, Trace.phase_tcp_write(), second));
                       val int third = Trace.begin_span(true);
-                      stdio.println(Trace.finish_span(buffer, 12, Trace.phase_actor_send(), third));
+                      stdio.println(Trace.finish_span(rt mut borrow buffer, 12, Trace.phase_actor_send(), third));
 
                       stdio.println(buffer.count());
                       stdio.println(buffer.dropped_count());
                       stdio.println(buffer.at(0).phase_id);
                       stdio.println(buffer.at(1).phase_id);
-                      stdio.println(Trace.finish_span(buffer, -1, 0, third));
+                      stdio.println(Trace.finish_span(rt mut borrow buffer, -1, 0, third));
                       stdio.println(buffer.dropped_count());
                       return;
                     }

@@ -35,7 +35,7 @@ final class NativeHttpInboundTraceContextTest {
 
     @Test
     void maliciousOrDuplicateHeadersNeverBecomeTrustedParents() {
-        for (List<String> values : List.of(
+        for (List<String> values : List.<List<String>>of(
                 List.of(REMOTE, REMOTE),
                 List.of("00-0123456789abcdef0123456789abcdef-0000000000000000-01"),
                 List.of("00-0123456789abcdef0123456789abcdef-abcdef0123456789-0g"),

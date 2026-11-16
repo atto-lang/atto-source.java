@@ -82,7 +82,7 @@ final class AutomaticCallProbeGuestTest {
     }
 
     @Test
-    void guestExceptionsAreNotSwallowedByProbeExit() {
+    void guestExceptionsAreNotSwallowedByProbeExit() throws Exception {
         ByteArrayOutputStream stdout = new ByteArrayOutputStream();
         ByteArrayOutputStream stderr = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, """
@@ -98,8 +98,8 @@ final class AutomaticCallProbeGuestTest {
                 """, "auto-calls-failure.atto").mimeType(OresLanguage.MIME_TYPE).build();
         try (Context ctx = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)
-                .arguments(OresLanguage.ID, "--ores-telemetry=calls",
-                        "--ores-telemetry-receipt=stderr")
+                .arguments(OresLanguage.ID, new String[] {"--ores-telemetry=calls",
+                        "--ores-telemetry-receipt=stderr"})
                 .out(stdout).err(stderr).build()) {
             assertThrows(PolyglotException.class, () -> ctx.eval(source));
         }
