@@ -89,7 +89,8 @@ public final class ReadonlyShapeProjectionV1 {
             if (field.sealedActorState()) {
                 throw new IllegalArgumentException("sealed actor-state field cannot be projected");
             }
-            if (!field.isPublic() || !field.immutable() || !field.effectFree()
+            if (expected.type() != Scalar.I64 || field.type() != Scalar.I64
+                    || !field.isPublic() || !field.immutable() || !field.effectFree()
                     || field.type() != expected.type()) {
                 throw new IllegalArgumentException("source field lacks public immutable exact type: "
                         + expected.name());
