@@ -2136,18 +2136,22 @@ public final class ActorRuntime implements AutoCloseable {
          * next(). No select waiter is registered on a failed poll.
          */
         public Optional<ActorOutput<M>> tryNext() {
-            Optional<ActorOutputEnvelope> candidate = channel.tryRead();
-            if (candidate.isEmpty()) {
-                if (isDone()) actorOutputStreams.remove(this);
-                return Optional.empty();
-            }
-            ActorOutputEnvelope envelope = candidate.orElseThrow();
             try {
-                @SuppressWarnings("unchecked")
-                ActorOutput<M> output = (ActorOutput<M>) envelope.output();
-                return Optional.of(output);
+                Optional<ActorOutputEnvelope> candidate = channel.tryRead();
+                if (candidate.isEmpty()) return Optional.empty();
+                ActorOutputEnvelope envelope = candidate.orElseThrow();
+                try {
+                    @SuppressWarnings("unchecked")
+                    ActorOutput<M> output = (ActorOutput<M>) envelope.output();
+                    return Optional.of(output);
+                } finally {
+                    envelope.close();
+                }
             } finally {
-                envelope.close();
+                // Exceptional close is surfaced by channel.tryRead() as a
+                // failure. Its throw must not skip stream deregistration:
+                // an otherwise drained failed actor would remain retained
+                // until the entire parent runtime shuts down.
                 if (isDone()) actorOutputStreams.remove(this);
             }
         }
