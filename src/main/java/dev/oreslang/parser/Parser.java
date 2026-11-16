@@ -1971,7 +1971,13 @@ public final class Parser {
                     "Critical", "RequiresPermission", "Permission",
                     "GrantPermission", "Unsafe", "Trusted", "Untrusted",
                     "AllowAll", "CallerRole", "CallableBy", "ActorMiddleware",
-                    "ActorMaxThreads").contains(name)) {
+                    "ActorMaxThreads",
+                    // An injected state handle is a capability, not inert metadata.
+                    // Reject before parsing nested arguments such as
+                    // @Inject(MutableStateContainer()) to avoid parse-error
+                    // misclassification and, more importantly, silent admission.
+                    "Inject", "StateBacked", "MutableStateContainer",
+                    "StateContainer").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
@@ -5035,12 +5041,35 @@ public final class Parser {
     }
 
     private Ast.Expr parseMultiplicative() {
-        Ast.Expr expr = parseUnary();
+        Ast.Expr expr = parseWithUpdate();
         while (match(STAR, SLASH, PERCENT)) {
             if (previous().type() == PERCENT) throw error(previous(),
                     "'%' is reserved and is not AttoLang source syntax; use Integer.rem(a, b) or Integer.mod(a, b)");
             String op = previous().lexeme();
-            expr = new Ast.BinaryExpr(op, expr, parseUnary());
+            expr = new Ast.BinaryExpr(op, expr, parseWithUpdate());
+        }
+        return expr;
+    }
+
+    /**
+     * Immutable updates bind after unary rt copy/take, not inside the rt
+     * operation. Thus 'rt copy p with {...}' parses as (rt copy p) with {...}.
+     * Keep 'with' contextual so existing names remain valid without an update.
+     */
+    private Ast.Expr parseWithUpdate() {
+        Ast.Expr expr = parseUnary();
+        while (isContextualIdentifier("with") && checkNext(LBRACE)) {
+            advance();
+            consume(LBRACE, "expected '{' after with");
+            List<Ast.WithField> changes = new ArrayList<>();
+            if (check(RBRACE)) throw error(peek(), "with update requires at least one field");
+            do {
+                Token field = consume(IDENT, "expected field name in with update");
+                consume(FAT_ARROW, "expected '=>' after with field name");
+                changes.add(new Ast.WithField(field.lexeme(), parseExpression()));
+            } while (match(COMMA) && !check(RBRACE));
+            consume(RBRACE, "expected '}' after with fields");
+            expr = new Ast.WithExpr(expr, changes);
         }
         return expr;
     }

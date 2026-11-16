@@ -1279,6 +1279,14 @@ public final class OresEvalRootNode extends RootNode {
 
             private SourceValueCont pendingLoopContinuation;
             private Env pendingLoopGuardEnv;
+            // Immediately completed source calls/arguments and ordinary statement
+            // progression may synchronously invoke their next callback. Retain
+            // those callbacks on this heap-owned task instead of nesting Java
+            // interpreter/control-plane frames without a bound.
+            private static final int MAX_IMMEDIATE_SOURCE_CALLBACKS = 16_384;
+            private static final int MAX_IMMEDIATE_SOURCE_DELIVERIES = 1_000_000;
+            private final ArrayDeque<Runnable> immediateSourceCallbacks = new ArrayDeque<>();
+            private boolean drainingImmediateSourceCallbacks;
             private final Ast.FunctionDecl function;
             private final Ast.MethodDecl method;
             private final OresObject receiver;
@@ -1301,6 +1309,42 @@ public final class OresEvalRootNode extends RootNode {
             private java.util.concurrent.CancellationException cancellationCause;
             private Throwable fatalCleanupFailure;
             private OresScheduler.Step<Object> nextStep;
+
+            private void dispatchImmediateSourceCallback(Runnable callback) {
+                Objects.requireNonNull(callback, "source continuation");
+                if (nextStep != null) {
+                    throw new IllegalStateException(
+                            "source callback scheduled after terminal Await/Done");
+                }
+                if (immediateSourceCallbacks.size() >= MAX_IMMEDIATE_SOURCE_CALLBACKS) {
+                    throw new IllegalStateException(
+                            "source callback queue budget exceeded");
+                }
+                immediateSourceCallbacks.addLast(callback);
+                if (drainingImmediateSourceCallbacks) return;
+                drainingImmediateSourceCallbacks = true;
+                int delivered = 0;
+                try {
+                    while (!immediateSourceCallbacks.isEmpty()) {
+                        if (nextStep != null) {
+                            throw new IllegalStateException(
+                                    "source callback crossed terminal Await/Done");
+                        }
+                        if (++delivered > MAX_IMMEDIATE_SOURCE_DELIVERIES) {
+                            throw new IllegalStateException(
+                                    "source callback dispatch budget exceeded");
+                        }
+                        immediateSourceCallbacks.removeFirst().run();
+                    }
+                } catch (RuntimeException | Error failed) {
+                    // A failed callback never leaks into the next physical
+                    // resume turn; a single task owns the entire pump.
+                    immediateSourceCallbacks.clear();
+                    throw failed;
+                } finally {
+                    drainingImmediateSourceCallbacks = false;
+                }
+            }
 
             private SourceTask(
                     Ast.FunctionDecl function,
@@ -1367,6 +1411,7 @@ public final class OresEvalRootNode extends RootNode {
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
                     nextStep = null;
+                    immediateSourceCallbacks.clear();
                     initialBlockEnv = null;
                     // Preserve control/authority failures even when a future
                     // or resumed continuation wraps the original exception.
@@ -1475,6 +1520,7 @@ public final class OresEvalRootNode extends RootNode {
                     awaitingContinuation = null;
                     pendingLoopContinuation = null;
                     pendingLoopGuardEnv = null;
+                    immediateSourceCallbacks.clear();
                     unwindCancelledSource();
                 } else {
                     SourceValueCont continuation = awaitingContinuation;
@@ -2204,6 +2250,11 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return false;
             }
+            if (expr instanceof Ast.WithExpr update) {
+                return expressionContainsPotentialSuspension(update.source(), seen)
+                        || update.changes().stream().anyMatch(
+                                change -> expressionContainsPotentialSuspension(change.value(), seen));
+            }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
                 if (runtime.operation().equals("cooperate")) return true;
                 return runtime.arguments().stream()
@@ -2447,8 +2498,9 @@ public final class OresEvalRootNode extends RootNode {
                 // A later source statement or completion callback is not part
                 // of this statement's exception scope. Never reinterpret its
                 // error as another completion for the current block.
-                runStatements(
-                        task, statements, env, defers, index + 1, continuation);
+                task.dispatchImmediateSourceCallback(
+                        () -> runStatements(
+                                task, statements, env, defers, index + 1, continuation));
                 return;
             }
 
@@ -2459,13 +2511,14 @@ public final class OresEvalRootNode extends RootNode {
                     defers,
                     (ignored, flow) -> {
                         if (flow.kind() == SourceFlowKind.NORMAL) {
-                            runStatements(
-                                    task,
-                                    statements,
-                                    env,
-                                    defers,
-                                    index + 1,
-                                    continuation);
+                            task.dispatchImmediateSourceCallback(
+                                    () -> runStatements(
+                                            task,
+                                            statements,
+                                            env,
+                                            defers,
+                                            index + 1,
+                                            continuation));
                         } else {
                             finishBlock(
                                     task,
@@ -4942,13 +4995,10 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, List.of(), failure);
                         } else {
                             values.add(value);
-                            evalSuspendableArgumentAt(
-                                    t,
-                                    expressions,
-                                    env,
-                                    values,
-                                    index + 1,
-                                    continuation);
+                            t.dispatchImmediateSourceCallback(
+                                    () -> evalSuspendableArgumentAt(
+                                            t, expressions, env, values,
+                                            index + 1, continuation));
                         }
                     });
         }
@@ -5570,17 +5620,21 @@ public final class OresEvalRootNode extends RootNode {
                 boolean declaredFuture,
                 Env env,
                 SourceValueCont continuation) {
-            // Do not catch exceptions from downstream callbacks. They may
-            // already have received a terminal result, and a second delivery
-            // would replay guest effects or double-release borrowed resources.
+            // Separate callee exceptions from consumer exceptions. Dispatching
+            // the consumer within an invocation catch would deliver a failure
+            // twice if downstream threw during synchronous completion.
             Object result;
             try {
                 result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
-                continuation.accept(task, null, failure);
+                task.dispatchImmediateSourceCallback(
+                        () -> continuation.accept(task, null, failure));
                 return;
             }
 
+            // Every continuation is delivered through the SourceTask trampoline
+            // (bounded synchronous chaining, no StackOverflowError), and never
+            // from inside an evaluation catch.
             if (result instanceof OresFuture<?> future && !declaredFuture) {
                 // Already-settled Futures remain values, without yielding.
                 if (future.isDone()) {
@@ -5588,27 +5642,33 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         completed = future.join();
                     } catch (RuntimeException | Error completedFailure) {
-                        continuation.accept(task, null, completedFailure);
+                        task.dispatchImmediateSourceCallback(
+                                () -> continuation.accept(task, null, completedFailure));
                         return;
                     }
-                    continuation.accept(task, completed, null);
+                    Object value = completed;
+                    task.dispatchImmediateSourceCallback(
+                            () -> continuation.accept(task, value, null));
                     return;
                 }
                 if (env.hasLiveMutexGuards()) {
-                    continuation.accept(task, null, new IllegalStateException(
-                            "cannot suspend on an implicit Future while holding a live MutexGuard"));
+                    task.dispatchImmediateSourceCallback(
+                            () -> continuation.accept(task, null, new IllegalStateException(
+                                    "cannot suspend on an implicit Future while holding a live MutexGuard")));
                     return;
                 }
                 // suspend() can synchronously resume a completed Future. Its
                 // callback's exception must never enter an evaluation catch.
                 task.suspend(future, (t, value, failure) ->
-                        continuation.accept(t, value, failure));
+                        t.dispatchImmediateSourceCallback(
+                                () -> continuation.accept(t, value, failure)));
                 return;
             }
-            continuation.accept(task, result, null);
+            task.dispatchImmediateSourceCallback(
+                    () -> continuation.accept(task, result, null));
         }
 
-        private boolean invocationDeclaresAsync(Invocation invocation) {
+                private boolean invocationDeclaresAsync(Invocation invocation) {
             return switch (invocation.kind()) {
                 case FUNCTION, FUNCTION_BODY ->
                         ((Ast.FunctionDecl) invocation.target()).async()
@@ -7849,6 +7909,49 @@ public final class OresEvalRootNode extends RootNode {
             return context.submitWorkflowGuest(payload);
         }
 
+        /** Mirrors independent type/ownership copy admission at the runtime boundary. */
+        private boolean withCopyEligibleClass(Ast.ClassDecl klass) {
+            if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
+                    || klass.constructor() != null || klass.isAbstract()
+                    || !klass.parents().isEmpty() || !klass.genericParameters().isEmpty()
+                    || klass.fields().isEmpty()) return false;
+            for (Ast.FieldDecl field : klass.fields()) {
+                Ast.TypeRef slot = field.type();
+                if (field.bindingKind() == Ast.BindingKind.LET
+                        || field.mutableReferent() || slot == null
+                        || slot.isBorrow() || slot.inferArguments()
+                        || !slot.arguments().isEmpty()
+                        || !Set.of("int", "bool", "float", "string", "String").contains(slot.name())
+                        || findClass(slot.name()) != null
+                        || program.modules().stream().flatMap(module -> module.declarations().stream())
+                                .anyMatch(declaration -> declaration instanceof Ast.TypeAliasDecl alias
+                                        && alias.name().equals(slot.name()))) return false;
+            }
+            return true;
+        }
+
+        /** Never copy uninitialized or unexpected class slots. */
+        private LinkedHashMap<String, Object> checkedCopyClassFields(OresObject object) {
+            if (!withCopyEligibleClass(object.klass)) {
+                throw new IllegalStateException("unverified class copy contract");
+            }
+            if (object.fields.size() != object.klass.fields().size()) {
+                throw new IllegalStateException("copy class runtime field layout mismatch");
+            }
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            for (Ast.FieldDecl field : object.klass.fields()) {
+                if (!object.fields.containsKey(field.name())) {
+                    throw new IllegalStateException("copy class missing field '" + field.name() + "'");
+                }
+                Object value = object.fields.get(field.name());
+                if (value == UNINITIALIZED_FIELD) {
+                    throw new IllegalStateException("copy class contains uninitialized field '" + field.name() + "'");
+                }
+                fields.put(field.name(), value);
+            }
+            return fields;
+        }
+
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
                 case "fail" -> {
@@ -7859,16 +7962,63 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 // Borrow/take/share alter compiler ownership state, not the JVM handle.
                 case "borrow", "take", "share" -> value;
-                // Static ownership checking currently admits rt copy only for proven
-                // Copy values on this convergence branch, so returning the immutable
-                // scalar/value representation is an independent language-level copy.
-                case "copy" -> value;
+                case "copy" -> {
+                    if (value instanceof OresObject object) {
+                        if (!withCopyEligibleClass(object.klass)) {
+                            throw new IllegalStateException(
+                                    "rt copy class requires an immutable scalar-field copy contract");
+                        }
+                        // Explicit class copy must allocate a NEW owned object.
+                        // Returning the JVM handle here would manufacture a
+                        // second owner of the same mutable class instance.
+                        yield new OresObject(object.owner, object.klass,
+                                checkedCopyClassFields(object));
+                    }
+                    yield value;
+                }
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + operation + "'");
             };
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.WithExpr update) {
+                Object source = eval(update.source(), env);
+                Map<String, Object> original;
+                OresObject originalClass = null;
+                if (source instanceof ReadonlyRecordValue record) {
+                    original = record;
+                } else if (source instanceof OresObject object) {
+                    if (!(update.source() instanceof Ast.RuntimeCallExpr ownership)
+                            || (!ownership.operation().equals("copy")
+                                    && !ownership.operation().equals("take"))
+                            || !withCopyEligibleClass(object.klass)) {
+                        throw new IllegalStateException(
+                                "with class update requires explicit checked rt copy/take");
+                    }
+                    originalClass = object;
+                    original = checkedCopyClassFields(object);
+                } else {
+                    throw new IllegalStateException(
+                            "with requires a checked readonly record or immutable product class");
+                }
+                // Every RHS sees the original, not earlier replacements.
+                // Publish the new object only after all RHSs have succeeded.
+                LinkedHashMap<String, Object> replacements = new LinkedHashMap<>();
+                for (Ast.WithField change : update.changes()) {
+                    if (!original.containsKey(change.name())
+                            || replacements.containsKey(change.name())) {
+                        throw new IllegalStateException(
+                                "unchecked with field '" + change.name() + "'");
+                    }
+                    replacements.put(change.name(), eval(change.value(), env));
+                }
+                LinkedHashMap<String, Object> fields = new LinkedHashMap<>(original);
+                fields.putAll(replacements);
+                return originalClass != null
+                        ? new OresObject(originalClass.owner, originalClass.klass, fields)
+                        : new ReadonlyRecordValue(fields);
+            }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {
@@ -9419,7 +9569,7 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, false, false);
                     };
-                    case "compose", "flatMap" -> (Invokable) args -> {
+                    case "compose", "flatMap", "flat_map" -> (Invokable) args -> {
                         requireOne(args, "Future." + name);
                         if (!(args.getFirst() instanceof Invokable callback)) {
                             throw new IllegalArgumentException(

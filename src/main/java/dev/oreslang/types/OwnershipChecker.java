@@ -1160,6 +1160,55 @@ public final class OwnershipChecker {
             mergeBranchState(base, exits);
             return result;
         }
+        if (expr instanceof Ast.WithExpr update) {
+            // Reprove copyability independently: the ownership checker may
+            // be invoked directly without type-checker provenance.
+            ValueInfo source = checkExpr(update.source(), scope, false);
+            boolean recordCopy = source.type != null
+                    && source.type.isReadonlyRecordType()
+                    && isCopyType(source.type)
+                    && source.kind == ValueKind.COPY
+                    && source.borrowSource == null;
+            boolean nominalCopy = source.type != null
+                    && withCopyEligibleClass(source.type)
+                    && source.kind == ValueKind.MOVE_ONLY
+                    && source.borrowSource == null
+                    && update.source() instanceof Ast.RuntimeCallExpr ownership
+                    && (ownership.operation().equals("copy")
+                            || ownership.operation().equals("take"));
+            if (!recordCopy && !nominalCopy) {
+                throw error("with requires an owned readonly Copy record or "
+                        + "explicit rt copy/take of a certified immutable scalar-field class");
+            }
+            Map<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+            if (recordCopy) fields.putAll(source.type.recordMembers());
+            else {
+                Ast.ClassDecl klass = findClass(source.type.name());
+                for (Ast.FieldDecl field : klass.fields()) {
+                    fields.put(field.name(), field.type());
+                }
+            }
+            for (Ast.WithField change : update.changes()) {
+                Ast.TypeRef slot = fields.get(change.name());
+                if (slot == null) {
+                    throw error("unknown with field '" + change.name() + "'");
+                }
+                if (!isCopyType(slot) || containsMutexGuardType(slot)) {
+                    throw error("with field '" + change.name()
+                            + "' is not a verified Copy field");
+                }
+                ValueInfo replacement = checkExpr(change.value(), scope, true);
+                if (replacement.kind != ValueKind.COPY
+                        || replacement.borrowSource != null
+                        || isBorrowValue(replacement)
+                        || containsMutexGuardType(replacement.type)) {
+                    throw error("with replacement '" + change.name()
+                            + "' must be an owned Copy value, never a borrow or guard");
+                }
+            }
+            return new ValueInfo(source.type,
+                    recordCopy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
@@ -1352,16 +1401,27 @@ public final class OwnershipChecker {
                     if (sourceClass != null && hasCopyPolicy(sourceClass.annotations(), "NoCopy")) {
                         throw error("E_COPY_FORBIDDEN: rt copy of @NoCopy class '" + sourceClass.name() + "'");
                     }
-                    if (source.kind != ValueKind.COPY) {
-                        throw error(
-                                "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
-                                        + "this current-main convergence patch fails closed instead of aliasing");
+                    ValueInfo copied = null;
+                    if (source.kind == ValueKind.COPY) {
+                        copied = source;
+                    } else if (source.type != null && withCopyEligibleClass(source.type)
+                            && source.kind != ValueKind.MUT_BORROW
+                            && !scope.hasLiveMutexGuard()) {
+                        // An explicit class copy constructs a NEW owned value
+                        // from certified immutable fields. The source may be
+                        // an implicit immutable self receiver, never an actor
+                        // or a mutable/exclusive borrow.
+                        copied = new ValueInfo(source.type, ValueKind.MOVE_ONLY, null);
+                    }
+                    if (copied == null) {
+                        throw error("rt copy of move-only values needs a checked copy contract; "
+                                + "only immutable scalar-field product classes are enabled");
                     }
                     if (projected != null && projected.warnOnCopy()) {
                         copyWarnings.add("W_COPY_DISCOURAGED: rt copy of @"
                                 + "WarnOnCopy field '" + projected.origin() + "'");
                     }
-                    yield source;
+                    yield copied;
                 }
                 case "share" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
@@ -1946,7 +2006,10 @@ public final class OwnershipChecker {
             if (object.structuralRecord()) type = Ast.TypeRef.readonlyRecordType(members);
             else if (object.inferredStruct() || object.explicitStruct()) type = Ast.TypeRef.structType(members);
             else throw error("unknown anonymous aggregate kind " + object.kind());
-            return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(type,
+                    type.isReadonlyRecordType() && isCopyType(type)
+                            ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
@@ -5988,6 +6051,28 @@ public final class OwnershipChecker {
         }
     }
 
+    /** Explicit-only nominal copy contract; classes never become implicit Copy. */
+    private boolean withCopyEligibleClass(Ast.TypeRef source) {
+        if (source == null || source.isBorrow() || source.inferArguments()
+                || source.isClosedAggregateType() || !source.arguments().isEmpty()) return false;
+        Ast.ClassDecl klass = findClass(source.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
+                || klass.constructor() != null || klass.isAbstract()
+                || !klass.parents().isEmpty()
+                || !klass.genericParameters().isEmpty()
+                || klass.fields().isEmpty()) return false;
+        for (Ast.FieldDecl field : klass.fields()) {
+            Ast.TypeRef slot = field.type();
+            if (field.bindingKind() == Ast.BindingKind.LET || field.mutableReferent()
+                    || slot == null || slot.isBorrow() || slot.inferArguments()
+                    || !slot.arguments().isEmpty()
+                    || !Set.of("int", "bool", "float", "string", "String").contains(slot.name())
+                    || findClass(slot.name()) != null
+                    || hasLocalTypeAliasNamed(slot.name())) return false;
+        }
+        return true;
+    }
+
     private boolean isCopyType(Ast.TypeRef type) {
         // Inference markers and compiler-only unverified shapes carry no
         // structural Copy proof. Task Send already rejects them; Copy must
@@ -5999,6 +6084,10 @@ public final class OwnershipChecker {
         if (type.isUnion()) return !type.arguments().isEmpty()
                 && type.arguments().stream().allMatch(this::isCopyType);
         if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        // Only immutable RECORDs can be copied structurally; a mutable
+        // struct remains affine even if every field is a scalar.
+        if (type.isRecordType()) return type.isReadonlyRecordType()
+                && type.recordMembers().values().stream().allMatch(this::isCopyType);
         if (hasLocalTypeAliasNamed(type.name())) return false;
         // Same spelling is not enough to bestow a runtime wrapper's Copy
         // semantics on a locally declared nominal class.

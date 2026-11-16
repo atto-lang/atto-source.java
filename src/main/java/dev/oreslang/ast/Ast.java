@@ -1252,7 +1252,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
+    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr, WithExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
@@ -1279,6 +1279,34 @@ public final class Ast {
                     throw new IllegalArgumentException("duplicate aggregate constructor field '" + field.name() + "'");
                 }
             }
+        }
+    }
+
+    /**
+     * Parsed immutable field-update expression. Admission of nominal/record
+     * reconstruction remains blocked until type, ownership and backend
+     * lowering are all checked; preserving it as a distinct node prevents
+     * callers from treating it as an unchecked mutable field assignment.
+     */
+    public record WithExpr(Expr source, List<WithField> changes) implements Expr {
+        public WithExpr {
+            java.util.Objects.requireNonNull(source, "with source");
+            changes = List.copyOf(java.util.Objects.requireNonNull(changes, "with changes"));
+            if (changes.isEmpty()) throw new IllegalArgumentException("with update requires at least one field");
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (WithField change : changes) {
+                if (!names.add(change.name())) {
+                    throw new IllegalArgumentException("duplicate with field '" + change.name() + "'");
+                }
+            }
+        }
+    }
+
+    /** RHSs are expressions, not implicit function returns or setter calls. */
+    public record WithField(String name, Expr value) {
+        public WithField {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("with field name required");
+            java.util.Objects.requireNonNull(value, "with field expression");
         }
     }
 

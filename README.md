@@ -68,6 +68,8 @@ Async filesystem, TCP and HTTP client APIs: [usage and execution guarantees](doc
 
 Core assertions: see [Assert API and trap behavior](docs/ASSERT.md).
 
+CPU/GPU execution expressions, nested placement and `nb`/stream parity: see [proposed v1 contract](docs/CPU_GPU_NB_GRAPH_V1.md). This is **not** a claim that the backend executes GPU or streamed source blocks.
+
 ## Rust-only tooling policy (no Python)
 
 **Python is prohibited in this organization.** Do not add, maintain, invoke, generate, or require Python code or Python-based scripts, helpers, tests, code generators, build utilities, automation, CI steps, notebooks, or runtime dependencies. This includes `.py`, `.pyi`, `.ipynb`, `python` / `python3` commands, `pip`, `uv`, `poetry`, `pytest`, and Python GitHub Actions setup steps.

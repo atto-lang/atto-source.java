@@ -2821,7 +2821,126 @@ public final class TypeChecker {
         return java.util.Collections.unmodifiableSet(declared);
     }
 
+    /**
+     * Narrow derived copy-contract for the first nominal with slice:
+     * immutable, non-actor, ctorless products of builtin Copy scalar fields.
+     * This is an explicit rt copy operation, NOT implicit Copy for classes.
+     */
+    /**
+     * A with receiver may be an explicit copy/take or a chained with value.
+     * Those wrappers do not authorize suspending or effectful original sources.
+     * Inspect the underlying expression rather than blanket-rejecting the
+     * copy/take syntax that v1 explicitly supports.
+     */
+    private boolean withReceiverMaySuspend(Ast.Expr source) {
+        if (source instanceof Ast.RuntimeCallExpr runtime
+                && (runtime.operation().equals("copy") || runtime.operation().equals("take"))) {
+            return runtime.arguments().size() != 1
+                    || withReceiverMaySuspend(runtime.arguments().getFirst());
+        }
+        if (source instanceof Ast.WithExpr nested) {
+            return withReceiverMaySuspend(nested.source())
+                    || nested.changes().stream().anyMatch(
+                            change -> fieldInitializerMaySuspend(change.value()));
+        }
+        return fieldInitializerMaySuspend(source);
+    }
+
+    private boolean withCopyEligibleClass(Ast.ClassDecl klass) {
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
+                || klass.constructor() != null || klass.isAbstract()
+                || !klass.parents().isEmpty()
+                || !klass.genericParameters().isEmpty()
+                || klass.fields().isEmpty()) return false;
+        for (Ast.FieldDecl field : klass.fields()) {
+            Ast.TypeRef slot = field.type();
+            if (field.bindingKind() == Ast.BindingKind.LET
+                    || field.mutableReferent()
+                    || slot == null || slot.isBorrow() || slot.inferArguments()
+                    || !slot.arguments().isEmpty()
+                    || !Set.of("int", "bool", "float", "string", "String").contains(slot.name())
+                    || findClass(slot.name()) != null
+                    || findTypeAlias(slot.name()) != null
+                    || linkedClassAliases.getOrDefault(klass, Map.of()).containsKey(slot.name())) {
+                return false;
+            }
+            Type resolved = classFieldType(klass, field);
+            if (resolved != Primitive.INT && resolved != Primitive.BOOL
+                    && resolved != Primitive.FLOAT && resolved != Primitive.STRING) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.WithExpr update) {
+            if (withReceiverMaySuspend(update.source())) {
+                throw new IllegalArgumentException(
+                        "with receiver must be a synchronous, effect-safe value source; "
+                                + "await, calls with unproven effects and side effects are not admitted");
+            }
+            Type receiver = typeOf(update.source(), env, generics, self);
+            Type projected = receiver instanceof SelfType receiverSelf
+                    ? receiverSelf.bound() : receiver;
+            Record record = projected instanceof Record row
+                    && row.kind() == AggregateKind.RECORD && row.readOnly()
+                            ? row : null;
+            Ast.ClassDecl copyClass = null;
+            if (record == null && projected instanceof Named named) {
+                copyClass = findClass(named.name());
+                if (!withCopyEligibleClass(copyClass)) copyClass = null;
+            }
+            if (record == null && copyClass == null) {
+                throw new IllegalArgumentException(
+                        "with requires a readonly structural record or a "
+                                + "compiler-certified immutable scalar-field class; "
+                                + "mutable classes, structs, actors and borrowed updates are disabled");
+            }
+            if (copyClass != null) {
+                if (!(update.source() instanceof Ast.RuntimeCallExpr ownership)
+                        || (!ownership.operation().equals("copy")
+                                && !ownership.operation().equals("take"))) {
+                    throw new IllegalArgumentException(
+                            "nominal class with updates require explicit rt copy or rt take");
+                }
+            }
+            for (Ast.WithField change : update.changes()) {
+                Type expected;
+                if (record != null) {
+                    expected = record.members().get(change.name());
+                } else {
+                    Ast.FieldDecl matched = null;
+                    for (Ast.FieldDecl field : copyClass.fields()) {
+                        if (field.name().equals(change.name())) matched = field;
+                    }
+                    if (matched == null) {
+                        throw new IllegalArgumentException(
+                                "unknown with field '" + change.name() + "'");
+                    }
+                    requireClassMemberVisible(matched.visibility(),
+                            copyClass, "field", matched.name());
+                    expected = classFieldType(copyClass, matched);
+                }
+                if (expected == null) {
+                    throw new IllegalArgumentException(
+                            "unknown with field '" + change.name() + "'");
+                }
+                // Only synchronous/pure RHSs may participate in the first
+                // class/record reconstruction slice.
+                if (fieldInitializerMaySuspend(change.value())) {
+                    throw new IllegalArgumentException(
+                            "with field '" + change.name()
+                                    + "' requires a non-suspending, effect-safe value expression");
+                }
+                Type actual = typeOf(change.value(), env, generics, self);
+                requireReadonlyCapabilityPreserved(
+                        actual, expected, "with field '" + change.name() + "'");
+                requireAssignable(actual, expected,
+                        "with field '" + change.name() + "'");
+            }
+            return receiver;
+        }
         if (expr instanceof Ast.LocalAggregateConstructExpr construct) {
             throw new IllegalArgumentException(
                     "local aggregate constructor '" + construct.typeName()
@@ -3852,7 +3971,7 @@ public final class TypeChecker {
                 if (receiver instanceof Named typedFuture
                         && typedFuture.name().equals("Future")
                         && typedFuture.arguments().size() == 1
-                        && Set.of("map", "compose", "flatMap", "onSuccess")
+                        && Set.of("map", "compose", "flatMap", "flat_map", "onSuccess")
                                 .contains(member.member())) {
                     String operation = "Future." + member.member();
                     if (call.typeArgumentsPresent()) {
@@ -8404,7 +8523,7 @@ public final class TypeChecker {
             case "map" -> new Function(
                     List.of(new Function(List.of(element), Unknown.INSTANCE)),
                     unknownFuture);
-            case "compose", "flatMap" -> new Function(
+            case "compose", "flatMap", "flat_map" -> new Function(
                     List.of(new Function(List.of(element), unknownFuture)),
                     unknownFuture);
             case "onSuccess" -> new Function(
