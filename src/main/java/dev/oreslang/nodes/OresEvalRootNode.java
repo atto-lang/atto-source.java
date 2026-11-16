@@ -7890,6 +7890,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("E_COPY_UNPROVEN: expected class copy plan");
             }
             return executeDerivedCopyV1(plan, original,
+                    new java.util.IdentityHashMap<>(),
                     new java.util.IdentityHashMap<>(), new int[]{0}, 0);
         }
 
@@ -7897,6 +7898,7 @@ public final class OresEvalRootNode extends RootNode {
                 dev.oreslang.types.DerivedCopyPlanV1.Plan plan,
                 Object value,
                 java.util.IdentityHashMap<Object, Object> copied,
+                java.util.IdentityHashMap<Object, dev.oreslang.types.DerivedCopyPlanV1.Plan> copyTypes,
                 int[] visited, int depth) {
             if (depth > 32 || ++visited[0] > 16384) {
                 throw new IllegalArgumentException("E_COPY_BUDGET: copy depth/node budget exceeded");
@@ -7914,6 +7916,14 @@ public final class OresEvalRootNode extends RootNode {
                 // Strings and boxed numbers/bools are immutable guest values.
                 return value;
             }
+            // A repeated source reference may only reuse a clone under the
+            // SAME statically proven logical layout. Otherwise an alias could
+            // launder an Array<int> into Array<Resource> or another nominal.
+            dev.oreslang.types.DerivedCopyPlanV1.Plan previous = copyTypes.putIfAbsent(value, plan);
+            if (previous != null && !previous.equals(plan)) {
+                throw new IllegalArgumentException(
+                        "E_COPY_TYPE: repeated source object has conflicting copy plans");
+            }
             if (copied.containsKey(value)) return copied.get(value);
             if (plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Sequence sequence) {
                 if (!(value instanceof List<?> source)) {
@@ -7927,7 +7937,7 @@ public final class OresEvalRootNode extends RootNode {
                 copied.put(value, result);
                 for (Object element : source) {
                     result.add(executeDerivedCopyV1(
-                            sequence.element(), element, copied, visited, depth + 1));
+                            sequence.element(), element, copied, copyTypes, visited, depth + 1));
                 }
                 return result;
             }
@@ -7953,7 +7963,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     copiedFields.put(field.name(), executeDerivedCopyV1(
                             field.plan(), source.fields.get(field.name()),
-                            copied, visited, depth + 1));
+                            copied, copyTypes, visited, depth + 1));
                 }
                 return result;
             }
