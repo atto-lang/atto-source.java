@@ -54,16 +54,24 @@ final class TildeRecordLiteralGuestTest {
 
     @Test
     void readonlyRecordsCannotRegainMutationAuthority() {
-        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
-                fixture("records-readonly-reject.atto")));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(fixture("records-readonly-reject.atto")));
+        String diagnostic = error.getMessage().toLowerCase();
+        assertTrue(diagnostic.contains("readonly") || diagnostic.contains("mutat")
+                        || diagnostic.contains("assign"),
+                "must reject mutation, not merely fail to parse Record.of: " + error.getMessage());
     }
 
     @Test
     void duplicateAndMixedEntriesFailBeforeRuntime() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
-                fixture("records-duplicate-reject.atto")));
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(fixture("records-duplicate-reject.atto")));
+        assertTrue(duplicate.getMessage().toLowerCase().contains("duplicate"),
+                "must diagnose duplicate fields, not missing Record.of lowering: " + duplicate.getMessage());
+        IllegalArgumentException mixed = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(fixture("records-mixed-reject.atto")));
+        assertTrue(mixed.getMessage().toLowerCase().contains("mixed"),
+                "must diagnose record/map mixing, not missing Record.of lowering: " + mixed.getMessage());
     }
 
     @Test
@@ -162,6 +170,7 @@ final class TildeRecordLiteralGuestTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(
                         fixture("records-spread-ownership-reject.atto")));
-        assertNotNull(e.getMessage());
+        assertTrue(e.getMessage().toLowerCase().contains("spread"),
+                "must reject unsupported spread semantics, not just Record.of syntax: " + e.getMessage());
     }
 }
