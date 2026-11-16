@@ -169,10 +169,10 @@ final class CollectionOfFactoryGuestTest {
         // These are nominal declarations too. Without the collision scan,
         // Tuple.of / Map.of would be stolen by the built-in AST factory.
         assertInstanceOf(Ast.CallExpr.class, firstFactoryInitializer(
-                "define contract Tuple as end\\n"
+                "define contract Tuple as end\n"
                         + program("const tuple = Tuple.of(1, 2);")));
         assertInstanceOf(Ast.CallExpr.class, firstFactoryInitializer(
-                "define isoactor Map as end\\n"
+                "define isoactor Map as end\n"
                         + program("const map = Map.of<string,int>();")));
     }
 
