@@ -55,6 +55,8 @@ public final class ReadonlyShapeProjectionV1HostMain {
             List.of(f("x",Scalar.I64,0)))),"SP015");
         reject(()->ReadonlyShapeProjectionV1.prove(s(Origin.CLASS,f("x",Scalar.I64,0)),
             List.of(new RequiredField("x",Scalar.I64),new RequiredField("x",Scalar.I64))),"SP016");
+        reject(()->ReadonlyShapeProjectionV1.prove(s(Origin.CLASS,f("x",Scalar.BOOL,0)),
+            List.of(new RequiredField("x",Scalar.BOOL))),"non-i64 ABI must reject even same type");
         System.out.println("JAVA HOST_WITNESS 16/16 PASS; offset oracle 84; Truffle guest NOT_EXECUTED");
     }
 }
