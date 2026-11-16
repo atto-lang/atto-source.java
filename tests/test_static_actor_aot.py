@@ -229,7 +229,7 @@ class StaticActorPilotTests(unittest.TestCase):
 
     def test_caret_guard_fail_arm_and_final_return(self):
         self.source.write_text(self.source.read_text().replace(
-            "return 43;", "guard false { ^ 7; }\\n  ^ 43;"))
+            "return 43;", "guard false { ^ 7; }\n  ^ 43;"))
         result = self.compile()
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads((self.output / "manifest.json").read_text())
@@ -247,7 +247,7 @@ class StaticActorPilotTests(unittest.TestCase):
     def test_caret_guard_cannot_bypass_actor_retirement(self):
         self.rejects("guard may exit only after all actor handles are stopped",
                      self.source.read_text().replace(
-                         "stop first;", "guard false { ^ 7; }\\n  stop first;"))
+                         "stop first;", "guard false { ^ 7; }\n  stop first;"))
 
     def test_infix_caret_is_not_xor_and_emits_no_artifact(self):
         self.rejects("expected ';'", self.source.read_text().replace(
@@ -260,6 +260,17 @@ class StaticActorPilotTests(unittest.TestCase):
     def test_double_caret_has_no_lexical_return_meaning(self):
         self.rejects("expected a signed integer literal", self.source.read_text().replace(
             "return 43;", "^ ^ 43;"))
+
+
+
+    def test_caret_static_native_image_fixture_is_compilable(self):
+        caret_fixture = ROOT / "fixtures/actor_counter_caret.atto"
+        self.source.write_bytes(caret_fixture.read_bytes())
+        result = self.compile()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertEqual(manifest["expected_guest_result"], 7)
+        self.assertEqual(manifest["actor_sends"], 3)
 
 
 if __name__ == "__main__":

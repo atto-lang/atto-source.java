@@ -23,6 +23,7 @@ source="${ATTO_STATIC_GUEST_FIXTURE:-fixtures/actor_counter.atto}"
 case "$source" in
   fixtures/actor_counter.atto) expected_result=43 ;;
   fixtures/actor_counter_guard.atto) expected_result=7 ;;
+  fixtures/actor_counter_caret.atto) expected_result=7 ;;
   *) echo "ATTO_STATIC_AOT_NOT_EXECUTED: fixture path not admitted" >&2; exit 2 ;;
 esac
 source_pin="$(sha256sum "$source" | cut -d ' ' -f 1)"
