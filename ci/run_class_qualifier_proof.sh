@@ -23,6 +23,16 @@ git diff --cached --quiet --exit-code || die "index is dirty"
 [[ -f src/test/java/dev/oreslang/ImportsQualifiedCallTest.java ]] || die "imports regression tests missing"
 [[ -f .github/private-ci-approved-repositories.txt ]] || die "source security policy missing"
 
+# A token-free cross-repository mirror necessarily has a different commit ID,
+# even when its Git tree matches the originating source exactly. In that case
+# enforce the independently reviewed SHA-256 path/mode/blob manifest and rehash
+# every blob BEFORE Maven or any guest code executes.
+if [[ "$(git rev-parse HEAD)" != "$EXPECTED_SOURCE_COMMIT" ]]; then
+  [[ -n "${EXPECTED_SOURCE_MANIFEST_SHA256:-}" ]] || die \
+    "cross-commit mirror requires separately approved EXPECTED_SOURCE_MANIFEST_SHA256"
+  bash ci/verify_exact_tree_mirror.sh
+fi
+
 printf 'SOURCE_COMMIT=%s\nEXACT_SOURCE_TREE=%s\nMIRROR_COMMIT=%s\n' \
   "$EXPECTED_SOURCE_COMMIT" "$actual_tree" "$(git rev-parse HEAD)"
 java -version
