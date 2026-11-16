@@ -45,6 +45,63 @@ public final class ReadonlyShapeProjectionV1 {
         }
     }
 
+    /**
+     * Project a *compiler-owned* ordinary class declaration against a parsed
+     * anonymous readonly row. This never trusts a guest-authored field-offset
+     * descriptor: slots are derived from the actual class field declaration
+     * order, which the evaluator also uses when constructing objects.
+     *
+     * Inherited layouts must be flattened by the real checker first; denying
+     * them here is safer than silently guessing their physical offsets.
+     */
+    public static Plan proveCheckedClass(
+            dev.oreslang.ast.Ast.ClassDecl actual,
+            dev.oreslang.ast.Ast.TypeRef expected,
+            int checkedNominalId,
+            long checkedLayoutEpoch,
+            long checkedLoanId) {
+        Objects.requireNonNull(actual, "checked class declaration");
+        Objects.requireNonNull(expected, "checked structural target");
+        if (actual.actorKind() != dev.oreslang.ast.Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException("actor identity is not structurally projectable");
+        }
+        if (!actual.parents().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "inherited class layouts require a verified flattened layout");
+        }
+        if (!expected.isReadonlyRecordType()) {
+            throw new IllegalArgumentException(
+                    "first-stage borrowed shape ABI requires an anonymous readonly row");
+        }
+        java.util.Map<String, dev.oreslang.ast.Ast.TypeRef> expectedFields =
+                expected.recordMembers();
+        List<RequiredField> requested = new ArrayList<>(expectedFields.size());
+        for (var member : expectedFields.entrySet()) {
+            if (!member.getValue().name().equals("int")
+                    || !member.getValue().arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "non-i64 structural field requires a separately verified ABI");
+            }
+            requested.add(new RequiredField(member.getKey(), Scalar.I64));
+        }
+        List<Field> actualFields = new ArrayList<>(actual.fields().size());
+        int slot = 0;
+        for (dev.oreslang.ast.Ast.FieldDecl field : actual.fields()) {
+            boolean i64 = field.type() != null
+                    && field.type().name().equals("int")
+                    && field.type().arguments().isEmpty();
+            actualFields.add(new Field(
+                    field.name(), i64 ? Scalar.I64 : Scalar.STRING, slot++,
+                    field.visibility() == dev.oreslang.ast.Ast.Visibility.PUBLIC,
+                    field.bindingKind() != dev.oreslang.ast.Ast.BindingKind.LET,
+                    true,
+                    false));
+        }
+        return prove(new Source(Origin.CLASS, checkedNominalId,
+                        checkedLayoutEpoch, checkedLoanId, false,
+                        List.copyOf(actualFields)), requested);
+    }
+
     public static Plan prove(Source source, List<RequiredField> required) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(required, "required");
