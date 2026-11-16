@@ -3500,6 +3500,21 @@ public final class TypeChecker {
                         "local '" + shadowing.name() + "' shadows an instance method "
                                 + "and is not callable; write self." + shadowing.name() + "(...)");
             }
+            // Import aliases never become arity fallbacks for a same-name
+            // file-root family. Call imports::name(...) to select the import.
+            if (call.callee() instanceof Ast.NameExpr localName
+                    && env.lookup(localName.name()) == null
+                    && importedFunctions.containsKey(localName.name())
+                    && functions.containsKey(Parser.ROOT_MODULE + "." + localName.name())) {
+                int arity = fixedCallArity(call.arguments(), env, generics, self,
+                        "file-root function " + localName.name());
+                if (findQualifiedFunction(
+                        Parser.ROOT_MODULE + "." + localName.name(), arity) == null) {
+                    throw new IllegalArgumentException(
+                            "file-root callable '" + localName.name() + "' has no matching arity; "
+                                    + "use imports::" + localName.name() + "(...) for the imported binding");
+                }
+            }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
                 int arity = fixedCallArity(
