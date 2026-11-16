@@ -61,7 +61,7 @@ final class StdAwaitUnaryGuestTest {
                 () -> TypeChecker.check(Parser.parse("""
                     pub fnc main(): int { return 41 |> std.await; }
                     """)));
-        assertTrue(wrongType.getMessage().contains("await requires Future"),
+        assertTrue(wrongType.getMessage().contains("std.await requires exactly one Future<T>"),
                 wrongType::getMessage);
 
         var shadowed = assertThrows(IllegalArgumentException.class,
