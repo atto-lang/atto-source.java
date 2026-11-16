@@ -9785,7 +9785,8 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private boolean clearRejectedDispatchIfCurrent(Object dispatchTicket) {
             synchronized (lifecycleLock) {
-                if (scheduledDispatchToken != dispatchTicket || carrierActive) return false;
+                if (dispatchTicket == null || scheduledDispatchToken != dispatchTicket
+                        || !scheduled.get() || carrierActive) return false;
                 scheduledDispatchToken = null;
                 scheduled.set(false);
                 return true;
