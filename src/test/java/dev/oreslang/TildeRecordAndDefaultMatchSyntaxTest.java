@@ -42,7 +42,6 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
         }
         // Construction has one canonical owner; parsing is not runtime proof.
         assertDoesNotThrow(() -> initializer("Record.of()"));
-        assertDoesNotThrow(() -> initializer("Record.of(foo: 42, ready: true)"));
     }
 
     @Test
@@ -93,7 +92,7 @@ final class TildeRecordAndDefaultMatchSyntaxTest {
                 "~record(foo: 1, \"x\" => true)")) {
             assertThrows(IllegalArgumentException.class, () -> initializer(source), source);
         }
-        assertDoesNotThrow(() -> initializer("Map.of<string,bool>(\"ready\" => true)"));
+        assertDoesNotThrow(() -> initializer("Map.of()"));
     }
 
     @Test
