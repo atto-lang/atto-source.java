@@ -4820,10 +4820,10 @@ public final class Parser {
 
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parsePipeline();
-        if (isContextualIdentifier("pipe")) {
-            throw error(peek(), "actor pipe expressions require compiler-checked "
-                    + "source/transform/sink role typing, supervisor exclusion, "
-                    + "bounded edge transport and Java/LLVM lowering; not yet enabled");
+        if (isContextualIdentifier("pipe") || isContextualIdentifier("rpipe")) {
+            throw error(peek(), "E_PIPE_BACKEND_UNSUPPORTED: 'pipe' flows left-to-right and "
+                    + "'rpipe' flows right-to-left; typed continuous graph, bounded stream "
+                    + "ownership, checked error completion and supervisor lowering are not yet enabled");
         }
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
@@ -4848,12 +4848,14 @@ public final class Parser {
         while (true) {
             boolean functional = match(PIPE_FORWARD);
             boolean actorPipe = !functional && matchContextualKeyword("pipe");
-            if (!functional && !actorPipe) break;
+            boolean reverseActorPipe = !functional && !actorPipe
+                    && matchContextualKeyword("rpipe");
+            if (!functional && !actorPipe && !reverseActorPipe) break;
             Token operator = previous();
-            if (actorPipe) {
-                throw error(operator, "actor pipe expressions require compiler-checked "
-                        + "source/transform/sink role typing, supervisor exclusion, "
-                        + "bounded edge transport and Java/LLVM lowering; not yet enabled");
+            if (actorPipe || reverseActorPipe) {
+                throw error(operator, "E_PIPE_BACKEND_UNSUPPORTED: continuous 'pipe' / 'rpipe' "
+                        + "requires typed source/sink roles, supervised bounded transport, "
+                        + "checked PipeHandle errors and backend lowering; no scalar fallback");
             }
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
@@ -4894,6 +4896,51 @@ public final class Parser {
                         Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
             } else {
                 throw error(operator, "pipeline stage must be a named callable");
+            }
+        }
+        if (check(PIPE_REVERSE) && stages > 0) {
+            throw error(peek(), "E_PIPE_DIRECTION: mixing '|>' and '<|' without parentheses is ambiguous");
+        }
+        // Reverse functional application is right-associative:
+        // f <| g <| value == f(g(value)). Unlike 'rpipe', this is one-value
+        // callable composition, not a continuous actor/stream connection.
+        if (match(PIPE_REVERSE)) {
+            List<Ast.Expr> reverseStages = new ArrayList<>();
+            Token operator = previous();
+            reverseStages.add(value);
+            while (true) {
+                if (reverseStages.size() > 128) {
+                    throw error(operator, "reverse functional pipeline exceeds 128 stages");
+                }
+                Ast.Expr right = parseConditional();
+                if (match(PIPE_REVERSE)) {
+                    reverseStages.add(right);
+                    operator = previous();
+                    continue;
+                }
+                if (check(PIPE_FORWARD)) {
+                    throw error(peek(), "E_PIPE_DIRECTION: mixing '<|' and '|>' without parentheses is ambiguous");
+                }
+                for (int i = reverseStages.size() - 1; i >= 0; i--) {
+                    Ast.Expr callable = reverseStages.get(i);
+                    if (callable instanceof Ast.CallExpr call) {
+                        if (!isPipelineCallable(call.callee())) {
+                            throw error(operator, "reverse pipeline requires a named callable");
+                        }
+                        List<Ast.Expr> args = new ArrayList<>();
+                        args.add(right);
+                        args.addAll(call.arguments());
+                        right = new Ast.CallExpr(call.callee(), call.typeArguments(),
+                                call.typeArgumentsPresent(), args, Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
+                    } else if (isPipelineCallable(callable)) {
+                        right = new Ast.CallExpr(callable, List.of(), false, List.of(right),
+                                Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
+                    } else {
+                        throw error(operator, "reverse pipeline stage must be a named callable");
+                    }
+                }
+                value = right;
+                break;
             }
         }
         return value;
