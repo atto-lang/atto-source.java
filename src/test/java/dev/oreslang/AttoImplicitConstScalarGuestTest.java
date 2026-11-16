@@ -48,10 +48,24 @@ final class AttoImplicitConstScalarGuestTest {
     }
 
     @Test void valMutIsExplicitAndNoLongerAnImplicitValCapability() {
-        var plain = Parser.parse("pub fnc main(): int { val int x = 10; return x; }");
-        var writable = Parser.parse("pub fnc main(): int { val mut int x = 10; return x; }");
-        assertNotNull(plain);
-        assertNotNull(writable);
+        var parsed = Parser.parse("pub fnc main(): int { val int readonly = 10; val mut int writable = 20;"
+                + " return readonly + writable; }");
+        var function = parsed.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(declaration -> declaration instanceof dev.oreslang.ast.Ast.FunctionDecl fn
+                        && fn.name().equals("main"))
+                .map(declaration -> (dev.oreslang.ast.Ast.FunctionDecl) declaration)
+                .findFirst().orElseThrow();
+        var plain = (dev.oreslang.ast.Ast.BindingStmt) function.body().get(0);
+        var writable = (dev.oreslang.ast.Ast.BindingStmt) function.body().get(1);
+        assertFalse(plain.mutableReferent(), "plain val must not imply mut");
+        assertTrue(writable.mutableReferent(), "val mut must request mutable referent access");
+        assertFalse(new dev.oreslang.ast.Ast.BindingStmt(plain.kind(), plain.declaredType(),
+                plain.name(), plain.initializer()).mutableReferent(),
+                "AST convenience constructor must not regrant legacy val mut");
+        assertFalse(new dev.oreslang.ast.Ast.DestructureBinding(
+                dev.oreslang.ast.Ast.BindingKind.VAL, "item").mutableReferent(),
+                "destructure AST convenience constructor must default read-only");
     }
 
     @Test void bothSpellingRequirePureAndCheckedConstantEvaluation() {
