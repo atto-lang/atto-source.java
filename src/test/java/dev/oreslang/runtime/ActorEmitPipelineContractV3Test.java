@@ -119,6 +119,24 @@ final class ActorEmitPipelineContractV3Test {
         assertThrows(UnsupportedOperationException.class, () -> snap.emitTypes().add("bool"));
     }
 
+    @Test void emittedSiteBudgetRejectsUnboundedCompilerEvidenceBeforeCopy() {
+        assertEquals(MAX_EMIT_OBSERVATIONS, 1024);
+        assertEquals(1, validate(List.of(
+                new Stage("source", "Parse", "int",
+                        java.util.Collections.nCopies(MAX_EMIT_OBSERVATIONS, "bool"), false),
+                actor("sink", "Sink", "bool"))).size());
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> new Stage("source", "Parse", "int",
+                        java.util.Collections.nCopies(MAX_EMIT_OBSERVATIONS + 1, "bool"), false));
+        assertTrue(failure.getMessage().startsWith("E_ACTOR_PIPE_EMIT_LIMIT:"));
+        // Invalid evidence cannot bypass the budget by placing the error
+        // after a thousand otherwise-consistent emit observations.
+        failure = assertThrows(IllegalArgumentException.class,
+                () -> new Stage("source", "Parse", "int",
+                        java.util.Collections.nCopies(1_000_000, "int"), false));
+        assertTrue(failure.getMessage().startsWith("E_ACTOR_PIPE_EMIT_LIMIT:"));
+    }
+
     @Test void differentialMutationCannotCreateImplicitOutputFromInput() {
         for (int n = 2; n <= 16; n++) {
             var stages = new ArrayList<Stage>();
