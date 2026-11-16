@@ -1788,7 +1788,7 @@ public final class OwnershipChecker {
             return new ValueInfo(witness, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
-            throw error("unresolved ~map() cannot pass ownership admission");
+            throw error("unresolved Map.of() cannot pass ownership admission");
         }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
             // Mirror the concrete-only TypeChecker admission. This also
