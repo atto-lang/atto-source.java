@@ -1194,6 +1194,12 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        // Sealed actor state is typed, private AST metadata: NEVER an
+        // ordinary Actor/Class field, mutable Java object or user-visible
+        // state-loan capability. TypeChecker must reject until runtime
+        // allocation and critical loan lowering are proven.
+        List<Ast.ProtectedStateField> sealedStateFields = new ArrayList<>();
+        boolean declaredSealedState = false;
         int requestConcurrency = 1;
         int messageConcurrency = 1;
         boolean declaredRequestConcurrency = false;
@@ -1205,12 +1211,49 @@ public final class Parser {
             if (match(DEFINE)) {
                 mods = mergeModifiers(mods, parseModifiers());
             }
-            // A typed state schema is not a legacy actor field/method.
-            // Reject it with an explicit admission error until the AST,
-            // checker, lifetime rules and runtime-owned loan are integrated.
             if (isContextualIdentifier("state") && checkNext(LBRACE)) {
-                throw error(peek(), "actor state schema requires compiler-sealed "
-                        + "state ownership and handle_state lowering; not yet enabled");
+                if (declaredSealedState)
+                    throw error(peek(), "duplicate sealed actor state container");
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async
+                        || mods.suspends || mods.generator || mods.isStatic || mods.isAbstract
+                        || mods.shared || mods.untrusted || mods.structural
+                        || mods.nonLexical || mods.trapped)
+                    throw error(peek(), "sealed actor state cannot have modifiers or annotations");
+                declaredSealedState = true;
+                advance(); // contextual 'state', not an actor field
+                consume(LBRACE, "expected '{' after actor state");
+                while (!check(RBRACE) && !check(EOF)) {
+                    if (sealedStateFields.size() >= 64)
+                        throw error(peek(), "sealed actor state exceeds 64-field bound");
+                    consume(LET, "sealed actor state requires private 'let' fields");
+                    Ast.TypeRef type = parseTypeRef();
+                    if (!type.arguments().isEmpty()
+                            || (!type.name().equals("int") && !type.name().equals("bool")))
+                        throw error(previous(), "sealed actor state v1 requires scalar int/bool fields");
+                    String fieldName = consume(IDENT, "expected sealed actor state field name").lexeme();
+                    if (sealedStateFields.stream().anyMatch(x -> x.name().equals(fieldName)))
+                        throw error(previous(), "duplicate sealed actor state field '" + fieldName + "'");
+                    if (!match(EQUAL, COLON))
+                        throw error(peek(), "sealed actor state field needs a literal initializer");
+                    Ast.Expr initializer = parseExpression();
+                    if (!(initializer instanceof Ast.LiteralExpr literal))
+                        throw error(previous(), "sealed actor state initializer must be a literal");
+                    // A literal AST node alone is not enough: it could hold
+                    // a String, float or bool in an int slot (or vice versa).
+                    // With the physical state layout still unlowered, enforce
+                    // the exact supported scalar representation at admission.
+                    Object initialValue = literal.value();
+                    if ((type.name().equals("int") && !(initialValue instanceof Long))
+                            || (type.name().equals("bool") && !(initialValue instanceof Boolean)))
+                        throw error(previous(), "sealed actor state initializer type must match "
+                                + type.name());
+                    consume(SEMICOLON, "sealed actor state field requires ';'");
+                    sealedStateFields.add(new Ast.ProtectedStateField(fieldName, type, initializer));
+                }
+                consume(RBRACE, "unterminated sealed actor state container");
+                if (sealedStateFields.isEmpty())
+                    throw error(previous(), "sealed actor state must contain at least one field");
+                continue;
             }
             if (isContextualIdentifier("int") && current + 1 < tokens.size()
                     && (tokens.get(current + 1).lexeme().equals("requestConcurrency")
@@ -1331,6 +1374,55 @@ public final class Parser {
                 throw error(peek(), "actor handle_state is compiler-owned; "
                         + "user-defined state-loan authority is forbidden");
             }
+            // Preserve critical as explicit AST metadata. It is never an
+            // ordinary method called 'critical', and generic execution is
+            // still rejected before TypeChecker expansion or raw evaluation.
+            if (isContextualIdentifier("critical")) {
+                Token criticalToken = advance();
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async
+                        || mods.suspends || mods.generator || mods.isStatic
+                        || mods.isAbstract || mods.shared || mods.untrusted
+                        || mods.structural || mods.nonLexical || mods.trapped) {
+                    throw error(criticalToken,
+                            "critical actor method cannot have modifiers or annotations");
+                }
+                int criticalBodyStartToken = current;
+                Ast.MethodDecl parsed = parseMethod(List.of(), mods);
+                // No nested await or cooperative yield can run while an
+                // actor-owned exclusive state loan is held. Scan the complete
+                // parsed method token span, including lambda/defer/loop bodies;
+                // merely checking the outer method's suspends flag is unsafe.
+                // Once checked MIR exists it must enforce this transitively
+                // through the complete call graph as well.
+                for (int i = criticalBodyStartToken; i < current; i++) {
+                    Token token = tokens.get(i);
+                    if (token.type() == AWAIT
+                            || (token.type() == RT && i + 1 < current
+                                    && tokens.get(i + 1).lexeme().equals("cooperate"))) {
+                        throw error(token,
+                                "critical state loan cannot await or cooperate");
+                    }
+                }
+                if (parsed.name().equals("receive") || parsed.name().equals("on_start")
+                        || parsed.name().equals("tear_down") || parsed.name().equals("handle_state")
+                        || parsed.name().equals("on_panic")) {
+                    throw error(criticalToken,
+                            "critical actor method cannot define runtime lifecycle or intrinsics");
+                }
+                if (parsed.body().isEmpty() || parsed.isAbstract()
+                        || parsed.isStatic() || parsed.async() || parsed.suspends()
+                        || parsed.structural() || !parsed.genericParameters().isEmpty()
+                        || !parsed.effects().equals(Ast.EffectSpec.none())) {
+                    throw error(criticalToken,
+                            "critical method requires non-suspending checked body");
+                }
+                methods.add(new Ast.MethodDecl(
+                        parsed.name(), parsed.visibility(), false, false,
+                        false, false, false, parsed.explicitReceiverType(),
+                        parsed.genericParameters(), parsed.parameters(), parsed.returnType(),
+                        parsed.annotations(), parsed.body(), parsed.effects(), true));
+                continue;
+            }
             if (check(IDENT) && peek().lexeme().equals("on_panic")) {
                 throw error(peek(), "actor-local on_panic is forbidden: "
                         + "panic goes directly to the supervisor CONTROL lane");
@@ -1352,9 +1444,12 @@ public final class Parser {
         if (prefix.serial() && (requestConcurrency != 1 || messageConcurrency != 1)) {
             throw error(previous(), "serial actors require requestConcurrency = 1 and messageConcurrency = 1");
         }
+        if (declaredSealedState && !fields.isEmpty())
+            throw error(previous(), "sealed actor state cannot mix ordinary actor fields");
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency),
+                sealedStateFields);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -1881,7 +1976,13 @@ public final class Parser {
                     "Critical", "RequiresPermission", "Permission",
                     "GrantPermission", "Unsafe", "Trusted", "Untrusted",
                     "AllowAll", "CallerRole", "CallableBy", "ActorMiddleware",
-                    "ActorMaxThreads", "DefaultArgVals").contains(name)) {
+                    "ActorMaxThreads",
+                    // An injected state handle is a capability, not inert metadata.
+                    // Reject before parsing nested arguments such as
+                    // @Inject(MutableStateContainer()) to avoid parse-error
+                    // misclassification and, more importantly, silent admission.
+                    "Inject", "StateBacked", "MutableStateContainer",
+                    "StateContainer", "DefaultArgVals").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
@@ -2774,17 +2875,44 @@ public final class Parser {
             }
             if (!(resource instanceof Ast.CallExpr call)
                     || !(call.callee() instanceof Ast.MemberExpr member)
-                    || !member.member().equals("borrow")
-                    || !call.arguments().isEmpty() || call.typeArgumentsPresent()) {
+                    || call.typeArgumentsPresent()) {
                 throw error(previous(),
                         "using borrowed scope requires a zero-argument resource.borrow() call");
             }
-            consume(AS, "using borrowed scope requires 'as <view>'");
-            Token name = consume(IDENT, "using borrowed scope requires a binding name");
-            if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
-                throw error(name, "using borrowed scope needs a named, usable view binding");
+            boolean telemetrySpan = member.member().equals("span")
+                    && member.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("telemetry");
+            boolean borrowedView = member.member().equals("borrow")
+                    && call.arguments().isEmpty();
+            if (!telemetrySpan && !borrowedView) {
+                throw error(previous(),
+                        "using borrowed scope requires a zero-argument resource.borrow() call");
             }
-            return new Ast.UsingBorrowStmt(resource, name.lexeme(), parseBlock());
+            if (telemetrySpan && call.arguments().size() > 1) {
+                throw error(previous(),
+                        "using telemetry.span accepts zero or one span-name argument");
+            }
+            consume(AS, telemetrySpan
+                    ? "using telemetry.span requires 'as <span>'"
+                    : "using borrowed scope requires 'as <view>'");
+            Token name = consume(IDENT, telemetrySpan
+                    ? "using telemetry.span requires a binding name"
+                    : "using borrowed scope requires a binding name");
+            if (name.lexeme().equals("_") || name.lexeme().equals("using")) {
+                throw error(name, telemetrySpan
+                        ? "using telemetry.span needs a named, usable span binding"
+                        : "using borrowed scope needs a named, usable view binding");
+            }
+            List<Ast.Stmt> body = parseBlock();
+            if (telemetrySpan) {
+                // Contextual intrinsic; bypass ordinary call evaluation so a
+                // guest binding named telemetry cannot spoof runtime authority.
+                Ast.Expr spanName = call.arguments().isEmpty()
+                        ? new Ast.LiteralExpr("span")
+                        : call.arguments().getFirst();
+                return new Ast.UsingTelemetrySpanStmt(spanName, name.lexeme(), body);
+            }
+            return new Ast.UsingBorrowStmt(resource, name.lexeme(), body);
         }
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
@@ -4138,7 +4266,8 @@ public final class Parser {
 
     private Ast.Expr parseCondition() {
         Ast.Expr expression = normalizeLegacyConditionPipe(parseLogicalOr());
-        // Legacy condition-only comma means logical AND. Prefer && in new code.
+        // Condition-only comma means logical AND and bare '|' means OR (spec ch.16).
+        // Prefer && and || in new code.
         while (match(COMMA)) {
             expression = new Ast.BinaryExpr(
                     "&&",
@@ -4461,6 +4590,8 @@ public final class Parser {
             }
             if (stmt instanceof Ast.UsingBorrowStmt loan
                     && valueArmPrefixContainsReturn(loan.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope
+                    && valueArmPrefixContainsReturn(scope.body())) return true;
         }
         return false;
     }
@@ -4799,8 +4930,11 @@ public final class Parser {
 
     private Ast.Expr parseLogicalXor() {
         Ast.Expr expr = parseLogicalAnd();
-        if (matchAdjacentPair(CARET)) throw error(previous(),
-                "'^^' is reserved and is not AttoLang source syntax; use Xor(a, b)");
+        // Canonical boolean XOR: both operands are evaluated once, left to right.
+        // Only an adjacent double caret is recognized; single '^' stays reserved.
+        while (matchAdjacentPair(CARET)) {
+            expr = new Ast.BinaryExpr("^^", expr, parseLogicalAnd());
+        }
         return expr;
     }
 
@@ -4912,12 +5046,35 @@ public final class Parser {
     }
 
     private Ast.Expr parseMultiplicative() {
-        Ast.Expr expr = parseUnary();
+        Ast.Expr expr = parseWithUpdate();
         while (match(STAR, SLASH, PERCENT)) {
             if (previous().type() == PERCENT) throw error(previous(),
                     "'%' is reserved and is not AttoLang source syntax; use Integer.rem(a, b) or Integer.mod(a, b)");
             String op = previous().lexeme();
-            expr = new Ast.BinaryExpr(op, expr, parseUnary());
+            expr = new Ast.BinaryExpr(op, expr, parseWithUpdate());
+        }
+        return expr;
+    }
+
+    /**
+     * Immutable updates bind after unary rt copy/take, not inside the rt
+     * operation. Thus 'rt copy p with {...}' parses as (rt copy p) with {...}.
+     * Keep 'with' contextual so existing names remain valid without an update.
+     */
+    private Ast.Expr parseWithUpdate() {
+        Ast.Expr expr = parseUnary();
+        while (isContextualIdentifier("with") && checkNext(LBRACE)) {
+            advance();
+            consume(LBRACE, "expected '{' after with");
+            List<Ast.WithField> changes = new ArrayList<>();
+            if (check(RBRACE)) throw error(peek(), "with update requires at least one field");
+            do {
+                Token field = consume(IDENT, "expected field name in with update");
+                consume(FAT_ARROW, "expected '=>' after with field name");
+                changes.add(new Ast.WithField(field.lexeme(), parseExpression()));
+            } while (match(COMMA) && !check(RBRACE));
+            consume(RBRACE, "expected '}' after with fields");
+            expr = new Ast.WithExpr(expr, changes);
         }
         return expr;
     }
@@ -5756,7 +5913,13 @@ public final class Parser {
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
             do {
-                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                // A mutable lexical alias is not a type name. Preserve its
+                // mutability in the AST so the state-loan checker can require
+                // an exclusive borrow rather than silently downgrade writes.
+                if (match(MUT)) {
+                    String name = consume(IDENT, "expected mutable lambda alias after 'mut'").lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, true));
+                } else if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
                 } else if (check(IDENT) && checkNext(COLON)) {
