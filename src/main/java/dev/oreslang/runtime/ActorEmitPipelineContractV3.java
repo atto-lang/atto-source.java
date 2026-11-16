@@ -52,6 +52,11 @@ public final class ActorEmitPipelineContractV3 {
     private static void requireIdentity(String value, String field) {
         if (value == null || value.isEmpty() || value.indexOf('\0') >= 0)
             throw reject("E_ACTOR_PIPE_IDENTITY", field + " must be a nonempty, NUL-free identifier");
+        // An N-code-unit UTF-16 string needs at least N UTF-8 bytes when valid.
+        // Reject impossible identities before the encoder allocates a buffer
+        // proportional to potentially untrusted compiler input.
+        if (value.length() > 256)
+            throw reject("E_ACTOR_PIPE_IDENTITY", field + " exceeds 256 UTF-8 bytes");
         try {
             ByteBuffer bytes = StandardCharsets.UTF_8.newEncoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
