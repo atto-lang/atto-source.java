@@ -109,6 +109,9 @@ public final class TypeChecker {
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    /** Identity guards recursive signature/value type queries across forward declarations. */
+    private final Set<Ast.TypeRef> resolvingTypeQueries =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
     // Only an actual constructor may initialize an otherwise fixed, initially
@@ -1066,7 +1069,8 @@ public final class TypeChecker {
         // (: int) or the public iterator protocol (: Iterator<int> /
         // : AsyncIterator<int>). The body always checks yields against the
         // element type and calls expose exactly one iterator wrapper.
-        Type declaredReturn = resolve(fn.returnType(), generics, null);
+        Type declaredReturn = resolveCallableReturnType(
+                fn.parameters(), fn.body(), fn.returnType(), generics, null);
         Type returns = fn.generator()
                 ? generatorYieldType(fn.async() || fn.suspends(), declaredReturn)
                 : declaredReturn;
@@ -1918,7 +1922,8 @@ public final class TypeChecker {
                 if (strictAttoEquality) env.defineStrictSourceType(param.name(), param.type());
             }
             defineImplicitArguments(env, methodArgumentTypes);
-            Type returns = resolve(method.returnType(), generics, callableSelf);
+            Type returns = resolveCallableReturnType(
+                    method.parameters(), method.body(), method.returnType(), generics, callableSelf);
             if (actorStartupHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
                         "actor lifecycle hook '" + klass.name() + ".on_start' must return void");
@@ -10290,7 +10295,8 @@ public final class TypeChecker {
                 params.stream().map(p -> resolveParam(p, generics, self)).toList(),
                 params.stream().map(Ast.Param::mutable).toList(),
                 async,
-                callableResult(async, suspends, generator, resolve(returns, generics, self)));
+                callableResult(async, suspends, generator,
+                        resolveCallableReturnType(params, null, returns, generics, self)));
     }
 
     private Function functionType(
@@ -10877,7 +10883,8 @@ public final class TypeChecker {
                     "argument " + (i + 1));
         }
 
-        Type result = substituteGenerics(resolve(returnRef, unique, callableSelf), bindings);
+        Type result = substituteGenerics(
+                resolveCallableReturnType(params, null, returnRef, unique, callableSelf), bindings);
         if (containsGenericNamed(result, unbound)) {
             throw new IllegalArgumentException("cannot infer generic return type for " + label + "; add an inferable value parameter");
         }
@@ -10996,6 +11003,107 @@ public final class TypeChecker {
                 || fn.effects().panicsTypes().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Record record) return record.members().values().stream().anyMatch(t -> containsGenericNamed(t, names));
         return false;
+    }
+
+    /**
+     * Resolve a declaration's return annotation before exporting its ABI.
+     * Forward locals are admitted only in the narrow, provably static v1
+     * subset: a unique direct val/const with a declared type or literal
+     * initializer. No body execution, reflection or guessed unknown type.
+     */
+    private Type resolveCallableReturnType(
+            List<Ast.Param> params,
+            List<Ast.Stmt> providedBody,
+            Ast.TypeRef returns,
+            Set<String> generics,
+            Type self) {
+        if (returns == null || !returns.isTypeQuery()) {
+            return resolve(returns, generics, self);
+        }
+        if (!resolvingTypeQueries.add(returns)) {
+            throw new IllegalArgumentException("E_RETURN_INFER_CYCLE: cyclic typeof query");
+        }
+        try {
+            String binding = returns.queriedBinding();
+            List<Ast.Param> foundParams = params.stream()
+                    .filter(p -> p.name().equals(binding)).toList();
+            if (foundParams.size() == 1) return resolveParam(foundParams.getFirst(), generics, self);
+            if (foundParams.size() > 1) {
+                throw new IllegalArgumentException("E_TYPE_QUERY_AMBIGUOUS: " + binding);
+            }
+
+            List<Ast.Stmt> body = providedBody;
+            if (body == null) {
+                // The same return-TypeRef AST is retained across call
+                // resolution, contract admission and declaration checking.
+                for (var family : functions.values()) {
+                    for (Ast.FunctionDecl fn : family.values()) {
+                        if (fn.returnType() == returns) body = fn.body();
+                    }
+                }
+                if (body == null) {
+                    for (Ast.ClassDecl klass : classOwners.keySet()) {
+                        for (Ast.MethodDecl method : klass.methods()) {
+                            if (method.returnType() == returns) body = method.body();
+                        }
+                    }
+                }
+            }
+            if (body != null) {
+                List<Ast.BindingStmt> locals = body.stream()
+                        .filter(stmt -> stmt instanceof Ast.BindingStmt bindingStmt
+                                && bindingStmt.name().equals(binding))
+                        .map(stmt -> (Ast.BindingStmt) stmt).toList();
+                if (locals.size() > 1) {
+                    throw new IllegalArgumentException("E_TYPE_QUERY_AMBIGUOUS: " + binding);
+                }
+                if (locals.size() == 1) {
+                    Ast.BindingStmt local = locals.getFirst();
+                    if (local.kind() == Ast.BindingKind.LET) {
+                        throw new IllegalArgumentException(
+                                "E_TYPE_QUERY_SCOPE: mutable forward local " + binding);
+                    }
+                    // For this first implementation, disallow nested scopes in
+                    // forward query bodies; later work must prove shadowing.
+                    if (body.stream().anyMatch(stmt -> !(stmt instanceof Ast.BindingStmt)
+                            && !(stmt instanceof Ast.ReturnStmt))) {
+                        throw new IllegalArgumentException(
+                                "E_TYPE_QUERY_SCOPE: forward typeof needs a flat outer body");
+                    }
+                    if (local.declaredType() != null) {
+                        return resolve(local.declaredType(), generics, self);
+                    }
+                    if (local.initializer() instanceof Ast.LiteralExpr literal) {
+                        return typeOf(literal, new Env(null), generics, self);
+                    }
+                    throw new IllegalArgumentException(
+                            "E_TYPE_QUERY_UNSUPPORTED: forward typeof initializer must be a static literal or have an explicit type");
+                }
+            }
+            return resolveTypeQueryValue(binding, generics, self);
+        } finally {
+            resolvingTypeQueries.remove(returns);
+        }
+    }
+
+    private Type resolveTypeQueryValue(String binding, Set<String> generics, Type self) {
+        if (currentTypeScope != null) {
+            Env.Binding local = currentTypeScope.lookup(binding);
+            if (local != null) return local.type();
+        }
+        LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(binding);
+        if (ambiguousFunctions.contains(binding) || family != null && family.size() != 1) {
+            throw new IllegalArgumentException("E_TYPE_QUERY_AMBIGUOUS: " + binding);
+        }
+        if (family != null) {
+            Ast.FunctionDecl fn = family.values().iterator().next();
+            if (!fn.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "E_TYPE_QUERY_UNSUPPORTED: unspecialized generic callable " + binding);
+            }
+            return trapFunctionType(fn, generics, self);
+        }
+        throw new IllegalArgumentException("E_TYPE_QUERY_UNBOUND: " + binding);
     }
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self) {
@@ -11337,6 +11445,16 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "named generic type arguments in type position are not supported yet; "
                             + "use positional type arguments");
+        }
+        if (ref.isTypeQuery()) {
+            if (!resolvingTypeQueries.add(ref)) {
+                throw new IllegalArgumentException("E_RETURN_INFER_CYCLE: cyclic typeof query");
+            }
+            try {
+                return resolveTypeQueryValue(ref.queriedBinding(), generics, self);
+            } finally {
+                resolvingTypeQueries.remove(ref);
+            }
         }
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isComplement()) return Types.notOf(resolve(ref.complementedType(), generics, self, allowNullMarker));
