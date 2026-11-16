@@ -90,7 +90,8 @@ fn python_command_boundary(line: &str) -> bool {
                     matches!(
                         *previous,
                         "run" | "exec" | "command" | "env" | "sudo" | "time" | "xargs"
-                            | "if" | "then" | "-c" | "-s" | "$"
+                            | "shell" | "if" | "then" | "-c" | "-lc" | "-euc"
+                            | "-xec" | "-s" | "$"
                     )
                 })
                 || env_wrapper;
@@ -269,6 +270,9 @@ mod tests {
             "/usr/bin/python3.12 -B",
             "env -S python3.13",
             "bash -c 'python3'",
+            "bash -lc 'python3 -V'",
+            "sh -euc 'python3 -V'",
+            "- shell: /usr/bin/python3",
             "pip3 install package",
             "- run: /usr/local/bin/pypy3",
             "- run: $(python3)",
@@ -285,6 +289,8 @@ mod tests {
             "printf 'migrate Python scripts to Rust'",
             "cargo test",
             "echo python3",
+            "printf 'migrate python3 to Rust'",
+            "name: Python commands are banned",
         ] {
             assert!(!forbidden_execution_line(line), "false positive: {line}");
         }
