@@ -105,9 +105,14 @@ public final class TypeAutoTraits {
                     Optional.of(named.arguments().size() == 2
                             ? combine(named.arguments(), nested)
                             : NONE);
-            case "Box" -> Optional.of(wrapped(named, Kind.BOX, false, nested));
-            case "Arc" -> Optional.of(wrapped(named, Kind.ARC, true, nested));
-            case "Weak" -> Optional.of(wrapped(named, Kind.WEAK, true, nested));
+            // Abstract auto-trait composition (AutoTraitRules) is not executable
+            // authority: no native guest allocator/atomic-refcount/ownership
+            // lowering has been proven for these constructors. Deny even if T
+            // is a safe scalar, and do not let a nested Option/Result launder it.
+            case "Atomic", "AtomicRef", "AtomicBool", "AtomicInt", "AtomicLong",
+                    "AtomicI8", "AtomicI16", "AtomicI32", "AtomicI64",
+                    "AtomicU8", "AtomicU16", "AtomicU32", "AtomicU64",
+                    "Box", "Arc", "Weak" -> Optional.of(NONE);
             case "Rc" -> Optional.of(wrapped(named, Kind.RC, false, nested));
             case "RefCell" -> Optional.of(wrapped(named, Kind.REFCELL, false, nested));
             // Mutex<T> is pinned to the actor/execution domain that created it: the
