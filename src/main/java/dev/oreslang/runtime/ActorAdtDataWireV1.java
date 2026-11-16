@@ -33,6 +33,8 @@ public final class ActorAdtDataWireV1 {
 
     private static byte[] utf8(String input) {
         Objects.requireNonNull(input, "ADT error payload");
+        if (input.length() > MAX_ERROR_BYTES)
+            throw new IllegalArgumentException("ADT error exceeds character budget");
         try {
             var encoded = StandardCharsets.UTF_8.newEncoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
