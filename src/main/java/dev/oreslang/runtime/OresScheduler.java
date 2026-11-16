@@ -1237,10 +1237,7 @@ public final class OresScheduler implements AutoCloseable {
                 // Cancellation/STOP may have beaten registration, including
                 // before activeOwnedSleep was published. Fail closed; never
                 // leave a timer alive after its execution lost admission.
-                if (phase.get() != RUNNING
-                        || (task instanceof CleanupAwareTask<?>
-                            && completion.deferredCancellationCause() != null
-                            && !cleanupCancellationInjected.get())) {
+                if (phase.get() != RUNNING) {
                     revokeOwnedSleep();
                     return;
                 }
