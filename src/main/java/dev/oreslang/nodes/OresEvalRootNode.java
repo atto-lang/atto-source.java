@@ -214,6 +214,7 @@ public final class OresEvalRootNode extends RootNode {
                 callableSlots = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
+        private final Map<String, Ast.ImportDecl> hostFunctionImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
         private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
         private final Map<String, Invokable> hostFunctions = new HashMap<>();
@@ -361,6 +362,9 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' does not export invocable static member '" + sourceName + "'");
                     }
                     String localName = ImportRules.localName(imported, sourceName);
+                    if (hostFunctionImports.putIfAbsent(localName, imported) != null) {
+                        throw new IllegalArgumentException("duplicate Java fnc import " + localName);
+                    }
                     putHostFunction(localName, args -> {
                         context.requireCapability(
                                 IsolatePolicy.Capability.JAVA_INTEROP,
@@ -7462,6 +7466,79 @@ public final class OresEvalRootNode extends RootNode {
             // Tuple slots are already evaluated. Do not evaluate or clone any
             // owned element when constructing the invocation argument list.
             return new ArrayList<>(tuple);
+        }
+
+        private static boolean isPkgRootMember(Ast.MemberExpr member) {
+            return member.receiver() instanceof Ast.NameExpr root
+                    && root.name().equals(Parser.PKG_ROOT_NAMESPACE);
+        }
+
+        private static boolean isImportsMember(Ast.MemberExpr member) {
+            return member.receiver() instanceof Ast.NameExpr root
+                    && root.name().equals(Parser.IMPORTS_NAMESPACE);
+        }
+
+        private void requireUnqualifiedRootCallNotShadowed(Ast.CallExpr call, Env env) {
+            if (!(call.callee() instanceof Ast.NameExpr name)
+                    || env.lookup(name.name()) != Env.MISSING) return;
+            String local = name.name();
+            boolean imported = hostFunctionImports.containsKey(local)
+                    || (namedImports.containsKey(local)
+                        && namedImports.get(local).declaration().kind() == Ast.ImportKind.FUNCTION);
+            if (imported && functions.containsKey(Parser.ROOT_MODULE + "." + local)
+                    && findQualifiedFunction(
+                            Parser.ROOT_MODULE + "." + local, call.arguments().size()) == null) {
+                throw new IllegalArgumentException(
+                        "file-root function '" + local + "' has no matching arity; "
+                                + "use imports::" + local + "(...) for the explicit import");
+            }
+        }
+
+        private ImportedBinding namedImportedFnc(String name) {
+            if (hostFunctionImports.containsKey(name)) return null;
+            ImportedBinding bound = namedImports.get(name);
+            if (bound == null || bound.declaration().kind() != Ast.ImportKind.FUNCTION
+                    || bound.declaration().wildcard()) {
+                throw new IllegalArgumentException(
+                        "imports::" + name + " requires an explicitly named import fnc");
+            }
+            return bound;
+        }
+
+        private Invocation prepareExplicitImportInvocation(String name, List<Object> args) {
+            ImportedBinding bound = namedImportedFnc(name);
+            if (hostFunctionImports.containsKey(name)) {
+                Invokable host = hostFunctions.get(name);
+                if (host == null) throw new IllegalArgumentException(
+                        "imports::" + name + " has no authorized host invocation");
+                return invokableInvocation(host, args);
+            }
+            return importedTarget(bound.declaration()).prepareImportedInvocation(
+                    Ast.ImportKind.FUNCTION, bound.sourceName(), args);
+        }
+
+        private Object explicitImportValue(String name) {
+            throw new IllegalArgumentException(
+                    "imports::" + name + " is direct-call-only; imported function values "
+                            + "require a linked ownership/effect/lifetime signature");
+        }
+
+        private Object pkgRootFunctionValue(String name) {
+            throw new IllegalArgumentException(
+                    "pkg::" + name + " is direct-call-only in this checked profile");
+        }
+
+        private Ast.FunctionDecl pkgRootCallable(String name, int arity, Env env) {
+            if (name.equals("init")) {
+                throw new IllegalArgumentException("pkg::init is a runtime lifecycle hook");
+            }
+            requireExplicitClassCallableImport(env, name);
+            Ast.FunctionDecl fn = findQualifiedFunction(Parser.ROOT_MODULE + "." + name, arity);
+            if (fn == null || fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "pkg::" + name + " has no ordinary file-root callable at arity " + arity);
+            }
+            return fn;
         }
 
         /** Resolve only a direct bare call, not an extracted method value. */
