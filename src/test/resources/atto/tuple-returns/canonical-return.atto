@@ -1,7 +1,7 @@
-// Canonical tuple return type and ~tuple(...) value construction.
+// Canonical tuple return type and positional tuple literal construction.
 // Compiler-backed guest test: do not count fixture creation as execution evidence.
 pub fnc labels(): Tuple[string, string] {
-  return ~tuple("alpha", "beta");
+  return ("alpha", "beta");
 }
 
 fnc forward(Tuple[string, string] value): Tuple[string, string] {
