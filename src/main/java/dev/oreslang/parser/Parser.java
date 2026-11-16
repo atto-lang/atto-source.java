@@ -2755,6 +2755,11 @@ public final class Parser {
                     inheritedMutableReferent);
         }
         if (isBindingKind(peek().type())) return parseBindingStatement();
+        // 'mut' modifies a referent capability only after an explicit
+        // binding qualifier. It never implicitly means 'const mut'.
+        if (check(MUT)) {
+            throw error(peek(), "E_MUT_QUALIFIER: bare 'mut' needs explicit const, val or let");
+        }
         if (looksLikePrimitiveTypeFirstImmutableBinding()) {
             return parsePrimitiveTypeFirstImmutableBinding();
         }
@@ -5872,12 +5877,9 @@ public final class Parser {
     }
 
     private boolean parseReferentMutability(Ast.BindingKind kind) {
-        if (kind == Ast.BindingKind.VAL) {
-            if (match(MUT)) {
-                throw error(previous(), "'val' already means 'const mut'; 'val mut' is a duplicate mutability qualifier");
-            }
-            return true;
-        }
+        // Name rebinding is controlled by const/val/let; writable referent
+        // access is independently and explicitly requested by 'mut'.
+        // Legacy val => const mut compatibility is intentionally removed.
         return match(MUT);
     }
 
