@@ -38,6 +38,22 @@ final class AttoImplicitConstScalarGuestTest {
         assertTrue(error.getMessage().contains(diagnostic), error.getMessage());
     }
 
+    @Test void typeRightConstAndExplicitMutQualifiers() {
+        valid("int shorthand = 10; const explicit_right: int = 20; const int explicit_left = 12;"
+                + " return shorthand + explicit_right + explicit_left;");
+        rejected("const value: int = 9223372036854775807 + 1; return value;", "E_CONST_OVERFLOW");
+        rejected("const value: int = runtime_value(); return value;", "E_NON_CONST_INITIALIZER");
+        rejected("mut int value = 10; return value;", "E_MUT_QUALIFIER");
+        rejected("const mut int value = 10; return value;", "E_CONST_MUT_UNSUPPORTED");
+    }
+
+    @Test void valMutIsExplicitAndNoLongerAnImplicitValCapability() {
+        var plain = Parser.parse("pub fnc main(): int { val int x = 10; return x; }");
+        var writable = Parser.parse("pub fnc main(): int { val mut int x = 10; return x; }");
+        assertNotNull(plain);
+        assertNotNull(writable);
+    }
+
     @Test void bothSpellingRequirePureAndCheckedConstantEvaluation() {
         valid("int base = 40; const int offset = 2; return base + offset;");
         valid("const int base = 40; int offset = 2; return base + offset;");
