@@ -78,6 +78,7 @@ public final class Parser {
                     ? EOF : this.tokens.get(i + 1).type();
             boolean nominal = prior == CLASS || prior == STRUCT || prior == MODULE
                     || prior == TYPE || prior == TYPES || prior == ACTOR
+                    || prior == ISOACTOR || prior == CONTRACT
                     || prior == INTERFACE || prior == TRAIT;
             boolean importAlias = prior == AS && next == FROM;
             boolean callableName = (prior == FNC || prior == ROUTINE)
