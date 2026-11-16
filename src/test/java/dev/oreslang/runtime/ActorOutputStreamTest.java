@@ -136,4 +136,48 @@ final class ActorOutputStreamTest {
         }
     }
 
+    @Test
+    void immediateOutputPollCopiesFrozenDataAndDistinguishesEmptyFromEof() {
+        for (ActorRuntime.ActorKind kind :
+                List.of(ActorRuntime.ActorKind.PRIVATE, ActorRuntime.ActorKind.SHARED)) {
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                ActorRuntime.ActorRef<String> ref = switch (kind) {
+                    case PRIVATE -> runtime.spawnPrivate(context -> (message, turn) -> {
+                        ArrayList<String> mutable = new ArrayList<>();
+                        mutable.add("before");
+                        turn.runtime().emitCurrentActorOutput(mutable);
+                        mutable.add("after");
+                        turn.runtime().emitCurrentActorOutput("last");
+                        turn.runtime().endCurrentActor();
+                    });
+                    case SHARED -> runtime.spawnShared(context -> (message, turn) -> {
+                        ArrayList<String> mutable = new ArrayList<>();
+                        mutable.add("before");
+                        turn.runtime().emitCurrentActorOutput(mutable);
+                        mutable.add("after");
+                        turn.runtime().emitCurrentActorOutput("last");
+                        turn.runtime().endCurrentActor();
+                    });
+                    case UNTRUSTED -> throw new AssertionError("not part of this case");
+                };
+                ref.ready().join();
+                assertTrue(ref.outputs().tryNext().isEmpty(),
+                        "nonparking poll must not await a future message");
+                assertFalse(ref.outputs().isDone(), "open, empty output is not EOF");
+                ref.send("go");
+                ref.done().join();
+
+                var first = ref.outputs().tryNext().orElseThrow();
+                assertEquals(0L, first.sequence());
+                assertEquals(List.of("before"), first.value(),
+                        "poll must deliver a frozen, owned output snapshot");
+                var second = ref.outputs().tryNext().orElseThrow();
+                assertEquals(1L, second.sequence());
+                assertEquals("last", second.value());
+                assertTrue(ref.outputs().tryNext().isEmpty());
+                assertTrue(ref.outputs().isDone(), "EOF is visible only after drain");
+            }
+        }
+    }
+
 }
