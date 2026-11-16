@@ -218,5 +218,49 @@ class StaticActorPilotTests(unittest.TestCase):
                      self.source.read_text().replace("return 43;", cases + "return 43;"))
 
 
+
+    def test_caret_main_return_matches_keyword_after_actor_teardown(self):
+        self.source.write_text(self.source.read_text().replace("return 43;", "^ 43;"))
+        result = self.compile()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertEqual(manifest["expected_guest_result"], 43)
+        self.assertIn("return 43L;", (self.output / "AttoGeneratedMain.java").read_text())
+
+    def test_caret_guard_fail_arm_and_final_return(self):
+        self.source.write_text(self.source.read_text().replace(
+            "return 43;", "guard false { ^ 7; }\\n  ^ 43;"))
+        result = self.compile()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertEqual(manifest["expected_guest_result"], 7)
+        java = (self.output / "AttoGeneratedMain.java").read_text()
+        self.assertIn("if (!false) return 7L;", java)
+        self.assertLess(java.index("handle_1.close();"), java.index("if (!false) return 7L;"))
+
+    def test_caret_actor_receive_return_is_lexical(self):
+        self.source.write_text(self.source.read_text().replace("return total;", "^ total;"))
+        result = self.compile()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads((self.output / "manifest.json").read_text())["expected_guest_result"], 43)
+
+    def test_caret_guard_cannot_bypass_actor_retirement(self):
+        self.rejects("guard may exit only after all actor handles are stopped",
+                     self.source.read_text().replace(
+                         "stop first;", "guard false { ^ 7; }\\n  stop first;"))
+
+    def test_infix_caret_is_not_xor_and_emits_no_artifact(self):
+        self.rejects("expected ';'", self.source.read_text().replace(
+            "return 43;", "return 4 ^ 3;"))
+
+    def test_caret_cannot_appear_in_value_position(self):
+        self.rejects("expected a signed integer literal", self.source.read_text().replace(
+            "return 43;", "return ^ 43;"))
+
+    def test_double_caret_has_no_lexical_return_meaning(self):
+        self.rejects("expected a signed integer literal", self.source.read_text().replace(
+            "return 43;", "^ ^ 43;"))
+
+
 if __name__ == "__main__":
     unittest.main()
