@@ -135,6 +135,18 @@ owned arguments still pass through the type and ownership analyses.
 Proof of linked parameter/return types, scheduler effects and backend parity
 remains pending; no ABI correctness claim is made by this draft.
 
+
+
+**Unchecked-AST runtime fence (Java draft):** The synchronous evaluator and
+suspendable expression evaluator both reject a bare `imports::name` member
+value, even when parser/type/ownership checking was bypassed by generated or
+forged AST. Only the separate `imports::name(...)` invocation path may
+retrieve a verified import target. Rejecting value extraction before creating
+an `Invokable` prevents opaque parameter, effect, suspension or borrow
+signatures from being erased by indirect calls. This source change is
+**not executed proof**; test the exact branch head in the JVM and native
+profiles before promotion.
+
 ## Receiver binding and performance
 
 Each class/actor code image holds shared method implementations and immutable
