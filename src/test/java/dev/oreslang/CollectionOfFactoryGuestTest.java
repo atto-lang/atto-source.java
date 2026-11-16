@@ -82,28 +82,44 @@ final class CollectionOfFactoryGuestTest {
         assertEquals("1\n1\n7\ntrue\n", guestStdout(text));
     }
 
+    private static void requireParserFactoryGate(String statement, String expected) {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(program(statement)), statement);
+        assertTrue(String.valueOf(failure.getMessage()).contains(expected),
+                "must fail the intended factory parser gate, not an earlier error: "
+                        + statement + ": " + failure.getMessage());
+    }
+
+    private static void requireCompilerFactoryGate(String statement, String expected) {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(program(statement)), statement);
+        assertTrue(String.valueOf(failure.getMessage()).contains(expected),
+                "must fail the intended factory compiler gate, not an earlier error: "
+                        + statement + ": " + failure.getMessage());
+    }
+
     @Test
     void missingOrInvalidMapWitnessesAreNotDynamicMaps() {
-        assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(program("const m = Map.of();")));
-        assertThrows(IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck(program("const m = Map.of(\"key\" => 1);")));
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(program("const m = Map.of<string>(\"key\" => 1);")));
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(program("const m = Map.of<string, int>(\"key\": 1);")));
+        requireCompilerFactoryGate("const m = Map.of();",
+                "Map.of() requires a directly declared, fully typed Map<K,V>");
+        requireCompilerFactoryGate("const m = Map.of(\\"key\\" => 1);",
+                "Map.of(...) requires a directly declared, fully typed Map<K,V>");
+        requireParserFactoryGate("const m = Map.of<string>(\\"key\\" => 1);",
+                "Map.of<K,V> requires exactly two positional type witnesses");
+        requireParserFactoryGate("const m = Map.of<string, int>(\\"key\\": 1);",
+                "map literals require '=>' between key and value");
     }
 
     @Test
     void unsupportedFactoryTypeWitnessesAndMapSpreadsFailClosed() {
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(program("const a = Array.of<int>(1, 2);")));
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(program("const t = Tuple.of<int>(1);")));
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(program("const m = Map.of<string,int>(...source);")));
-        assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(program("const r = Record.of<int>(x: 1);")));
+        requireParserFactoryGate("const a = Array.of<int>(1, 2);",
+                "Array.of<T>(...) requires independently checked typed factory lowering");
+        requireParserFactoryGate("const t = Tuple.of<int>(1);",
+                "Tuple.of<T>(...) requires independently checked typed factory lowering");
+        requireParserFactoryGate("const m = Map.of<string,int>(...source);",
+                "map spreads require explicit source-ownership");
+        requireParserFactoryGate("const r = Record.of<int>(x: 1);",
+                "Record.of does not admit explicit generic arguments");
     }
     private static Ast.Expr firstFactoryInitializer(String source) {
         Ast.Program program = Parser.parse(source);
