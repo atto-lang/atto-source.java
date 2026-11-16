@@ -1,0 +1,64 @@
+# Exact-source JDK25 compiler/Truffle guest verification. No runner allocation
+# or authored test alone counts as execution evidence.
+name: Atto Type.of integrated Java 25 guest evidence
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/main/java/**'
+      - 'src/test/java/dev/oreslang/*Factory*'
+      - 'src/test/java/dev/oreslang/*Tilde*'
+      - 'src/test/java/dev/oreslang/*Map*'
+      - 'src/test/java/dev/oreslang/TupleReturnTypeContractTest.java'
+      - 'src/test/resources/atto/**'
+      - 'pom.xml'
+      - '.github/workflows/atto-type-of-integrated-guest-jdk25.yml'
+  push:
+    branches:
+      - draft/integrate-collection-of-pr2735-3140-20261116
+permissions:
+  contents: read
+jobs:
+  java25-factory-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Capture exact tested Git revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "GIT_HEAD=$(git rev-parse HEAD)"
+          echo "JAVA_TREE=$(git rev-parse HEAD:src/main/java)"
+          echo "FACTORY_GUEST_TEST=$(git rev-parse HEAD:src/test/java/dev/oreslang/CollectionOfFactoryGuestTest.java)"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Compile compiler and run nine JUnit / Truffle guest suites
+        shell: bash
+        env:
+          MAVEN_OPTS: '-Xmx3g'
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp '-P!native-thread-unix' '-Dtest=TildeCollectionConstructorRemovalTest,TildeAggregateTypeAliasCompilerTest,TildeRecordAndDefaultMatchSyntaxTest,TildeArrayTupleValueGuestTest,CollectionOfFactoryGuestTest,NonemptyTildeMapGuestTest,TypedEmptyMapGuestTest,TildeRecordLiteralGuestTest,TupleReturnTypeContractTest' -DfailIfNoTests=true test
+      - name: Fail unless each targeted suite actually executed without skips
+        shell: bash
+        run: |
+          set -euo pipefail
+          for cls in TildeCollectionConstructorRemovalTest TildeAggregateTypeAliasCompilerTest TildeRecordAndDefaultMatchSyntaxTest TildeArrayTupleValueGuestTest CollectionOfFactoryGuestTest NonemptyTildeMapGuestTest TypedEmptyMapGuestTest TildeRecordLiteralGuestTest TupleReturnTypeContractTest; do
+            report="target/surefire-reports/dev.oreslang.${cls}.txt"
+            test -s "$report"
+            grep -E '^Tests run: [1-9][0-9]*, Failures: 0, Errors: 0, Skipped: 0' "$report"
+          done
+          echo "PASS: nine nonvacuous JDK25 compiler/guest JUnit suites"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atto-type-of-pr3142-exact-head-surefire
+          path: target/surefire-reports/
+          if-no-files-found: ignore
