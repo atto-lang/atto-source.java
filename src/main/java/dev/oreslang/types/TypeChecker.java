@@ -11096,6 +11096,16 @@ public final class TypeChecker {
             throw new IllegalArgumentException("E_TYPE_QUERY_AMBIGUOUS: " + binding);
         }
         if (family != null) {
+            // The global declaration index is NOT a visibility capability.
+            // Do not leak a private or unimported module callable's signature
+            // through a type-only query. Cross-module binding queries require
+            // a separately admitted import and ABI contract.
+            String declaringModule = unqualifiedFunctionOwners.get(binding);
+            if (declaringModule == null || currentLexicalModule == null
+                    || !declaringModule.equals(currentLexicalModule)) {
+                throw new IllegalArgumentException(
+                        "E_TYPE_QUERY_SCOPE: typeof callable is not visible in the current module: " + binding);
+            }
             Ast.FunctionDecl fn = family.values().iterator().next();
             if (!fn.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException(
