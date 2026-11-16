@@ -288,8 +288,14 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ClassDecl klass) {
         validateCopyPolicyAnnotations(klass.annotations(), "class " + klass.name());
         if (hasCopyPolicy(klass.annotations(), "Copyable")) {
-            throw error("E_COPY_UNPROVEN: @" + "Copyable on class '" + klass.name()
-                    + "' requires compiler-verified duplication lowering; no class copy contract is enabled");
+            // A positive annotation requests the same compiler-derived proof
+            // used for an unannotated class. It never authorizes a shallow
+            // reference copy merely because the user claimed Copyable.
+            DerivedCopyPlanV1.Plan copyPlan = DerivedCopyPlanV1.derive(
+                    Ast.TypeRef.simple(klass.name()), this::findClass);
+            if (!(copyPlan instanceof DerivedCopyPlanV1.Instance)) {
+                throw error("E_COPY_UNPROVEN: @Copyable requires a concrete class copy plan");
+            }
         }
         for (Ast.FieldDecl field : klass.fields()) {
             validateCopyPolicyAnnotations(field.annotations(), "field " + klass.name() + "." + field.name());
@@ -1353,9 +1359,24 @@ public final class OwnershipChecker {
                         throw error("E_COPY_FORBIDDEN: rt copy of @NoCopy class '" + sourceClass.name() + "'");
                     }
                     if (source.kind != ValueKind.COPY) {
-                        throw error(
-                                "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
-                                        + "this current-main convergence patch fails closed instead of aliasing");
+                        // Explicit logical copy is NOT the implicit trivial Copy
+                        // classification: classes remain move-only on normal
+                        // arguments and assignments, while rt copy produces an
+                        // independently allocated owned result.
+                        DerivedCopyPlanV1.Plan plan = DerivedCopyPlanV1.derive(
+                                source.type, this::findClass);
+                        if (!(plan instanceof DerivedCopyPlanV1.Instance)) {
+                            throw error("E_COPY_UNPROVEN: only proven class roots have runtime copy lowering in v1");
+                        }
+                        if (projected != null && projected.warnOnCopy()) {
+                            copyWarnings.add("W_COPY_DISCOURAGED: rt copy of @"
+                                    + "WarnOnCopy field '" + projected.origin() + "'");
+                        }
+                        if (sourceClass != null && hasCopyPolicy(sourceClass.annotations(), "WarnOnCopy")) {
+                            copyWarnings.add("W_COPY_DISCOURAGED: rt copy of @WarnOnCopy class '"
+                                    + sourceClass.name() + "'");
+                        }
+                        yield new ValueInfo(source.type, ValueKind.MOVE_ONLY, null);
                     }
                     if (projected != null && projected.warnOnCopy()) {
                         copyWarnings.add("W_COPY_DISCOURAGED: rt copy of @"
