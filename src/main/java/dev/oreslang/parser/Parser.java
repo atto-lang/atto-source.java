@@ -2511,8 +2511,19 @@ public final class Parser {
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "function types use 'typeof fnc(...) => ReturnType', not 'typeof fn(...)'");
             }
-            consume(FNC, "typeof function types use 'typeof fnc(...) => ReturnType'");
-            return parseFunctionTypeSignature();
+            // Existing callable-signature syntax has priority. A type query
+            // is an independent static AST node, never a value expression.
+            if (match(FNC)) return parseFunctionTypeSignature();
+            if (check(BANG)) {
+                throw error(peek(), "typeof! is not an ownership operator; use 'typeof name'");
+            }
+            if (match(LPAREN)) {
+                Token binding = consume(IDENT, "typeof(...) expects exactly one binding name");
+                consume(RPAREN, "typeof(...) expects exactly one binding name");
+                return Ast.TypeRef.typeQuery(binding.lexeme());
+            }
+            return Ast.TypeRef.typeQuery(
+                    consume(IDENT, "typeof requires a binding name").lexeme());
         }
 
         if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
