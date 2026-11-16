@@ -9419,7 +9419,7 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, false, false);
                     };
-                    case "compose", "flatMap" -> (Invokable) args -> {
+                    case "compose", "flatMap", "flat_map" -> (Invokable) args -> {
                         requireOne(args, "Future." + name);
                         if (!(args.getFirst() instanceof Invokable callback)) {
                             throw new IllegalArgumentException(

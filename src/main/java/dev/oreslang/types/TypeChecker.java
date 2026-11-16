@@ -3852,7 +3852,7 @@ public final class TypeChecker {
                 if (receiver instanceof Named typedFuture
                         && typedFuture.name().equals("Future")
                         && typedFuture.arguments().size() == 1
-                        && Set.of("map", "compose", "flatMap", "onSuccess")
+                        && Set.of("map", "compose", "flatMap", "flat_map", "onSuccess")
                                 .contains(member.member())) {
                     String operation = "Future." + member.member();
                     if (call.typeArgumentsPresent()) {
@@ -8404,7 +8404,7 @@ public final class TypeChecker {
             case "map" -> new Function(
                     List.of(new Function(List.of(element), Unknown.INSTANCE)),
                     unknownFuture);
-            case "compose", "flatMap" -> new Function(
+            case "compose", "flatMap", "flat_map" -> new Function(
                     List.of(new Function(List.of(element), unknownFuture)),
                     unknownFuture);
             case "onSuccess" -> new Function(
