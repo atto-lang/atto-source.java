@@ -122,14 +122,20 @@ final class CollectionOfFactoryGuestTest {
     void canonicalFactoriesLowerDirectlyToExistingCheckedAggregateAst() {
         assertInstanceOf(Ast.TupleExpr.class, firstFactoryInitializer(
                 program("const t = Tuple.of(1, true);")));
-        assertInstanceOf(Ast.ListExpr.class, firstFactoryInitializer(
-                program("const a = Array.of(1, 2);")));
-        assertInstanceOf(Ast.ListExpr.class, firstFactoryInitializer(
-                program("const a = arr[1, 2];")));
+        Ast.ListExpr array = assertInstanceOf(Ast.ListExpr.class,
+                firstFactoryInitializer(program("const a = Array.of(1, 2);")));
+        assertTrue(array.explicitArrayConstructor(),
+                "Array.of must preserve explicit-array typing; never silently infer Tuple");
+        Ast.ListExpr oldArray = assertInstanceOf(Ast.ListExpr.class,
+                firstFactoryInitializer(program("const a = arr[1, 2];")));
+        assertTrue(oldArray.explicitArrayConstructor());
         assertInstanceOf(Ast.ObjectExpr.class, firstFactoryInitializer(
                 program("const r = Record.of(ready: true);")));
-        assertInstanceOf(Ast.MapLiteralExpr.class, firstFactoryInitializer(
-                program("const m = Map.of<string,int>(\"x\" => 1);")));
+        Ast.MapLiteralExpr map = assertInstanceOf(Ast.MapLiteralExpr.class,
+                firstFactoryInitializer(program("const m = Map.of<string,int>(\"x\" => 1);")));
+        assertNotNull(map.mapType(), "typed Map.of needs a compile-time K/V witness");
+        assertEquals("Map", map.mapType().name());
+        assertEquals(2, map.mapType().arguments().size());
     }
 
     @Test
@@ -145,11 +151,32 @@ final class CollectionOfFactoryGuestTest {
                 "pub fnc build<Tuple>(): void { const t = Tuple.of(1, 2); return; }",
                 "define class Map as end\n" +
                     program("const m = Map.of(\"x\", 1);"),
-                program("const Array = 1; const t = Array.of(1, 2);")
+                program("const Array = 1; const t = Array.of(1, 2);"),
+                // Lexically later names still cannot retroactively grant the
+                // compiler ownership of a user's nominal factory.
+                program("const t = Tuple.of(1, 2);")
+                        + "define class Tuple as end\n",
+                program("const r = Record.of(ready: true);")
+                        + "define class Record as end\n"
         }) {
             assertInstanceOf(Ast.CallExpr.class,
                     firstFactoryInitializer(source), source);
         }
+    }
+
+    @Test
+    void explicitArrayFactoryCannotSatisfyTupleReturnType() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc incorrectly_return_tuple(): Tuple[int, int] {
+                            return Array.of(1, 2);
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("return value")
+                        || failure.getMessage().contains("Tuple"),
+                "Array.of must not be silently reclassified as a Tuple: "
+                        + failure.getMessage());
     }
 
     @Test
