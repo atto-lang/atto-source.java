@@ -5097,31 +5097,28 @@ public final class Parser {
                 throw error(peek(), "'~<T>()' collection constructors are removed; "
                         + "use the canonical Type.of<T>() spelling");
             }
-            // Preserve the pre-existing bare ~(...) / unary operator paths,
-            // which are separate from named ~kind(...) factories.
+            // The ordinary unary ~(expr) path is independent of collection
+            // construction. Bare ~(field: value) or ~(key => value) used
+            // to select implicit Record/Map construction; those are also
+            // removed, because tilde must not manufacture aggregates.
             if (check(LPAREN)) {
                 if (checkNext(RPAREN)) {
-                    throw error(peek(), "empty '~()' is ambiguous; collection constructors use Type.of(...)");
+                    throw error(peek(), "empty '~()' cannot construct an aggregate; use Type.of(...)");
                 }
                 int first = current + 1;
                 if (first < tokens.size() && tokens.get(first).type() == ELLIPSIS) {
-                    throw error(peek(), "bare '~(...source)' has no constructor meaning; use Record.of(...) or Map.of(...)");
+                    throw error(peek(), "tilde aggregate spread constructors are removed; use Type.of(...)");
                 }
                 if (first + 1 < tokens.size()) {
                     Token.Type keyKind = tokens.get(first).type();
                     Token.Type separator = tokens.get(first + 1).type();
-                    if ((keyKind == IDENT || keyKind == STRING) && separator == COLON) {
-                        return parsePostfixSuffix(parseTildeRecordLiteral(false));
-                    }
-                    if (separator == FAT_ARROW) {
-                        advance(); // consume '(' after the tilde literal
-                        return parsePostfixSuffix(parseTildeMapEntries(null));
+                    if ((keyKind == IDENT || keyKind == STRING) && separator == COLON
+                            || separator == FAT_ARROW) {
+                        throw error(peek(), "tilde Map/Record construction is removed; use Map.of(...) or Record.of(...)");
                     }
                 }
                 if (tildeHasTopLevelMapSeparator()) {
-                    // Computed evaluated keys require a static Map<K,V> witness.
-                    advance(); // consume '(' and parse checked typed entries
-                    return parsePostfixSuffix(parseTildeMapEntries(null));
+                    throw error(peek(), "tilde Map construction is removed; use Map.of(...)");
                 }
             }
             return new Ast.UnaryExpr("~", parseUnary());
