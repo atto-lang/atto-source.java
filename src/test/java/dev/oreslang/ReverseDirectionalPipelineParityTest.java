@@ -127,6 +127,37 @@ final class ReverseDirectionalPipelineParityTest {
     }
 
     @Test
+    void reverseResultAndOptionCombinatorsPreserveTaggedValuesAndErrors() throws Exception {
+        String program = """
+                fnc twice(int n): int { return n * 2; }
+                fnc annotate(String error): String { return error + "!"; }
+                pub routine main(): void {
+                    stdio.println(Option.map(twice) <| Some(3));
+                    stdio.println(Option.map(twice) <| None);
+                    stdio.println(Result.map(twice) <| Ok(2));
+                    stdio.println(Result.map(twice) <| Err("bad"));
+                    stdio.println(Result.map_err(annotate) <| Err("bad"));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        assertEquals("Some(6)\nNone\nOk(4)\nErr(bad)\nErr(bad!)",
+                run(program).trim());
+    }
+
+    @Test
+    void reverseResultAndThenCannotChangeCheckedErrorDomain() {
+        String program = """
+                fnc bad_next(int n): Result<int,int> { return Err(5); }
+                fnc wrong(Result<int,String> input): Result<int,String> {
+                    return Result.and_then(bad_next) <| input;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
     void functionalReversePreservesTypeErrorsRatherThanImplicitResultFlattening() {
         var source = """
                 fnc consume(int value): int { return value + 1; }
