@@ -1,0 +1,17 @@
+// Same-file source path contains a loop to force resumable function lowering.
+pub define class DecodeAttempt as
+  pub val int status;
+end
+
+pub fnc decode_attempt(int n): DecodeAttempt {
+  let int count = 0;
+  loop do
+    if count >= 1 then break; fi
+    count = count + 1;
+  done
+  return new DecodeAttempt(n + count);
+}
+
+fnc hidden_decode(int n): DecodeAttempt {
+  return new DecodeAttempt(n);
+}
