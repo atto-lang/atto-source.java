@@ -5423,7 +5423,13 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
-            Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
+            Ast.CallExpr implicit;
+            try {
+                implicit = implicitSelfMethodCall(call, env);
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
             if (implicit != null) {
                 evalSuspendableCall(task, implicit, env, continuation);
                 return;
@@ -7620,6 +7626,15 @@ public final class OresEvalRootNode extends RootNode {
 
         /** Resolve only a direct bare call, not an extracted method value. */
         private Ast.CallExpr implicitSelfMethodCall(Ast.CallExpr call, Env env) {
+            if (call.origin() == Ast.CallOrigin.DIRECT
+                    && call.callee() instanceof Ast.NameExpr bareState
+                    && bareState.name().equals("handle_state")
+                    && env.instanceMethodOwner() != null
+                    && env.instanceMethodOwner().actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare actor handle_state "
+                                + "cannot resolve to an imported or file-root function");
+            }
             if (call.origin() != Ast.CallOrigin.DIRECT
                     || !(call.callee() instanceof Ast.NameExpr name)
                     || CallableSelector.reservedImplicitReceiverCallName(name.name())
