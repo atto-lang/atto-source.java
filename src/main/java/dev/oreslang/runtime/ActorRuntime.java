@@ -9778,6 +9778,20 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Reject only the dispatch whose identity is still current.
+         * A late gate/executor failure for an older callback must not
+         * revoke a replacement turn or stop its actor.
+         */
+        private boolean clearRejectedDispatchIfCurrent(Object dispatchTicket) {
+            synchronized (lifecycleLock) {
+                if (scheduledDispatchToken != dispatchTicket || carrierActive) return false;
+                scheduledDispatchToken = null;
+                scheduled.set(false);
+                return true;
+            }
+        }
+
         private void schedule() {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
@@ -9802,31 +9816,24 @@ public final class ActorRuntime implements AutoCloseable {
                 };
                 if (physicalTurnGate != null) {
                     physicalTurnGate.dispatch(dispatch, submit, failure -> {
-                        synchronized (lifecycleLock) {
-                            if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
-                                scheduledDispatchToken = null;
-                                scheduled.set(false);
-                            }
+                        if (clearRejectedDispatchIfCurrent(dispatchTicket)) {
+                            stop();
                         }
-                        stop();
                     });
                 } else {
                     submit.accept(dispatch);
                 }
             } catch (RejectedExecutionException rejected) {
-                synchronized (lifecycleLock) {
-                    if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
-                        scheduledDispatchToken = null;
-                        scheduled.set(false);
+                // A rejected queued callback can arrive after its ticket was
+                // cancelled or superseded. Do not poison a newer actor turn.
+                if (clearRejectedDispatchIfCurrent(dispatchTicket)) {
+                    synchronized (lifecycleLock) {
+                        gracefulTeardownPending = false;
+                        gracefulTeardownRevoked = true;
                     }
+                    fail(rejected);
+                    if (!closed.get()) throw rejected;
                 }
-                synchronized (lifecycleLock) {
-                    gracefulTeardownPending = false;
-                    gracefulTeardownRevoked = true;
-                }
-                fail(rejected);
-
-                if (!closed.get()) throw rejected;
             }
         }
 
