@@ -102,11 +102,11 @@ final class CollectionOfFactoryGuestTest {
     void missingOrInvalidMapWitnessesAreNotDynamicMaps() {
         requireCompilerFactoryGate("const m = Map.of();",
                 "Map.of() requires a directly declared, fully typed Map<K,V>");
-        requireCompilerFactoryGate("const m = Map.of(\\"key\\" => 1);",
+        requireCompilerFactoryGate("const m = Map.of(\"key\" => 1);",
                 "Map.of(...) requires a directly declared, fully typed Map<K,V>");
-        requireParserFactoryGate("const m = Map.of<string>(\\"key\\" => 1);",
+        requireParserFactoryGate("const m = Map.of<string>(\"key\" => 1);",
                 "Map.of<K,V> requires exactly two positional type witnesses");
-        requireParserFactoryGate("const m = Map.of<string, int>(\\"key\\": 1);",
+        requireParserFactoryGate("const m = Map.of<string, int>(\"key\": 1);",
                 "map literals require '=>' between key and value");
     }
 
