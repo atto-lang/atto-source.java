@@ -167,6 +167,57 @@ final class TypeAutoTraitsTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void closedAutoTraitsBoundDeepWideAndDagMetadata() {
+        Types.Type deep = Types.Primitive.INT;
+        for (int i = 0; i < 8_192; i++) {
+            deep = new Types.Named("Option", List.of(deep));
+        }
+        var limited = TypeAutoTraits.inferClosed(deep);
+        assertFalse(limited.send());
+        assertFalse(limited.sync());
+        assertFalse(limited.share());
+
+        var wide = new Types.Tuple(
+                java.util.Collections.nCopies(100_001, Types.Primitive.INT));
+        assertFalse(TypeAutoTraits.inferClosed(wide).send());
+
+        // Shared DAGs are not exponential: memoize by identity AND depth,
+        // preserving genuinely safe small/scalar structures.
+        Types.Type dag = Types.Primitive.INT;
+        for (int i = 0; i < 70; i++) {
+            dag = new Types.Tuple(List.of(dag, dag));
+        }
+        var safe = TypeAutoTraits.inferClosed(dag);
+        assertTrue(safe.send());
+        assertTrue(safe.sync());
+        assertTrue(safe.share());
+        assertTrue(TypeAutoTraits.inferClosed(Types.Primitive.INT).send(),
+                "failure in one proof cannot affect a later independent proof");
+    }
+
+    @Test
+    void malformedTypesAndNonValueNullDoNotMintWorkerCapabilities() {
+        for (Types.Type invalid : List.of(
+                Types.Primitive.NULL,
+                Types.Primitive.VOID,
+                new Types.StringLiteral(null),
+                new Types.Named(null, List.of(Types.Primitive.INT)),
+                new Types.Named("  ", List.of(Types.Primitive.INT)),
+                new Types.Named("x".repeat(1_025), List.of()),
+                new Types.Record(Map.of(" ", Types.Primitive.INT)))) {
+            var capabilities = TypeAutoTraits.inferClosed(invalid);
+            assertFalse(capabilities.send());
+            assertFalse(capabilities.sync());
+            assertFalse(capabilities.share());
+            var nested = TypeAutoTraits.inferClosed(
+                    new Types.Named("Option", List.of(invalid)));
+            assertFalse(nested.send(), "Option must not launder an invalid value");
+            assertFalse(nested.sync(), "Option must not launder an invalid value");
+        }
+    }
+
+    @Test
     void actorRefIsAnExplicitShareableCapability() {
         var ref = TypeAutoTraits.inferClosed(
                 new Types.Named(
