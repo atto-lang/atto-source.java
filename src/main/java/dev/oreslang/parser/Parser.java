@@ -4608,8 +4608,15 @@ public final class Parser {
         }
 
         if (match(TILDE)) {
+            // Bare "on ~Point" is a structural VALUE pattern, not the same
+            // operation as the type test "on is ~Point". Until the value-
+            // intersection contract has lowering, do not silently treat the
+            // two forms as equivalent or steal the nominal TypePattern path.
             if (isContextualIdentifier("record") && checkNext(LPAREN)) {
-                advance();
+                throw error(peek(), "on ~record(...) is retired; use an explicit structural field pattern");
+            }
+            if (!check(LPAREN)) {
+                throw error(peek(), "on ~Type is a structural value pattern requiring checked intersection lowering; use 'on is ~Type' for a structural type test");
             }
             return parseTildeRecordPattern(false);
         }
