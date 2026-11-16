@@ -155,6 +155,20 @@ public final class Ast {
             arguments = List.copyOf(arguments);
         }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
+        /** A compile-time, binding-derived type; never a runtime typeof call. */
+        public static TypeRef typeQuery(String binding) {
+            if (binding == null || binding.isBlank()) {
+                throw new IllegalArgumentException("typeof requires a binding name");
+            }
+            return new TypeRef("$typeof$", List.of(simple(binding)), false);
+        }
+        public boolean isTypeQuery() { return name.equals("$typeof$"); }
+        public String queriedBinding() {
+            if (!isTypeQuery() || arguments.size() != 1 || !arguments.getFirst().arguments().isEmpty()) {
+                throw new IllegalStateException("malformed typeof binding query");
+            }
+            return arguments.getFirst().name();
+        }
         /** A complement in type position. The token '!' is not a value operator here. */
         public static TypeRef complement(TypeRef excluded) {
             return excluded.isComplement()
