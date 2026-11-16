@@ -7065,16 +7065,16 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.ImportKind.FUNCTION, imported.sourceName(), args);
         }
 
+        /**
+         * Qualified imports are direct-call-only until the linker supplies a
+         * checked first-class signature (including ownership and suspension).
+         * Even a forged / unchecked AST must not obtain an Invokable here.
+         * Both sync eval and suspendable eval use this same fail-closed gate.
+         */
         private Object explicitImportValue(String name) {
-            ImportedBinding imported = namedImportedFnc(name);
-            if (hostFunctionImports.containsKey(name)) {
-                Invokable host = hostFunctions.get(name);
-                if (host == null) throw new IllegalArgumentException(
-                        "imports::" + name + " has no authorized Java host function");
-                return host;
-            }
-            return importedTarget(imported.declaration())
-                    .exportValue(Ast.ImportKind.FUNCTION, imported.sourceName());
+            throw new IllegalArgumentException(
+                    "imports::" + name + " is direct-call-only; imported function values "
+                            + "require checked parameter, result, effect and lifetime signatures");
         }
 
         private Ast.FunctionDecl pkgRootCallable(String name, int arity, Env env) {
