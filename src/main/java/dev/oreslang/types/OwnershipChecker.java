@@ -1365,8 +1365,9 @@ public final class OwnershipChecker {
                         // independently allocated owned result.
                         DerivedCopyPlanV1.Plan plan = DerivedCopyPlanV1.derive(
                                 source.type, this::findClass);
-                        if (!(plan instanceof DerivedCopyPlanV1.Instance)) {
-                            throw error("E_COPY_UNPROVEN: only proven class roots have runtime copy lowering in v1");
+                        if (!(plan instanceof DerivedCopyPlanV1.Instance
+                                || plan instanceof DerivedCopyPlanV1.Sequence)) {
+                            throw error("E_COPY_UNPROVEN: only proven class or typed sequence roots have copy lowering in v1");
                         }
                         if (projected != null && projected.warnOnCopy()) {
                             copyWarnings.add("W_COPY_DISCOURAGED: rt copy of @"
@@ -1377,6 +1378,13 @@ public final class OwnershipChecker {
                                     + sourceClass.name() + "'");
                         }
                         yield new ValueInfo(source.type, ValueKind.MOVE_ONLY, null);
+                    }
+                    // ValueKind.COPY also includes legacy *handle* types such
+                    // as Channel/SharedMutex. They are copyable as references
+                    // in older paths, but explicit ownership-copy must not
+                    // manufacture a second owned mutable resource alias.
+                    if (!isExplicitValueCopyType(source.type)) {
+                        throw error("E_COPY_UNPROVEN: rt copy requires an independently copyable scalar/Option/Result payload");
                     }
                     if (projected != null && projected.warnOnCopy()) {
                         copyWarnings.add("W_COPY_DISCOURAGED: rt copy of @"
@@ -6007,6 +6015,34 @@ public final class OwnershipChecker {
             throw error("E_COPY_FORBIDDEN: cannot duplicate @NoCopy field '"
                     + policy.origin() + "' by owned projection; use rt borrow");
         }
+    }
+
+    /**
+     * Unlike the legacy implicit Copy classifier, an explicit owned copy
+     * cannot be a second alias of a mutable handle or a borrowed view.
+     * Only immutable scalar/value sum representations are admissible until
+     * other plans have independently verified lowering.
+     */
+    private boolean isExplicitValueCopyType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow() || type.inferArguments()
+                || type.isComplement() || type.isUnion() || type.isTupleType()) {
+            return false;
+        }
+        if (type.isIntLiteral() || type.isBoolLiteral() || type.isStringLiteral()) return true;
+        if (findClass(type.name()) != null || hasLocalTypeAliasNamed(type.name())) return false;
+        return switch (type.name()) {
+            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                    "int", "uint", "bigint", "f32", "f64", "float",
+                    "decimal", "complex64", "complex128", "complex",
+                    "bool", "Bool", "string", "String", "void"
+                    -> type.arguments().isEmpty();
+            case "Option" -> type.arguments().size() == 1
+                    && isExplicitValueCopyType(type.arguments().getFirst());
+            case "Result" -> type.arguments().size() == 2
+                    && isExplicitValueCopyType(type.arguments().get(0))
+                    && isExplicitValueCopyType(type.arguments().get(1));
+            default -> false;
+        };
     }
 
     private boolean isCopyType(Ast.TypeRef type) {
