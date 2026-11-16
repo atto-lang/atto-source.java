@@ -11,6 +11,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class DistinctPipeSyntaxTest {
@@ -203,6 +205,31 @@ final class DistinctPipeSyntaxTest {
                     return rpipe;
                 }
                 """));
+    }
+
+    @Test
+    void sharedDirectionalAttoFixturesMatchExactSourceContracts() throws Exception {
+        Path root = Path.of("tests", "fixtures", "directional-parity");
+        for (String file : new String[] {
+                "directional-value-forward-v1.atto",
+                "directional-value-reverse-v1.atto",
+                "directional-rpipe-contextual-name.atto"
+        }) {
+            String source = Files.readString(root.resolve(file), StandardCharsets.UTF_8);
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)), file);
+        }
+        for (String file : new String[] {
+                "directional-value-mixed-reject.atto",
+                "directional-actor-rpipe-reject.atto"
+        }) {
+            String source = Files.readString(root.resolve(file), StandardCharsets.UTF_8);
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source), file);
+            String diagnostic = file.contains("mixed")
+                    ? "E_VALUE_PIPE_DIRECTION" : "E_ACTOR_PIPE_BACKEND_UNSUPPORTED";
+            assertTrue(rejected.getMessage().contains(diagnostic),
+                    rejected::getMessage);
+        }
     }
 
     private static String run(String code) throws Exception {
