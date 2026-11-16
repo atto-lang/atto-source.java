@@ -199,6 +199,22 @@ final class ImportsQualifiedCallTest {
     }
 
     @Test
+    void explicitImportNamedHandleStateDoesNotImpersonateActorStateIntrinsic() {
+        // Only the unqualified/current-actor intrinsic name is reserved.
+        // An authorized imported fnc with the same spelling is a distinct
+        // static target and may never gain the sealed actor's state loan.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                import fnc handle_state from "./lib.ores";
+                define actor Worker as
+                  pub ping(): void {
+                    imports::handle_state();
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void importedPrivateFunctionCannotBypassExportValidation() throws Exception {
         Files.writeString(temp.resolve("lib.ores"), """
                 fnc roodles(): int { return 123; }
