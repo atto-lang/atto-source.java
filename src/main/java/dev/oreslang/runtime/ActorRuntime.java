@@ -9792,6 +9792,11 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /** A gate rejection may run after the original callback was replaced. */
+        private void stopRejectedDispatchIfCurrent(Object dispatchTicket) {
+            if (clearRejectedDispatchIfCurrent(dispatchTicket)) stop();
+        }
+
         private void schedule() {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
@@ -9815,11 +9820,8 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 };
                 if (physicalTurnGate != null) {
-                    physicalTurnGate.dispatch(dispatch, submit, failure -> {
-                        if (clearRejectedDispatchIfCurrent(dispatchTicket)) {
-                            stop();
-                        }
-                    });
+                    physicalTurnGate.dispatch(dispatch, submit,
+                            failure -> stopRejectedDispatchIfCurrent(dispatchTicket));
                 } else {
                     submit.accept(dispatch);
                 }
