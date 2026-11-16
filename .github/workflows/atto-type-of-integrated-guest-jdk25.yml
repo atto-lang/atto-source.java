@@ -1,21 +1,10 @@
 # Exact-source JDK25 compiler/Truffle guest verification. No runner allocation
 # or authored test alone counts as execution evidence.
 name: Atto Type.of integrated Java 25 guest evidence
+# Manual-only until an actual one-step capacity probe is admitted. Re-enable
+# pull_request once runner/Actions billing and policy eligibility are proven.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'src/main/java/**'
-      - 'src/test/java/dev/oreslang/*Factory*'
-      - 'src/test/java/dev/oreslang/*Tilde*'
-      - 'src/test/java/dev/oreslang/*Map*'
-      - 'src/test/java/dev/oreslang/TupleReturnTypeContractTest.java'
-      - 'src/test/resources/atto/**'
-      - 'pom.xml'
-      - '.github/workflows/atto-type-of-integrated-guest-jdk25.yml'
-  push:
-    branches:
-      - draft/integrate-collection-of-pr2735-3140-20261116
 permissions:
   contents: read
 jobs:
@@ -25,12 +14,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # PR triggers normally check out a synthetic merge commit.
+          # Even if pull_request is restored, always pin the authored head.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Capture exact tested Git revision
+      - name: Enforce exact-source checkout and capture Git provenance
         shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          echo "GIT_HEAD=$(git rev-parse HEAD)"
+          actual_head="$(git rev-parse HEAD)"
+          echo "GIT_HEAD=$actual_head"
+          echo "EXPECTED_SOURCE_SHA=$EXPECTED_SOURCE_SHA"
+          test "$actual_head" = "$EXPECTED_SOURCE_SHA" || {
+            echo "::error::Checkout does not match the authored PR or dispatch commit"
+            exit 1
+          }
           echo "JAVA_TREE=$(git rev-parse HEAD:src/main/java)"
           echo "FACTORY_GUEST_TEST=$(git rev-parse HEAD:src/test/java/dev/oreslang/CollectionOfFactoryGuestTest.java)"
       - uses: actions/setup-java@v4
