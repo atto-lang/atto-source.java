@@ -180,4 +180,111 @@ final class ActorOutputStreamTest {
         }
     }
 
+
+    /**
+     * Regression guard for a drained failed channel: tryRead() throws on
+     * exceptional closure, so the output stream must still leave the parent's
+     * retained-stream registry. This is host/JVM lifecycle evidence only.
+     */
+    @Test
+    void failedImmediateOutputPollDoesNotRetainDrainedStream() {
+        for (ActorRuntime.ActorKind kind :
+                List.of(ActorRuntime.ActorKind.PRIVATE, ActorRuntime.ActorKind.SHARED)) {
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                ActorRuntime.ActorRef<String> ref = switch (kind) {
+                    case PRIVATE -> runtime.spawnPrivate(context -> (message, turn) -> {
+                        throw new IllegalStateException("poll-failure-without-output");
+                    });
+                    case SHARED -> runtime.spawnShared(context -> (message, turn) -> {
+                        throw new IllegalStateException("poll-failure-without-output");
+                    });
+                    case UNTRUSTED -> throw new AssertionError("not part of this case");
+                };
+                ref.ready().join();
+                ref.send("go");
+                CompletionException terminated =
+                        assertThrows(CompletionException.class, () -> ref.done().join());
+                var stream = ref.outputs();
+                assertTrue(retainsOutputStream(runtime, stream),
+                        "before observation, the runtime retains the terminated stream");
+
+                CompletionException failed =
+                        assertThrows(CompletionException.class, stream::tryNext);
+                assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
+                        failed.getCause());
+                assertSame(terminated.getCause(), failed.getCause().getCause(),
+                        "the actor failure must survive exceptional output closure");
+                assertTrue(stream.isDone());
+                assertFalse(retainsOutputStream(runtime, stream),
+                        "failed nonparking poll must deregister drained actor output");
+            }
+        }
+    }
+
+    @Test
+    void immediatePollDrainsBufferedOutputBeforeSurfacingActorFailure() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("published-before-error");
+                        throw new IllegalArgumentException("actor-failed-after-publish");
+                    });
+            ref.ready().join();
+            ref.send("go");
+            CompletionException terminated =
+                    assertThrows(CompletionException.class, () -> ref.done().join());
+
+            var stream = ref.outputs();
+            var buffered = stream.tryNext().orElseThrow();
+            assertEquals("published-before-error", buffered.value());
+            assertEquals(0L, buffered.sequence());
+
+            CompletionException failed =
+                    assertThrows(CompletionException.class, stream::tryNext);
+            assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
+                    failed.getCause());
+            assertSame(terminated.getCause(), failed.getCause().getCause());
+            assertTrue(stream.isDone());
+            assertFalse(retainsOutputStream(runtime, stream));
+        }
+    }
+
+    @Test
+    void immediatePollDoesNotStealOutputFromRegisteredAsyncReader() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnPrivate(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("one-output");
+                        turn.runtime().endCurrentActor();
+                    });
+            ref.ready().join();
+
+            var pending = ref.outputs().next();
+            assertTrue(ref.outputs().tryNext().isEmpty(),
+                    "poll of an open empty stream must not manufacture output");
+            ref.send("go");
+
+            var committed = pending.join();
+            assertFalse(committed.done());
+            assertEquals("one-output", committed.value().value());
+            assertEquals(0L, committed.value().sequence());
+            ref.done().join();
+
+            assertTrue(ref.outputs().tryNext().isEmpty(),
+                    "the same output must not be delivered a second time");
+            assertTrue(ref.outputs().isDone());
+        }
+    }
+
+    private static boolean retainsOutputStream(
+            ActorRuntime runtime, ActorRuntime.ActorOutputStream<?> stream) {
+        try {
+            var field = ActorRuntime.class.getDeclaredField("actorOutputStreams");
+            field.setAccessible(true);
+            return ((java.util.Set<?>) field.get(runtime)).contains(stream);
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError("cannot inspect output stream retention", failure);
+        }
+    }
+
 }
