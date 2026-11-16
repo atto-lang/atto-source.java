@@ -3819,21 +3819,23 @@ public final class Parser {
     }
 
     /**
-     * Resolve ~map() only in an immediate, explicitly typed binding.
-     * This is a syntax-level witness, NOT an inferred runtime dictionary.
-     * Aliases, generics and implicit expected types remain fail closed until
-     * an independently verified typed-HIR contextual lowering pass exists.
+     * Resolve contextual Map.of(...) / Map.of() only in an immediate, explicitly
+     * typed binding. This is a syntax-level witness, NOT an inferred runtime
+     * dictionary. Aliases, generics and implicit expected types fail closed
+     * until independently verified typed-HIR contextual lowering exists.
      */
     private Ast.Expr resolveDirectContextualEmptyMap(
             Ast.TypeRef declaredType, Ast.Expr initializer) {
-        if (!(initializer instanceof Ast.ContextualEmptyMapExpr)
-                && !(initializer instanceof Ast.MapLiteralExpr map && map.mapType() == null)) {
+        boolean untypedEntries = initializer instanceof Ast.MapLiteralExpr map
+                && map.mapType() == null;
+        if (!(initializer instanceof Ast.ContextualEmptyMapExpr) && !untypedEntries) {
             return initializer;
         }
         if (declaredType == null || !declaredType.name().equals("Map")
                 || declaredType.inferArguments() || declaredType.arguments().size() != 2) {
-            throw error(previous(),
-                    "Map.of() requires a directly declared, fully typed Map<K,V> binding");
+            String spelling = untypedEntries ? "Map.of(...)" : "Map.of()";
+            throw error(previous(), spelling
+                    + " requires a directly declared, fully typed Map<K,V> binding");
         }
         // Never lose the exact key/value witness. TypeChecker and
         // OwnershipChecker still independently validate both domains.
