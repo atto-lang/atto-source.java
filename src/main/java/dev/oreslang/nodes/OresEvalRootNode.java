@@ -4585,6 +4585,19 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.MemberExpr member) {
+                    if (isImportsMember(member) || isPkgRootMember(member)) {
+                        try {
+                            continuation.accept(task, null,
+                                    isImportsMember(member)
+                                            ? new IllegalArgumentException(
+                                                    "imports::" + member.member() + " is direct-call-only")
+                                            : new IllegalArgumentException(
+                                                    "pkg::" + member.member() + " is direct-call-only"));
+                        } catch (RuntimeException | Error failure) {
+                            continuation.accept(task, null, failure);
+                        }
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             member.receiver(),
@@ -5413,6 +5426,70 @@ public final class OresEvalRootNode extends RootNode {
             Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
             if (implicit != null) {
                 evalSuspendableCall(task, implicit, env, continuation);
+                return;
+            }
+            try {
+                requireUnqualifiedRootCallNotShadowed(call, env);
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr imported && isImportsMember(imported)) {
+                if (call.origin() != Ast.CallOrigin.DIRECT) {
+                    continuation.accept(task, null, new IllegalArgumentException(
+                            "imports:: callable is direct-call-only"));
+                    return;
+                }
+                try {
+                    namedImportedFnc(imported.member());
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
+                evalSuspendableArguments(task, call.arguments(), env,
+                        (t, args, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                Invocation invocation = prepareExplicitImportInvocation(
+                                        imported.member(), args);
+                                completeSourceInvocation(t, invocation,
+                                        invocationDeclaresAsync(invocation), env, continuation);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
+                return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr pkg && isPkgRootMember(pkg)) {
+                if (call.origin() != Ast.CallOrigin.DIRECT) {
+                    continuation.accept(task, null, new IllegalArgumentException(
+                            "pkg:: callable is direct-call-only"));
+                    return;
+                }
+                Ast.FunctionDecl fn;
+                try {
+                    fn = pkgRootCallable(pkg.member(), call.arguments().size(), env);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
+                evalSuspendableArguments(task, call.arguments(), env,
+                        (t, args, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                Invocation invocation = functionInvocation(fn, args);
+                                completeSourceInvocation(t, invocation,
+                                        invocationDeclaresAsync(invocation), env, continuation);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
                 return;
             }
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
@@ -7586,6 +7663,20 @@ public final class OresEvalRootNode extends RootNode {
             // A lexical instance family wins before arity and file/import lookup.
             Ast.CallExpr implicit = implicitSelfMethodCall(call, env);
             if (implicit != null) return prepareInvocation(implicit, env);
+            requireUnqualifiedRootCallNotShadowed(call, env);
+            if (call.callee() instanceof Ast.MemberExpr pkg && isPkgRootMember(pkg)) {
+                if (call.origin() != Ast.CallOrigin.DIRECT)
+                    throw new IllegalArgumentException("pkg:: callable is direct-call-only");
+                Ast.FunctionDecl fn = pkgRootCallable(pkg.member(), call.arguments().size(), env);
+                return functionInvocation(fn, evaluateArguments(call.arguments(), env));
+            }
+            if (call.callee() instanceof Ast.MemberExpr imported && isImportsMember(imported)) {
+                if (call.origin() != Ast.CallOrigin.DIRECT)
+                    throw new IllegalArgumentException("imports:: callable is direct-call-only");
+                namedImportedFnc(imported.member());
+                return prepareExplicitImportInvocation(
+                        imported.member(), evaluateArguments(call.arguments(), env));
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 // Immutable checked target within this evaluator's code image.
@@ -8011,6 +8102,10 @@ public final class OresEvalRootNode extends RootNode {
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
+                if (name.name().equals(Parser.PKG_ROOT_NAMESPACE)
+                        || name.name().equals(Parser.IMPORTS_NAMESPACE)) {
+                    throw new IllegalArgumentException("compiler qualifier cannot be evaluated as a value");
+                }
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
@@ -8319,7 +8414,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
-            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
+            if (expr instanceof Ast.MemberExpr member) {
+                if (isImportsMember(member)) return explicitImportValue(member.member());
+                if (isPkgRootMember(member)) return pkgRootFunctionValue(member.member());
+                return member(eval(member.receiver(), env), member.member(), env);
+            }
             if (expr instanceof Ast.IndexExpr indexed) {
                 return indexValue(
                         eval(indexed.receiver(), env),
