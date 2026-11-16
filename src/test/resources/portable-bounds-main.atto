@@ -1,0 +1,52 @@
+import fnc valid_index from "./bounds.atto";
+import fnc valid_slice from "./bounds.atto";
+import fnc valid_strided_slice from "./bounds.atto";
+
+pub fnc main(): void {
+  if valid_index(-1, 5) || valid_index(5, 5) || valid_index(0, 0); do
+    stdio.stdout.write("invalid-index-accepted");
+    return;
+  fi
+  if !valid_index(0, 5) || !valid_index(4, 5); do
+    stdio.stdout.write("valid-index-rejected");
+    return;
+  fi
+  if !valid_slice(0, 5, 5) || !valid_slice(5, 0, 5); do
+    stdio.stdout.write("valid-slice-rejected");
+    return;
+  fi
+  if valid_slice(5, 1, 5) || valid_slice(-1, 1, 5) || valid_slice(0, -1, 5); do
+    stdio.stdout.write("invalid-slice-accepted");
+    return;
+  fi
+  if !valid_slice(9223372036854775806, 1, 9223372036854775807); do
+    stdio.stdout.write("max-slice-rejected");
+    return;
+  fi
+  if valid_slice(9223372036854775806, 2, 9223372036854775807); do
+    stdio.stdout.write("overflow-slice-accepted");
+    return;
+  fi
+  if !valid_strided_slice(0, 2, 3, 5) || !valid_strided_slice(5, 1, 0, 5); do
+    stdio.stdout.write("valid-strided-rejected");
+    return;
+  fi
+  if valid_strided_slice(0, 2, 4, 5) || valid_strided_slice(5, 1, 1, 5); do
+    stdio.stdout.write("invalid-strided-accepted");
+    return;
+  fi
+  if valid_strided_slice(0, 0, 1, 5) || valid_strided_slice(0, -1, 1, 5); do
+    stdio.stdout.write("invalid-stride-accepted");
+    return;
+  fi
+  if !valid_strided_slice(9223372036854775806, 2, 1, 9223372036854775807); do
+    stdio.stdout.write("max-strided-rejected");
+    return;
+  fi
+  if valid_strided_slice(9223372036854775806, 2, 2, 9223372036854775807); do
+    stdio.stdout.write("overflow-strided-accepted");
+    return;
+  fi
+  stdio.stdout.write("checked-bounds-ok");
+  return;
+}

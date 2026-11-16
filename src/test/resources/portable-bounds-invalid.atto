@@ -1,0 +1,7 @@
+import fnc valid_slice from "./bounds.atto";
+
+pub fnc main(): void {
+  // String is not an int, even though the function merely checks a bound.
+  stdio.stdout.write(valid_slice("bad", 1, 3));
+  return;
+}
