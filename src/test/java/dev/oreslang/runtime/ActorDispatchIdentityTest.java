@@ -131,6 +131,22 @@ final class ActorDispatchIdentityTest {
                 assertSame(newTicket, activeTicket(actorCell));
                 assertEquals(2, deliveries.get());
 
+                // A delayed executor/gate rejection for the old ticket must
+                // not stop the actor currently executing under newTicket.
+                // Exercise the actual rejection-stop entrypoint, rather than
+                // only rechecking ticket equality in a source-free model.
+                Method rejectDispatch = actorCell.getClass().getDeclaredMethod(
+                        "stopRejectedDispatchIfCurrent", Object.class);
+                rejectDispatch.setAccessible(true);
+                rejectDispatch.invoke(actorCell, oldTicket);
+                assertSame(newTicket, activeTicket(actorCell));
+
+                // Even if a broken submitter reports a failure *after*
+                // physical entry, its current turn cannot be revoked.
+                rejectDispatch.invoke(actorCell, newTicket);
+                assertSame(newTicket, activeTicket(actorCell));
+                assertEquals(2, deliveries.get());
+
                 actor.send(3);
                 releaseSecond.countDown();
                 actor.done().get(4, TimeUnit.SECONDS);
