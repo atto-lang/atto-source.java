@@ -2243,7 +2243,7 @@ public final class Parser {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
-            boolean structural = matchContextualKeyword("structural");
+            boolean structural = matchContextualKeyword("structural") || match(TILDE);
 
             // Migration spelling for named-argument-friendly declarations:
             // |value: Type| is accepted, while oreslang-format emits |Type value|.
@@ -2329,7 +2329,7 @@ public final class Parser {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
-            boolean structural = matchContextualKeyword("structural");
+            boolean structural = matchContextualKeyword("structural") || match(TILDE);
 
             // Canonical type-first structural spelling: structural Foo y
             if (structural) {
@@ -2512,30 +2512,16 @@ public final class Parser {
             return grouped;
         }
 
-        // Tilde aggregate types are only a source spelling of established
-        // built-in types. Keep the complete bracketed shape/metadata grammar
-        // below; do not create a new type family or an unchecked nominal.
-        boolean explicitTildeType = match(TILDE);
+        // The tilde is reserved for structural typing, not the former
+        // lowercase collection type aliases. Structural parameter syntax
+        // consumes the sigil before entering parseTypeRef.
+        if (match(TILDE)) {
+            Token structuralSigil = previous();
+            throw error(structuralSigil, "'~' marks structural typing, not a nominal collection alias; "
+                    + "use 'structural T' in this position and canonical Type.of(...) for construction");
+        }
         String name;
-        if (explicitTildeType) {
-            Token kind = consume(IDENT, "expected a built-in aggregate type after '~'");
-            name = switch (kind.lexeme()) {
-                case "array" -> "Array";
-                case "vector" -> "Vector";
-                case "tuple" -> "Tuple";
-                case "fixed_array" -> "FixedArray";
-                case "fixed_list" -> "FixedList";
-                case "list" -> "List";
-                case "slice" -> "Slice";
-                case "map" -> "Map";
-                case "set" -> "Set";
-                case "entry" -> "Entry";
-                case "pair" -> "Pair";
-                case "record" -> "Record";
-                default -> throw error(kind, "unknown built-in tilde type '~" + kind.lexeme()
-                        + "'; aggregate aliases must name a supported built-in kind");
-            };
-        } else if (match(VOID)) name = "void";
+        if (match(VOID)) name = "void";
         else if (match(SELF)) name = "self";
         else if (match(NULL)) name = "null";
         else name = parseQualifiedName();
@@ -2584,14 +2570,6 @@ public final class Parser {
             }
         }
 
-        // Tilde tuple calls are values, not return/parameter type annotations.
-        // A type witness may be written ~tuple<T...> for compatibility, but
-        // ~tuple(...) in type position must fail with a precise diagnostic.
-        if (explicitTildeType && name.equals("Tuple") && check(LPAREN)) {
-            throw error(peek(), "~tuple(...) constructs a value, not a type; "
-                    + "use Tuple[T1, T2, ...] in type annotations");
-        }
-
         // Newable[T] is a type-level static factory trait application,
         // not an array/collection sequence shape. Other bracketed type
         // syntax retains the existing sequence-shape interpretation.
@@ -2605,7 +2583,7 @@ public final class Parser {
         }
         args = canonicalizeNamedParameters(args);
         while (match(LBRACKET)) {
-            // Zero-arity tuples are values (~tuple()) and types (Tuple[]).
+            // Zero-arity Tuple[] is a named tuple type.
             // Model the empty intrinsic with the existing finite tuple type
             // rather than allowing an empty sequence shape for every collection.
             if (name.equals("Tuple") && !infer && args.isEmpty() && check(RBRACKET)) {
@@ -2616,20 +2594,6 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
 
-        // Explicit ~tuple<T1,T2,...> resolves directly to the existing
-        // Tuple[T1,T2,...] shape. Preserve *unprefixed* Tuple<A,B> ASTs:
-        // a user-declared nominal Tuple<A,B> must still resolve as a class.
-        // The builtin unprefixed Tuple<T...> compatibility path is handled
-        // only by TypeChecker after lexical class resolution.
-        if (explicitTildeType && name.equals("Tuple") && !infer
-                && args.stream().noneMatch(Ast.TypeRef::isSequenceShape)) {
-            List<Ast.TypeRef> slots = args.stream()
-                    .filter(arg -> !arg.isNamedParameter()).toList();
-            if (!slots.isEmpty()) {
-                args.removeIf(arg -> !arg.isNamedParameter());
-                args.add(Ast.TypeRef.sequenceShape(slots));
-            }
-        }
         return new Ast.TypeRef(name, args, infer);
     }
 
@@ -5050,20 +5014,9 @@ public final class Parser {
         return expr;
     }
 
-    /** Dispatch only explicit, allowlisted ~kind(...) / ~kind<T>(...) heads.
-     *  Ordinary unary ~expr remains on the original operator path.
+    /** Detect removed collection-factory spellings only in expression
+     * context; structural type and match parsing have separate entry paths.
      */
-    /** Forms the canonical ~ branch in parseUnary owns: ~tuple(, ~record(, ~map( and ~map<. */
-    private boolean mainParsesTildeInline() {
-        String kind = tokens.get(current + 1).lexeme();
-        Token.Type next = tokens.get(current + 2).type();
-        return switch (kind) {
-            case "tuple", "record" -> next == LPAREN;
-            case "map" -> next == LPAREN || next == LT;
-            default -> false;
-        };
-    }
-
     private boolean isTildeAggregateConstructorHead() {
         if (!check(TILDE) || current + 2 >= tokens.size()
                 || tokens.get(current + 1).type() != IDENT) return false;
@@ -5106,72 +5059,29 @@ public final class Parser {
             }
             return new Ast.UnaryExpr("-", parseUnary());
         }
-        // main parses ~<T>(), ~tuple, ~record and ~map inline below; the remaining
-        // built-in tilde kinds (~array, ~vector, ~list, ~set, ~entry, ~pair, ...) use
-        // the postfix constructor path so they keep indexed/member/call postfixes.
-        if (isTildeAggregateConstructorHead() && !mainParsesTildeInline())
-            return parsePostfix();
+        // Former ~kind(...) collection constructors are invalid regardless of
+        // whether canonical Type.of lowering exists in this backend.
+        if (isTildeAggregateConstructorHead()) {
+            String kind = tokens.get(current + 1).lexeme();
+            String canonical = switch (kind) {
+                case "fixed_array" -> "FixedArray";
+                case "fixed_list" -> "FixedList";
+                default -> Character.toUpperCase(kind.charAt(0)) + kind.substring(1);
+            };
+            throw error(peek(), "'~' is reserved for structural typing; use "
+                    + canonical + ".of(...) to construct collections");
+        }
         if (match(BANG, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(TILDE)) {
             Token sigil = previous();
-            // Only a statically named ':' entry selects a short record.
-            // Keep ~(expression) as unary bitwise complement, including calls
-            // and parenthesized expressions. The map spelling cannot be
-            // lowered until guest Map<K,V> typing and ownership are integrated.
+            // Typed-empty ~<T>() was a constructor alias, not structural
+            // syntax; explicit typed empties use Type.of<T>().
             if (check(LT) && adjacent(sigil, peek())) {
-                advance(); // ~<T> retains a compile-time type witness
-                if (check(GT)) {
-                    throw error(peek(), "typed empty aggregate requires exactly one type: ~<T>()");
-                }
-                Ast.TypeRef aggregateType = parseTypeRef();
-                if (check(COMMA)) {
-                    throw error(peek(), "typed empty aggregate requires exactly one type: ~<T>()");
-                }
-                consume(GT, "expected '>' after typed empty aggregate type");
-                consume(LPAREN, "expected '(' after ~<T>");
-                consume(RPAREN, "typed empty aggregate accepts no value arguments; use ~map, ~record or ~tuple");
-                return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(aggregateType));
+                throw error(peek(), "'~<T>()' collection constructors are removed; "
+                        + "use the canonical Type.of<T>() spelling");
             }
-            if (isContextualIdentifier("tuple") && checkNext(LPAREN)
-                    && adjacent(sigil, peek())) {
-                advance();
-                consume(LPAREN, "expected '(' after ~tuple");
-                List<Ast.Expr> items = new ArrayList<>();
-                if (!check(RPAREN)) {
-                    do {
-                        items.add(parseExpression());
-                    } while (match(COMMA) && !check(RPAREN));
-                }
-                consume(RPAREN, "expected ')' after ~tuple");
-                return parsePostfixSuffix(new Ast.TupleExpr(items));
-            }
-            if (isContextualIdentifier("record") && checkNext(LPAREN)
-                    && adjacent(sigil, peek())) {
-                advance();
-                return parsePostfixSuffix(parseTildeRecordLiteral(true));
-            }
-            if (isContextualIdentifier("map") && (checkNext(LPAREN) || checkNext(LT))
-                    && adjacent(sigil, peek())) {
-                advance(); // contextual map head
-                if (match(LPAREN)) {
-                    if (match(RPAREN)) {
-                        return parsePostfixSuffix(new Ast.ContextualEmptyMapExpr());
-                    }
-                    return parsePostfixSuffix(parseTildeMapEntries(null));
-                }
-                consume(LT, "expected explicit <K,V> or () after ~map");
-                Ast.TypeRef keyType = parseTypeRef();
-                consume(COMMA, "~map<K,V>() requires both key and value types");
-                Ast.TypeRef valueType = parseTypeRef();
-                consume(GT, "~map<K,V>() requires exactly two type arguments");
-                consume(LPAREN, "expected '(' after ~map<K,V>");
-                Ast.TypeRef mapType = new Ast.TypeRef(
-                        "Map", List.of(keyType, valueType), false);
-                if (match(RPAREN)) {
-                    return parsePostfixSuffix(new Ast.TypedEmptyAggregateExpr(mapType));
-                }
-                return parsePostfixSuffix(parseTildeMapEntries(mapType));
-            }
+            // Preserve the pre-existing bare ~(...) / unary operator paths,
+            // which are separate from named ~kind(...) factories.
             if (check(LPAREN)) {
                 if (checkNext(RPAREN)) {
                     throw error(peek(), "empty '~()' is ambiguous; use '~record()' or, when supported, '~map()'");
@@ -5571,28 +5481,6 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
-        // One semantic constructor path: reuse the old array/tuple AST.
-        // Explicit typed value constructors and other aggregate families
-        // remain unavailable until their runtime/type-witness reviews.
-        if (isTildeAggregateConstructorHead()) {
-            advance(); // tilde
-            String kind = advance().lexeme();
-            if (check(LT)) {
-                throw error(peek(), "~" + kind + "<...>(...) requires checked "
-                        + "explicit-constructor type witnesses; use a declared expected type");
-            }
-            if (kind.equals("array") || kind.equals("tuple")) {
-                consume(LPAREN, "expected '(' after ~" + kind);
-                List<Ast.Expr> values = parseArgumentsUntil(RPAREN);
-                consume(RPAREN, "expected ')' after ~" + kind + " literal");
-                return kind.equals("array")
-                        ? new Ast.ListExpr(values, true)
-                        : new Ast.TupleExpr(values);
-            }
-            throw error(previous(), "~" + kind
-                    + "(...) requires reviewed compiler-owned aggregate lowering; "
-                    + "no host fallback is allowed");
-        }
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
