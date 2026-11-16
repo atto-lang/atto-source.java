@@ -20,6 +20,18 @@ public final class Parser {
 
     private final List<Token> tokens;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
+    private static final java.util.Set<String> BUILTIN_OF_TYPES =
+            java.util.Set.of("Map", "Array", "Tuple", "Record");
+    private static final java.util.Set<String> PENDING_OF_TYPES =
+            java.util.Set.of("Entry", "Pair", "List", "Vector", "Set");
+    private static final java.util.Set<String> COLLECTION_OF_TYPES =
+            java.util.Set.of("Map", "Array", "Tuple", "Record",
+                    "Entry", "Pair", "List", "Vector", "Set");
+    // Conservative module-wide lexical collision gate. A factory rewrite may
+    // not capture a user class, import alias, parameter or local binding.
+    // Global conservatism is deliberate until typed-HIR symbol ownership is
+    // available: preserving ordinary CallExpr beats inventing guest authority.
+    private final java.util.Set<String> shadowedOfTypes = new java.util.HashSet<>();
     private int current;
     private boolean suppressRefinementOperators;
     /** Lexical names recognized as local aggregate constructors; never runtime type factories. */
@@ -53,6 +65,45 @@ public final class Parser {
             if (token.type() == UNSAFE ||
                     (token.type() == IDENT && "unsafe".equals(token.lexeme()))) {
                 throw error(token, "unsafe is reserved until checked unsafe effects and backend lowering exist");
+            }
+        }
+        // Read only lexer-produced token kinds, never source substrings.
+        // This scans declarations forward so a later nominal Tuple does not
+        // retroactively become an unowned compiler Tuple.of constructor.
+        for (int i = 0; i < this.tokens.size(); i++) {
+            Token token = this.tokens.get(i);
+            if (token.type() != IDENT || !COLLECTION_OF_TYPES.contains(token.lexeme())) continue;
+            Token.Type prior = i == 0 ? EOF : this.tokens.get(i - 1).type();
+            Token.Type next = i + 1 == this.tokens.size()
+                    ? EOF : this.tokens.get(i + 1).type();
+            boolean nominal = prior == CLASS || prior == STRUCT || prior == MODULE
+                    || prior == TYPE || prior == TYPES || prior == ACTOR
+                    || prior == INTERFACE || prior == TRAIT;
+            boolean importAlias = prior == AS && next == FROM;
+            boolean callableName = (prior == FNC || prior == ROUTINE)
+                    && next == LPAREN;
+            boolean bindingName = (next == EQUAL || next == COLON)
+                    && (prior == VAL || prior == CONST || prior == LET
+                        || prior == MUT || prior == IDENT);
+            boolean formalName = (next == COMMA || next == RPAREN
+                    || next == PIPE) && (prior == IDENT || prior == PIPE);
+            // A generic formal named Tuple/Map/etc. hides the compiler's
+            // nominal owner. Conservatively deny intrinsic rewriting even
+            // if the lexical form could also be a type argument elsewhere;
+            // the fallback remains an ordinary call for later resolution.
+            boolean genericFormalCandidate =
+                    (prior == LT && (next == GT || next == COMMA
+                            || next == EQUAL))
+                    || (prior == COMMA && next == GT);
+            boolean forBindingName = next == OF
+                    && (prior == CONST || prior == LET || prior == VAL);
+            boolean contextualTypeAlias = prior == IDENT
+                    && this.tokens.get(i - 1).lexeme().equals("alias")
+                    && i > 1 && this.tokens.get(i - 2).type() == TYPE;
+            if (nominal || importAlias || callableName || bindingName
+                    || formalName || genericFormalCandidate || forBindingName
+                    || contextualTypeAlias) {
+                shadowedOfTypes.add(token.lexeme());
             }
         }
     }
@@ -163,6 +214,19 @@ public final class Parser {
 
         List<Ast.ImportDecl> imports = new ArrayList<>();
         while (match(IMPORT)) imports.add(parseImport());
+        // Use parser-resolved import selections as an additional identity
+        // boundary: grouped imports and local aliases must not be captured
+        // by a syntactic Type.of rewrite, even when token lookbehind misses
+        // their brace-delimited declaration form.
+        for (Ast.ImportDecl imported : imports) {
+            for (String name : imported.names()) {
+                if (COLLECTION_OF_TYPES.contains(name)) shadowedOfTypes.add(name);
+            }
+            if (imported.namespace() != null
+                    && COLLECTION_OF_TYPES.contains(imported.namespace())) {
+                shadowedOfTypes.add(imported.namespace());
+            }
+        }
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
@@ -5312,6 +5376,63 @@ public final class Parser {
         return new Ast.DynamicSelectExpr(mode, policy, cases);
     }
 
+    /**
+     * Compiler-owned factories must lower to the same aggregate AST as the
+     * corresponding literals, not to dynamic members or host collections.
+     * Only kinds with an existing checked value representation are admitted.
+     */
+    private String builtinOfFactory(Ast.Expr callee) {
+        if (!(callee instanceof Ast.MemberExpr member)
+                || !member.member().equals("of")
+                || !(member.receiver() instanceof Ast.NameExpr owner)) return null;
+        String name = owner.name();
+        if (!BUILTIN_OF_TYPES.contains(name) || shadowedOfTypes.contains(name))
+            return null;
+        return name;
+    }
+
+    private boolean unsupportedBuiltInOf(Ast.Expr callee) {
+        if (!(callee instanceof Ast.MemberExpr member)
+                || !member.member().equals("of")
+                || !(member.receiver() instanceof Ast.NameExpr owner)) return false;
+        return PENDING_OF_TYPES.contains(owner.name())
+                && !shadowedOfTypes.contains(owner.name());
+    }
+
+    private Ast.Expr parseFactoryOf(String kind, List<Ast.TypeRef> explicitTypes) {
+        if (kind.equals("Map")) {
+            Ast.TypeRef witness = null;
+            if (explicitTypes != null) {
+                if (explicitTypes.size() != 2
+                        || explicitTypes.stream().anyMatch(Ast.TypeRef::isNamedParameter)) {
+                    throw error(previous(), "Map.of<K,V> requires exactly two positional type witnesses");
+                }
+                witness = new Ast.TypeRef("Map", explicitTypes, false);
+            }
+            if (match(RPAREN)) {
+                return witness == null
+                        ? new Ast.ContextualEmptyMapExpr()
+                        : new Ast.TypedEmptyAggregateExpr(witness);
+            }
+            return parseMapOfEntries(witness);
+        }
+        if (explicitTypes != null) {
+            throw error(previous(), kind + ".of<T>(...) requires independently checked typed factory lowering");
+        }
+        if (kind.equals("Record")) {
+            throw error(previous(), "Record.of must be parsed through the checked static-field record parser");
+        }
+        // This is exactly the existing array/tuple literal argument grammar:
+        // spreads, named call labels and foreign argument dispatch are not
+        // silently enabled by a new factory spelling.
+        List<Ast.Expr> elements = parseArgumentsUntil(RPAREN);
+        consume(RPAREN, "expected ')' after " + kind + ".of arguments");
+        if (kind.equals("Array") && elements.isEmpty()) {
+            throw error(previous(), "Array.of() needs a checked element type; an empty untyped array cannot infer T");
+        }
+        return kind.equals("Tuple") ? new Ast.TupleExpr(elements) : new Ast.ListExpr(elements, true);
+    }
+
     private Ast.Expr parsePostfix() {
         return parsePostfixSuffix(parsePrimary());
     }
@@ -5319,7 +5440,37 @@ public final class Parser {
     /** Preserve postfix member/index behavior for typed aggregate literals. */
     private Ast.Expr parsePostfixSuffix(Ast.Expr expr) {
         while (true) {
-            if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
+            // A pending standard-library factory is not a dynamic host
+            // member. User-defined/shadowed nominal methods remain ordinary
+            // calls so the typechecker, not this parser, resolves identity.
+            if (unsupportedBuiltInOf(expr)) {
+                throw error(peek(), "collection factory requires compiler-owned "
+                        + "type, ownership and guest lowering; unsupported: "
+                        + ((Ast.NameExpr) ((Ast.MemberExpr) expr).receiver()).name()
+                        + ".of");
+            }
+            String factory = builtinOfFactory(expr);
+            if (factory != null && check(LT) && adjacent(previous(), peek())
+                    && looksLikeTypeArgumentCall()) {
+                List<Ast.TypeRef> types = parseCallTypeArguments();
+                consume(LPAREN, "expected '(' after " + factory + ".of type arguments");
+                if (factory.equals("Record")) {
+                    throw error(previous(), "Record.of does not admit explicit generic arguments");
+                }
+                expr = parseFactoryOf(factory, types);
+            } else if (factory != null && check(LPAREN)) {
+                if (factory.equals("Record")) {
+                    expr = parseRecordOfLiteral();
+                } else {
+                    advance(); // '('; factory owns closing ')'
+                    expr = parseFactoryOf(factory, null);
+                }
+            } else if (factory != null) {
+                // Do not allow a bare compiler-owned factory to escape as
+                // a first-class dynamic/host member until it has a typed
+                // function-value representation with ownership and AOT proof.
+                throw error(peek(), factory + ".of must be invoked as a checked collection factory");
+            } else if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
                 rejectUnsupportedActorFactory(expr);
@@ -5667,7 +5818,7 @@ public final class Parser {
      * Map value becomes visible. Mixed record ':' syntax is not accepted.
      * The '=>' token is consumed outside parseExpression's pipeline grammar.
      */
-    private Ast.MapLiteralExpr parseTildeMapEntries(Ast.TypeRef mapType) {
+    private Ast.MapLiteralExpr parseMapOfEntries(Ast.TypeRef mapType) {
         List<Ast.MapLiteralEntry> entries = new ArrayList<>();
         do {
             if (check(ELLIPSIS)) {
@@ -5687,11 +5838,8 @@ public final class Parser {
         return new Ast.MapLiteralExpr(mapType, entries);
     }
 
-    private Ast.ObjectExpr parseTildeRecordLiteral(boolean explicit) {
-        consume(LPAREN, "expected '(' after tilde record prefix");
-        if (!explicit && check(RPAREN)) {
-            throw error(peek(), "empty '~()' is ambiguous; use '~record()'");
-        }
+    private Ast.ObjectExpr parseRecordOfLiteral() {
+        consume(LPAREN, "expected '(' after Record.of");
         List<Ast.ObjectField> fields = new ArrayList<>();
         java.util.Set<String> names = new java.util.LinkedHashSet<>();
         while (!check(RPAREN)) {
@@ -5700,20 +5848,20 @@ public final class Parser {
                 // their lifetime and partial-move proof is implemented.
                 fields.add(Ast.ObjectField.spreading(parseExpression()));
             } else {
-                String name = consumeStaticObjectKeyName("expected static tilde record field name");
+                String name = consumeStaticObjectKeyName("expected static Record.of field name");
                 if (!names.add(name)) {
-                    throw error(previous(), "duplicate named field in tilde record: '" + name + "'");
+                    throw error(previous(), "duplicate named field in Record.of: '" + name + "'");
                 }
                 if (check(FAT_ARROW)) {
                     throw error(peek(), "mixed record ':' and map '=>' entries are forbidden");
                 }
-                consume(COLON, "tilde records use ':' after a static field name; maps use '=>'");
+                consume(COLON, "Record.of fields use ':' after a static field name; Map.of keys use '=>'");
                 fields.add(Ast.ObjectField.named(name, parseExpression()));
             }
             if (!match(COMMA)) break;
             if (check(RPAREN)) break; // an optional trailing comma
         }
-        consume(RPAREN, "expected ')' after tilde record literal");
+        consume(RPAREN, "expected ')' after Record.of literal");
         return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
     }
 
