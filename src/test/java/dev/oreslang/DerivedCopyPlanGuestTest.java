@@ -50,6 +50,88 @@ final class DerivedCopyPlanGuestTest {
     }
 
     @Test
+    void rootTypedArrayCopyIsIndependentAndRetainsTypeForFurtherCopy() throws Exception {
+        assertEquals("10|99|7", run("""
+                pub fnc main(): void {
+                  let mut Array<int> original = new Array<int>();
+                  original.add(10);
+                  let mut Array<int> copied = rt copy original;
+                  copied.set(0, 99);
+                  let mut Array<int> copied_twice = rt copy copied;
+                  copied_twice.set(0, 7);
+                  stdio.stdout.write(original.get(0));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(copied.get(0));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(copied_twice.get(0));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void rootTypedListCopySeparatesMutableStorage() throws Exception {
+        assertEquals("10|77", run("""
+                pub fnc main(): void {
+                  let mut List<int> original = new List<int>();
+                  original.add(10);
+                  let mut List<int> copied = rt copy original;
+                  copied.set(0, 77);
+                  stdio.stdout.write(original.get(0));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(copied.get(0));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void rootTypedArrayOfClassesCopiesNestedObjects() throws Exception {
+        assertEquals("10|88", run("""
+                define class Child as
+                  pub let int value = 10;
+                end
+                pub fnc main(): void {
+                  let mut Array<Child> children = new Array<Child>();
+                  children.add(new Child());
+                  let mut Array<Child> clone = rt copy children;
+                  clone.get(0).value = 88;
+                  stdio.stdout.write(children.get(0).value);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(clone.get(0).value);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void legacyCopyOfChannelReferenceIsRejectedInsteadOfSharingHandle() {
+        String source = """
+                fnc bad(Channel<int> channel): Channel<int> {
+                  return rt copy channel;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("E_COPY_UNPROVEN"), failure::toString);
+    }
+
+    @Test
+    void nonCopyableArrayElementTypeRemainsRejectedEvenForEmptyArray() {
+        String source = """
+                pub fnc main(): void {
+                  val Array<Channel<int>> channels = new Array<Channel<int>>();
+                  val copied = rt copy channels;
+                  return;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("E_COPY_UNPROVEN")
+                || failure.getMessage().contains("E_COPY_TRANSITIVE"), failure::toString);
+    }
+
+    @Test
     void nestedClassesAreRecursivelyCloned() throws Exception {
         assertEquals("7|42", run("""
                 define class Child as
