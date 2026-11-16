@@ -1976,7 +1976,13 @@ public final class Parser {
                     "Critical", "RequiresPermission", "Permission",
                     "GrantPermission", "Unsafe", "Trusted", "Untrusted",
                     "AllowAll", "CallerRole", "CallableBy", "ActorMiddleware",
-                    "ActorMaxThreads").contains(name)) {
+                    "ActorMaxThreads",
+                    // An injected state handle is a capability, not inert metadata.
+                    // Reject before parsing nested arguments such as
+                    // @Inject(MutableStateContainer()) to avoid parse-error
+                    // misclassification and, more importantly, silent admission.
+                    "Inject", "StateBacked", "MutableStateContainer",
+                    "StateContainer").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
