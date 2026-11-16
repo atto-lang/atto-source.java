@@ -1311,7 +1311,15 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.Param> parameters,
                 List<?> args,
                 String label) {
-            bindCallableArguments(env, parameters, args, label, true);
+            // Binding can reject after the first shape loan was minted
+            // (for example, a later malformed argument). Make admission
+            // failure-atomic: no live borrow may survive partial binding.
+            try {
+                bindCallableArguments(env, parameters, args, label, true);
+            } catch (RuntimeException | Error failure) {
+                env.revokeReadonlyShapeLoans();
+                throw failure;
+            }
         }
 
         private void bindCallableArguments(
