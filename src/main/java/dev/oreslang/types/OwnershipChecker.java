@@ -45,6 +45,7 @@ public final class OwnershipChecker {
     private final Set<Ast.ClassDecl> linkedClassLayouts =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<String> modules = new HashSet<>();
+    private final Set<String> importedFncs = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
@@ -188,6 +189,13 @@ public final class OwnershipChecker {
     }
 
     private void index(Ast.Program program) {
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() == Ast.ImportKind.FUNCTION && !imported.wildcard()) {
+                for (String source : imported.names()) {
+                    importedFncs.add(dev.oreslang.imports.ImportRules.localName(imported, source));
+                }
+            }
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
@@ -1422,6 +1430,13 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr qualifier
+                    && (qualifier.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)
+                            || qualifier.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE))) {
+                throw error((qualifier.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)
+                        ? "imports::" : "pkg::")
+                        + member.member() + " is direct-call-only without a checked callable value ABI");
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -1909,6 +1924,55 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.MemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)) {
+            if (!importedFncs.contains(qualified.member())) {
+                throw error("imports::" + qualified.member()
+                        + " requires an explicitly named import fnc binding");
+            }
+            if (call.typeArgumentsPresent()) {
+                throw error("imports::" + qualified.member()
+                        + " cannot specialize an opaque imported fnc");
+            }
+            // The other source unit's effects and parameter lifetimes are not
+            // yet linked. An active borrow or MutexGuard cannot escape.
+            checkSuspensionBorrows(scope, "call imports::" + qualified.member());
+            for (Ast.Expr arg : call.arguments()) {
+                ValueInfo passed = checkExpr(arg, scope, true);
+                if (isBorrowValue(passed) || passed.borrowSource != null
+                        || containsMutexGuardType(passed.type)) {
+                    throw error("imports::" + qualified.member()
+                            + " cannot transfer a borrow or MutexGuard without a linked lifetime ABI");
+                }
+            }
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals(dev.oreslang.parser.Parser.PKG_ROOT_NAMESPACE)) {
+            if (qualified.member().equals("init")) {
+                throw error("pkg::init is a lifecycle hook and cannot be called");
+            }
+            Ast.FunctionDecl fn = findFunction(
+                    dev.oreslang.parser.Parser.ROOT_MODULE + "." + qualified.member(),
+                    syntacticCallArgumentTypes(call.arguments(), scope).size());
+            if (fn == null || fn.actorKind() != Ast.ActorKind.NONE) {
+                throw error("pkg::" + qualified.member()
+                        + " has no ordinary file-root callable at this arity");
+            }
+            CallSignature signature = specializeCall(
+                    fn.genericParameters(), fn.genericParameters(),
+                    fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
+            if (fn.suspends() && !fn.generator()) {
+                checkSuspensionBorrows(scope, "suspends call pkg::" + qualified.member());
+            }
+            checkArguments(call.arguments(), signature.parameters(), scope,
+                    "function pkg::" + qualified.member());
+            Ast.TypeRef result = callableResultType(
+                    signature.result(), fn.async() || (fn.generator() && fn.suspends()), fn.generator());
+            return new ValueInfo(result, kindOfType(result), null);
+        }
         // Resolve names in the same order as TypeChecker: a lexical local
         // wins, then the *entire* implicit receiver method family, only then
         // file/import callables. Do not let wrong arity fall through.
