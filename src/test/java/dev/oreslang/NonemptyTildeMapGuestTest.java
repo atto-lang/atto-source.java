@@ -79,17 +79,25 @@ final class NonemptyTildeMapGuestTest {
         for (String name : new String[]{
                 "nonempty-wrong-value-reject",
                 "nonempty-wrong-key-reject"}) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> OresCompiler.parseAndTypeCheck(
-                            fixture(name + ".atto")), name);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(fixture(name + ".atto")), name);
+            String expected = name.contains("value")
+                    ? "Map literal value" : "Map literal key";
+            assertTrue(failure.getMessage().contains(expected),
+                    "must fail the actual Map.of type gate, not unrelated parsing: "
+                            + name + ": " + failure.getMessage());
         }
     }
 
     @Test
     void missingWitnessSpreadAndRecordSyntaxCannotBypassAdmission() {
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException untyped = assertThrows(
+                IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(
                         fixture("nonempty-untyped-reject.atto")));
+        assertTrue(untyped.getMessage().contains("Map<K,V>"),
+                "missing Map witness must fail the type gate: " + untyped.getMessage());
         for (String name : new String[]{
                 "nonempty-spread-reject",
                 "nonempty-mixed-reject"}) {
