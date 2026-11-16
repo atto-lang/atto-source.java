@@ -6,6 +6,11 @@ use std::{env, path::PathBuf, process::Command};
 fn actor_output_immediate_poll_executes_on_jvm() {
     let root = PathBuf::from(env!("PWD"));
     assert!(root.join("pom.xml").is_file(), "execute from repository root");
+    let report = root.join(
+        "target/surefire-reports/TEST-dev.oreslang.runtime.ActorOutputStreamTest.xml");
+    if report.exists() {
+        std::fs::remove_file(&report).expect("remove stale Surefire receipt before test");
+    }
     let run = Command::new("mvn")
         .args(["-B", "-ntp", "-Dtest=ActorOutputStreamTest",
                "-DfailIfNoTests=true", "test"])
@@ -23,8 +28,6 @@ fn actor_output_immediate_poll_executes_on_jvm() {
     let stdout = String::from_utf8_lossy(&run.stdout);
     assert!(stdout.contains("ActorOutputStreamTest"),
         "Maven output did not identify the selected actor test suite");
-    let report = root.join(
-        "target/surefire-reports/TEST-dev.oreslang.runtime.ActorOutputStreamTest.xml");
     let xml = std::fs::read_to_string(&report).unwrap_or_else(|failure| {
         panic!("missing executed JUnit receipt at {}: {failure}", report.display())
     });
@@ -32,7 +35,7 @@ fn actor_output_immediate_poll_executes_on_jvm() {
     let header_end = xml[start..].find('>').expect("malformed XML testsuite tag") + start;
     let header = &xml[start..header_end];
     fn count(header: &str, attribute: &str) -> usize {
-        let key = format!("{attribute}=\""); 
+        let key = format!("{attribute}=\"");
         let tail = header.split(&key).nth(1)
             .unwrap_or_else(|| panic!("missing {attribute} in Surefire testsuite"));
         tail.split('"').next().expect("malformed Surefire attribute")
