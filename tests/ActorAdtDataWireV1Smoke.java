@@ -1,6 +1,7 @@
 import dev.oreslang.runtime.ActorAdtDataWireV1;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.Random;
 
 /** Standalone exact-byte Java runtime DATA profile test; no GraalVM dependencies. */
 public final class ActorAdtDataWireV1Smoke {
@@ -26,6 +27,17 @@ public final class ActorAdtDataWireV1Smoke {
         roundTrip(new ActorAdtDataWireV1.SomeOk(Long.MIN_VALUE), "415441440101010000000000000080");
         roundTrip(new ActorAdtDataWireV1.SomeErr(""), "415441440101020000");
         roundTrip(new ActorAdtDataWireV1.SomeErr("é"), "415441440101020200c3a9");
+        var rng = new Random(20261116L);
+        for (int i = 0; i < 256; ++i) {
+            var value = new ActorAdtDataWireV1.SomeOk(rng.nextLong());
+            check(ActorAdtDataWireV1.decode(ActorAdtDataWireV1.encode(value)).equals(value),
+                    "random signed i64 payload drift");
+        }
+        for (int i = 0; i <= 256; i += 2) {
+            var value = new ActorAdtDataWireV1.SomeErr("x".repeat(i));
+            check(ActorAdtDataWireV1.decode(ActorAdtDataWireV1.encode(value)).equals(value),
+                    "bounded Err length drift");
+        }
         var good = hex("415441440101020200c3a9");
         for (int n = 0; n < good.length; ++n) deny(Arrays.copyOf(good, n));
         for (int idx = 0; idx < 7; ++idx) {
