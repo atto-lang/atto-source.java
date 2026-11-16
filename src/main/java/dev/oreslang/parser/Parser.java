@@ -4858,6 +4858,22 @@ public final class Parser {
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
             }
+            // std.await is a *unary*, compiler-owned suspension stage, not a
+            // callable value, factory, or Future.map/flat_map. Reuse the same
+            // checked AwaitExpr as the prefix keyword. Its origin flag lets
+            // the checker reject shadowing of the reserved core namespace.
+            if (isContextualIdentifier("std") && checkNext(DOT)
+                    && current + 2 < tokens.size()
+                    && tokens.get(current + 2).type() == AWAIT) {
+                advance(); // std
+                advance(); // .
+                advance(); // await
+                if (check(LPAREN) || check(LT)) {
+                    throw error(peek(), "std.await is a unary pipeline adapter, not a callable factory");
+                }
+                value = new Ast.AwaitExpr(value, true);
+                continue;
+            }
             // A bare lambda stage uses the existing lambda AST. Parse its
             // expression body below pipeline precedence so the next top-level
             // |> starts the NEXT stage, not part of this lambda body.
