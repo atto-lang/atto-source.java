@@ -30,7 +30,8 @@ final class ImportedSynchronousResultGuestTest {
     @BeforeEach
     void copyGuestFixtures() throws Exception {
         for (String name : new String[] {
-                "decode.atto", "main-single.atto", "main-sequential.atto", "main-private.atto"
+                "decode.atto", "main-single.atto", "main-sequential.atto", "main-private.atto",
+                "main-explicit-future.atto", "main-future-without-await.atto"
         }) {
             try (InputStream input = getClass().getResourceAsStream(
                     "/linked-sync-function/" + name)) {
@@ -64,6 +65,17 @@ final class ImportedSynchronousResultGuestTest {
     void consecutiveImportedSynchronousCallsReturnDistinctValues() throws Exception {
         assertEquals("2,41", run("main-sequential.atto"),
                 "both imported source-task completions must publish the concrete result once");
+    }
+
+    @Test
+    void explicitlyAsyncImportedFunctionRemainsFutureUntilAwaited() throws Exception {
+        assertEquals("42", run("main-explicit-future.atto"));
+    }
+
+    @Test
+    void explicitlyAsyncImportedFunctionCannotImplicitlyBecomeInt() {
+        assertThrows(RuntimeException.class, () -> run("main-future-without-await.atto"),
+                "imported Future must require explicit await");
     }
 
     @Test

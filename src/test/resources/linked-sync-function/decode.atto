@@ -12,6 +12,10 @@ pub fnc decode_attempt(int n): DecodeAttempt {
   return new DecodeAttempt(n + count);
 }
 
+pub async fnc async_decode(int n): int {
+  return n + 1;
+}
+
 fnc hidden_decode(int n): DecodeAttempt {
   return new DecodeAttempt(n);
 }
