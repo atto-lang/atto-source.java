@@ -4924,14 +4924,26 @@ public final class Parser {
                 for (int i = reverseStages.size() - 1; i >= 0; i--) {
                     Ast.Expr callable = reverseStages.get(i);
                     if (callable instanceof Ast.CallExpr call) {
-                        if (!isPipelineCallable(call.callee())) {
-                            throw error(operator, "reverse pipeline requires a named callable");
+                        // Exact forward-pipe Option/Result receiver lowering:
+                        // preserve the tagged-sum value and the original
+                        // typechecker, ownership and exception effect gates.
+                        // Never auto-unwrap Err or None while reversing syntax.
+                        if (call.callee() instanceof Ast.MemberExpr member
+                                && member.receiver() instanceof Ast.NameExpr namespace
+                                && (namespace.name().equals("Option")
+                                    || namespace.name().equals("Result"))) {
+                            right = new Ast.CallExpr(new Ast.MemberExpr(right, member.member()),
+                                    call.typeArguments(), call.typeArgumentsPresent(),
+                                    call.arguments(), Ast.CallOrigin.VALUE_PIPE_RECEIVER);
+                        } else if (isPipelineCallable(call.callee())) {
+                            List<Ast.Expr> args = new ArrayList<>();
+                            args.add(right);
+                            args.addAll(call.arguments());
+                            right = new Ast.CallExpr(call.callee(), call.typeArguments(),
+                                    call.typeArgumentsPresent(), args, Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
+                        } else {
+                            throw error(operator, "reverse pipeline requires a named callable or Option/Result combinator");
                         }
-                        List<Ast.Expr> args = new ArrayList<>();
-                        args.add(right);
-                        args.addAll(call.arguments());
-                        right = new Ast.CallExpr(call.callee(), call.typeArguments(),
-                                call.typeArgumentsPresent(), args, Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
                     } else if (isPipelineCallable(callable)) {
                         right = new Ast.CallExpr(callable, List.of(), false, List.of(right),
                                 Ast.CallOrigin.VALUE_PIPE_ARGUMENT);
