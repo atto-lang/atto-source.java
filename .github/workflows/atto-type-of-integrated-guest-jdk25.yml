@@ -1,10 +1,21 @@
 # Exact-source JDK25 compiler/Truffle guest verification. No runner allocation
 # or authored test alone counts as execution evidence.
 name: Atto Type.of integrated Java 25 guest evidence
-# Manual-only until an actual one-step capacity probe is admitted. Re-enable
-# pull_request once runner/Actions billing and policy eligibility are proven.
+# This new workflow is not on main, so workflow_dispatch alone cannot
+# reliably admit a run. A single PR trigger verifies the exact authored head.
+# No parallel push trigger; do not rerun failures until capacity is proven.
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/main/java/**'
+      - 'src/test/java/dev/oreslang/*Factory*'
+      - 'src/test/java/dev/oreslang/*Tilde*'
+      - 'src/test/java/dev/oreslang/*Map*'
+      - 'src/test/java/dev/oreslang/TupleReturnTypeContractTest.java'
+      - 'src/test/resources/atto/**'
+      - 'pom.xml'
+      - '.github/workflows/atto-type-of-integrated-guest-jdk25.yml'
 permissions:
   contents: read
 jobs:
