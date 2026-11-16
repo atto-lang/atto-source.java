@@ -7859,13 +7859,105 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 // Borrow/take/share alter compiler ownership state, not the JVM handle.
                 case "borrow", "take", "share" -> value;
-                // Static ownership checking currently admits rt copy only for proven
-                // Copy values on this convergence branch, so returning the immutable
-                // scalar/value representation is an independent language-level copy.
-                case "copy" -> value;
+                // The new explicit class plan guarantees a separate owned object,
+                // including nested class/Array fields. Trivial immutable Copy values
+                // preserve their existing value representation.
+                case "copy" -> copyOwnedValueV1(value);
                 default -> throw new IllegalArgumentException(
                         "unknown runtime ownership operation 'rt " + operation + "'");
             };
+        }
+
+        /**
+         * Executes the same compiler-derived closed-world type plan used by
+         * OwnershipChecker. No reflection, guest callbacks, implicit constructors,
+         * shallow map copy or user-defined copy() calls are permitted in v1.
+         */
+        private Object copyOwnedValueV1(Object value) {
+            if (!(value instanceof OresObject original)) {
+                // The checker already admits only its existing Copy value kinds
+                // here (scalars and explicitly copyable builtin handles).
+                return value;
+            }
+            if (original.owner != this) {
+                throw new IllegalArgumentException(
+                        "E_COPY_DOMAIN: cannot duplicate a foreign compiler owner's object");
+            }
+            dev.oreslang.types.DerivedCopyPlanV1.Plan plan =
+                    dev.oreslang.types.DerivedCopyPlanV1.derive(
+                            Ast.TypeRef.simple(original.klass.name()), this::findClass);
+            if (!(plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Instance)) {
+                throw new IllegalArgumentException("E_COPY_UNPROVEN: expected class copy plan");
+            }
+            return executeDerivedCopyV1(plan, original,
+                    new java.util.IdentityHashMap<>(), new int[]{0}, 0);
+        }
+
+        private Object executeDerivedCopyV1(
+                dev.oreslang.types.DerivedCopyPlanV1.Plan plan,
+                Object value,
+                java.util.IdentityHashMap<Object, Object> copied,
+                int[] visited, int depth) {
+            if (depth > 32 || ++visited[0] > 16384) {
+                throw new IllegalArgumentException("E_COPY_BUDGET: copy depth/node budget exceeded");
+            }
+            if (plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Scalar scalar) {
+                boolean valid = switch (scalar.typeName()) {
+                    case "string", "String" -> value instanceof String;
+                    case "bool", "Bool" -> value instanceof Boolean;
+                    default -> value instanceof Number;
+                };
+                if (!valid) {
+                    throw new IllegalArgumentException(
+                            "E_COPY_TYPE: scalar payload does not match " + scalar.typeName());
+                }
+                // Strings and boxed numbers/bools are immutable guest values.
+                return value;
+            }
+            if (copied.containsKey(value)) return copied.get(value);
+            if (plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Sequence sequence) {
+                if (!(value instanceof List<?> source)) {
+                    throw new IllegalArgumentException(
+                            "E_COPY_TYPE: typed Array/List requires a source guest sequence");
+                }
+                if (source.size() > 8192 || source.size() > 16384 - visited[0]) {
+                    throw new IllegalArgumentException("E_COPY_BUDGET: copy sequence budget exceeded");
+                }
+                ArrayList<Object> result = new ArrayList<>(source.size());
+                copied.put(value, result);
+                for (Object element : source) {
+                    result.add(executeDerivedCopyV1(
+                            sequence.element(), element, copied, visited, depth + 1));
+                }
+                return result;
+            }
+            if (plan instanceof dev.oreslang.types.DerivedCopyPlanV1.Instance instance) {
+                if (!(value instanceof OresObject source)
+                        || source.owner != this
+                        || !source.klass.name().equals(instance.className())
+                        || source.klass.actorKind() != Ast.ActorKind.NONE
+                        || source.fields.size() != instance.fields().size()) {
+                    throw new IllegalArgumentException(
+                            "E_COPY_TYPE: copied class must have exact owned concrete layout");
+                }
+                LinkedHashMap<String, Object> copiedFields = new LinkedHashMap<>();
+                OresObject result = new OresObject(this, source.klass, copiedFields);
+                // Memoization preserves repeated references inside the new graph,
+                // but never retains mutable aliases into the original graph.
+                copied.put(value, result);
+                for (dev.oreslang.types.DerivedCopyPlanV1.Field field : instance.fields()) {
+                    if (!source.fields.containsKey(field.name())
+                            || source.fields.get(field.name()) == UNINITIALIZED_FIELD) {
+                        throw new IllegalArgumentException(
+                                "E_COPY_TYPE: missing/uninitialized field " + field.name());
+                    }
+                    copiedFields.put(field.name(), executeDerivedCopyV1(
+                            field.plan(), source.fields.get(field.name()),
+                            copied, visited, depth + 1));
+                }
+                return result;
+            }
+            throw new IllegalArgumentException("E_COPY_UNPROVEN: unknown copy plan");
         }
 
         private Object eval(Ast.Expr expr, Env env) {
