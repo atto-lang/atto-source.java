@@ -26,6 +26,8 @@ public final class ActorEmitPipelineContractV3 {
     private ActorEmitPipelineContractV3() { }
 
     public static final int MAX_STAGES = 16;
+    // Upper bound on distinct typed emit(expr) observations in each actor body.
+    public static final int MAX_EMIT_OBSERVATIONS = 1024;
 
     public record Stage(
             String instanceId,
@@ -38,6 +40,9 @@ public final class ActorEmitPipelineContractV3 {
             requireIdentity(actorType, "actor type");
             requireScalar(receiveType);
             Objects.requireNonNull(emitTypes, "emitted types");
+            if (emitTypes.size() > MAX_EMIT_OBSERVATIONS)
+                throw reject("E_ACTOR_PIPE_EMIT_LIMIT",
+                        "actor body has more than 1024 typed emit observations");
             emitTypes = List.copyOf(emitTypes);
             for (String type : emitTypes) requireScalar(type);
         }
