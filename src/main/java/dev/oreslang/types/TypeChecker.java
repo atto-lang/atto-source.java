@@ -516,7 +516,13 @@ public final class TypeChecker {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) {
                     localNames.add(fn.name());
-                    if (module.name().equals(Parser.ROOT_MODULE)) rootFunctions.add(fn.name());
+                    if (module.name().equals(Parser.ROOT_MODULE)) {
+                        rootFunctions.add(fn.name());
+                    } else {
+                        // Only a true root callable may coexist with an import.
+                        // A module-owned declaration does not gain that exception.
+                        nonFunctionDeclarations.add(fn.name());
+                    }
                 }
                 else if (declaration instanceof Ast.ClassDecl klass) {
                     if (SEALED_ACTOR_PROTOCOL_TYPES.contains(klass.name())) {
