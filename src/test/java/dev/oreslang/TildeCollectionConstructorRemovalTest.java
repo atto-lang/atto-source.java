@@ -20,7 +20,9 @@ final class TildeCollectionConstructorRemovalTest {
             "~record(ready: true)",
             "~slice(1, 2)",
             "~fixed_array(1, 2)",
-            "~fixed_list(1, 2)"
+            "~fixed_list(1, 2)",
+            "~ tuple(1, true)",
+            "~ map(\"a\" => 1)"
     };
 
     @Test
@@ -56,6 +58,52 @@ final class TildeCollectionConstructorRemovalTest {
         assertEquals(1, fn.parameters().size());
         assertTrue(fn.parameters().get(0).structural());
         assertEquals("Point", fn.parameters().get(0).type().name());
+    }
+
+
+    @Test
+    void isTildePointPreservesStructuralTypeTestAndReadonlyValBinding() {
+        Ast.Program parsed = Parser.parse("""
+                define trait Point as
+                    x: int;
+                end
+                fnc classify(Point value): int {
+                    match value over
+                        on is ~Point as val p -> { return p.x; }
+                        on _ -> { return 0; }
+                    end
+                }
+                """);
+        Ast.FunctionDecl fn = parsed.modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(d -> d instanceof Ast.FunctionDecl f && f.name().equals("classify"))
+                .map(d -> (Ast.FunctionDecl) d)
+                .findFirst().orElseThrow();
+        Ast.MatchStmt match = fn.body().stream()
+                .filter(stmt -> stmt instanceof Ast.MatchStmt)
+                .map(stmt -> (Ast.MatchStmt) stmt)
+                .findFirst().orElseThrow();
+        Ast.StructuralPattern shape = assertInstanceOf(Ast.StructuralPattern.class,
+                match.arms().getFirst().pattern());
+        assertEquals("Point", shape.target().name());
+        assertEquals("p", shape.binding());
+        assertInstanceOf(Ast.WildcardPattern.class, match.arms().get(1).pattern());
+    }
+
+    @Test
+    void structuralTestDoesNotSilentlyAcceptLetOrConstBindings() {
+        for (String qualifier : new String[]{"let", "const"}) {
+            String source = """
+                    define trait Point as x: int; end
+                    fnc read(Point value): int {
+                        match value over
+                            on is ~Point as %s p -> { return 1; }
+                            on _ -> { return 0; }
+                        end
+                    }
+                    """.formatted(qualifier);
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), qualifier);
+        }
     }
 
     @Test
