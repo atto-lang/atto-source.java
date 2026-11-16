@@ -102,6 +102,16 @@ final class ReadonlyShapeProjectionV1Test {
                         List.of(new RequiredField("x", Scalar.I64),
                                 new RequiredField("x", Scalar.I64))));
     }
+    @Test void matchingNonI64TypesAreNotYetAnExecutableAbi() {
+        assertThrows(IllegalArgumentException.class, () ->
+                ReadonlyShapeProjectionV1.prove(
+                        source(Origin.CLASS, List.of(field("x", Scalar.BOOL, 0))),
+                        List.of(new RequiredField("x", Scalar.BOOL))));
+        assertThrows(IllegalArgumentException.class, () ->
+                ReadonlyShapeProjectionV1.prove(
+                        source(Origin.CLASS, List.of(field("x", Scalar.STRING, 0))),
+                        List.of(new RequiredField("x", Scalar.STRING))));
+    }
     @Test void callerCannotMutateProofFieldList() {
         var plan = plan(source(Origin.CLASS, List.of(field("x", Scalar.I64, 0))));
         assertThrows(UnsupportedOperationException.class, () ->
