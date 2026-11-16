@@ -2147,6 +2147,16 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     envelope.close();
                 }
+            } catch (java.util.concurrent.CompletionException failure) {
+                // Channel.tryRead() reports even a normal drained EOF as a
+                // failed immediate Select. Match next(): only ordinary EOF
+                // becomes empty, whereas a failed actor retains its cause.
+                Throwable terminal = OresFuture.unwrap(failure);
+                if (terminal instanceof ChannelRuntime.ChannelClosedException closed) {
+                    if (closed.getCause() == null) return Optional.empty();
+                    throw new java.util.concurrent.CompletionException(closed.getCause());
+                }
+                throw failure;
             } finally {
                 // Exceptional close is surfaced by channel.tryRead() as a
                 // failure. Its throw must not skip stream deregistration:
