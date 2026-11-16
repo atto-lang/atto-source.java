@@ -4615,11 +4615,29 @@ public final class Parser {
         }
 
         if (match(IS)) {
+            // "is ~Point" is a structural TYPE test (not a collection factory
+            // and not the value-equality/destructuring "on ~Point" form).
+            // Keep the existing structural checker and runtime semantics:
+            // do not erase the sigil into a nominal TypePattern.
+            boolean structuralTest = match(TILDE)
+                    || match(STRUCTURAL)
+                    || matchContextualIdentifier("structural");
             Ast.TypeRef target = parseTypeRef();
-            String binding = match(AS)
-                    ? consume(IDENT, "expected name after type pattern 'as'").lexeme()
-                    : check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
-            return new Ast.TypePattern(target, binding);
+            String binding = null;
+            if (match(AS)) {
+                // Pattern bindings are currently readonly VAL in both
+                // StructuralPattern and TypePattern; do not accept "as let"
+                // or "as const" and silently discard its distinct semantics.
+                if (match(LET, CONST))
+                    throw error(previous(), "type pattern binding qualifier requires 'val' in this backend");
+                match(VAL);
+                binding = consume(IDENT, "expected bound name after type pattern 'as val'").lexeme();
+            } else if (check(IDENT) && !peek().lexeme().equals("_")) {
+                binding = advance().lexeme();
+            }
+            return structuralTest
+                    ? new Ast.StructuralPattern(target, binding)
+                    : new Ast.TypePattern(target, binding);
         }
 
         if (match(LPAREN)) {
@@ -5023,11 +5041,10 @@ public final class Parser {
         Token tilde = tokens.get(current);
         Token kind = tokens.get(current + 1);
         Token next = tokens.get(current + 2);
-        // A source sigil must be contiguous with its built-in kind. Preserve
-        // old unary "~ array(...)" and "~ tuple(...)" expressions verbatim.
-        if (!adjacent(tilde, kind)) return false;
+        // Whitespace is insignificant for a removed constructor call:
+        // reject both ~tuple(...) and ~ tuple (...). A spaced '<' still
+        // parses as comparison rather than a former generic witness.
         Token.Type suffix = next.type();
-        // Spaced '<' is a comparison, not a generic constructor witness.
         if (suffix != LPAREN && (suffix != LT || !adjacent(kind, next))) return false;
         return switch (tokens.get(current + 1).lexeme()) {
             case "array", "tuple", "vector", "fixed_array", "fixed_list",
@@ -5084,11 +5101,11 @@ public final class Parser {
             // which are separate from named ~kind(...) factories.
             if (check(LPAREN)) {
                 if (checkNext(RPAREN)) {
-                    throw error(peek(), "empty '~()' is ambiguous; use '~record()' or, when supported, '~map()'");
+                    throw error(peek(), "empty '~()' is ambiguous; collection constructors use Type.of(...)");
                 }
                 int first = current + 1;
                 if (first < tokens.size() && tokens.get(first).type() == ELLIPSIS) {
-                    throw error(peek(), "bare '~(...source)' has no record/map separator; use '~record(...source)'");
+                    throw error(peek(), "bare '~(...source)' has no constructor meaning; use Record.of(...) or Map.of(...)");
                 }
                 if (first + 1 < tokens.size()) {
                     Token.Type keyKind = tokens.get(first).type();
