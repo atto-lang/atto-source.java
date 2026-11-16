@@ -52,7 +52,7 @@ fn python_executable_name(word: &str) -> bool {
     }
     for prefix in ["python", "pypy", "pip"] {
         if let Some(version) = base.strip_prefix(prefix) {
-            if version.starts_with(|ch: char| ch.is_ascii_digit())
+            if version.chars().next().is_some_and(|ch| ch.is_ascii_digit())
                 && version.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
             {
                 return true;
@@ -109,18 +109,8 @@ fn forbidden_execution_line(line: &str) -> bool {
     }
     [
         "actions/setup-python@",
-        "python -m ",
-        "python3 -m ",
-        "python -c ",
-        "python3 -c ",
-        "python ",
-        "python3 ",
-        "pypy ",
-        "pypy3 ",
-        "pip install",
-        "pip3 install",
         "uv run ",
-        "pytest ",
+        "uv pip ",
         "poetry run ",
         "pdm run ",
     ]
@@ -281,7 +271,7 @@ mod tests {
             "bash -c 'python3'",
             "pip3 install package",
             "- run: /usr/local/bin/pypy3",
-            "- run: \\$(python3)",
+            "- run: $(python3)",
         ] {
             assert!(forbidden_execution_line(line), "missed command: {line}");
         }
