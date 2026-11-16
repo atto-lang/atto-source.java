@@ -168,10 +168,16 @@ public final class ReturnCleanupChecker {
                 statements(block.body(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.TaskScopeStmt taskScope) {
                 statements(taskScope.body(), scope, inFinally, inDefer, trackReturns, state);
+            } else if (stmt instanceof Ast.UsingTelemetrySpanStmt span) {
+                expression(span.name(), scope, inDefer, state);
+                Scope scoped = new Scope(scope);
+                scoped.define(span.binding());
+                statements(span.body(), scoped, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
-                    expression(branch.condition(), scope, inDefer, state);
-                    statements(branch.body(), scope, inFinally, inDefer, trackReturns, state);
+                    Scope branchScope = new Scope(scope);
+                    expression(branch.condition(), branchScope, inDefer, state);
+                    statements(branch.body(), branchScope, inFinally, inDefer, trackReturns, state);
                 }
                 statements(conditional.elseBody(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.MatchStmt matched) {
@@ -336,6 +342,9 @@ public final class ReturnCleanupChecker {
             expression(test.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.PatternTestExpr test) {
             expression(test.value(), scope, inDefer, state);
+        } else if (expr instanceof Ast.CaptureExpr capture) {
+            expression(capture.value(), scope, inDefer, state);
+            scope.define(capture.name(), capture.value() instanceof Ast.LambdaExpr lambda ? lambda : null, scope);
         } else if (expr instanceof Ast.CastExpr cast) {
             expression(cast.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.SpreadExpr spread) {
