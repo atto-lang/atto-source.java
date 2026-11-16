@@ -1924,6 +1924,14 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.origin() == Ast.CallOrigin.DIRECT
+                && currentInstanceMethodOwner != null
+                && currentInstanceMethodOwner.actorKind() != Ast.ActorKind.NONE
+                && call.callee() instanceof Ast.NameExpr stateCall
+                && stateCall.name().equals("handle_state")) {
+            throw error("ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: bare handle_state "
+                    + "must use a compiler-owned actor-critical loan, never a free/imported fnc");
+        }
         if (call.callee() instanceof Ast.MemberExpr qualified
                 && qualified.receiver() instanceof Ast.NameExpr namespace
                 && namespace.name().equals(dev.oreslang.parser.Parser.IMPORTS_NAMESPACE)) {
