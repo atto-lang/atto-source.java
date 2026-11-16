@@ -5273,7 +5273,7 @@ public final class TypeChecker {
             if (witness == null) {
                 throw new IllegalArgumentException(
                         "nonempty Map literal requires a directly declared Map<K,V> "
-                                + "or explicit ~map<K,V>(...) type witness");
+                                + "or explicit Map.of<K,V>(...) type witness");
             }
             // Use the same narrow, compiler-owned typed-map proof as the
             // already admitted empty constructor. This rejects aliases,
@@ -5303,7 +5303,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
             throw new IllegalArgumentException(
-                    "~map() requires a directly declared Map<K,V> type; "
+                    "Map.of() requires a directly declared Map<K,V> type; "
                             + "unresolved contextual map literals cannot be lowered");
         }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
