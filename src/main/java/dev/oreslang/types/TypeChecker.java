@@ -5236,6 +5236,15 @@ public final class TypeChecker {
                         "std.await core adapter cannot resolve through a shadowed 'std' binding");
             }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
+            if (awaited.coreAdapter()
+                    && !(awaitedType instanceof Named future
+                        && future.name().equals("Future")
+                        && future.arguments().size() == 1)) {
+                // Ordinary 'await actor_ref' is a readiness operation, but
+                // std.await is intentionally the unary Future<T> adapter.
+                throw new IllegalArgumentException(
+                        "std.await requires exactly one Future<T>; got " + awaitedType);
+            }
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
                     && named.arguments().size() == 1) {
