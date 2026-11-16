@@ -3579,7 +3579,8 @@ public final class TypeChecker {
                 if (pkgRoot && qualifiedCall.member().equals("init")) {
                     throw new IllegalArgumentException("pkg::init is a lifecycle hook, not a callable");
                 }
-                if (!pkgRoot) rejectUnimportedModuleNamespace(moduleName);
+                // pkg:: is not an actor capability: same-file dependencies remain forbidden.
+                rejectUnimportedModuleNamespace(moduleName);
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + (pkgRoot ? "pkg::" : moduleName + ".") + qualifiedCall.member());
