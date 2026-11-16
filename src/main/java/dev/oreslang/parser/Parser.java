@@ -114,6 +114,13 @@ public final class Parser {
      * intrinsic owner; unrelated uses of '<Map>' or '<Tuple>' must not.
      */
     private boolean isDeclarationGenericParameter(int tokenIndex) {
+        // Only a formal identifier immediately after '<' or a parameter
+        // separator can declare/shadow a compiler-owned factory name.
+        // A default type reference in 'fnc build<T = Tuple>()' is a use,
+        // not a declaration of Tuple; nested defaults behave likewise.
+        if (tokenIndex == 0) return false;
+        Token.Type preceding = tokens.get(tokenIndex - 1).type();
+        if (preceding != LT && preceding != COMMA) return false;
         int depth = 0;
         int opening = -1;
         for (int j = tokenIndex - 1; j >= 0; j--) {

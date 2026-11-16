@@ -204,6 +204,23 @@ final class CollectionOfFactoryGuestTest {
     }
 
     @Test
+    void defaultedGenericTypeReferencesDoNotShadowBuiltinFactories() {
+        // A generic default is a type *use*, not a declaration of a
+        // type parameter called Tuple or Map. A prior module-wide lexical
+        // scan suppressed built-in .of AST lowering in both cases.
+        assertInstanceOf(Ast.TupleExpr.class, firstFactoryInitializer(
+                "pub fnc build<T = Tuple>(): void { "
+                        + "const tuple = Tuple.of(1, 2); return; }"));
+        assertInstanceOf(Ast.MapLiteralExpr.class, firstFactoryInitializer(
+                "pub fnc build<T = Map<string, int>>(): void { "
+                        + "const map = Map.of<string,int>(\"key\" => 1); return; }"));
+        // Nested applied type arguments inside defaults are also uses.
+        assertInstanceOf(Ast.TupleExpr.class, firstFactoryInitializer(
+                "pub fnc build<T = Map<string, Tuple>>(): void { "
+                        + "const tuple = Tuple.of(1, 2); return; }"));
+    }
+
+    @Test
     void explicitArrayFactoryCannotSatisfyTupleReturnType() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
