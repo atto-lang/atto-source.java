@@ -210,10 +210,8 @@ final class ActorOutputStreamTest {
 
                 CompletionException failed =
                         assertThrows(CompletionException.class, stream::tryNext);
-                assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
-                        failed.getCause());
-                assertSame(terminated.getCause(), failed.getCause().getCause(),
-                        "the actor failure must survive exceptional output closure");
+                assertSame(terminated.getCause(), failed.getCause(),
+                        "nonparking poll must preserve the actual actor failure");
                 assertTrue(stream.isDone());
                 assertFalse(retainsOutputStream(runtime, stream),
                         "failed nonparking poll must deregister drained actor output");
@@ -241,9 +239,8 @@ final class ActorOutputStreamTest {
 
             CompletionException failed =
                     assertThrows(CompletionException.class, stream::tryNext);
-            assertInstanceOf(ChannelRuntime.ChannelClosedException.class,
-                    failed.getCause());
-            assertSame(terminated.getCause(), failed.getCause().getCause());
+            assertSame(terminated.getCause(), failed.getCause(),
+                    "buffered output must not hide the terminal actor failure");
             assertTrue(stream.isDone());
             assertFalse(retainsOutputStream(runtime, stream));
         }
