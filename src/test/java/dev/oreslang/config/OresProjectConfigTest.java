@@ -50,6 +50,22 @@ final class OresProjectConfigTest {
     }
 
     @Test
+    void canonicalAttoImportsWinOverLegacyWhenBothAreAvailable() throws Exception {
+        Path sourceDir = temp.resolve("canonical");
+        Files.createDirectories(sourceDir);
+        Path importer = sourceDir.resolve("main.atto");
+        Files.writeString(importer, "pub routine main(): void { return; }");
+        Files.writeString(sourceDir.resolve("helper.atto"), "pub fnc value() => int { return 1; }");
+        Files.writeString(sourceDir.resolve("helper.ores"), "pub fnc value() => int { return 2; }");
+        Files.writeString(sourceDir.resolve("legacy.ores"), "pub fnc legacy() => int { return 3; }");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(sourceDir.resolve("helper.atto").toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./helper").orElseThrow());
+        assertEquals(sourceDir.resolve("legacy.ores").toAbsolutePath().normalize(),
+                config.resolveImport(importer, "./legacy").orElseThrow());
+    }
+
+    @Test
     void oreslangPathIsAnOrderedOsNativePathList() throws Exception {
         Path one = temp.resolve("one");
         Path two = temp.resolve("two");
