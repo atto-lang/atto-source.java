@@ -2468,6 +2468,10 @@ public final class Parser {
             return marked;
         }
 
+        if (match(AMP)) {
+            throw error(previous(),
+                    "Oreslang does not use '&' for borrowed/reference types (no pointer syntax); use 'borrow T' or 'borrow mut T'");
+        }
         if (matchContextualKeyword("borrow")) {
             boolean mutable = match(MUT);
             return Ast.TypeRef.borrowed(parseTypeAtom(), mutable);
@@ -2548,6 +2552,10 @@ public final class Parser {
 
         List<Ast.TypeRef> args = new ArrayList<>();
         boolean infer = false;
+        if ((name.equals("Pointer") || name.equals("RawPointer")) && check(LT)) {
+            throw error(peek(),
+                    name + "<T> is not Oreslang source syntax; use explicit rt copy/share/take/borrow operations");
+        }
         if (match(LT)) {
             if (match(GT)) {
                 infer = true;
@@ -5229,7 +5237,12 @@ public final class Parser {
             return new Ast.UnaryExpr("~", parseUnary());
         }
         if (match(AMP)) {
-            throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
+            if (match(MUT)) {
+                throw error(previous(),
+                        "Oreslang does not use '&mut' for mutable borrowing (unary pointer syntax is not supported); use 'rt mut borrow value'");
+            }
+            throw error(previous(),
+                    "Oreslang does not use '&' for borrowing (unary pointer syntax is not supported); use 'rt borrow value'");
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
 
@@ -5311,9 +5324,17 @@ public final class Parser {
     }
 
     private Ast.Expr parseRuntimeExpression() {
-        boolean mutableBorrow = match(MUT);
+        boolean mutableBorrow = false;
         Token operation;
-        if (match(YIELD)) {
+        if (match(MUT)) {
+            Token mut = previous();
+            operation = consume(IDENT, "expected 'borrow' after 'rt mut'");
+            if (!operation.lexeme().equals("borrow")) {
+                throw error(operation,
+                        "'rt mut' only supports borrowing; use 'rt mut borrow value'");
+            }
+            mutableBorrow = true;
+        } else if (match(YIELD)) {
             operation = previous(); // compatibility spelling: rt yield
         } else {
             operation = consume(IDENT, "expected runtime operation after 'rt'");
@@ -5332,6 +5353,12 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after rt cooperate");
             }
             return new Ast.RuntimeCallExpr("cooperate", List.of());
+        }
+
+        if (name.equals("ref") || name.equals("deref") || name.equals("unref") || name.equals("raw")) {
+            throw error(operation,
+                    "pointer-style rt operation '" + name
+                            + "' is not valid Oreslang source; use rt copy/share/take/borrow or rt mut borrow");
         }
 
         if (name.equals("workflow_request")) {
@@ -5356,9 +5383,9 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
-        if (name.equals("borrow") && check(MUT)) {
-            throw error(peek(),
-                    "legacy 'rt borrow mut value' is not accepted; use 'rt mut borrow value'");
+        if (name.equals("borrow") && match(MUT)) {
+            throw error(previous(),
+                    "legacy 'rt borrow mut value' is not valid Oreslang; use 'rt mut borrow value'");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
@@ -5371,8 +5398,11 @@ public final class Parser {
             // Command form has unary precedence: rt borrow value.member
             argument = parseUnary();
         }
-        return mutableBorrow ? new Ast.UnaryExpr("&mut", argument)
-                : new Ast.RuntimeCallExpr(name, List.of(argument));
+        if (mutableBorrow) {
+            // Internal AST marker only; '&mut' is never admitted as Oreslang source syntax.
+            return new Ast.UnaryExpr("&mut", argument);
+        }
+        return new Ast.RuntimeCallExpr(name, List.of(argument));
     }
 
     private Ast.Expr parseChannelOperation(

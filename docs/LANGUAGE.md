@@ -1992,7 +1992,7 @@ fnc inspect(borrow Bar value): void {
 }
 ```
 
-Exclusive mutable borrowing uses `rt borrow mut value` and `borrow mut T`:
+Exclusive mutable borrowing uses `rt mut borrow value` and `borrow mut T`:
 
 ```ores
 fnc change(borrow mut Bar value): void {
@@ -2002,7 +2002,7 @@ fnc change(borrow mut Bar value): void {
 
 fnc example(): void {
   val Bar b = new Bar();
-  change(rt borrow mut b);
+  change(rt mut borrow b);
   stdio.println(b.foo);
   return;
 }
