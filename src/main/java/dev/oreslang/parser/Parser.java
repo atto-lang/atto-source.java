@@ -4820,10 +4820,11 @@ public final class Parser {
 
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parsePipeline();
-        if (isContextualIdentifier("pipe")) {
-            throw error(peek(), "actor pipe expressions require compiler-checked "
-                    + "source/transform/sink role typing, supervisor exclusion, "
-                    + "bounded edge transport and Java/LLVM lowering; not yet enabled");
+        if (isContextualIdentifier("pipe") || isContextualIdentifier("rpipe")) {
+            String direction = peek().lexeme();
+            throw error(peek(), "E_ACTOR_PIPE_BACKEND_UNSUPPORTED: '" + direction
+                    + "' requires compiler-checked source/transform/sink role typing, "
+                    + "supervisor exclusion, bounded edge transport and source lowering");
         }
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
@@ -4845,15 +4846,37 @@ public final class Parser {
     private Ast.Expr parsePipeline() {
         Ast.Expr value = parseConditional();
         int stages = 0;
+        // Reverse application is right-associative: f <| g <| x = f(g(x)).
+        // Collect the author's stages without evaluating them, then lower to
+        // the SAME type-checked call AST used by forward |> application.
+        // Do not reverse evaluation order or expand into host-side calls.
+        if (match(PIPE_REVERSE)) {
+            List<Ast.Expr> reverse = new ArrayList<>();
+            List<Token> operators = new ArrayList<>();
+            reverse.add(value);
+            do {
+                Token operator = previous();
+                if (++stages > 128) throw error(operator, "pipeline exceeds 128 stages");
+                operators.add(operator);
+                reverse.add(parseConditional());
+            } while (match(PIPE_REVERSE));
+            if (check(PIPE_FORWARD)) {
+                throw error(peek(), "E_VALUE_PIPE_DIRECTION: use parentheses when mixing <| and |>");
+            }
+            value = reverse.get(reverse.size() - 1);
+            for (int i = reverse.size() - 2; i >= 0; i--) {
+                value = applyValuePipelineStage(value, reverse.get(i), operators.get(i));
+            }
+            return value;
+        }
         while (true) {
             boolean functional = match(PIPE_FORWARD);
             boolean actorPipe = !functional && matchContextualKeyword("pipe");
             if (!functional && !actorPipe) break;
             Token operator = previous();
             if (actorPipe) {
-                throw error(operator, "actor pipe expressions require compiler-checked "
-                        + "source/transform/sink role typing, supervisor exclusion, "
-                        + "bounded edge transport and Java/LLVM lowering; not yet enabled");
+                throw error(operator, "E_ACTOR_PIPE_BACKEND_UNSUPPORTED: 'pipe' requires compiler-checked "
+                        + "source/transform/sink role typing, supervisor exclusion and source lowering");
             }
             if (++stages > 128) {
                 throw error(operator, "pipeline exceeds 128 stages");
@@ -4871,9 +4894,17 @@ public final class Parser {
             } else {
                 stage = parsePostfix();
             }
-            if (actorPipe) {
-                value = new Ast.BinaryExpr("pipe", value, stage);
-            } else if (stage instanceof Ast.CallExpr call) {
+            value = applyValuePipelineStage(value, stage, operator);
+        }
+        if (check(PIPE_REVERSE)) {
+            throw error(peek(), "E_VALUE_PIPE_DIRECTION: use parentheses when mixing |> and <|");
+        }
+        return value;
+    }
+
+    /** Lower one functional stage, retaining checked AST call provenance. */
+    private Ast.Expr applyValuePipelineStage(Ast.Expr value, Ast.Expr stage, Token operator) {
+        if (stage instanceof Ast.CallExpr call) {
                 if (call.callee() instanceof Ast.MemberExpr member
                         && member.receiver() instanceof Ast.NameExpr namespace
                         && (namespace.name().equals("Option") || namespace.name().equals("Result"))) {
@@ -4895,7 +4926,6 @@ public final class Parser {
             } else {
                 throw error(operator, "pipeline stage must be a named callable");
             }
-        }
         return value;
     }
 
