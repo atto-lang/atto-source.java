@@ -28,7 +28,7 @@ jobs:
           test "$(git ls-files 'src/test/resources/parity/step-demo-v1/*.ores' | wc -l)" -eq 13
           # Four actor-step fixtures + thirteen canonical demo fixtures.
           test "$(git ls-files 'src/test/resources/parity/actor-*.ores' | wc -l)" -eq 4
-          test "$(git hash-object src/test/resources/parity/actor-coordinator-fork-join.ores)" = "80b8da1ba193b30137efa122d94f30b52dae7d46"
+          test "$(git hash-object src/test/resources/parity/actor-coordinator-fork-join.ores)" = "9470d82a3180744c28abe9f890545b9bafdb2110"
           echo "NATIVE_GUEST_SOURCE_HEAD=$EXPECTED_SHA"
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
