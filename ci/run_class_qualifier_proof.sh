@@ -90,8 +90,8 @@ case "${CLASS_QUALIFIER_PROFILE:-jvm}" in
   *) die "unsupported CLASS_QUALIFIER_PROFILE, expected jvm, aot or hybrid" ;;
 esac
 
-# The count is pinned to the currently committed 18 + 14 regression tests.
+# The count is pinned to the currently committed 18 + 16 regression tests.
 # Any new head that adds/removes cases must independently update this gate.
-[[ "$total" -eq 32 ]] || die "regression count mismatch: expected 32, got $total"
+[[ "$total" -eq 34 ]] || die "regression count mismatch: expected 34, got $total"
 printf 'CLASS_QUALIFIER_PROOF=PASS SOURCE_COMMIT=%s EXACT_SOURCE_TREE=%s TESTS=%s\n' \
   "$EXPECTED_SOURCE_COMMIT" "$actual_tree" "$total"
