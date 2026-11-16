@@ -2137,7 +2137,20 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public Optional<ActorOutput<M>> tryNext() {
             try {
-                Optional<ActorOutputEnvelope> candidate = channel.tryRead();
+                Optional<ActorOutputEnvelope> candidate;
+                try {
+                    candidate = channel.tryRead();
+                } catch (java.util.concurrent.CompletionException failure) {
+                    // A drained, normally closed Channel.tryRead() fails the
+                    // immediate select. Mirror next(): EOF is empty, but actor
+                    // failure must preserve the original termination cause.
+                    Throwable terminal = OresFuture.unwrap(failure);
+                    if (terminal instanceof ChannelRuntime.ChannelClosedException closed) {
+                        if (closed.getCause() == null) return Optional.empty();
+                        throw new java.util.concurrent.CompletionException(closed.getCause());
+                    }
+                    throw failure;
+                }
                 if (candidate.isEmpty()) return Optional.empty();
                 ActorOutputEnvelope envelope = candidate.orElseThrow();
                 try {
@@ -2145,23 +2158,12 @@ public final class ActorRuntime implements AutoCloseable {
                     ActorOutput<M> output = (ActorOutput<M>) envelope.output();
                     return Optional.of(output);
                 } finally {
+                    // Never absorb a reservation-release failure as normal EOF.
                     envelope.close();
                 }
-            } catch (java.util.concurrent.CompletionException failure) {
-                // Channel.tryRead() reports even a normal drained EOF as a
-                // failed immediate Select. Match next(): only ordinary EOF
-                // becomes empty, whereas a failed actor retains its cause.
-                Throwable terminal = OresFuture.unwrap(failure);
-                if (terminal instanceof ChannelRuntime.ChannelClosedException closed) {
-                    if (closed.getCause() == null) return Optional.empty();
-                    throw new java.util.concurrent.CompletionException(closed.getCause());
-                }
-                throw failure;
             } finally {
-                // Exceptional close is surfaced by channel.tryRead() as a
-                // failure. Its throw must not skip stream deregistration:
-                // an otherwise drained failed actor would remain retained
-                // until the entire parent runtime shuts down.
+                // A failed actor can have a drained/closed output stream.
+                // Failed tryRead must not skip its final deregistration.
                 if (isDone()) actorOutputStreams.remove(this);
             }
         }
