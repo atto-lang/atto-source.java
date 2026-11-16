@@ -89,6 +89,22 @@ final class ImportsQualifiedCallTest {
     }
 
     @Test
+    void qualifiedImportedFunctionCannotEscapeEvenAsAnUnusedValue() {
+        // The rejection must happen when the member is evaluated, not only
+        // when an indirect call later attempts to use the extracted value.
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import fnc roodles from "./lib.ores";
+                        pub routine main(): void {
+                          val unused = imports::roodles;
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("imports::roodles"),
+                failure::getMessage);
+    }
+
+    @Test
     void importQualifierDoesNotFlattenWildcardOrInventExports() {
         IllegalArgumentException noImport = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
