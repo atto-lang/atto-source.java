@@ -113,4 +113,42 @@ final class ActorMessageContractV1Test {
         assertNull(absent.receives());
         assertNull(absent.sends());
     }
+
+    private static String fixture(String name) {
+        try (var input = ActorMessageContractV1Test.class
+                .getResourceAsStream("/actor-message-v1/" + name)) {
+            assertNotNull(input, "missing portable .atto fixture: " + name);
+            return new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.io.IOException failure) {
+            throw new java.io.UncheckedIOException(failure);
+        }
+    }
+
+    @Test void multipleRecipientsKeepIndependentTypedMailboxContracts() {
+        assertDoesNotThrow(() -> TypeChecker.check(
+                Parser.parse(fixture("positive-multiple-recipients.atto"))));
+    }
+
+    @Test void wrongPayloadForOneRecipientCannotBeLaunderedThroughOtherRefs() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(
+                        fixture("negative-wrong-downstream-payload.atto"))));
+        assertTrue(failure.getMessage().contains("ActorRef.send mailbox value"),
+                failure::getMessage);
+    }
+
+    @Test void explicitSendsIsDeniedEvenWithoutAVisibleOutboundCall() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(fixture("negative-unverified-sends.atto"))));
+        assertTrue(failure.getMessage().contains("ACTOR_SENDS_EFFECT_UNSUPPORTED"),
+                failure::getMessage);
+    }
+
+    @Test void controlOnlyNeverRequiresVerifiedControlRouting() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(fixture("negative-receives-never.atto"))));
+        assertTrue(failure.getMessage().contains("ACTOR_RECEIVES_NEVER_UNSUPPORTED"),
+                failure::getMessage);
+    }
+
 }
