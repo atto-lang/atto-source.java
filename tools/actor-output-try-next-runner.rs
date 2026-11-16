@@ -17,7 +17,38 @@ fn actor_output_immediate_poll_executes_on_jvm() {
         run.status.code(),
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr));
+    // Do not confuse a successful Maven invocation or a class name printed
+    // in the logs with real JUnit execution. Require a fresh Surefire XML
+    // receipt, nonzero tests, zero skips/failures, and named regressions.
     let stdout = String::from_utf8_lossy(&run.stdout);
     assert!(stdout.contains("ActorOutputStreamTest"),
-        "no proof of actual ActorOutputStreamTest execution");
+        "Maven output did not identify the selected actor test suite");
+    let report = root.join(
+        "target/surefire-reports/TEST-dev.oreslang.runtime.ActorOutputStreamTest.xml");
+    let xml = std::fs::read_to_string(&report).unwrap_or_else(|failure| {
+        panic!("missing executed JUnit receipt at {}: {failure}", report.display())
+    });
+    let start = xml.find("<testsuite ").expect("missing XML testsuite root");
+    let header_end = xml[start..].find('>').expect("malformed XML testsuite tag") + start;
+    let header = &xml[start..header_end];
+    fn count(header: &str, attribute: &str) -> usize {
+        let key = format!("{attribute}=\""); 
+        let tail = header.split(&key).nth(1)
+            .unwrap_or_else(|| panic!("missing {attribute} in Surefire testsuite"));
+        tail.split('"').next().expect("malformed Surefire attribute")
+            .parse::<usize>().expect("non-numeric Surefire count")
+    }
+    assert!(count(header, "tests") >= 8, "expected all eight actor output tests");
+    for attribute in ["errors", "failures", "skipped"] {
+        assert_eq!(count(header, attribute), 0,
+            "the actual JUnit suite must not skip or fail tests: {attribute}");
+    }
+    for required in [
+        "failedImmediateOutputPollDoesNotRetainDrainedStream",
+        "immediatePollDrainsBufferedOutputBeforeSurfacingActorFailure",
+        "immediatePollDoesNotStealOutputFromRegisteredAsyncReader",
+    ] {
+        assert!(xml.contains(&format!("name=\"{required}\"")),
+            "missing executed actor-output regression: {required}");
+    }
 }
