@@ -113,4 +113,16 @@ final class TypeofBindingQueryTest {
                 }
                 """)));
     }
+    @Test
+    void crossModulePrivateCallableQueryMustNotBypassVisibility() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module alpha as
+                    fnc secret(int x): int { return x; }
+                end
+                define module beta as
+                    type Hidden = typeof secret;
+                end
+                """)));
+    }
+
 }
