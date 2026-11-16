@@ -93,9 +93,9 @@ final class ActorEmitPipelineContractV3Test {
         assertThrows(IllegalArgumentException.class,
                 () -> actor("🌍".repeat(65), "Parse", "int", "bool"));
         assertThrows(IllegalArgumentException.class,
-                () -> actor("abc\\0def", "Parse", "int", "bool"));
+                () -> actor(new String(new char[]{'a', 'b', 'c', (char) 0, 'd', 'e', 'f'}), "Parse", "int", "bool"));
         assertThrows(IllegalArgumentException.class,
-                () -> actor("x\\uD800", "Parse", "int", "bool"));
+                () -> actor(new String(new char[]{'x', (char) 0xD800}), "Parse", "int", "bool"));
 
         // A hostile million-character identifier must be rejected before
         // allocating an encoder buffer proportional to the input length.
