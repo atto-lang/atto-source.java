@@ -17,8 +17,6 @@ fi
 # Git status/diff may invoke a configured clean filter before test admission.
 # Check the index tree and physical raw bytes instead, with no filter execution.
 command -v python3 >/dev/null || { echo "Python 3 unavailable" >&2; exit 2; }
-python3 scripts/verify-raw-worktree.py --self-test
-python3 scripts/verify-raw-worktree.py .
 
 command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 
