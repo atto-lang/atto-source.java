@@ -35,7 +35,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, EnumDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -494,6 +494,36 @@ public final class Ast {
         /** Existing AST producers without an explicit visibility are private by default. */
         public TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) {
             this(name, Visibility.PRIVATE, genericParameters, target);
+        }
+    }
+
+    /** Closed, nominal enum. Numeric tags are stable protocol identifiers. */
+    public record EnumDecl(String name, Visibility visibility, List<EnumVariant> variants) implements Decl {
+        public EnumDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("enum requires a name");
+            if (visibility == null) throw new IllegalArgumentException("enum requires visibility");
+            variants = List.copyOf(variants);
+            if (variants.isEmpty()) throw new IllegalArgumentException("enum requires at least one variant");
+            java.util.HashSet<String> names = new java.util.HashSet<>();
+            java.util.HashSet<Long> tags = new java.util.HashSet<>();
+            for (EnumVariant variant : variants) {
+                if (!names.add(variant.name())) throw new IllegalArgumentException(
+                        "duplicate enum variant name '" + variant.name() + "'");
+                if (!tags.add(variant.tag())) throw new IllegalArgumentException(
+                        "duplicate enum variant tag " + variant.tag());
+                if (variant.payload() != null && !variant.payload().isRecordType()) {
+                    throw new IllegalArgumentException(
+                            "enum variant '" + variant.name() + "' requires a closed record payload");
+                }
+            }
+        }
+    }
+
+    /** A null payload denotes a zero-argument variant. */
+    public record EnumVariant(String name, TypeRef payload, long tag) {
+        public EnumVariant {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("empty enum variant name");
+            if (tag <= 0) throw new IllegalArgumentException("enum variant tag must be positive");
         }
     }
 
