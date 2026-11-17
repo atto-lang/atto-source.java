@@ -1,7 +1,11 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
 source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
-namespace_decl  = "namespace" IDENT ";" ;
+namespace_decl  = [ "use" ] "namespace" IDENT ";" ;
+(* Canonical: "use namespace x;" only at the source-file header.
+   "use" is contextual and DOES NOT import module members into lexical scope;
+   an imported module requires "import module Name from \"./file.atto\";".
+   The legacy "namespace x;" header is still accepted for migration. *)
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
