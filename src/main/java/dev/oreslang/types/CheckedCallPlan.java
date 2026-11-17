@@ -708,10 +708,21 @@ public record CheckedCallPlan(
                         throw new IllegalArgumentException(
                                 "explicit omission provenance disagrees with raw call-item plan");
                     }
-                    BoundSlot marker = sourceOrder.stream()
-                            .filter(slot -> slot.explicitOmission()
-                                    && slot.parameterIndex() == parameterIndex)
-                            .findFirst().orElseThrow();
+                    BoundSlot marker = null;
+                    for (BoundSlot candidate : sourceOrder) {
+                        if (candidate.explicitOmission()
+                                && candidate.parameterIndex() == parameterIndex) {
+                            if (marker != null) {
+                                throw new IllegalArgumentException(
+                                        "duplicate explicit omission marker for one formal slot");
+                            }
+                            marker = candidate;
+                        }
+                    }
+                    if (marker == null) {
+                        throw new IllegalArgumentException(
+                                "explicit omission marker is missing from call-item provenance");
+                    }
                     if (marker.callItemIndex() != omission.callItemIndex()) {
                         throw new IllegalArgumentException(
                                 "explicit omission call-item provenance disagrees");
