@@ -121,8 +121,12 @@ final class ActorExecutionContextTest {
             doomed.send("x");
             ExecutionException failure = assertThrows(ExecutionException.class,
                     () -> doomed.done().get(5, TimeUnit.SECONDS));
-            assertTrue(String.valueOf(failure.getCause()).contains("actor execution id space exhausted"),
+            // Observers get a cause-free snapshot (#1223); the raw cause is host-gated.
+            assertTrue(failure.getCause() instanceof ActorRuntime.ActorFailureSnapshotException,
                     () -> "unexpected failure: " + failure.getCause());
+            assertTrue(String.valueOf(doomed.failure().orElse(null))
+                            .contains("actor execution id space exhausted"),
+                    () -> "unexpected raw failure: " + doomed.failure());
 
             executions.set(0L);
             AtomicReference<ExecutionContext> seen = new AtomicReference<>();
