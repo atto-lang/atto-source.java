@@ -8873,6 +8873,8 @@ public final class TypeChecker {
             return hasSuspendingSumCallbackSyntax(cast.value());
         if (expr instanceof Ast.SpreadExpr spread)
             return hasSuspendingSumCallbackSyntax(spread.expression());
+        if (expr instanceof Ast.NamedArgExpr named)
+            return hasSuspendingSumCallbackSyntax(named.value());
         if (expr instanceof Ast.CallExpr call)
             return hasSuspendingSumCallbackSyntax(call.callee())
                     || call.arguments().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
