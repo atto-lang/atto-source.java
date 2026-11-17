@@ -1920,11 +1920,6 @@ public final class Ast {
             @Override void copy(Expr source, Expr target) {
                 CheckedStructuralFieldDomain.copy(source, target);
             }
-        },
-        CHECKED_CALL_PLAN("CheckedCallPlan") {
-            @Override void copy(Expr source, Expr target) {
-                dev.oreslang.types.CheckedCallPlan.copyCheckedMetadata(source, target);
-            }
         };
 
         private final String tableName;
@@ -1947,6 +1942,10 @@ public final class Ast {
         for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
             transfer.copy(source, target);
         }
+        // The call-plan side table lives in the types package rather than
+        // inside Ast, so it has an explicit transfer hook outside the enum
+        // that enumerates only Ast-owned side tables.
+        dev.oreslang.types.CheckedCallPlan.copyCheckedMetadata(source, target);
     }
 
     static java.util.Set<String> checkedMetadataTransferPolicy() {
