@@ -3310,7 +3310,27 @@ public final class Parser {
         }
     }
 
+    private Ast.MatchExpr parseMatchValueExpression() {
+        // Use the same pattern and exhaustiveness syntax as statements, but
+        // isolate the arm result from the surrounding callable return.
+        Ast.MatchStmt parsed = parseMatch(false);
+        if (!parsed.ordered()) throw error(previous(),
+                "value-producing match requires canonical 'over' arms");
+        List<Ast.MatchValueArm> results = new ArrayList<>();
+        for (Ast.MatchArm arm : parsed.arms()) {
+            if (arm.body().size() != 1
+                    || !(arm.body().getFirst() instanceof Ast.ReturnStmt ret)
+                    || ret.value() == null) {
+                throw error(previous(),
+                        "value-producing match arm must contain exactly 'return expression;'");
+            }
+            results.add(new Ast.MatchValueArm(arm.pattern(), arm.guard(), ret.value()));
+        }
+        return new Ast.MatchExpr(parsed.subject(), results);
+    }
+
     private Ast.Expr parsePrimary() {
+        if (match(MATCH)) return parseMatchValueExpression();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {

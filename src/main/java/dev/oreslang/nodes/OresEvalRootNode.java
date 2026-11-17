@@ -1614,6 +1614,13 @@ public final class OresEvalRootNode extends RootNode {
                         || expressionContainsPotentialSuspension(
                                 assignment.value(), seen);
             }
+            if (expr instanceof Ast.MatchExpr match) {
+                if (expressionContainsPotentialSuspension(match.subject(), seen)) return true;
+                return match.arms().stream().anyMatch(arm ->
+                        (arm.guard() != null
+                                && expressionContainsPotentialSuspension(arm.guard(), seen))
+                                || expressionContainsPotentialSuspension(arm.value(), seen));
+            }
             if (expr instanceof Ast.ConditionalExpr conditional) {
                 return expressionContainsPotentialSuspension(
                                 conditional.condition(), seen)
@@ -5942,6 +5949,20 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.MatchExpr matched) {
+                Object subject = eval(matched.subject(), env);
+                for (Ast.MatchValueArm arm : matched.arms()) {
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!patternMatches(arm.pattern(), subject, bindings)) continue;
+                    Env local = new Env(env);
+                    bindings.forEach((name, value) ->
+                            local.define(name, value, Ast.BindingKind.VAL));
+                    if (arm.guard() != null && !truth(eval(arm.guard(), local))) continue;
+                    return eval(arm.value(), local);
+                }
+                throw new IllegalStateException(
+                        "value match exhaustiveness proof violated at runtime");
+            }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
