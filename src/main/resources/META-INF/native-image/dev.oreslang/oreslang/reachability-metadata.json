@@ -21,6 +21,10 @@
           "parameterTypes": [
             "int"
           ]
+        },
+        {
+          "name": "nativeCarriersJoined",
+          "parameterTypes": []
         }
       ]
     }
