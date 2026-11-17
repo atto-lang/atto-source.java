@@ -10214,27 +10214,7 @@ public final class ActorRuntime implements AutoCloseable {
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
             }
-            Throwable terminalOutput = ref.terminationCause.get();
-            if (terminalOutput != null && ref.terminalFailureNotice.get() == null) {
-                ref.terminalFailureNotice.compareAndSet(
-                        null,
-                        new ActorFailureNotice(
-                                ref.id(),
-                                ref.generation(),
-                                parent == null
-                                        ? Optional.empty()
-                                        : Optional.of(parent.ref.id()),
-                                kind,
-                                actorFailureKind(terminalOutput),
-                                nextSupervisorControlSequence(),
-                                boundedDiagnosticType(terminalOutput)));
-            }
-            // Observers receive immutable failure metadata, never the raw cause.
-            Throwable observerFailure = ref.terminalFailureNotice.get() == null
-                    ? null
-                    : new ActorFailureSnapshotException(
-                            ref.terminalFailureNotice.get());
-            try { outputStream.close(observerFailure); }
+            try { outputStream.close(ref.terminationCause.get()); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
             catch (Throwable failure) {
                 virtualPhysicalCleanupComplete = false;
@@ -10276,6 +10256,24 @@ public final class ActorRuntime implements AutoCloseable {
             try { actorAndGroupDeregistered = unregisterActor(this); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
             catch (Throwable failure) { recordFinalizationFailure(failure); }
+            // Mint the supervisor notice only after every cleanup step: cleanup
+            // failures are recorded into terminationCause above. Supervisors get
+            // this immutable metadata through CONTROL, never the raw Throwable.
+            Throwable terminalOutput = ref.terminationCause.get();
+            if (terminalOutput != null && ref.terminalFailureNotice.get() == null) {
+                ref.terminalFailureNotice.compareAndSet(
+                        null,
+                        new ActorFailureNotice(
+                                ref.id(),
+                                ref.generation(),
+                                parent == null
+                                        ? Optional.empty()
+                                        : Optional.of(parent.ref.id()),
+                                kind,
+                                actorFailureKind(terminalOutput),
+                                nextSupervisorControlSequence(),
+                                boundedDiagnosticType(terminalOutput)));
+            }
             boolean parentReleased = parent == null;
             if (parent != null) {
                 try {
@@ -10310,13 +10308,11 @@ public final class ActorRuntime implements AutoCloseable {
                 ref.readyFuture.failFromRuntime(
                         terminal == null
                                 ? new ActorTerminatedException(ref.id(), kind, null)
-                                : observerFailure);
+                                : terminal);
             }
-            if (terminal == null) {
-                ref.doneFuture.completeFromRuntime(null);
-            } else {
-                ref.doneFuture.failFromRuntime(observerFailure);
-            }
+            // Trusted host observers keep the raw terminal cause, as on main.
+            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+            else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
         }

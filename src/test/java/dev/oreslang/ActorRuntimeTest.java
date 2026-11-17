@@ -699,7 +699,7 @@ final class ActorRuntimeTest {
                     ActorRuntime.ActorTerminatedException.class,
                     () -> ref.send("after-failure"));
             // The raw cause stays on the trusted host path (ActorRef.failure());
-            // an exception that may cross actors never carries it (#1223).
+            // an exception thrown into another actor never carries it (#1223).
             assertNull(terminated.getCause());
         }
     }
