@@ -162,13 +162,23 @@ public final class Parser {
         }
 
         List<Ast.ImportDecl> imports = new ArrayList<>();
-        while (match(IMPORT)) imports.add(parseImport());
+        List<Ast.ExportDecl> exports = new ArrayList<>();
+        // File exports can appear before imports as well as after them.
+        while (true) {
+            if (match(IMPORT)) imports.add(parseImport());
+            else if (match(EXPORT)) exports.add(parseExport());
+            else break;
+        }
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
+            if (match(EXPORT)) {
+                exports.add(parseExport());
+                continue;
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -294,11 +304,77 @@ public final class Parser {
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
+        validateExports(exports, rootDeclarations);
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
-        return new Ast.Program(namespace, imports, modules);
+        return new Ast.Program(namespace, imports, modules, exports);
+    }
+
+    /** `export pub Foo;` and `export pub[pkg] class Bar;` are file-level declarations. */
+    private Ast.ExportDecl parseExport() {
+        Token at = previous();
+        consume(PUB, "export requires 'pub' visibility");
+        Ast.ExportScope scope = Ast.ExportScope.PUBLIC;
+        if (match(LBRACKET)) {
+            Token value = consume(IDENT, "expected pkg in pub[pkg]");
+            if (!"pkg".equals(value.lexeme()))
+                throw error(value, "only pub[pkg] export visibility is supported");
+            consume(RBRACKET, "expected ']' after pub[pkg]");
+            scope = Ast.ExportScope.PACKAGE;
+        }
+        Ast.ExportKind kind = null;
+        if (match(CLASS)) kind = Ast.ExportKind.CLASS;
+        else if (match(FNC)) kind = Ast.ExportKind.FNC;
+        else if (match(ROUTINE)) kind = Ast.ExportKind.ROUTINE;
+        else if (match(ACTOR)) kind = Ast.ExportKind.ACTOR;
+        else if (match(INTERFACE)) kind = Ast.ExportKind.INTERFACE;
+        else if (match(TRAIT)) kind = Ast.ExportKind.TRAIT;
+        else if (match(TYPE)) kind = Ast.ExportKind.TYPE;
+        String name = consume(IDENT, "expected a declaration name after export").lexeme();
+        consume(SEMICOLON, "export declaration requires ';'");
+        return new Ast.ExportDecl(name, scope, kind);
+    }
+
+    /** Validate after all declarations, so placement never changes binding. */
+    private void validateExports(List<Ast.ExportDecl> exports, List<Ast.Decl> declarations) {
+        java.util.Set<String> exportedNames = new java.util.HashSet<>();
+        for (Ast.ExportDecl entry : exports) {
+            if (!exportedNames.add(entry.name()))
+                throw error(previous(), "duplicate export: " + entry.name());
+            Ast.ExportKind kind = null;
+            for (Ast.Decl decl : declarations) {
+                Ast.ExportKind found = null;
+                Ast.Visibility visibility = Ast.Visibility.PRIVATE;
+                String name = null;
+                if (decl instanceof Ast.ClassDecl c) {
+                    name = c.name(); visibility = c.visibility();
+                    found = c.actorKind() == Ast.ActorKind.NONE
+                            ? Ast.ExportKind.CLASS : Ast.ExportKind.ACTOR;
+                } else if (decl instanceof Ast.FunctionDecl f) {
+                    name = f.name(); visibility = f.visibility();
+                    found = f.kind() == Ast.CallableKind.FNC
+                            ? Ast.ExportKind.FNC : Ast.ExportKind.ROUTINE;
+                } else if (decl instanceof Ast.TypeAliasDecl t) {
+                    name = t.name(); visibility = t.visibility(); found = Ast.ExportKind.TYPE;
+                } else if (decl instanceof Ast.InterfaceDecl i) {
+                    name = i.name(); visibility = i.visibility();
+                    found = interfaceKinds.getOrDefault(i, INTERFACE) == TRAIT
+                            ? Ast.ExportKind.TRAIT : Ast.ExportKind.INTERFACE;
+                }
+                if (!entry.name().equals(name)) continue;
+                if (kind != null && kind != found)
+                    throw error(previous(), "ambiguous export target: " + entry.name());
+                if (entry.scope() == Ast.ExportScope.PACKAGE && visibility == Ast.Visibility.PUBLIC)
+                    throw error(previous(), "pub[pkg] export conflicts with public declaration: " + entry.name());
+                kind = found;
+            }
+            if (kind == null)
+                throw error(previous(), "export references undeclared file-root symbol: " + entry.name());
+            if (entry.kind() != null && entry.kind() != kind)
+                throw error(previous(), "export declaration kind mismatch for " + entry.name());
+        }
     }
 
     private Ast.ImportDecl parseImport() {
