@@ -156,7 +156,7 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /** Result of one resumable task turn. */
-    public sealed interface Step<T> permits Done, Await, Cooperate { }
+    public sealed interface Step<T> permits Done, Await, Cooperate, Sleep { }
 
     /** The async task has produced its final value. */
     public record Done<T>(T value) implements Step<T> { }
@@ -176,6 +176,25 @@ public final class OresScheduler implements AutoCloseable {
      * resumes the same task only after the current carrier turn has unwound.
      */
     public record Cooperate<T>() implements Step<T> { }
+
+    /**
+     * Compiler-lowered nonparking sleep. Like Await, this is a single logical
+     * suspension of the EXISTING execution, not a child Task or a physical
+     * thread sleep. The timer is owned by the current TaskRunner (unlike an
+     * arbitrary shared Future), so cancellation/STOP revokes its registration.
+     *
+     * A synchronous-looking source sleep_blocking must lower through this
+     * Step in a suspending context; calling Thread.sleep on a carrier is NOT
+     * an implementation of this operation.
+     */
+    public record Sleep<T>(OresTimers timers, long delayNanos) implements Step<T> {
+        public Sleep {
+            Objects.requireNonNull(timers, "timers");
+            if (delayNanos < 0) {
+                throw new IllegalArgumentException("negative sleep duration");
+            }
+        }
+    }
 
     /**
      * Input delivered to a compiler-generated state machine when it starts or
@@ -482,6 +501,23 @@ public final class OresScheduler implements AutoCloseable {
     /** Lowering target for source-level `rt cooperate`. */
     public static <T> Step<T> cooperate() {
         return new Cooperate<>();
+    }
+
+    /**
+     * One scheduler-authenticated sleep suspension with no new task, no
+     * physical carrier wait and no inline producer callback. Legal only
+     * within a compiler-generated susp frame on an admitted scheduler turn.
+     *
+     * Timer expiry is merely readiness, like an NIO Future completing on
+     * its reactor. Both resume on this execution's OWN scheduler, with the
+     * same ExecutionContext and a fresh physical dispatch ID.
+     */
+    public static <T> Step<T> sleepNanos(OresTimers timers, long delayNanos) {
+        requireCurrent();
+        if (currentExecutionContext() == null) {
+            throw new IllegalStateException("sleep requires an admitted execution context");
+        }
+        return new Sleep<>(timers, delayNanos);
     }
 
     /**
@@ -852,6 +888,9 @@ public final class OresScheduler implements AutoCloseable {
                 new AtomicReference<>();
         private final AtomicReference<OresFuture.RuntimeWaiterRegistration<?>>
                 activeAwaitRegistration = new AtomicReference<>();
+        /** Sleep is OWNED by this execution, unlike shared NIO/Future awaits. */
+        private final AtomicReference<OresFuture<Void>> activeOwnedSleep =
+                new AtomicReference<>();
         /** True iff AWAIT_GRAPH holds an edge for completion; written only
          *  under AWAIT_GRAPH_LOCK. Lets turns skip that VM-wide lock. */
         private volatile boolean awaitEdgeRegistered;
@@ -1097,6 +1136,11 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
+                if (step instanceof Sleep<?> sleep) {
+                    armSleep(sleep);
+                    return;
+                }
+
                 if (step instanceof Cooperate<?>) {
                     armCooperate();
                     return;
@@ -1168,6 +1212,39 @@ public final class OresScheduler implements AutoCloseable {
             }
             // afterCarrierTurn() owns requeueing so this dispatch fully
             // unwinds before the continuation becomes runnable again.
+        }
+
+        private void armSleep(Sleep<?> sleep) {
+            OresFuture<Void> timer = null;
+            try {
+                // This is the same bounded, monotonic timer owner used by
+                // Future/await. Arming happens while the scheduler still owns
+                // the current logical execution; the clock never enters guest.
+                timer = sleep.timers().sleepNanos(sleep.delayNanos());
+                if (!activeOwnedSleep.compareAndSet(null, timer)) {
+                    timer.cancel(false);
+                    failTerminal(new IllegalStateException(
+                            "previous execution-owned sleep was not retired"));
+                    return;
+                }
+                // Cancellation/STOP may have beaten registration, including
+                // before activeOwnedSleep was published. Fail closed; never
+                // leave a timer alive after its execution lost admission.
+                if (phase.get() != RUNNING) {
+                    revokeOwnedSleep();
+                    return;
+                }
+                armAwait(timer);
+                if (phase.get() == TERMINAL) revokeOwnedSleep();
+            } catch (RuntimeException | Error failure) {
+                if (timer != null) timer.cancel(false);
+                failTerminal(failure);
+            }
+        }
+
+        private void revokeOwnedSleep() {
+            OresFuture<Void> owned = activeOwnedSleep.getAndSet(null);
+            if (owned != null) owned.cancel(false);
         }
 
         private void armAwait(OresFuture<?> awaited) {
@@ -1313,6 +1390,9 @@ public final class OresScheduler implements AutoCloseable {
             OresFuture.RuntimeWaiterRegistration<?> registration =
                     activeAwaitRegistration.getAndSet(null);
             if (registration != null) registration.detach();
+            // Only sleep owns its awaited producer. NEVER cancel a shared
+            // NIO readiness, channel or caller-supplied Future from here.
+            revokeOwnedSleep();
         }
 
         private void finish(T value) {
