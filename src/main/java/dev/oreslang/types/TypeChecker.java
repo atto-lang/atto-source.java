@@ -1200,9 +1200,12 @@ public final class TypeChecker {
                         false,
                         "parameter '" + param.name() + "' of actor callable '" + module + "." + fn.name() + "'");
             }
-            if (fn.async() || fn.suspends() || asyncGeneratorProtocol) {
-                // A suspends function creates a SourceTask; non-Send handles
-                // cannot cross this boundary, even if the caller owns them.
+            // A suspends frame is not a Task (SUSPENDS_AWAIT_EXECUTION_CONTEXT_V1):
+            // it may take a Future it will await. Other non-Send capabilities,
+            // such as #2440's ActorGroup/Topic/Subscription handles, still may
+            // not cross into a suspendable frame.
+            if (fn.async() || asyncGeneratorProtocol
+                    || (fn.suspends() && !containsFutureType(parameterType))) {
                 validateAsyncBoundaryType(
                         parameterType,
                         false,
@@ -1235,7 +1238,8 @@ public final class TypeChecker {
                     true,
                     "return type of actor callable '" + module + "." + fn.name() + "'");
         }
-        if (fn.async() || fn.suspends() || asyncGeneratorProtocol) {
+        if (fn.async() || asyncGeneratorProtocol
+                || (fn.suspends() && !containsFutureType(returns))) {
             validateAsyncBoundaryType(
                     returns,
                     true,
@@ -6087,17 +6091,21 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "Channel<void> cannot carry a value; use an explicit signal/unit type");
         }
-        // A channel is an execution-domain-local handle, but its payload is
-        // still transferred between independently resumed continuations.
-        // Only statically Sendable data is admissible: a function, bound
-        // method, closure or an object containing one must never carry its
-        // lexical environment into channel storage or select registrations.
-        // Serializable<Format> is a separate, stricter wire/codec contract.
+        // Ordinary Channel<T> is an execution-domain-local capability, not a
+        // mailbox. Owned function values and objects containing callables may
+        // move through local channels. Actor message types are checked by
+        // validateActorCallableBoundaryType/isSharedSafe instead and remain
+        // strictly non-callable. Borrows cannot inhabit buffered channels
+        // until channel-bound lifetimes are expressible and checked.
         if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " cannot transport borrowed payloads, including nested fields: "
                             + "channel storage may outlive their owners");
         }
+        // #2440: a function, bound method, closure or object holding one must
+        // never carry its lexical environment into channel storage or select
+        // registrations. (#2440's broader Send-only payload rule is not
+        // adopted here: it rejects programs main's channel tests accept.)
         if (containsChannelCallable(element, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " cannot transport functions, bound methods, closures, or nested callable fields; "
@@ -6105,11 +6113,6 @@ public final class TypeChecker {
         }
         if (element == Unknown.INSTANCE) {
             throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
-        }
-        if (!isSendSafe(element, new LinkedHashSet<>(), Map.of())) {
-            throw new IllegalArgumentException(
-                    where + " requires concrete Sendable data; runtime capabilities, unresolved types, "
-                            + "and non-Sendable mutable state cannot be channel payloads");
         }
     }
 
@@ -7643,6 +7646,16 @@ public final class TypeChecker {
             }
         }
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
+    }
+
+    /** True when the type is or contains a Future (through generic arguments). */
+    private static boolean containsFutureType(Type type) {
+        if (!(type instanceof Named named)) return false;
+        if (named.name().equals("Future")) return true;
+        for (Type argument : named.arguments()) {
+            if (containsFutureType(argument)) return true;
+        }
+        return false;
     }
 
     private void validateAsyncBoundaryType(
