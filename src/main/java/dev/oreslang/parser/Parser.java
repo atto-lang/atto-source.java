@@ -228,6 +228,10 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (isExternalActorMethodHead()) {
+                    rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
+                    continue;
+                }
                 if (isProtectedDeclarationHead()) {
                     rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
                     continue;
@@ -572,6 +576,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (isExternalActorMethodHead()) {
+                return parseExternalActorMethod(annotations, modifiers);
+            }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
             }
@@ -788,6 +795,52 @@ public final class Parser {
         List<Ast.Stmt> body = parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
+    }
+
+    /** Contextual mtd only counts as a source receiver declaration in a define head. */
+    private boolean isExternalActorMethodHead() {
+        return isContextualIdentifier("mtd")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == LPAREN;
+    }
+
+    private Ast.ExternalActorMethodDecl parseExternalActorMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
+        rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
+        rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
+        consumeContextualIdentifier("mtd", "expected external receiver method declaration");
+        String name = consumeCallableName("expected external actor method name");
+        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
+                "on_recover").contains(name)) {
+            throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
+        }
+        consume(LPAREN, "external receiver method requires '(Actor receiver)'");
+        Ast.TypeRef receiverType = parseTypeRef();
+        if (receiverType.inferArguments() || !receiverType.arguments().isEmpty()
+                || receiverType.isBorrow()) {
+            throw error(previous(), "external receiver must be a non-generic nominal actor");
+        }
+        String receiverName = consume(IDENT, "expected external receiver binding name").lexeme();
+        consume(RPAREN, "expected ')' after external actor receiver");
+        consume(LPAREN, "expected '(' before external receiver method parameters");
+        List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after external receiver method parameters");
+        if (parameters.stream().anyMatch(p -> p.structural()
+                || p.name().equals(receiverName))) {
+            throw error(previous(), "external receiver methods cannot use structural parameters "
+                    + "or shadow the receiver binding");
+        }
+        Ast.TypeRef returns = match(FAT_ARROW, COLON)
+                ? parseTypeRef() : Ast.TypeRef.simple("void");
+        if (!parseCheckedEffects().isEmpty()) {
+            throw error(previous(), "external receiver effects require checked actor-effect lowering");
+        }
+        List<Ast.Stmt> body = parseBlock();
+        return new Ast.ExternalActorMethodDecl(
+                receiverType.name(), receiverName, name,
+                modifiers.visibility, parameters, returns, body);
     }
 
     /** Free/module functions may use '-> Type' then newline/end or '::' body/end. */
@@ -1062,7 +1115,7 @@ public final class Parser {
         return new ActorPrefix(transport, serial);
     }
 
-    private Ast.ClassDecl parseDefinedActorClass(
+    private Ast.Decl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
             List<Ast.Annotation> annotations,
@@ -1254,16 +1307,34 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
-    private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+    private Ast.Decl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
     }
 
-    private Ast.ClassDecl parseActorClass(
+    private Ast.Decl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        // Standalone actor declaration: retain the receiver-binding name in
+        // its own AST node. Never synthesize an empty class, dispatch table,
+        // or executable actor when receiver lowering has not been certified.
+        if (check(AS) && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == SEMICOLON) {
+            if (!generics.isEmpty() || !parents.isEmpty() || !interfaces.isEmpty()
+                    || actorKind != Ast.ActorKind.SHARED
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
+                throw error(peek(), "standalone actor declarations currently require a plain "
+                        + "non-generic actor without transport or inheritance modifiers");
+            }
+            advance(); // as
+            String receiverName = consume(IDENT, "expected standalone actor receiver binding").lexeme();
+            consume(SEMICOLON, "standalone actor declaration requires ';'");
+            return new Ast.StandaloneActorDecl(name, receiverName, visibility, actorKind);
+        }
 
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
@@ -1589,6 +1660,47 @@ public final class Parser {
             }
             if (!moduleContract && check(ACTOR)) {
                 throw error(peek(), "actor requirements belong only in module contracts");
+            }
+            // A receiver method in a module contract requires an actor's
+            // existing mailbox-dispatched instance method. This spelling is
+            // deliberately NOT an executable free-function declaration.
+            // Keep "mtd" available as a type/identifier in field positions.
+            boolean actorMethodHead = isContextualIdentifier("mtd")
+                    && current + 2 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT
+                    && tokens.get(current + 2).type() == LPAREN;
+            if (moduleContract && actorMethodHead) {
+                advance(); // contextual mtd
+                validateOnlyVisibilityModifiers(memberModifiers, "module contract receiver requirements");
+                if (!memberAnnotations.isEmpty()) {
+                    throw error(previous(), "contract receiver requirements do not accept annotations");
+                }
+                String methodName = consumeCallableName("expected receiver method name");
+                consume(LPAREN, "expected '(' before nominal actor receiver");
+                Ast.TypeRef receiver = parseTypeRef();
+                if (!receiver.arguments().isEmpty() || receiver.inferArguments()
+                        || receiver.isBorrow()) {
+                    throw error(previous(), "contract receiver must name a non-generic nominal actor");
+                }
+                consume(IDENT, "expected actor receiver parameter name");
+                consume(RPAREN, "expected ')' after actor receiver");
+                consume(LPAREN, "expected '(' before receiver method parameters");
+                List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+                consume(RPAREN, "expected ')' after receiver method parameters");
+                if (parameters.stream().anyMatch(Ast.Param::structural)) {
+                    throw error(previous(), "structural arguments cannot cross an actor receiver boundary");
+                }
+                Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                if (!parseCheckedEffects().isEmpty()) {
+                    throw error(previous(), "receiver contract checked effects require typed actor-effect lowering");
+                }
+                consumeMemberTerminator(terminator, "actor receiver requirement should end with ';'");
+                members.add(new Ast.InterfaceActorMethodDecl(
+                        receiver.name(), methodName, memberModifiers.visibility, parameters, returns));
+                continue;
+            }
+            if (!moduleContract && actorMethodHead) {
+                throw error(peek(), "actor receiver requirements belong only in module contracts");
             }
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
