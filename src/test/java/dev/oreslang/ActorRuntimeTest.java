@@ -698,7 +698,9 @@ final class ActorRuntimeTest {
             ActorRuntime.ActorTerminatedException terminated = assertThrows(
                     ActorRuntime.ActorTerminatedException.class,
                     () -> ref.send("after-failure"));
-            assertSame(ref.failure().orElseThrow(), terminated.getCause());
+            // The raw cause stays on the trusted host path (ActorRef.failure());
+            // an exception thrown into another actor never carries it (#1223).
+            assertNull(terminated.getCause());
         }
     }
 
