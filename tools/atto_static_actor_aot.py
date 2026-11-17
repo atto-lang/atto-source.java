@@ -182,6 +182,9 @@ class Parser:
                 early_value = self.integer()
                 self.take(";")
                 self.take("}")
+                if self.peek() == "else":
+                    raise CompileError(
+                        "E_GUARD_ELSE_NOT_REQUIRED: Atto guard has no else arm")
                 actions.append(("guard", condition == "true", early_value))
             elif token in ("return", "^"):
                 self.return_marker()
