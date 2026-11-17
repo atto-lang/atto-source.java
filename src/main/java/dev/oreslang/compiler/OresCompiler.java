@@ -106,8 +106,11 @@ public final class OresCompiler {
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
-        return new AnalysisResult(checked.program(), checked.warnings());
+        OwnershipChecker.OwnershipCheckResult owned =
+                OwnershipChecker.checkWithDiagnostics(checked.program(), checked.shortInferredAliases());
+        java.util.List<String> warnings = new java.util.ArrayList<>(checked.warnings());
+        warnings.addAll(owned.warnings());
+        return new AnalysisResult(checked.program(), warnings);
     }
 
     /**

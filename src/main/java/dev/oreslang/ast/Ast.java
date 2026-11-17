@@ -577,9 +577,11 @@ public final class Ast {
             ConstructorDecl constructor,
             List<MethodDecl> methods,
             ActorConcurrency actorConcurrency,
-            List<ProtectedStateField> sealedStateFields) implements Decl {
+            List<ProtectedStateField> sealedStateFields,
+            List<Annotation> annotations) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
+            annotations = List.copyOf(annotations);
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
             genericParameters = List.copyOf(genericParameters);
@@ -596,7 +598,7 @@ public final class Ast {
             }
         }
 
-        /** Existing actor concurrency call sites default to no sealed state. */
+        /** Existing actor concurrency call sites default to no sealed state or annotations. */
         public ClassDecl(String name, Visibility visibility, boolean isAbstract,
                          ActorKind actorKind, List<String> genericParameters,
                          List<TypeRef> parents, List<TypeRef> interfaces,
@@ -604,7 +606,19 @@ public final class Ast {
                          List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
             this(name, visibility, isAbstract, actorKind, genericParameters,
                     parents, interfaces, fields, constructor, methods,
-                    actorConcurrency, List.of());
+                    actorConcurrency, List.of(), List.of());
+        }
+
+        /** Sealed-state call sites (main) default to no class annotations. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency,
+                         List<ProtectedStateField> sealedStateFields) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, sealedStateFields, List.of());
         }
 
         /** Compatibility constructor for all existing AST/JIT compiler clients. */

@@ -193,12 +193,9 @@ public final class Parser {
                 if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
-                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                validateCopyPolicyClassAnnotations(annotations);
                 validateClassModifiers(modifiers);
-                rootDeclarations.add(parseClass(
-                        modifiers.visibility,
-                        modifiers.isAbstract,
-                        modifiers.visibility != Ast.Visibility.PUBLIC));
+                rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
                 continue;
             }
 
@@ -265,12 +262,9 @@ public final class Parser {
                 if (match(CLASS)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
-                    rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                    validateCopyPolicyClassAnnotations(annotations);
                     validateClassModifiers(modifiers);
-                    rootDeclarations.add(parseClass(
-                            modifiers.visibility,
-                            modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC));
+                    rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
@@ -547,9 +541,9 @@ public final class Parser {
             if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
             modifiers = mergeModifiers(modifiers, parseModifiers());
             rejectCallableStructuralAnnotation(annotations, "class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+            validateCopyPolicyClassAnnotations(annotations);
             validateClassModifiers(modifiers);
-            return parseClass(modifiers.visibility, modifiers.isAbstract, false);
+            return parseClass(modifiers.visibility, modifiers.isAbstract, false, annotations);
         }
 
         if (check(CONTRACT) && defineFollowsAfterVisibilityModifiers()) {
@@ -600,10 +594,9 @@ public final class Parser {
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
-                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                validateCopyPolicyClassAnnotations(annotations);
                 validateClassModifiers(modifiers);
-                return parseClass(modifiers.visibility,
-                        modifiers.isAbstract, false);
+                return parseClass(modifiers.visibility, modifiers.isAbstract, false, annotations);
             }
             if (match(INTERFACE, TRAIT)) {
                 Token.Type declarationKind = previous().type();
@@ -863,7 +856,8 @@ public final class Parser {
     private Ast.ClassDecl parseClass(
             Ast.Visibility visibility,
             boolean isAbstract,
-            boolean filePrivateScope) {
+            boolean filePrivateScope,
+            List<Ast.Annotation> classAnnotations) {
         String name = consumeTypeDeclarationName("expected class name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -981,7 +975,8 @@ public final class Parser {
                         : "expected 'end' to close class " + name);
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
-                parents, interfaces, fields, constructor, methods);
+                parents, interfaces, fields, constructor, methods,
+                Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC), List.of(), classAnnotations);
     }
 
     private Ast.ConstructorDecl parseConstructor(
@@ -6354,6 +6349,23 @@ public final class Parser {
             throw error(previous(), "duplicate structural callable modifier; use either 'structural' or '@structural', not both");
         }
         return new CallableStructural(modifierStructural || annotationStructural, List.copyOf(remaining));
+    }
+
+    /** Only recognized, zero-argument copy policies can annotate a class. */
+    private void validateCopyPolicyClassAnnotations(List<Ast.Annotation> annotations) {
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Ast.Annotation annotation : annotations) {
+            String name = annotation.name();
+            if (!List.of("NoCopy", "WarnOnCopy", "Copyable").contains(name)) {
+                throw error(previous(), "@" + name + " on class declarations would be silently discarded; unsupported annotation");
+            }
+            if (!annotation.arguments().isEmpty() || !seen.add(name)) {
+                throw error(previous(), "E_COPY_ANNOTATION: invalid or duplicate @" + name + " on class declaration");
+            }
+        }
+        if (seen.contains("NoCopy") && (seen.contains("Copyable") || seen.contains("WarnOnCopy"))) {
+            throw error(previous(), "E_COPY_ANNOTATION: conflicting copy policies on class");
+        }
     }
 
     /**
