@@ -564,7 +564,9 @@ public final class ActorRuntime implements AutoCloseable {
             super("actor " + notice.actor() + "#" + notice.generation()
                     + " terminated: " + notice.failureKind()
                     + " [" + notice.diagnosticType() + "]",
-                    null, false, false);
+                    // No stack or cause, but suppression stays on so an awaiting
+                    // task can attach its own bounded SourceBoundaryTrace frames.
+                    null, true, false);
             this.notice = Objects.requireNonNull(notice, "notice");
         }
 
@@ -10135,6 +10137,45 @@ public final class ActorRuntime implements AutoCloseable {
                                 && (childControl.hasPending() || !mailbox.isEmpty()))));
         }
 
+        private void mintTerminalNoticeIfAbsent() {
+            Throwable terminalOutput = ref.terminationCause.get();
+            if (terminalOutput == null || ref.terminalFailureNotice.get() != null) return;
+            ref.terminalFailureNotice.compareAndSet(
+                    null,
+                    new ActorFailureNotice(
+                            ref.id(),
+                            ref.generation(),
+                            parent == null
+                                    ? Optional.empty()
+                                    : Optional.of(parent.ref.id()),
+                            kind,
+                            actorFailureKind(terminalOutput),
+                            nextSupervisorControlSequence(),
+                            boundedDiagnosticType(terminalOutput)));
+        }
+
+        /**
+         * What lifecycle observers (ready, done, outputs) see for a terminal
+         * cause (#1223): runtime-minted control exceptions without a foreign
+         * cause pass through; any guest or host failure becomes the immutable
+         * snapshot. The raw cause stays on the host-gated ActorRef.failure().
+         */
+        private Throwable observerFailure(Throwable terminal) {
+            if (terminal == null) return null;
+            if (terminal instanceof ActorCancelledException) return terminal;
+            if (terminal instanceof ActorTerminatedException terminated
+                    && terminated.getCause() == null) return terminal;
+            ActorFailureNotice notice = ref.terminalFailureNotice.get();
+            if (notice == null) return new ActorTerminatedException(ref.id(), kind, null);
+            // One snapshot per incarnation: every observer sees the same object.
+            if (observerSnapshot == null || observerSnapshot.notice() != notice) {
+                observerSnapshot = new ActorFailureSnapshotException(notice);
+            }
+            return observerSnapshot;
+        }
+
+        private ActorFailureSnapshotException observerSnapshot;
+
         /** The heap is reachable only from this incarnation's own live turn. */
         private void requireHeapOwner() {
             if (currentActor.get() != this) {
@@ -10391,7 +10432,9 @@ public final class ActorRuntime implements AutoCloseable {
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
             }
-            try { outputStream.close(ref.terminationCause.get()); }
+            // Output observers, like ready/done, see the snapshot (#1223).
+            mintTerminalNoticeIfAbsent();
+            try { outputStream.close(observerFailure(ref.terminationCause.get())); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
             catch (Throwable failure) {
                 virtualPhysicalCleanupComplete = false;
@@ -10442,24 +10485,10 @@ public final class ActorRuntime implements AutoCloseable {
             try { actorAndGroupDeregistered = unregisterActor(this); }
             catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
             catch (Throwable failure) { recordFinalizationFailure(failure); }
-            // Mint the supervisor notice only after every cleanup step: cleanup
-            // failures are recorded into terminationCause above. Supervisors get
-            // this immutable metadata through CONTROL, never the raw Throwable.
-            Throwable terminalOutput = ref.terminationCause.get();
-            if (terminalOutput != null && ref.terminalFailureNotice.get() == null) {
-                ref.terminalFailureNotice.compareAndSet(
-                        null,
-                        new ActorFailureNotice(
-                                ref.id(),
-                                ref.generation(),
-                                parent == null
-                                        ? Optional.empty()
-                                        : Optional.of(parent.ref.id()),
-                                kind,
-                                actorFailureKind(terminalOutput),
-                                nextSupervisorControlSequence(),
-                                boundedDiagnosticType(terminalOutput)));
-            }
+            // Cleanup-only failures are recorded into terminationCause above, so
+            // mint again here. Supervisors get this immutable metadata through
+            // CONTROL, never the raw Throwable.
+            mintTerminalNoticeIfAbsent();
             boolean parentReleased = parent == null;
             if (parent != null) {
                 try {
@@ -10490,15 +10519,19 @@ public final class ActorRuntime implements AutoCloseable {
                 catch (Throwable failure) { recordFinalizationFailure(failure); }
             }
             Throwable terminal = ref.terminationCause.get();
+            // Decision on #1223 (2026-11-17): ready/done may be awaited by guest
+            // code and other actors, so they fail with the immutable failure
+            // snapshot, never the raw cause. Trusted hosts read the raw cause
+            // through the host-gated ActorRef.failure().
+            Throwable observerFailure = observerFailure(terminal);
             if (!ref.readyFuture.isDone()) {
                 ref.readyFuture.failFromRuntime(
                         terminal == null
                                 ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
+                                : observerFailure);
             }
-            // Trusted host observers keep the raw terminal cause, as on main.
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
+            else ref.doneFuture.failFromRuntime(observerFailure);
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
         }

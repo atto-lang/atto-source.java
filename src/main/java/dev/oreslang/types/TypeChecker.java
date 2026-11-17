@@ -3431,8 +3431,8 @@ public final class TypeChecker {
             Type inner = typeOf(trapped.expression(), env, generics, self);
             if (inner instanceof Borrow)
                 throw new IllegalArgumentException(
-                        "trap cannot wrap a borrowed value without a proven Option loan lifetime");
-            return new Named("Option", List.of(inner));
+                        "trap cannot wrap a borrowed value without a proven Result loan lifetime");
+            return trapResultType(inner);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
@@ -3803,7 +3803,7 @@ public final class TypeChecker {
                         recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
                                 target.name(), arity, target, null, null);
                     }
-                    return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
+                    return trappedCallableResult(target.trapped(), target.async(), target.suspends(), target.generator(), result);
                 }
             }
             // Primitive display is explicit, deterministic, and not a host
@@ -3865,7 +3865,7 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
-                    return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
+                    return trappedCallableResult(target.trapped(), target.async(), target.suspends(), target.generator(), result);
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr bytesCall
@@ -10719,8 +10719,38 @@ public final class TypeChecker {
         members.put(name, type);
     }
 
+    /**
+     * `trap` yields Result<T, Error>. A value that is already Result<T, E> is
+     * not wrapped again: it becomes Result<T, E | Error>, where a caught throw
+     * is Err(Error) and the value's own Err(E) passes through unchanged.
+     */
     private Type trapResult(boolean trapped, Type result) {
-        return trapped ? new Named("Option", List.of(result)) : result;
+        return trapped ? trapResultType(result) : result;
+    }
+
+    private static final Named TRAP_ERROR = new Named("Error", List.of());
+
+    private Type trapResultType(Type inner) {
+        if (inner instanceof Named named && named.name().equals("Result")
+                && named.arguments().size() == 2) {
+            Type error = named.arguments().get(1);
+            boolean acceptsError = error == Unknown.INSTANCE
+                    || (error instanceof Named e && e.arguments().isEmpty()
+                        && Set.of("Error", "Any", "Object").contains(e.name()));
+            if (acceptsError) return inner;
+            return new Named("Result", List.of(named.arguments().get(0),
+                    Types.unionOf(error, TRAP_ERROR)));
+        }
+        return new Named("Result", List.of(inner, TRAP_ERROR));
+    }
+
+    /** Async trap callables settle their Future with the trap result. */
+    private Type trappedCallableResult(boolean trapped, boolean async, boolean suspends,
+            boolean generator, Type result) {
+        if (!trapped || generator) {
+            return trapResult(trapped, callableResult(async, suspends, generator, result));
+        }
+        return callableResult(async, suspends, false, trapResultType(result));
     }
 
     private Function trapFunctionType(Ast.FunctionDecl fn, Set<String> generics, Type self) {
