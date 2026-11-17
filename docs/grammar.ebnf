@@ -1,7 +1,11 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
 source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
-namespace_decl  = "namespace" IDENT ";" ;
+namespace_decl  = [ "use" ] "namespace" IDENT ";" ;
+(* Canonical: "use namespace x;" only at the source-file header.
+   "use" is contextual and DOES NOT import module members into lexical scope;
+   an imported module requires "import module Name from \"./file.atto\";".
+   The legacy "namespace x;" header is still accepted for migration. *)
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
@@ -122,10 +126,17 @@ contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
 module_contract_body = "{" { module_contract_member } "}"
                      | { module_contract_member } "end" ;
 module_contract_member = interface_member
-                       | "actor" IDENT member_terminator ;
-(* Stage 1: 'actor IDENT;' requires a public nominal actor declaration in
-   the conforming module. External 'mtd(Actor receiver)' implementations and
-   per-actor method requirements are NOT yet part of this grammar. *)
+                       | "actor" IDENT member_terminator
+                       | [ visibility ] "mtd" IDENT "(" type_ref IDENT ")"
+                         "(" [ param_list ] ")" [ (":" | "=>") type_ref ]
+                         member_terminator ;
+(* Stage 1: 'actor IDENT;' requires a public nominal actor declaration.
+   Stage 2: 'pub mtd f(Actor a)(Args...): T;' requires an existing
+   mailbox-dispatched actor method with an exact signature and visibility.
+   No external executable 'define mtd' declarations, standalone actor alias,
+   runtime witness, or actor-state capability is introduced by this rule.
+   Stage 2 currently rejects checked effects, generic receiver types,
+   structural arguments, and generic contracts with receiver requirements. *)
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -183,6 +194,12 @@ binding_decl    = named_inferred_binding
                   | [ type_ref ] IDENT )
                   "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
+(* Type declarations use 'type T = <type_ref>'. Type names are immutable by
+   definition; 'const type T = ...' is not a declaration. Inside a callable
+   every 'const type' spelling (including 'const type T value = ...') is
+   rejected as redundant; write 'const T value = ...'.
+   Function/block-local type declarations and their public return ABI are
+   NOT enabled in this grammar revision. *)
 named_inferred_binding
                 = "const" IDENT IDENT "=" named_inferred_literal stmt_terminator ;
 named_inferred_literal
@@ -505,8 +522,13 @@ type_atom       = borrow_type
 
 borrow_type     = "&" [ "mut" ] type_atom ;
 tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
+(* A record or struct prefix in type position is a type-shape marker.
+   At a declaration initializer / return-expression site the same prefix
+   instead introduces a value literal; never inspect field payload spelling
+   to decide which grammar applies. *)
 empty_named_tuple_type = ( "Tuple" | "~tuple" ) "[" "]" ;
-record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
+record_type     = [ "record" | "struct" ]
+                  "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
 alias_marker    = "type" named_type ;

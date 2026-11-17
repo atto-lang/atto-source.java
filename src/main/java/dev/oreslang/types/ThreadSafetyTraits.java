@@ -52,7 +52,10 @@ public final class ThreadSafetyTraits {
             "ReadLoan", "WriteLoan", "PartitionLoan",
             // Guest lowering, allocation-domain and physical lifetime proofs
             // for these shared/task capabilities are not yet established.
-            "Arc", "Weak", "Rc", "RefCell", "Cell",
+            "Atomic", "AtomicRef", "AtomicBool", "AtomicInt", "AtomicLong",
+            "AtomicI8", "AtomicI16", "AtomicI32", "AtomicI64",
+            "AtomicU8", "AtomicU16", "AtomicU32", "AtomicU64",
+            "Box", "Arc", "Weak", "Rc", "RefCell", "Cell",
             "RwLock", "RwLockReadGuard", "RwLockWriteGuard",
             "Ref", "TRef", "EtsTable", "TableId",
             "Task", "TaskHandle", "TaskScope", "TaskCancellation",

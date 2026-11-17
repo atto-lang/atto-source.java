@@ -1,0 +1,10 @@
+define class Secret as
+    final int x: 5;
+    pub final int y: 6;
+end
+
+pub routine main(): void {
+    const Secret original = new Secret();
+    const Secret updated = rt copy original with {x => 99};
+    return;
+}

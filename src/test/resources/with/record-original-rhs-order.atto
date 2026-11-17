@@ -1,0 +1,8 @@
+pub routine main(): void {
+    const base = record{x: 5, y: 6};
+    const updated = base with {x => base.x + 1, y => base.x + base.y};
+    stdio.stdout.write(updated.x);
+    stdio.stdout.write(updated.y);
+    stdio.stdout.write(base.x);
+    return;
+}
