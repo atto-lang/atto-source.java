@@ -39,8 +39,17 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final Semaphore queueSlots;
     /** Turns admitted to a lane but not yet entered; column indexed lane * PAD. */
     private final AtomicIntegerArray queuedByLane;
-    /** Turns currently executing on a lane; only maintained with demandGrowth. */
+    /** Turns currently executing on a lane, wherever they were queued. */
     private final AtomicIntegerArray runningByLane;
+    /** Steal probes queued or waiting on a lane; at most one per lane. */
+    private final AtomicIntegerArray probesByLane;
+    /**
+     * How long a turn queued behind a busy lane waits for its home carrier
+     * before an idle soft lane may take it; negative disables idle stealing.
+     */
+    private final long stealGraceNanos;
+    private final AtomicLong steals = new AtomicLong();
+    private final AtomicInteger stealProbeSeed = new AtomicInteger();
     private final int softSpillThreshold;
     private final AtomicLong spills = new AtomicLong();
     private final AtomicLong laneStartFailures = new AtomicLong();
@@ -58,14 +67,33 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
 
     ActorAffinityDispatcher(int parallelism, int capacity, int[] cpus,
                             IntFunction<ExecutorService> factory, boolean demandGrowth) {
+        this(parallelism, capacity, cpus, factory, demandGrowth, defaultStealGraceNanos());
+    }
+
+    /** Default 50 us; {@code ores.actor.lane.steal-grace-micros < 0} disables idle stealing. */
+    static long defaultStealGraceNanos() {
+        long micros = Long.getLong("ores.actor.lane.steal-grace-micros", 50L);
+        if (micros > 10_000L) {
+            throw new IllegalArgumentException(
+                    "ores.actor.lane.steal-grace-micros must be at most 10000");
+        }
+        return micros < 0 ? -1L : TimeUnit.MICROSECONDS.toNanos(micros);
+    }
+
+    ActorAffinityDispatcher(int parallelism, int capacity, int[] cpus,
+                            IntFunction<ExecutorService> factory, boolean demandGrowth,
+                            long stealGraceNanos) {
         if (parallelism < 1 || capacity < 1) throw new IllegalArgumentException("invalid lane limits");
+        // Hard CPU binding is a placement constraint that stealing must not bypass.
+        this.stealGraceNanos = cpus.length == 0 ? stealGraceNanos : -1L;
+        this.probesByLane = new AtomicIntegerArray(parallelism * PAD);
         this.cpus = cpus.clone();
         for (int cpu : cpus) NativeCarrierExecutor.requireAllowedCpu(cpu);
         // Pinned lanes are strict placement; demand growth would move actors.
         this.demandGrowth = demandGrowth && cpus.length == 0;
         this.queueSlots = new Semaphore(capacity);
         this.queuedByLane = new AtomicIntegerArray(parallelism * PAD);
-        this.runningByLane = new AtomicIntegerArray(this.demandGrowth ? parallelism * PAD : 0);
+        this.runningByLane = new AtomicIntegerArray(parallelism * PAD);
         this.softSpillThreshold = Math.max(1, capacity / parallelism);
         var created = new ArrayList<ExecutorService>();
         try {
@@ -229,11 +257,16 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             throw failure;
         }
         QueuedTurn task = new QueuedTurn(command, target);
+        // Sample busyness before this turn is counted, so it reflects only
+        // work already ahead of it on the target lane.
+        boolean behindOtherWork = stealGraceNanos >= 0
+                && (queuedByLane.get(target * PAD) > 0 || runningByLane.get(target * PAD) > 0);
         queuedByLane.incrementAndGet(target * PAD);
         try {
             if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
             lanes.get(target).execute(task);
             if (target != lane) spills.incrementAndGet();
+            if (behindOtherWork) offerToIdleLane(task, target);
             return target;
         } catch (RuntimeException | Error failure) {
             task.rejectAdmission();
@@ -241,9 +274,82 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         }
     }
 
+    long steals() { return steals.get(); }
+
+    /** Free queue slots; equals capacity when nothing is queued (tests). */
+    int availableQueueSlots() { return queueSlots.availablePermits(); }
+
+    /** Queued plus running turns across all lanes (tests). */
+    int outstandingTurns() {
+        int total = 0;
+        for (int i = 0; i < lanes.size(); i++) {
+            total += queuedByLane.get(i * PAD) + runningByLane.get(i * PAD);
+        }
+        return total;
+    }
+
+    /**
+     * A turn queued behind other work may be taken by an idle soft lane once
+     * it has waited the grace. The probe and the original queue entry race on
+     * the turn's claim, so it runs exactly once; the ActorCell lease still
+     * serializes the actor itself. At most one probe waits on any lane.
+     */
+    private void offerToIdleLane(QueuedTurn task, int home) {
+        int span = demandGrowth ? startedLanes : lanes.size();
+        if (span < 2) return;
+        int limit = Math.min(span - 1, SoftLaneSelector.MAX_PROBES - 1);
+        int cursor = Math.floorMod(stealProbeSeed.getAndIncrement(), span);
+        for (int checked = 0; checked < limit;) {
+            if (cursor != home) {
+                int slot = cursor * PAD;
+                if (queuedByLane.get(slot) == 0 && runningByLane.get(slot) == 0
+                        && probesByLane.compareAndSet(slot, 0, 1)) {
+                    try {
+                        lanes.get(cursor).execute(new StealProbe(task, cursor));
+                    } catch (RejectedExecutionException closedLane) {
+                        probesByLane.set(slot, 0);
+                    }
+                    return;
+                }
+                checked++;
+            }
+            if (++cursor == span) cursor = 0;
+        }
+    }
+
+    /** Waits out the grace on an idle lane, then runs the turn if it is still pending. */
+    private final class StealProbe implements Runnable {
+        private final QueuedTurn task;
+        private final int thief;
+
+        private StealProbe(QueuedTurn task, int thief) {
+            this.task = task;
+            this.thief = thief;
+        }
+
+        @Override public void run() {
+            boolean stillIdle;
+            try {
+                long remaining = stealGraceNanos - (System.nanoTime() - task.queuedAtNanos);
+                while (remaining > 0 && task.pending() && queuedByLane.get(thief * PAD) == 0
+                        && !closed.get()) {
+                    java.util.concurrent.locks.LockSupport.parkNanos(this, remaining);
+                    remaining = stealGraceNanos - (System.nanoTime() - task.queuedAtNanos);
+                }
+                // Only an idle lane steals: if work of its own arrived during
+                // the grace, leave the turn to its home lane.
+                stillIdle = queuedByLane.get(thief * PAD) == 0 && !closed.get();
+            } finally {
+                probesByLane.set(thief * PAD, 0);
+            }
+            if (stillIdle && task.runOn(thief)) steals.incrementAndGet();
+        }
+    }
+
     private final class QueuedTurn implements Runnable {
         private final Runnable command;
         private final int assignedLane;
+        private final long queuedAtNanos = System.nanoTime();
         private final AtomicBoolean released = new AtomicBoolean();
         // 0=pending, 1=entered, 2=rejected. The task itself is the lock:
         // no additional per-dispatch claim allocation in the actor hot path.
@@ -251,6 +357,9 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         private QueuedTurn(Runnable command, int assignedLane) {
             this.command = command;
             this.assignedLane = assignedLane;
+        }
+        private synchronized boolean pending() {
+            return claim == 0;
         }
         private void releaseSlot() {
             if (released.compareAndSet(false, true)) {
@@ -265,18 +374,18 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             releaseSlot();
         }
         @Override public void run() {
+            runOn(assignedLane);
+        }
+
+        /** Runs the turn on {@code lane} if nobody claimed it first. */
+        private boolean runOn(int lane) {
             synchronized (this) {
-                if (claim != 0) return;
+                if (claim != 0) return false;
                 claim = 1;
-            }
-            if (!demandGrowth) {
-                releaseSlot();
-                command.run();
-                return;
             }
             // Mark running before leaving the queued count so the lane never
             // looks idle while this turn is still on its carrier.
-            int slot = assignedLane * PAD;
+            int slot = lane * PAD;
             runningByLane.incrementAndGet(slot);
             try {
                 releaseSlot();
@@ -284,6 +393,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             } finally {
                 runningByLane.decrementAndGet(slot);
             }
+            return true;
         }
     }
 
@@ -303,7 +413,10 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
                         ? nativeLane.requestShutdownFromCarrier()
                         : lane.shutdownNow();
                 for (var pending : pendingTurns) {
-                    QueuedTurn task = (QueuedTurn) pending;
+                    // A queued steal probe owns no turn and no queue slot.
+                    if (!(pending instanceof QueuedTurn task)) continue;
+                    // A turn whose probe already ran it is not abandoned.
+                    if (!task.pending()) continue;
                     task.rejectAdmission();
                     abandoned.add(task.command);
                 }
