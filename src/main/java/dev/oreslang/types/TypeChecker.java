@@ -3711,6 +3711,52 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
             }
+            // Unqualified instance calls are lexical self calls, never ambient
+            // dynamic lookup. Reuse the exact explicit-self member checker so
+            // ownership, visibility, generics and suspension checks cannot drift.
+            if (call.callee() instanceof Ast.NameExpr unqualified
+                    && currentClassOwner != null && self != null
+                    && env.lookup("self") != null
+                    && env.lookup(unqualified.name()) == null
+                    && !Set.of("init", "Some", "Ok", "Err", "And", "Or", "Xor",
+                            "print", "task_context", "task_cancel_requested",
+                            "$task_context_enter", "$task_context_exit").contains(unqualified.name())) {
+                int implicitArity = fixedCallArity(
+                        call.arguments(), env, generics, self,
+                        "implicit method " + unqualified.name());
+                ResolvedMethod implicit = findMethodTarget(
+                        currentClassOwner, nominalClassType(currentClassOwner),
+                        unqualified.name(), implicitArity, new LinkedHashSet<>());
+                if (implicit != null) {
+                    if (findFunction(unqualified.name(), implicitArity) != null
+                            || importedValues.contains(unqualified.name())) {
+                        throw new IllegalArgumentException(
+                                "ambiguous unqualified call '" + unqualified.name()
+                                        + "': both a self method and a free/imported callable match; "
+                                        + "write self." + unqualified.name() + "(...) or qualify the function");
+                    }
+                    return typeOf(call.rewrite(
+                            new Ast.MemberExpr(new Ast.NameExpr("self"), unqualified.name()),
+                            call.typeArguments(), call.typeArgumentsPresent(), call.arguments()),
+                            env, generics, self);
+                }
+            }
+            // A lexical local that shadows an instance method wins, and implicit
+            // self never falls back to the method. Calling a non-callable local
+            // must therefore fail closed instead of typing as Unknown.
+            if (call.callee() instanceof Ast.NameExpr shadowing
+                    && currentClassOwner != null && self != null
+                    && env.lookup("self") != null
+                    && env.lookup(shadowing.name()) != null
+                    && !(typeOf(shadowing, env, generics, self) instanceof Function)
+                    && findMethodTarget(
+                            currentClassOwner, nominalClassType(currentClassOwner),
+                            shadowing.name(), call.arguments().size(), new LinkedHashSet<>()) != null) {
+                throw new IllegalArgumentException(
+                        "local '" + shadowing.name() + "' shadows instance method '" + shadowing.name()
+                                + "' and is not callable; implicit self never falls back past a lexical binding, "
+                                + "write self." + shadowing.name() + "(...)");
+            }
             if (call.callee() instanceof Ast.NameExpr functionName
                     && env.lookup(functionName.name()) == null) {
                 int arity = fixedCallArity(
