@@ -32,6 +32,50 @@ import java.util.Set;
  * - moving an outer value from a repeating loop is rejected conservatively.
  */
 public final class OwnershipChecker {
+    /**
+     * Opt-in same-pass shadow events. This is a partial trace of accepted
+     * ownership transitions, never a second checker or a Rust proof receipt.
+     * Names are diagnostic labels, not canonical typed owner IDs.
+     */
+    public record BorrowShadowEventV0(String kind, String binding, int sharedLoans, boolean mutableLoan) { }
+    @FunctionalInterface
+    public interface BorrowShadowSinkV0 {
+        void record(BorrowShadowEventV0 event);
+    }
+    private static final int MAX_BORROW_SHADOW_EVENTS_V0 = 65_536;
+    private List<BorrowShadowEventV0> stagedBorrowShadowEvents;
+
+    private void shadowEvent(String kind, VarState owner) {
+        List<BorrowShadowEventV0> events = stagedBorrowShadowEvents;
+        if (events == null) return; // normal compiler path has no trace allocation
+        if (events.size() >= MAX_BORROW_SHADOW_EVENTS_V0) {
+            throw new IllegalStateException("borrow shadow event budget exceeded");
+        }
+        VarState root = owner == null ? null : ownershipRoot(owner);
+        events.add(new BorrowShadowEventV0(kind,
+                root == null ? "" : root.debugName,
+                root == null ? 0 : root.immutableBorrows,
+                root != null && root.mutableBorrowed));
+    }
+
+    /**
+     * Records accepted operations in the existing compiler pass, but
+     * publishes them only after validation of the entire program succeeds.
+     * These are partial diagnostic observations, never proof of typed-MIR parity.
+     * Sink failures stop before Task capability admissions are published.
+     */
+    public static Ast.Program checkWithBorrowShadowV0(
+            Ast.Program program, BorrowShadowSinkV0 sink) {
+        java.util.Objects.requireNonNull(sink, "borrow shadow sink");
+        OwnershipChecker checker = new OwnershipChecker(program);
+        checker.stagedBorrowShadowEvents = new ArrayList<>();
+        checker.validate(program);
+        for (BorrowShadowEventV0 event : checker.stagedBorrowShadowEvents) {
+            sink.record(event);
+        }
+        checker.publishTaskAdmissions();
+        return program;
+    }
     private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
@@ -981,6 +1025,7 @@ public final class OwnershipChecker {
                     || state.immutableBorrows > 0 || state.mutableBorrowed))) {
             throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
         }
+        shadowEvent("SUSPEND_SAFE", null);
     }
 
     private void checkBinding(Ast.BindingStmt binding, Scope scope) {
@@ -3643,6 +3688,7 @@ public final class OwnershipChecker {
         VarState root = ownershipRoot(owner);
         if (mutable) root.mutableBorrowed = true;
         else root.immutableBorrows++;
+        shadowEvent(mutable ? "BORROW_MUT" : "BORROW_SHARED", root);
     }
 
     private boolean isBorrowValue(ValueInfo value) {
@@ -4920,6 +4966,7 @@ public final class OwnershipChecker {
 
         for (Set<VarState> observer : tryMoveObservers) observer.add(root);
         root.moved = true;
+        shadowEvent("MOVE", root);
     }
 
     private VarState requireState(Scope scope, String name) {
