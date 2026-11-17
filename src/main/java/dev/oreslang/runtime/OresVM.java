@@ -131,7 +131,9 @@ public final class OresVM implements AutoCloseable {
         ThreadFactory factory = runnable -> Thread.ofPlatform()
                 .daemon(true)
                 .name("ores-control-plane-" + carrierId.getAndIncrement())
-                .unstarted(runnable);
+                .stackSize(LogicalStackQuota.CARRIER_STACK_BYTES)
+                .unstarted(LogicalStackQuota.carrierBody(
+                        LogicalStackQuota.CARRIER_STACK_BYTES, runnable));
 
         this.controlExecutor = new ThreadPoolExecutor(
                 controlParallelism,

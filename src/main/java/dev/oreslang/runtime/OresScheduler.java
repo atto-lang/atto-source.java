@@ -313,14 +313,15 @@ public final class OresScheduler implements AutoCloseable {
         ThreadFactory factory = task -> Thread.ofPlatform()
                 .daemon(true)
                 .name(name + "-carrier-" + carrierId.getAndIncrement())
-                .unstarted(() -> {
+                .stackSize(LogicalStackQuota.CARRIER_STACK_BYTES)
+                .unstarted(LogicalStackQuota.carrierBody(LogicalStackQuota.CARRIER_STACK_BYTES, () -> {
                     state().schedulerCarrier = Boolean.TRUE;
                     try {
                         task.run();
                     } finally {
                         state().schedulerCarrier = null;
                     }
-                });
+                }));
         ThreadPoolExecutor pool = new ThreadPoolExecutor(
                 parallelism,
                 parallelism,

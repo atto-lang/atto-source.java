@@ -8841,7 +8841,12 @@ public final class ActorRuntime implements AutoCloseable {
     private static ThreadFactory namedFactory(String prefix) {
         AtomicInteger next = new AtomicInteger();
         return task -> {
-            Thread thread = new Thread(task, prefix + next.incrementAndGet());
+            // Explicit stack size: guest frames are bounded against it (LogicalStackQuota).
+            Thread thread = new Thread(
+                    null,
+                    LogicalStackQuota.carrierBody(LogicalStackQuota.CARRIER_STACK_BYTES, task),
+                    prefix + next.incrementAndGet(),
+                    LogicalStackQuota.CARRIER_STACK_BYTES);
             thread.setDaemon(true);
             return thread;
         };
@@ -10152,6 +10157,10 @@ public final class ActorRuntime implements AutoCloseable {
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
                             activeMail = mail;
+                            // Each admitted receive invocation gets its own logical stack
+                            // (spec ch. 25): its quota does not depend on the carrier, and
+                            // its exhaustion fails this actor, not the carrier or process.
+                            LogicalStackQuota.Segment receiveStack = LogicalStackQuota.enter(ref.id());
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -10175,6 +10184,12 @@ public final class ActorRuntime implements AutoCloseable {
                                 }
                             } finally {
                                 if (!sourceReceiveSuspended) activeMail = null;
+                                receiveStack.close();
+                            }
+                            if (receiveStack.poisoned()) {
+                                // Trusted host code swallowed the overflow; a poisoned
+                                // invocation still fails the incarnation.
+                                throw receiveStack.overflowFailure();
                             }
                         }
                         if (codeExecutor == null

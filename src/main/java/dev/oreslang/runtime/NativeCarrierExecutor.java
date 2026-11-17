@@ -118,7 +118,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     }
 
     private static long configuredCarrierStackBytes() {
-        long configured = Long.getLong("ores.actor.carrier-stack-bytes", 2L * 1024 * 1024);
+        long configured = Long.getLong("ores.actor.carrier-stack-bytes", LogicalStackQuota.CARRIER_STACK_BYTES);
         if (configured < 256L * 1024 || configured > 64L * 1024 * 1024) {
             throw new IllegalArgumentException(
                     "ores.actor.carrier-stack-bytes must be between 262144 and 67108864");
@@ -149,6 +149,11 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
      */
     @SuppressWarnings("unused") // invoked from JNI
     private void nativeCarrierLoop(int slot) {
+        // Guest frames on this pthread are bounded by its real stack size.
+        LogicalStackQuota.carrierBody(nativeStackBytes, () -> nativeCarrierLoopBody(slot)).run();
+    }
+
+    private void nativeCarrierLoopBody(int slot) {
         CURRENT_EXECUTOR.set(this);
         CURRENT_SLOT.set(slot);
         CURRENT_NATIVE_THREAD_ID.set(nativeCurrentThreadId());

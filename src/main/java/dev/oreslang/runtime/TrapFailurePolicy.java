@@ -14,6 +14,9 @@ import java.util.concurrent.TimeoutException;
  *       and timeout remain terminal at that boundary.</li>
  *   <li>Explicit guest {@code catch} may recover denied operations and timeouts,
  *       without consuming panic, scheduler cancellation or host failures.</li>
+ *   <li>Logical stack exhaustion ({@link LogicalStackOverflowException}) is
+ *       panic-class: neither boundary consumes it, defers still run, and the
+ *       owning actor or Task fails under supervision.</li>
  * </ul>
  *
  * <p>Wrapped and suppressed failures are inspected with bounded, identity-based
@@ -49,6 +52,7 @@ public final class TrapFailurePolicy {
             if (visited.put(current, Boolean.TRUE) != null) return false;
             if (panicType.isInstance(current)
                     || current instanceof Error
+                    || current instanceof LogicalStackOverflowException
                     || current instanceof CancellationException
                     || current instanceof InterruptedException
                     || current instanceof RejectedExecutionException) {

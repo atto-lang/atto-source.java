@@ -930,16 +930,24 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
-            Invocation current = initial;
-            int tailHops = 0;
-            while (true) {
-                Object result = current.owner().executeRaw(current);
-                if (!(result instanceof TailCall tail)) return result;
-                current = tail.invocation();
-                tailHops++;
-                if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
-                    current.owner().context.schedulerSafepoint();
+            // One guest frame per nested call, charged to the current logical
+            // stack (receive invocation or Task). Tail hops stay inside this
+            // frame, so proper tail calls never grow the logical stack.
+            dev.oreslang.runtime.LogicalStackQuota.pushFrame();
+            try {
+                Invocation current = initial;
+                int tailHops = 0;
+                while (true) {
+                    Object result = current.owner().executeRaw(current);
+                    if (!(result instanceof TailCall tail)) return result;
+                    current = tail.invocation();
+                    tailHops++;
+                    if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
+                        current.owner().context.schedulerSafepoint();
+                    }
                 }
+            } finally {
+                dev.oreslang.runtime.LogicalStackQuota.popFrame();
             }
         }
 
