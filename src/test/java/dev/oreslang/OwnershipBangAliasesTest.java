@@ -33,14 +33,10 @@ final class OwnershipBangAliasesTest {
         sameAst("rt borrow mutfoo", "borrow! mutfoo", "borrow!mutfoo");
         sameAst("rt share foo", "share! foo", "share!foo");
         sameAst("rt mut borrow foo", "mut borrow! foo", "mut borrow!foo");
-        sameAst("rt mut borrow foo", "borrow! mut foo", "borrow!mut foo");
-        sameAst("rt mut borrow(foo)", "borrow! mut (foo)", "borrow!mut(foo)");
-        sameAst("rt borrow mut foo", "borrow! mut foo", "borrow!mut foo");
-        sameAst("rt mut borrow foo.bar", "borrow! mut foo.bar", "borrow!mut foo.bar");
+        sameAst("rt mut borrow(foo)", "mut borrow! (foo)", "mut borrow!(foo)");
+        sameAst("rt mut borrow foo.bar", "mut borrow! foo.bar", "mut borrow!foo.bar");
         assertThrows(RuntimeException.class, () -> source("mut borrow! mut foo"),
                 "two mutable borrow qualifiers must not be admitted");
-        assertEquals(source("rt mut borrow foo"), source("rt borrow mut foo"),
-                "both historic mutable-borrow word orders must agree");
         sameAst("rt copy(foo + 1)", "copy! (foo + 1)", "copy!(foo + 1)");
         sameAst("rt borrow foo.bar", "borrow! foo.bar", "borrow!foo.bar");
     }
@@ -72,15 +68,25 @@ final class OwnershipBangAliasesTest {
     @Test
     void doubleMutableQualifiersReceiveTargetedDiagnostic() {
         for (String malformed : new String[]{
-                "borrow! mut mut foo",
-                "borrow!mut mut foo",
                 "mut borrow! mut foo",
-                "rt borrow mut mut foo",
-                "rt mut borrow mut foo"}) {
+                "mut borrow!mut foo"}) {
             RuntimeException error = assertThrows(RuntimeException.class,
                     () -> source(malformed), malformed);
             assertTrue(error.getMessage().contains("duplicate mutable borrow qualifier"),
                     malformed + ": " + error.getMessage());
+        }
+    }
+
+    @Test
+    void trailingMutWordOrderIsRejectedLikeMainsLegacyRtBorrowMut() {
+        // main rejects 'rt borrow mut value'; the bang alias follows the same
+        // canonical mutable-borrow word order ('mut borrow! value').
+        for (String legacy : new String[]{"borrow! mut foo", "borrow!mut foo",
+                "borrow! mut (foo)", "borrow! mut foo.bar", "borrow! mut mut foo"}) {
+            RuntimeException error = assertThrows(RuntimeException.class,
+                    () -> source(legacy), legacy);
+            assertTrue(error.getMessage().contains("use 'mut borrow! value'"),
+                    legacy + ": " + error.getMessage());
         }
     }
 
@@ -101,7 +107,7 @@ final class OwnershipBangAliasesTest {
     @Test
     void deepPrefixChainsFailDeterministicallyInsteadOfOverflowingTheJvmStack() {
         for (String prefix : new String[]{"copy!", "borrow!", "take!",
-                "share!", "mut borrow!", "!"}) {
+                "share!", "mut borrow! copy!", "!"}) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> source(prefix.repeat(200) + "foo"), prefix);
             assertTrue(error.getMessage().contains("unary expression nesting exceeds 128"),
@@ -118,7 +124,7 @@ final class OwnershipBangAliasesTest {
     void nestedCommentsCannotLeakOwnershipAliasesOrExceedLexerBudget() {
         assertDoesNotThrow(() -> Parser.parse(
                 "fnc main(): int { val int foo = 7; return " +
-                "/* outer /* borrow! mut foo */ tail /* take!foo */ */ copy!foo; }"));
+                "/* outer /* mut borrow! foo */ tail /* take!foo */ */ copy!foo; }"));
         RuntimeException unclosed = assertThrows(RuntimeException.class,
                 () -> Parser.parse(
                         "fnc main(): int { return /* outer /* copy!7 */ 7; }"));
@@ -231,7 +237,7 @@ final class OwnershipBangAliasesTest {
                 end
                 fnc read_it(): void {
                   let Item item = new Item();
-                  val borrow mut Item first = borrow! mut item;
+                  val borrow mut Item first = mut borrow! item;
                   val borrow mut Item second = mut borrow! item;
                   stdio.println(first.value);
                   stdio.println(second.value);
