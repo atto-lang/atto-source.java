@@ -3038,6 +3038,10 @@ public final class TypeChecker {
                 }
                 return trapFunctionType(fn, Set.of(), null);
             }
+            if (name.name().equals("to_string")) {
+                throw new IllegalArgumentException(
+                        "to_string is a direct-call-only primitive conversion: use to_string(value)");
+            }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
@@ -3586,6 +3590,24 @@ public final class TypeChecker {
                     }
                     return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
+            }
+            // Primitive display is explicit, deterministic, and not a host
+            // Object.toString() escape hatch. Declared user functions win at
+            // their exact arity; custom classes must call their own method.
+            if (call.callee() instanceof Ast.NameExpr converter
+                    && converter.name().equals("to_string")
+                    && env.lookup("to_string") == null) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException(
+                            "to_string expects exactly one primitive value with no type arguments");
+                }
+                Type argument = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                if (argument != Primitive.INT && argument != Primitive.BOOL && !isStringLike(argument)) {
+                    throw new IllegalArgumentException(
+                            "to_string requires int, bool or String; call a declared class to_string() method explicitly");
+                }
+                return Primitive.STRING;
             }
             String integerIntrinsic = integerIntrinsicName(call, env);
             if (integerIntrinsic != null) {
@@ -4815,6 +4837,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("unknown function member '" + member.member()
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
             }
+            if (member.member().equals("to_string")
+                    && (sumReceiver == Primitive.INT || sumReceiver == Primitive.BOOL)) {
+                return new Function(List.of(), Primitive.STRING);
+            }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (collectionMember != null
                     && sumReceiver instanceof Named map && map.name().equals("Map")
@@ -4826,6 +4852,7 @@ public final class TypeChecker {
             }
             if (isStringLike(sumReceiver)) {
                 return switch (member.member()) {
+                    case "to_string" -> new Function(List.of(), Primitive.STRING);
                     case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
                     case "split_literal" -> new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
                     case "trim" -> new Function(List.of(), Primitive.STRING);
