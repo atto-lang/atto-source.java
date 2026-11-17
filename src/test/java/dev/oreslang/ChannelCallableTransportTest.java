@@ -99,18 +99,41 @@ final class ChannelCallableTransportTest {
                 """)));
     }
 
+    /**
+     * Decision on #2440 (2026-11-17): channels are not Send-only. A channel of
+     * non-Send data is allowed, because the Channel handle is itself Send only
+     * when its payload is: such a channel is confined to one execution domain
+     * and can never reach another task or actor, so it cannot race. A blanket
+     * Send-only rule would reject safe local uses.
+     */
     @Test
-    @org.junit.jupiter.api.Disabled("Send-only channel payloads (#2440) not adopted: main's channel tests"
-            + " accept non-Send payloads in local channels; needs an owner decision")
-    void nonSendableRuntimeCapabilitiesCannotBeChannelPayloads() {
+    void nonSendPayloadChannelsAreConfinedToTheirExecutionDomain() {
         for (String type : new String[] {"Future<int>", "Rc<int>"}) {
-            IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(
-                            "fnc bad(Channel<" + type + "> value): void { return; }")));
-            assertTrue(error.getMessage().contains("requires concrete Sendable data"),
-                    () -> "expected Sendable diagnostic for " + type + ", got: " + error.getMessage());
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                    "fnc local(Channel<" + type + "> value): void { return; }")),
+                    "a local channel may carry " + type);
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                    "async fnc leak(Channel<" + type + "> value): int { return 0; }")),
+                    "a Channel<" + type + "> cannot cross an async boundary");
         }
+        // Another task cannot capture a channel of genuinely non-Send data.
+        // (Future is a thread-safe runtime handle that another task may await,
+        // so a channel of Futures may be captured.)
+        for (String type : new String[] {"Rc<int>", "Mutex<int>"}) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                    fnc leak(Channel<%s> value): void {
+                      let Future<int> other = task {
+                        val Channel<%s> captured = value;
+                        return 0;
+                      };
+                      return;
+                    }
+                    """.formatted(type, type))),
+                    "a Channel<" + type + "> cannot be captured by another task");
+        }
+        // A Send payload makes the channel itself Send: it may cross both.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "async fnc share(Channel<int> value): int { return 0; }")));
     }
 
     @Test
