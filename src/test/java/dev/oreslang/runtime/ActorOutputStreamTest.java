@@ -159,10 +159,11 @@ final class ActorOutputStreamTest {
 
             CompletionException failed =
                     assertThrows(CompletionException.class, () -> ref.done().join());
-            assertInstanceOf(IllegalArgumentException.class, failed.getCause());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failed.getCause());
+            assertInstanceOf(IllegalArgumentException.class, ref.failure().orElseThrow());
             assertTrue(
-                    failed.getCause().getMessage().contains("data values only"),
-                    failed.getCause().getMessage());
+                    ref.failure().orElseThrow().getMessage().contains("data values only"),
+                    ref.failure().orElseThrow().getMessage());
 
             CompletionException outputFailure =
                     assertThrows(
@@ -199,10 +200,11 @@ final class ActorOutputStreamTest {
 
             CompletionException failed =
                     assertThrows(CompletionException.class, () -> ref.done().join());
-            assertInstanceOf(IllegalArgumentException.class, failed.getCause());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failed.getCause());
+            assertInstanceOf(IllegalArgumentException.class, ref.failure().orElseThrow());
             assertTrue(
-                    failed.getCause().getMessage().contains("not Sendable"),
-                    failed.getCause().getMessage());
+                    ref.failure().orElseThrow().getMessage().contains("not Sendable"),
+                    ref.failure().orElseThrow().getMessage());
 
             CompletionException outputFailure =
                     assertThrows(

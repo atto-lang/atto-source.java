@@ -295,8 +295,6 @@ final class ActorSupervisorControlV2Test {
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("Deferred: main (#2033 and later) keeps the raw terminal cause on host"
-            + " ready/done observers; cause-free observers need an owner decision (see #1223 port notes)")
     void lifecycleObserversNeverExportRawTerminalThrowableGraphs() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicReference<Throwable> thrown = new AtomicReference<>();
@@ -354,8 +352,6 @@ final class ActorSupervisorControlV2Test {
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("Deferred: main (#2033 and later) keeps the raw terminal cause on host"
-            + " ready/done observers; cause-free observers need an owner decision (see #1223 port notes)")
     void startupFailureReadyFutureIsCauseFreeButHostDiagnosticRemainsRaw() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicReference<Throwable> thrown = new AtomicReference<>();
