@@ -98,6 +98,8 @@ public final class OresMain {
         String coreLogLevel = System.getenv().getOrDefault("ORES_CORE_LOG_LEVEL", "off");
         String debugEnv = System.getenv("ORES_CORE_DEBUG");
         boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
+        String controlWorkers = System.getenv("ORES_CONTROL_WORKERS");
+        String actorCarriersMax = System.getenv("ORES_ACTOR_CARRIERS_MAX");
         boolean strict = false;
         boolean checkOnly = false;
         boolean analyzeOnly = false;
@@ -129,6 +131,10 @@ public final class OresMain {
                 else if (arg.equals("--no-core-log")) coreLogLevel = "off";
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
+                else if (arg.startsWith("--control-workers="))
+                    controlWorkers = arg.substring("--control-workers=".length());
+                else if (arg.startsWith("--actor-carriers-max="))
+                    actorCarriersMax = arg.substring("--actor-carriers-max=".length());
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
                 else if (arg.equals("--require-full-guest-aot")) requireFullGuestAot = true;
                 else if (arg.equals("--require-zero-guest-tracing-gc")) requireZeroGuestTracingGc = true;
@@ -217,6 +223,7 @@ public final class OresMain {
         CoreLog.configure(admittedLogLevel);
         CorePerf.configure(corePerf);
         CoreDebug.configure(coreDebug);
+        applyThreadBudget(controlWorkers, actorCarriersMax);
         try {
             NativeBuildMode.requireCompatible(ExecutionProfile.parse(mode, platform));
         } catch (IllegalArgumentException invalidOption) {
@@ -444,9 +451,41 @@ public final class OresMain {
         }
     }
 
+    /**
+     * Thread budget flags (flags-2-env: .cli-flags.toml). A flag overrides its
+     * ORES_* variable; either one overrides the matching -D property. Applied
+     * before the context exists, since the VM reads them at construction.
+     */
+    static void applyThreadBudget(String controlWorkers, String actorCarriersMax) {
+        if (controlWorkers != null) {
+            System.setProperty("ores.runtime.control.parallelism",
+                    Integer.toString(boundedCount("--control-workers", controlWorkers, 64)));
+        }
+        if (actorCarriersMax != null) {
+            String value = actorCarriersMax.trim();
+            if (value.equalsIgnoreCase("auto")) {
+                System.clearProperty("ores.runtime.actor.max-carriers");
+            } else {
+                System.setProperty("ores.runtime.actor.max-carriers",
+                        Integer.toString(boundedCount("--actor-carriers-max", value, 1024)));
+            }
+        }
+    }
+
+    private static int boundedCount(String flag, String raw, int max) {
+        try {
+            int value = Integer.parseInt(raw.trim());
+            if (value >= 1 && value <= max) return value;
+        } catch (NumberFormatException ignored) {
+            // reported below
+        }
+        throw new UsageException(flag + " must be an integer in [1," + max + "]: " + raw);
+    }
+
     private static void printUsage() {
         System.err.println(
                 "usage: oreslang-compiler [--check|--analyze|--build-analysis] "
+                        + "[--control-workers=N] [--actor-carriers-max=N|auto] "
                         + "[--permission-check=runtime|compile] [--allow-all] "
                         + "[--allow-read[=PATH,...]] [--deny-read[=PATH,...]] "
                         + "[--allow-write[=PATH,...]] [--deny-write[=PATH,...]] "

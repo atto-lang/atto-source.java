@@ -512,7 +512,7 @@ public final class TypeChecker {
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "HttpClientResponse", "HttpClientBody",
-                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorStream", "StreamOperator",
+                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorGroup", "Topic", "Subscription", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
@@ -1200,7 +1200,12 @@ public final class TypeChecker {
                         false,
                         "parameter '" + param.name() + "' of actor callable '" + module + "." + fn.name() + "'");
             }
-            if (fn.async() || asyncGeneratorProtocol) {
+            // A suspends frame is not a Task (SUSPENDS_AWAIT_EXECUTION_CONTEXT_V1):
+            // it may take a Future it will await. Other non-Send capabilities,
+            // such as #2440's ActorGroup/Topic/Subscription handles, still may
+            // not cross into a suspendable frame.
+            if (fn.async() || asyncGeneratorProtocol
+                    || (fn.suspends() && !containsFutureType(parameterType))) {
                 validateAsyncBoundaryType(
                         parameterType,
                         false,
@@ -1233,7 +1238,8 @@ public final class TypeChecker {
                     true,
                     "return type of actor callable '" + module + "." + fn.name() + "'");
         }
-        if (fn.async() || asyncGeneratorProtocol) {
+        if (fn.async() || asyncGeneratorProtocol
+                || (fn.suspends() && !containsFutureType(returns))) {
             validateAsyncBoundaryType(
                     returns,
                     true,
@@ -4345,6 +4351,215 @@ public final class TypeChecker {
                     return Primitive.VOID;
                 }
 
+                if (receiver instanceof Named actorNamespace
+                        && actorNamespace.name().equals("actor")
+                        && member.member().equals("group")) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "actor.group does not accept type arguments");
+                    }
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "actor.group expects exactly one group name");
+                    }
+                    requireAssignable(
+                            typeOf(call.arguments().getFirst(), env, generics, self),
+                            Primitive.STRING,
+                            "actor.group name");
+                    return new Named("ActorGroup", List.of());
+                }
+
+                if (receiver instanceof Named actorGroup
+                        && actorGroup.name().equals("ActorGroup")) {
+                    return switch (member.member()) {
+                        case "join", "leave", "contains" -> {
+                            if (call.typeArgumentsPresent()) {
+                                throw new IllegalArgumentException(
+                                        "ActorGroup." + member.member()
+                                                + " does not accept type arguments");
+                            }
+                            if (call.arguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "ActorGroup." + member.member()
+                                                + " expects exactly one ActorRef");
+                            }
+                            Type target = deref(typeOf(
+                                    call.arguments().getFirst(), env, generics, self));
+                            if (!(target instanceof Named ref)
+                                    || !ref.name().equals("ActorRef")) {
+                                throw new IllegalArgumentException(
+                                        "ActorGroup." + member.member()
+                                                + " expects ActorRef<T>");
+                            }
+                            actorClassForRef(ref);
+                            if ((member.member().equals("join")
+                                    || member.member().equals("leave"))
+                                    && currentActorKind != Ast.ActorKind.NONE) {
+                                throw new IllegalArgumentException(
+                                        "ActorGroup." + member.member()
+                                                + " is a root/supervisor authority operation; "
+                                                + "actor code cannot grant or revoke membership");
+                            }
+                            yield member.member().equals("contains")
+                                    ? Primitive.BOOL : Primitive.VOID;
+                        }
+                        case "member_count" -> {
+                            if (call.typeArgumentsPresent()
+                                    || !call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorGroup.member_count expects no arguments or type arguments");
+                            }
+                            yield Primitive.INT;
+                        }
+                        case "close" -> {
+                            if (call.typeArgumentsPresent()
+                                    || !call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorGroup.close expects no arguments or type arguments");
+                            }
+                            if (currentActorKind != Ast.ActorKind.NONE) {
+                                throw new IllegalArgumentException(
+                                        "ActorGroup.close is a root/supervisor authority operation");
+                            }
+                            yield Primitive.VOID;
+                        }
+                        case "topic" -> {
+                            if (!call.typeArgumentsPresent()
+                                    || call.typeArguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "ActorGroup.topic<T> requires exactly one explicit payload type");
+                            }
+                            if (call.arguments().size() != 1
+                                    && call.arguments().size() != 3) {
+                                throw new IllegalArgumentException(
+                                        "ActorGroup.topic<T> expects name or name, policy, capacity");
+                            }
+                            Ast.TypeRef topicArgument = call.typeArguments().getFirst();
+                            if (topicArgument.isNamedParameter()
+                                    || (topicArgument.name().equals("_")
+                                            && topicArgument.arguments().isEmpty()
+                                            && !topicArgument.inferArguments())) {
+                                throw new IllegalArgumentException(
+                                        "ActorGroup.topic<T> requires one positional concrete payload type");
+                            }
+                            Type payload = resolve(topicArgument, generics, self);
+                            if (payload == Primitive.VOID) {
+                                throw new IllegalArgumentException(
+                                        "Topic<void> is invalid");
+                            }
+                            validateActorCallableBoundaryType(
+                                    payload,
+                                    Ast.ActorKind.SHARED,
+                                    false,
+                                    "Topic payload");
+                            requireAssignable(
+                                    typeOf(call.arguments().getFirst(), env, generics, self),
+                                    Primitive.STRING,
+                                    "ActorGroup.topic name");
+                            if (call.arguments().size() == 3) {
+                                if (currentActorKind != Ast.ActorKind.NONE) {
+                                    throw new IllegalArgumentException(
+                                            "actor code may resolve an existing Topic<T> but cannot define one");
+                                }
+                                requireAssignable(
+                                        typeOf(call.arguments().get(1), env, generics, self),
+                                        Primitive.STRING,
+                                        "ActorGroup.topic policy");
+                                requireAssignable(
+                                        typeOf(call.arguments().get(2), env, generics, self),
+                                        Primitive.INT,
+                                        "ActorGroup.topic capacity");
+                            }
+                            yield new Named("Topic", List.of(payload));
+                        }
+                        default -> throw new IllegalArgumentException(
+                                "unknown ActorGroup callable member '"
+                                        + member.member() + "'");
+                    };
+                }
+
+                if (receiver instanceof Named topic
+                        && topic.name().equals("Topic")
+                        && topic.arguments().size() == 1) {
+                    Type payload = topic.arguments().getFirst();
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "Topic." + member.member()
+                                        + " does not accept call-site type arguments");
+                    }
+                    return switch (member.member()) {
+                        case "publish" -> {
+                            if (call.arguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "Topic.publish expects exactly one value");
+                            }
+                            Type actual = typeOf(
+                                    call.arguments().getFirst(), env, generics, self);
+                            requireAssignable(actual, payload, "Topic.publish value");
+                            yield new Named("Future", List.of(Primitive.VOID));
+                        }
+                        case "subscribe" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "Topic.subscribe expects no arguments");
+                            }
+                            if (currentActorKind != Ast.ActorKind.SHARED) {
+                                throw new IllegalArgumentException(
+                                        "Topic.subscribe currently requires a shared actor; "
+                                                + "private/untrusted actors must use mailbox delivery");
+                            }
+                            yield new Named("Subscription", List.of(payload));
+                        }
+                        default -> throw new IllegalArgumentException(
+                                "unknown Topic callable member '"
+                                        + member.member() + "'");
+                    };
+                }
+
+                if (receiver instanceof Named subscription
+                        && subscription.name().equals("Subscription")
+                        && subscription.arguments().size() == 1) {
+                    Type payload = subscription.arguments().getFirst();
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "Subscription." + member.member()
+                                        + " does not accept call-site type arguments");
+                    }
+                    return switch (member.member()) {
+                        case "next" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "Subscription.next expects no arguments");
+                            }
+                            yield new Named("Future", List.of(payload));
+                        }
+                        case "try_read" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "Subscription.try_read expects no arguments");
+                            }
+                            yield new Named("Option", List.of(payload));
+                        }
+                        case "close" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "Subscription.close expects no arguments");
+                            }
+                            yield Primitive.VOID;
+                        }
+                        case "closed" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "Subscription.closed expects no arguments");
+                            }
+                            yield Primitive.BOOL;
+                        }
+                        default -> throw new IllegalArgumentException(
+                                "unknown Subscription callable member '"
+                                        + member.member() + "'");
+                    };
+                }
+
                 if (receiver instanceof Named actorRef
                         && actorRef.name().equals("ActorRef")) {
                     Ast.ClassDecl actorClass = actorClassForRef(actorRef);
@@ -5468,7 +5683,20 @@ public final class TypeChecker {
             return new Named("Future", List.of(Primitive.VOID));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (awaited.coreAdapter() && env.lookup("std") != null) {
+                throw new IllegalArgumentException(
+                        "std.await core adapter cannot resolve through a shadowed 'std' binding");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
+            if (awaited.coreAdapter()
+                    && !(awaitedType instanceof Named future
+                        && future.name().equals("Future")
+                        && future.arguments().size() == 1)) {
+                // Ordinary 'await actor_ref' is a readiness operation, but
+                // std.await is intentionally the unary Future<T> adapter.
+                throw new IllegalArgumentException(
+                        "std.await requires exactly one Future<T>; got " + awaitedType);
+            }
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
                     && named.arguments().size() == 1) {
@@ -5873,6 +6101,15 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " cannot transport borrowed payloads, including nested fields: "
                             + "channel storage may outlive their owners");
+        }
+        // #2440: a function, bound method, closure or object holding one must
+        // never carry its lexical environment into channel storage or select
+        // registrations. (#2440's broader Send-only payload rule is not
+        // adopted here: it rejects programs main's channel tests accept.)
+        if (containsChannelCallable(element, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport functions, bound methods, closures, or nested callable fields; "
+                            + "send Sendable data instead");
         }
         if (element == Unknown.INSTANCE) {
             throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
@@ -7411,6 +7648,16 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
+    /** True when the type is or contains a Future (through generic arguments). */
+    private static boolean containsFutureType(Type type) {
+        if (!(type instanceof Named named)) return false;
+        if (named.name().equals("Future")) return true;
+        for (Type argument : named.arguments()) {
+            if (containsFutureType(argument)) return true;
+        }
+        return false;
+    }
+
     private void validateAsyncBoundaryType(
             Type type,
             boolean returnPosition,
@@ -7480,6 +7727,8 @@ public final class TypeChecker {
                 || named.name().equals("RefCell") || named.name().equals("RwLock")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("ActorStream") || named.name().equals("StreamOperator")
+                || named.name().equals("ActorGroup") || named.name().equals("Topic")
+                || named.name().equals("Subscription")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectPlan")
                 || named.name().equals("DynamicSelectPlan")
@@ -11775,6 +12024,30 @@ public final class TypeChecker {
                             ref.name() + " does not accept type arguments");
                 }
                 yield new Named(ref.name(), List.of());
+            }
+            case "ActorGroup" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "ActorGroup does not accept type arguments");
+                }
+                yield new Named("ActorGroup", List.of());
+            }
+            case "Topic", "Subscription" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            ref.name() + "<T> requires exactly one explicit payload type");
+                }
+                Type payload = resolve(ref.arguments().getFirst(), generics, self);
+                if (payload == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            ref.name() + "<void> is invalid");
+                }
+                validateActorCallableBoundaryType(
+                        payload,
+                        Ast.ActorKind.SHARED,
+                        false,
+                        ref.name() + " payload");
+                yield new Named(ref.name(), List.of(payload));
             }
             case "ActorStream" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 2)
