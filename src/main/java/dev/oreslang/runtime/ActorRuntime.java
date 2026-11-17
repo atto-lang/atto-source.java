@@ -2776,6 +2776,14 @@ public final class ActorRuntime implements AutoCloseable {
         Optional<ActorMemorySlice> privateMemory();
 
         /**
+         * This actor incarnation's private 32-bit heap (spec chapter 27).
+         * Usable only during this actor's own turn.
+         */
+        default ActorNativeArena heap() {
+            throw new UnsupportedOperationException("this ActorContext has no actor heap");
+        }
+
+        /**
          * Current admitted mailbox envelope, present only while onMessage is
          * executing. Startup/factory code has no current mail.
          */
@@ -9647,6 +9655,16 @@ public final class ActorRuntime implements AutoCloseable {
         private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
+        /**
+         * This incarnation's private 32-bit heap: actor-relative unsigned
+         * 32-bit offsets over explicitly freed native slabs, never Java
+         * references or host addresses. Every actor kind has one, SHARED
+         * included (SHARED changes dispatch eligibility, never heap aliasing).
+         * Accessible only during this actor's own turn; closed only after
+         * physical quiescence. A restart creates a new incarnation and a new
+         * heap; code upgrade keeps it (spec chapter 27).
+         */
+        private final ActorNativeArena heap;
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
         private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
         /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
@@ -9792,6 +9810,13 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+            this.heap = new ActorNativeArena(
+                    policy.maxHeapBytes(),
+                    this::requireHeapOwner,
+                    bytes -> {
+                        reserveSharedRuntimeBytes(bytes, "actor heap");
+                        return () -> releaseSharedRuntimeBytes(bytes);
+                    });
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
@@ -10105,6 +10130,17 @@ public final class ActorRuntime implements AutoCloseable {
                                 && (childControl.hasPending() || !mailbox.isEmpty()))));
         }
 
+        /** The heap is reachable only from this incarnation's own live turn. */
+        private void requireHeapOwner() {
+            if (currentActor.get() != this) {
+                throw new SecurityException(
+                        "actor heap accessible only during its owning actor turn: " + ref.id());
+            }
+            if (finalized) {
+                throw new IllegalStateException("actor heap retired with its incarnation: " + ref.id());
+            }
+        }
+
         private OresScheduler sourceScheduler() {
             synchronized (lifecycleLock) {
                 if (sourceScheduler != null) return sourceScheduler;
@@ -10374,6 +10410,15 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             shardSnapshotLeases.clear();
+            // The heap closes only here, after turns, tasks, loans and leases
+            // have quiesced; outstanding read leases make close fail, which
+            // quarantines the identity instead of freeing pinned memory.
+            try { heap.close(); }
+            catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
+            catch (Throwable failure) {
+                virtualPhysicalCleanupComplete = false;
+                recordFinalizationFailure(failure);
+            }
             if (memorySlice != null) {
                 try { memorySlice.close(); }
                 catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
@@ -10865,6 +10910,7 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
                     }
+                    @Override public ActorNativeArena heap() { return heap; }
                     @Override public Optional<ActorInboxMail<M>> currentMail() {
                         return Optional.ofNullable(activeMail);
                     }
