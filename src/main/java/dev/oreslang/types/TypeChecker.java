@@ -1015,6 +1015,9 @@ public final class TypeChecker {
                 for (String generic : fn.genericParameters()) {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
+                validateFormalParameterMetadata(
+                        fn.parameters(), all, interfaceSelf,
+                        "interface method '" + iface.name() + "." + fn.name() + "'");
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
             } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
                 if (!iface.moduleContract()) {
@@ -1078,6 +1081,9 @@ public final class TypeChecker {
                             "duplicate contract receiver method slot '" + method.actorName()
                                     + "." + method.name() + "' with arity " + method.parameters().size());
                 }
+                validateFormalParameterMetadata(
+                        method.parameters(), generics, null,
+                        "interface actor receiver method '" + iface.name() + "." + method.name() + "'");
                 for (Ast.Param param : method.parameters()) {
                     if (param.structural()) {
                         throw new IllegalArgumentException(
@@ -1178,6 +1184,8 @@ public final class TypeChecker {
                 fn.genericParameters(),
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         validateFunctionGenericDefaults(fn);
+        validateFormalParameterMetadata(
+                fn.parameters(), generics, null, "callable '" + module + "." + fn.name() + "'");
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
@@ -1312,6 +1320,25 @@ public final class TypeChecker {
                         if (parentMethod.genericParameters().size() != local.genericParameters().size()) {
                             throw new IllegalArgumentException("incompatible generic arity for method slot '"
                                     + klass.name() + "." + local.name() + "' with arity " + local.arity());
+                        }
+                        for (int i = 0; i < parentMethod.parameters().size(); i++) {
+                            Ast.Param parentParam = parentMethod.parameters().get(i);
+                            Ast.Param localParam = local.parameters().get(i);
+                            if (!parentParam.name().equals(localParam.name())) {
+                                throw new IllegalArgumentException(
+                                        "override parameter label drift for '" + klass.name() + "."
+                                                + local.name() + "' at position " + (i + 1)
+                                                + ": inherited label is '" + parentParam.name()
+                                                + "', overriding label is '" + localParam.name() + "'");
+                            }
+                            if (parentParam.omittable() != localParam.omittable()
+                                    || !java.util.Objects.equals(
+                                            parentParam.defaultValue(), localParam.defaultValue())) {
+                                throw new IllegalArgumentException(
+                                        "override omission/default contract drift for '" + klass.name()
+                                                + "." + local.name() + "' parameter '" + parentParam.name()
+                                                + "'; retain the inherited omittable marker and default");
+                            }
                         }
                         // Dispatch selects the child's declaration, but inherited public
                         // contracts still advertise this slot to callers (including through
@@ -1776,6 +1803,11 @@ public final class TypeChecker {
         // This scope is local to klass; inherited initializers are validated
         // against their own declaring class and cannot capture child params.
         Ast.ConstructorDecl constructor = klass.constructor();
+        if (constructor != null) {
+            validateFormalParameterMetadata(
+                    constructor.parameters(), classGenerics, self,
+                    "constructor '" + klass.name() + "'");
+        }
         Env fieldInitializerEnv = new Env(null);
         if (constructor != null) {
             // The field-initializer ownership checker does not yet prove
@@ -2030,6 +2062,9 @@ public final class TypeChecker {
             // This rejects `return new Foo()` because the runtime receiver may
             // be a subtype, while allowing values already typed as `self`.
             Type callableSelf = method.isStatic() ? null : new SelfType(self);
+            validateFormalParameterMetadata(
+                    method.parameters(), generics, callableSelf,
+                    "method '" + klass.name() + "." + method.name() + "'");
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", callableSelf, Ast.BindingKind.VAL);
             List<Type> methodArgumentTypes = new ArrayList<>(method.parameters().size());
@@ -3630,11 +3665,13 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (call.arguments().stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
+            if (call.arguments().stream().anyMatch(argument ->
+                    argument instanceof Ast.NamedArgExpr || Ast.isExplicitOmissionMarker(argument))) {
                 throw new IllegalArgumentException(
-                        "NAMED_CALL_BINDING_UNSUPPORTED: named arguments are parsed and preserved, "
-                                + "but cannot execute until checked call plans are consumed by type, "
-                                + "ownership, synchronous and suspendable runtime lowering");
+                        "NAMED_OR_OMITTED_CALL_BINDING_UNSUPPORTED: named arguments and explicit "
+                                + "omission markers are parsed and preserved, but cannot execute until "
+                                + "checked call plans are consumed by type, ownership, synchronous and "
+                                + "suspendable runtime lowering");
             }
             // A host/compiler-side type_of query table exists, but the guest
             // intrinsic has no typed HIR or AOT machine-code lowering yet.
@@ -5349,10 +5386,11 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
-            if (created.arguments().stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
+            if (created.arguments().stream().anyMatch(argument ->
+                    argument instanceof Ast.NamedArgExpr || Ast.isExplicitOmissionMarker(argument))) {
                 throw new IllegalArgumentException(
-                        "NAMED_CONSTRUCTOR_BINDING_UNSUPPORTED: named constructor arguments require "
-                                + "the checked call-plan ABI and constructor runtime lowering");
+                        "NAMED_OR_OMITTED_CONSTRUCTOR_BINDING_UNSUPPORTED: named and omitted constructor "
+                                + "arguments require the checked call-plan ABI and constructor runtime lowering");
             }
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                 if (created.type().inferArguments() || !created.type().arguments().isEmpty()
@@ -6694,6 +6732,12 @@ public final class TypeChecker {
     private Type inferValuePipelineLambda(
             Ast.LambdaExpr lambda, Type upstream,
             Env parent, Set<String> generics, Type self) {
+        if (lambda.parameters().stream().anyMatch(param ->
+                param.omittable() || param.defaultValue() != null)) {
+            throw new IllegalArgumentException(
+                    "pipeline lambda parameters cannot be omittable or defaulted; "
+                            + "the pipeline supplies every input positionally");
+        }
         final int arity = lambda.parameters().size();
         if (arity < 1) {
             throw new IllegalArgumentException(
@@ -6793,6 +6837,12 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+        if (lambda.parameters().stream().anyMatch(param ->
+                param.omittable() || param.defaultValue() != null)) {
+            throw new IllegalArgumentException(
+                    "lambda parameter defaults/omission are unsupported because function-value "
+                            + "contracts do not carry a checked named-call ABI");
+        }
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
@@ -10607,6 +10657,110 @@ public final class TypeChecker {
             Type self) {
         return callableContractType(
                 callableGenerics, params, returns, async, false, generator, ownerGenerics, self);
+    }
+
+    private boolean isResolvedOptionType(Type type) {
+        Type concrete = deref(type);
+        return concrete instanceof Named named
+                && named.name().equals("Option")
+                && named.arguments().size() == 1;
+    }
+
+    private static boolean containsBorrowOrMutexGuard(Ast.TypeRef type) {
+        if (type.isBorrow() || type.name().equals("MutexGuard")) return true;
+        return type.arguments().stream().anyMatch(TypeChecker::containsBorrowOrMutexGuard);
+    }
+
+    private static boolean isAdmittedConstantDefaultShape(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            return value instanceof Long || value instanceof Double
+                    || value instanceof Boolean || value instanceof String
+                    || value instanceof Character;
+        }
+        if (expression instanceof Ast.NameExpr name) return name.name().equals("None");
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return (unary.operator().equals("+") || unary.operator().equals("-"))
+                    && isAdmittedConstantDefaultShape(unary.operand());
+        }
+        if (expression instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.NameExpr name
+                && name.name().equals("Some")
+                && !call.typeArgumentsPresent()
+                && call.arguments().size() == 1
+                && !(call.arguments().getFirst() instanceof Ast.NamedArgExpr)
+                && !(call.arguments().getFirst() instanceof Ast.SpreadExpr)) {
+            return isAdmittedConstantDefaultShape(call.arguments().getFirst());
+        }
+        return false;
+    }
+
+    private void validateFormalParameterMetadata(
+            List<Ast.Param> parameters,
+            Set<String> generics,
+            Type self,
+            String callable) {
+        Set<String> names = new HashSet<>();
+        for (Ast.Param parameter : parameters) {
+            if (!names.add(parameter.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate formal parameter '" + parameter.name() + "' in " + callable);
+            }
+            if (parameter.optionTypeSugar()
+                    && (!parameter.type().name().equals("Option")
+                            || parameter.type().arguments().size() != 1
+                            || parameter.type().inferArguments())) {
+                throw new IllegalArgumentException(
+                        "OPTION_TYPE_SUGAR_METADATA_INVALID: formal '" + parameter.name()
+                                + "' must retain its exact Option<T> type node");
+            }
+            if (parameter.defaultValue() != null && !parameter.omittable()) {
+                throw new IllegalArgumentException(
+                        "PARAMETER_DEFAULT_REQUIRES_OMITTABLE: formal '" + parameter.name()
+                                + "' has a default but no name-level '?' marker");
+            }
+            if (!parameter.omittable()) continue;
+            if (parameter.structural() || parameter.mutable()
+                    || containsBorrowOrMutexGuard(parameter.type())) {
+                throw new IllegalArgumentException(
+                        "OMITTABLE_PARAMETER_MODE_UNSUPPORTED: formal '" + parameter.name()
+                                + "' in " + callable
+                                + " cannot be structural, mutable or borrow/MutexGuard-bearing");
+            }
+
+            Type expected = resolveParam(parameter, generics, self);
+            if (parameter.defaultValue() == null) {
+                if (!isResolvedOptionType(expected)) {
+                    throw new IllegalArgumentException(
+                            "OMITTABLE_PARAMETER_REQUIRES_DEFAULT: non-Option formal '"
+                                    + parameter.name() + "' in " + callable
+                                    + " needs an explicit checked constant default");
+                }
+                continue;
+            }
+
+            if (!isAdmittedConstantDefaultShape(parameter.defaultValue())) {
+                throw new IllegalArgumentException(
+                        "PARAMETER_DEFAULT_NOT_CONSTANT: default for formal '"
+                                + parameter.name() + "' in " + callable
+                                + " must be a literal, None, unary signed literal or Some(constant)");
+            }
+            Type actual = typeOf(parameter.defaultValue(), new Env(null), generics, self);
+            if (parameter.defaultValue() instanceof Ast.NameExpr none
+                    && none.name().equals("None")) {
+                if (!isResolvedOptionType(expected)) {
+                    throw new IllegalArgumentException(
+                            "PARAMETER_DEFAULT_TYPE_MISMATCH: None default requires Option<T> for formal '"
+                                    + parameter.name() + "'");
+                }
+            } else {
+                requireReadonlyCapabilityPreserved(
+                        actual, expected, "default for formal '" + parameter.name() + "'");
+                requireMutableReferentCompatible(
+                        actual, false, "default for formal '" + parameter.name() + "'");
+                requireAssignable(actual, expected, "default for formal '" + parameter.name() + "'");
+            }
+        }
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {

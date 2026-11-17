@@ -5474,9 +5474,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private static void rejectUnloweredNamedArguments(
                 List<Ast.Expr> arguments, String surface) {
-            if (arguments.stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
+            if (arguments.stream().anyMatch(argument ->
+                    argument instanceof Ast.NamedArgExpr
+                            || Ast.isExplicitOmissionMarker(argument))) {
                 throw new IllegalStateException(
-                        "NAMED_CALL_BINDING_UNSUPPORTED: " + surface
+                        "NAMED_OR_OMITTED_CALL_BINDING_UNSUPPORTED: " + surface
                                 + " reached runtime without a checked source-to-formal binding plan");
             }
         }

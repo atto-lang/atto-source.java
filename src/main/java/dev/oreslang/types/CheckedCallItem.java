@@ -24,7 +24,8 @@ public record CheckedCallItem(
     public enum ProjectionKind {
         DIRECT,
         TUPLE,
-        RECORD
+        RECORD,
+        OMISSION
     }
 
     public CheckedCallItem {
@@ -60,6 +61,13 @@ public record CheckedCallItem(
                 if (label == null || projectionIndex < 0) {
                     throw new IllegalArgumentException(
                             "record projection requires a label and non-negative projection index");
+                }
+            }
+            case OMISSION -> {
+                if (label != null || projectionIndex != -1
+                        || !Ast.isExplicitOmissionMarker(sourceExpression)) {
+                    throw new IllegalArgumentException(
+                            "omission item requires a bare omit or '_' source marker");
                 }
             }
         }
@@ -113,8 +121,24 @@ public record CheckedCallItem(
                 projectionIndex);
     }
 
+    public static CheckedCallItem omittedMarker(
+            Ast.Expr markerExpression,
+            int callItemIndex) {
+        return new CheckedCallItem(
+                markerExpression,
+                ProjectionKind.OMISSION,
+                null,
+                callItemIndex,
+                -1);
+    }
+
     public boolean projected() {
-        return projectionKind != ProjectionKind.DIRECT;
+        return projectionKind == ProjectionKind.TUPLE
+                || projectionKind == ProjectionKind.RECORD;
+    }
+
+    public boolean omissionMarker() {
+        return projectionKind == ProjectionKind.OMISSION;
     }
 
     public CheckedCallPlan.InputSlot inputSlot() {
@@ -128,6 +152,9 @@ public record CheckedCallItem(
                     label,
                     callItemIndex,
                     projectionIndex);
+        }
+        if (projectionKind == ProjectionKind.OMISSION) {
+            return CheckedCallPlan.InputSlot.explicitOmission(callItemIndex);
         }
         return label == null
                 ? CheckedCallPlan.InputSlot.positional(callItemIndex)

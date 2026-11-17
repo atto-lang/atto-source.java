@@ -391,9 +391,52 @@ public final class Ast {
         }
     }
 
-    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
-        public Param(TypeRef type, String name) { this(type, name, false, false); }
-        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
+    /**
+     * A declared value parameter. The two question-mark positions are kept as
+     * independent metadata: optionTypeSugar describes the type-position T?
+     * spelling, while omittable describes the formal-name suffix name?.
+     * defaultValue is the unevaluated, compiler-checked constant candidate;
+     * no runtime default execution is implied by this AST node.
+     */
+    public record Param(
+            TypeRef type,
+            String name,
+            boolean structural,
+            boolean mutable,
+            boolean optionTypeSugar,
+            boolean omittable,
+            Expr defaultValue) {
+        public Param {
+            java.util.Objects.requireNonNull(type, "parameter type");
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("parameter name cannot be blank");
+            }
+            if (optionTypeSugar
+                    && (!type.name().equals("Option")
+                            || type.inferArguments()
+                            || type.arguments().size() != 1)) {
+                throw new IllegalArgumentException(
+                        "type-position '?' metadata must describe exactly Option<T>");
+            }
+            if (defaultValue != null && !omittable) {
+                throw new IllegalArgumentException(
+                        "a parameter default requires an independent omittable name marker");
+            }
+            if (structural && (omittable || defaultValue != null)) {
+                throw new IllegalArgumentException(
+                        "structural parameters cannot be omittable or have defaults");
+            }
+        }
+
+        public Param(TypeRef type, String name) {
+            this(type, name, false, false, false, false, null);
+        }
+        public Param(TypeRef type, String name, boolean structural) {
+            this(type, name, structural, false, false, false, null);
+        }
+        public Param(TypeRef type, String name, boolean structural, boolean mutable) {
+            this(type, name, structural, mutable, false, false, null);
+        }
     }
 
     /** A source generic name and its optional compile-time default type. */
@@ -1343,6 +1386,15 @@ public final class Ast {
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
             TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
+
+    /**
+     * The words omit and underscore are call-list omission markers only when
+     * they appear as a complete positional item. Elsewhere they remain names.
+     */
+    public static boolean isExplicitOmissionMarker(Expr expression) {
+        return expression instanceof NameExpr name
+                && (name.name().equals("omit") || name.name().equals("_"));
+    }
 
     /** Statically named local aggregate constructor; not a dynamic object allocation.
      *  Deliberately retained until checked identity/layout and backend lowering exist.

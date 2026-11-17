@@ -1685,6 +1685,14 @@ public final class OwnershipChecker {
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.arguments().stream().anyMatch(argument ->
+                    argument instanceof Ast.NamedArgExpr
+                            || Ast.isExplicitOmissionMarker(argument))) {
+                throw error(
+                        "NAMED_OR_OMITTED_CONSTRUCTOR_BINDING_UNSUPPORTED: ownership analysis "
+                                + "cannot consume named constructor arguments or omission markers "
+                                + "before constructor ABI lowering");
+            }
             List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
@@ -2038,6 +2046,14 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.arguments().stream().anyMatch(argument ->
+                argument instanceof Ast.NamedArgExpr
+                        || Ast.isExplicitOmissionMarker(argument))) {
+            throw error(
+                    "NAMED_OR_OMITTED_CALL_BINDING_UNSUPPORTED: ownership analysis cannot "
+                            + "consume named arguments or omission markers before a checked "
+                            + "source-to-formal proof is published");
+        }
         if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                 && call.callee() instanceof Ast.LambdaExpr lambda) {
             int arity = lambda.parameters().size();

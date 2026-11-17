@@ -28,7 +28,149 @@ public record CheckedCallPlan(
         List<String> parameterNames,
         List<Boolean> omittable,
         List<CheckedCallPlan.BoundSlot> sourceOrder,
-        List<Integer> abiToSource) {
+        List<Integer> abiToSource,
+        List<CheckedCallPlan.FormalParameter> formalParameters,
+        List<CheckedCallPlan.OmittedSlot> omittedSlots) {
+
+    public enum DefaultKind { REQUIRED, OPTION_NONE, CHECKED_CONSTANT, UNRESOLVED }
+    public enum OmissionOrigin { IMPLICIT_ABSENCE, EXPLICIT_MARKER }
+    public enum InputKind { VALUE, EXPLICIT_OMISSION }
+
+    /** Declaration-side parameter metadata snapshotted into a checked call. */
+    public record FormalParameter(
+            String name,
+            Ast.TypeRef type,
+            boolean optionTypeSugar,
+            boolean omittable,
+            DefaultKind defaultKind,
+            Ast.Expr defaultExpression) {
+        public FormalParameter {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("formal parameter name cannot be blank");
+            }
+            Objects.requireNonNull(defaultKind, "formal default kind");
+            if (optionTypeSugar
+                    && (type == null || !type.name().equals("Option")
+                            || type.inferArguments() || type.arguments().size() != 1)) {
+                throw new IllegalArgumentException(
+                        "type-position Option sugar requires exactly Option<T>");
+            }
+            if (!omittable) {
+                if ((defaultKind != DefaultKind.REQUIRED
+                        && defaultKind != DefaultKind.UNRESOLVED)
+                        || defaultExpression != null) {
+                    throw new IllegalArgumentException(
+                            "required formal cannot carry an omission materializer");
+                }
+            } else if (defaultKind == DefaultKind.REQUIRED) {
+                throw new IllegalArgumentException(
+                        "omittable formal must declare a default materialization kind");
+            }
+            if (defaultKind == DefaultKind.CHECKED_CONSTANT && defaultExpression == null) {
+                throw new IllegalArgumentException(
+                        "checked-constant formal requires its exact default expression");
+            }
+            if ((defaultKind == DefaultKind.OPTION_NONE
+                    || defaultKind == DefaultKind.UNRESOLVED)
+                    && defaultExpression != null) {
+                throw new IllegalArgumentException(
+                        "None/unresolved formal cannot also carry a constant default expression");
+            }
+            if (defaultKind != DefaultKind.UNRESOLVED && type == null) {
+                throw new IllegalArgumentException(
+                        "checked formal metadata requires its declared type");
+            }
+        }
+
+        public static FormalParameter from(
+                Ast.Param parameter, DefaultKind checkedDefaultKind) {
+            Objects.requireNonNull(parameter, "AST formal parameter");
+            return new FormalParameter(
+                    parameter.name(), parameter.type(), parameter.optionTypeSugar(),
+                    parameter.omittable(), checkedDefaultKind, parameter.defaultValue());
+        }
+    }
+
+    /** How an omitted ABI slot is materialized after successful checking. */
+    public record OmittedSlot(
+            int parameterIndex,
+            OmissionOrigin origin,
+            DefaultKind materialization,
+            int callItemIndex) {
+        public OmittedSlot {
+            if (parameterIndex < 0) {
+                throw new IllegalArgumentException("omitted formal index cannot be negative");
+            }
+            Objects.requireNonNull(origin, "omission origin");
+            Objects.requireNonNull(materialization, "omission materialization");
+            if (materialization == DefaultKind.REQUIRED) {
+                throw new IllegalArgumentException("required formal cannot be omitted");
+            }
+            if (origin == OmissionOrigin.EXPLICIT_MARKER && callItemIndex < 0) {
+                throw new IllegalArgumentException(
+                        "explicit omission requires its source call-item index");
+            }
+            if (origin == OmissionOrigin.IMPLICIT_ABSENCE && callItemIndex != -1) {
+                throw new IllegalArgumentException(
+                        "implicit absence cannot claim a source call-item index");
+            }
+        }
+    }
+
+    /**
+     * One raw call-list input. Explicit omission is not an evaluated source
+     * expression, but still occupies a positional formal slot.
+     */
+    public record InputSlot(
+            String label, int callItemIndex, int projectionIndex, InputKind kind) {
+        public InputSlot {
+            if (label != null && label.isBlank()) {
+                throw new IllegalArgumentException("named argument label cannot be empty");
+            }
+            if (callItemIndex < -1 || projectionIndex < -1) {
+                throw new IllegalArgumentException("call-item provenance index cannot be below -1");
+            }
+            if (callItemIndex == -1 && projectionIndex != -1) {
+                throw new IllegalArgumentException(
+                        "projection provenance requires a source call-item index");
+            }
+            Objects.requireNonNull(kind, "call input kind");
+            if (kind == InputKind.EXPLICIT_OMISSION
+                    && (label != null || callItemIndex < 0 || projectionIndex != -1)) {
+                throw new IllegalArgumentException(
+                        "explicit omission must be an unlabelled, provenanced positional item");
+            }
+        }
+
+        public InputSlot(String label, int callItemIndex, int projectionIndex) {
+            this(label, callItemIndex, projectionIndex, InputKind.VALUE);
+        }
+        public InputSlot(String label) {
+            this(label, -1, -1, InputKind.VALUE);
+        }
+        public static InputSlot positional() { return new InputSlot(null); }
+        public static InputSlot positional(int callItemIndex) {
+            return new InputSlot(null, callItemIndex, -1);
+        }
+        public static InputSlot positionalProjection(int callItemIndex, int projectionIndex) {
+            return new InputSlot(null, callItemIndex, projectionIndex);
+        }
+        public static InputSlot named(String label) {
+            return new InputSlot(Objects.requireNonNull(label, "label"));
+        }
+        public static InputSlot named(String label, int callItemIndex) {
+            return new InputSlot(Objects.requireNonNull(label, "label"), callItemIndex, -1);
+        }
+        public static InputSlot namedProjection(
+                String label, int callItemIndex, int projectionIndex) {
+            return new InputSlot(Objects.requireNonNull(label, "label"), callItemIndex, projectionIndex);
+        }
+        public static InputSlot explicitOmission(int callItemIndex) {
+            return new InputSlot(null, callItemIndex, -1, InputKind.EXPLICIT_OMISSION);
+        }
+        public boolean isExplicitOmission() { return kind == InputKind.EXPLICIT_OMISSION; }
+        public boolean hasProvenance() { return callItemIndex >= 0; }
+    }
 
     /**
      * One flattened scalar before formal binding.
@@ -323,22 +465,80 @@ public record CheckedCallPlan(
         return true;
     }
 
-    /** One supplied scalar in lexical evaluation order and its formal ABI slot. */
+    /** One raw call-list item in lexical order. */
     public record BoundSlot(
             int sourceIndex,
             int parameterIndex,
             String label,
             int callItemIndex,
-            int projectionIndex) { }
+            int projectionIndex,
+            boolean explicitOmission) {
+        public BoundSlot(
+                int sourceIndex, int parameterIndex, String label,
+                int callItemIndex, int projectionIndex) {
+            this(sourceIndex, parameterIndex, label, callItemIndex, projectionIndex, false);
+        }
+    }
+
+    /** Compatibility constructor for the original pure binding-plan API. */
+    public CheckedCallPlan(
+            List<String> parameterNames,
+            List<Boolean> omittable,
+            List<BoundSlot> sourceOrder,
+            List<Integer> abiToSource) {
+        this(parameterNames, omittable, sourceOrder, abiToSource,
+                legacyFormalParameters(parameterNames, omittable),
+                legacyOmissions(omittable, abiToSource));
+    }
+
+    private static List<FormalParameter> legacyFormalParameters(
+            List<String> parameterNames, List<Boolean> omittable) {
+        Objects.requireNonNull(parameterNames, "parameterNames");
+        Objects.requireNonNull(omittable, "omittable");
+        if (parameterNames.size() != omittable.size()) {
+            throw new IllegalArgumentException("parameter/defaultability metadata size mismatch");
+        }
+        List<FormalParameter> result = new ArrayList<>(parameterNames.size());
+        for (int i = 0; i < parameterNames.size(); i++) {
+            boolean mayOmit = Objects.requireNonNull(omittable.get(i), "omittable flag");
+            result.add(new FormalParameter(
+                    parameterNames.get(i), null, false, mayOmit,
+                    DefaultKind.UNRESOLVED, null));
+        }
+        return List.copyOf(result);
+    }
+
+    private static List<OmittedSlot> legacyOmissions(
+            List<Boolean> omittable, List<Integer> abiToSource) {
+        Objects.requireNonNull(omittable, "omittable");
+        Objects.requireNonNull(abiToSource, "abiToSource");
+        if (omittable.size() != abiToSource.size()) {
+            throw new IllegalArgumentException("checked call plan formal metadata size mismatch");
+        }
+        List<OmittedSlot> result = new ArrayList<>();
+        for (int i = 0; i < abiToSource.size(); i++) {
+            if (abiToSource.get(i) == -1) {
+                if (!omittable.get(i)) {
+                    throw new IllegalArgumentException("checked call plan omits a required formal");
+                }
+                result.add(new OmittedSlot(
+                        i, OmissionOrigin.IMPLICIT_ABSENCE, DefaultKind.UNRESOLVED, -1));
+            }
+        }
+        return List.copyOf(result);
+    }
 
     public CheckedCallPlan {
         parameterNames = List.copyOf(parameterNames);
         omittable = List.copyOf(omittable);
         sourceOrder = List.copyOf(sourceOrder);
         abiToSource = List.copyOf(abiToSource);
+        formalParameters = List.copyOf(formalParameters);
+        omittedSlots = List.copyOf(omittedSlots);
 
         if (parameterNames.size() != omittable.size()
-                || parameterNames.size() != abiToSource.size()) {
+                || parameterNames.size() != abiToSource.size()
+                || parameterNames.size() != formalParameters.size()) {
             throw new IllegalArgumentException(
                     "checked call plan formal metadata size mismatch");
         }
@@ -352,30 +552,38 @@ public record CheckedCallPlan(
                 throw new IllegalArgumentException(
                         "duplicate or empty declared parameter name: " + name);
             }
-            Objects.requireNonNull(
-                    omittable.get(i), "omittable flag");
+            Objects.requireNonNull(omittable.get(i), "omittable flag");
+            FormalParameter formal = Objects.requireNonNull(
+                    formalParameters.get(i), "formal parameter metadata");
+            if (!formal.name().equals(name) || formal.omittable() != omittable.get(i)) {
+                throw new IllegalArgumentException(
+                        "formal parameter snapshot disagrees with plan name/omission bit");
+            }
         }
 
-        boolean[] seenSource = new boolean[sourceOrder.size()];
+        Map<Integer, OmittedSlot> omissionByFormal = new HashMap<>();
+        for (OmittedSlot omitted : omittedSlots) {
+            Objects.requireNonNull(omitted, "omitted slot");
+            if (omitted.parameterIndex() >= parameterNames.size()
+                    || omissionByFormal.putIfAbsent(omitted.parameterIndex(), omitted) != null) {
+                throw new IllegalArgumentException("duplicate or out-of-range omitted formal slot");
+            }
+        }
+
         boolean[] seenTarget = new boolean[parameterNames.size()];
+        boolean[] seenExplicitOmission = new boolean[parameterNames.size()];
         boolean namedStarted = false;
         int nextPositional = 0;
+        int nextSourceIndex = 0;
         Set<String> seenLabels = new HashSet<>();
         Boolean provenanceMode = null;
         int previousCallItemIndex = -1;
         int previousProjectionIndex = -1;
         boolean previousProjectionWasNamed = false;
+        boolean previousProjectionWasOmission = false;
 
         for (int i = 0; i < sourceOrder.size(); i++) {
-            BoundSlot slot =
-                    Objects.requireNonNull(sourceOrder.get(i), "bound slot");
-            if (slot.sourceIndex() != i
-                    || slot.sourceIndex() < 0
-                    || slot.sourceIndex() >= seenSource.length
-                    || seenSource[slot.sourceIndex()]) {
-                throw new IllegalArgumentException(
-                        "checked call plan does not preserve dense lexical source order");
-            }
+            BoundSlot slot = Objects.requireNonNull(sourceOrder.get(i), "bound slot");
             if (slot.parameterIndex() < 0
                     || slot.parameterIndex() >= parameterNames.size()
                     || seenTarget[slot.parameterIndex()]) {
@@ -383,35 +591,15 @@ public record CheckedCallPlan(
                         "checked call plan has duplicate/out-of-range formal slot");
             }
 
-            if (slot.label() == null) {
-                if (namedStarted) {
-                    throw new IllegalArgumentException(
-                            "positional argument follows named argument or record spread");
-                }
-                if (slot.parameterIndex() != nextPositional++) {
-                    throw new IllegalArgumentException(
-                            "positional argument skips or reorders a formal slot");
-                }
-            } else {
-                namedStarted = true;
-                if (slot.label().isBlank() || !seenLabels.add(slot.label())) {
-                    throw new IllegalArgumentException(
-                            "duplicate or empty named argument in checked call plan");
-                }
-                if (!parameterNames.get(slot.parameterIndex())
-                        .equals(slot.label())) {
-                    throw new IllegalArgumentException(
-                            "checked call label/formal mapping disagrees for '"
-                                    + slot.label() + "'");
-                }
-            }
-
             boolean provenanced = slot.callItemIndex() >= 0;
             if (slot.callItemIndex() < -1
                     || slot.projectionIndex() < -1
                     || (!provenanced && slot.projectionIndex() != -1)) {
+                throw new IllegalArgumentException("invalid checked-call source provenance");
+            }
+            if (provenanced && slot.callItemIndex() < previousCallItemIndex) {
                 throw new IllegalArgumentException(
-                        "invalid checked-call source provenance");
+                        "checked call provenance reorders source call items");
             }
             if (provenanceMode == null) {
                 provenanceMode = provenanced;
@@ -419,77 +607,136 @@ public record CheckedCallPlan(
                 throw new IllegalArgumentException(
                         "checked call plan cannot mix provenanced and unprovenanced inputs");
             }
+            if (provenanced && slot.callItemIndex() == previousCallItemIndex) {
+                if (slot.explicitOmission() || previousProjectionWasOmission
+                        || slot.projectionIndex() < 0 || previousProjectionIndex < 0) {
+                    throw new IllegalArgumentException(
+                            "one call item cannot mix an omission marker with another input");
+                }
+                if ((slot.label() != null) != previousProjectionWasNamed) {
+                    throw new IllegalArgumentException(
+                            "one call item cannot mix tuple and record projections");
+                }
+                if (slot.projectionIndex() != previousProjectionIndex + 1) {
+                    throw new IllegalArgumentException(
+                            "checked call projection provenance must be contiguous and ordered");
+                }
+            } else if (provenanced && slot.projectionIndex() > 0) {
+                throw new IllegalArgumentException(
+                        "checked call projection provenance must begin at projection 0");
+            }
+
+            if (slot.explicitOmission()) {
+                if (slot.sourceIndex() != -1 || slot.label() != null
+                        || !provenanced || slot.projectionIndex() != -1) {
+                    throw new IllegalArgumentException(
+                            "explicit omission is not a source value and must retain a direct call-item index");
+                }
+                if (namedStarted) {
+                    throw new IllegalArgumentException("positional omission follows a named argument");
+                }
+                if (!omittable.get(slot.parameterIndex())) {
+                    throw new IllegalArgumentException(
+                            "explicit omission targets required parameter '"
+                                    + parameterNames.get(slot.parameterIndex()) + "'");
+                }
+                if (slot.parameterIndex() != nextPositional++) {
+                    throw new IllegalArgumentException(
+                            "explicit omission skips or reorders a positional formal slot");
+                }
+                seenTarget[slot.parameterIndex()] = true;
+                seenExplicitOmission[slot.parameterIndex()] = true;
+            } else {
+                if (slot.sourceIndex() != nextSourceIndex++) {
+                    throw new IllegalArgumentException(
+                            "checked call plan does not preserve dense source-value order");
+                }
+                if (slot.label() == null) {
+                    if (namedStarted) {
+                        throw new IllegalArgumentException(
+                                "positional argument follows named argument or record spread");
+                    }
+                    if (slot.parameterIndex() != nextPositional++) {
+                        throw new IllegalArgumentException(
+                                "positional argument skips or reorders a formal slot");
+                    }
+                } else {
+                    namedStarted = true;
+                    if (slot.label().isBlank() || !seenLabels.add(slot.label())) {
+                        throw new IllegalArgumentException(
+                                "duplicate or empty named argument in checked call plan");
+                    }
+                    if (!parameterNames.get(slot.parameterIndex()).equals(slot.label())) {
+                        throw new IllegalArgumentException(
+                                "checked call label/formal mapping disagrees for '"
+                                        + slot.label() + "'");
+                    }
+                }
+                seenTarget[slot.parameterIndex()] = true;
+                if (!Objects.equals(
+                        abiToSource.get(slot.parameterIndex()), slot.sourceIndex())) {
+                    throw new IllegalArgumentException("checked call source/ABI maps disagree");
+                }
+            }
             if (provenanced) {
-                if (slot.callItemIndex() < previousCallItemIndex) {
-                    throw new IllegalArgumentException(
-                            "checked call provenance reorders source call items");
-                }
-                if (slot.callItemIndex() == previousCallItemIndex) {
-                    // One raw call item cannot simultaneously be a tuple
-                    // (unlabeled) and a record (labeled) spread.
-                    if ((slot.label() != null) != previousProjectionWasNamed) {
-                        throw new IllegalArgumentException(
-                                "one call item cannot mix tuple and record projections");
-                    }
-                    // A single raw spread cannot change from tuple to record
-                    // projection semantics halfway through its projections.
-                    if ((slot.label() == null)
-                            != (sourceOrder.get(i - 1).label() == null)) {
-                        throw new IllegalArgumentException(
-                                "checked call item mixes tuple and record projections");
-                    }
-                    if (slot.projectionIndex() < 0
-                            || previousProjectionIndex < 0
-                            || slot.projectionIndex()
-                                    != previousProjectionIndex + 1) {
-                        throw new IllegalArgumentException(
-                                "checked call projection provenance must be contiguous and ordered");
-                    }
-                } else if (slot.projectionIndex() > 0) {
-                    throw new IllegalArgumentException(
-                            "checked call projection provenance must begin at projection 0");
-                }
                 previousCallItemIndex = slot.callItemIndex();
                 previousProjectionIndex = slot.projectionIndex();
                 previousProjectionWasNamed = slot.label() != null;
-            }
-
-            seenSource[slot.sourceIndex()] = true;
-            seenTarget[slot.parameterIndex()] = true;
-            if (!Objects.equals(
-                    abiToSource.get(slot.parameterIndex()),
-                    slot.sourceIndex())) {
-                throw new IllegalArgumentException(
-                        "checked call source/ABI maps disagree");
+                previousProjectionWasOmission = slot.explicitOmission();
             }
         }
 
-        for (int parameterIndex = 0;
-                parameterIndex < parameterNames.size();
-                parameterIndex++) {
+        for (int parameterIndex = 0; parameterIndex < parameterNames.size(); parameterIndex++) {
             int source = abiToSource.get(parameterIndex);
-            if (source < -1 || source >= sourceOrder.size()) {
-                throw new IllegalArgumentException(
-                        "checked call plan contains invalid ABI source index");
+            if (source < -1 || source >= nextSourceIndex) {
+                throw new IllegalArgumentException("checked call plan contains invalid ABI source index");
             }
+            OmittedSlot omission = omissionByFormal.get(parameterIndex);
             if (source == -1) {
-                if (seenTarget[parameterIndex]) {
+                if (!omittable.get(parameterIndex) || omission == null) {
                     throw new IllegalArgumentException(
-                            "checked call omitted/bound slot bookkeeping disagrees");
-                }
-                if (!omittable.get(parameterIndex)) {
-                    throw new IllegalArgumentException(
-                            "checked call plan omits required formal slot "
+                            "checked call plan omits a required or unclassified formal slot "
                                     + parameterIndex);
                 }
+                if (omission.materialization() != formalParameters.get(parameterIndex).defaultKind()) {
+                    throw new IllegalArgumentException(
+                            "omitted slot materialization disagrees with formal default metadata");
+                }
+                if (omission.origin() == OmissionOrigin.EXPLICIT_MARKER) {
+                    if (!seenExplicitOmission[parameterIndex]
+                            || !seenTarget[parameterIndex] || omission.callItemIndex() < 0) {
+                        throw new IllegalArgumentException(
+                                "explicit omission provenance disagrees with raw call-item plan");
+                    }
+                    BoundSlot marker = sourceOrder.stream()
+                            .filter(slot -> slot.explicitOmission()
+                                    && slot.parameterIndex() == parameterIndex)
+                            .findFirst().orElseThrow();
+                    if (marker.callItemIndex() != omission.callItemIndex()) {
+                        throw new IllegalArgumentException(
+                                "explicit omission call-item provenance disagrees");
+                    }
+                } else if (seenTarget[parameterIndex] || seenExplicitOmission[parameterIndex]) {
+                    throw new IllegalArgumentException(
+                            "implicit absence cannot also claim an explicit call item");
+                }
             } else {
-                if (!seenTarget[parameterIndex]
-                        || sourceOrder.get(source).parameterIndex()
-                                != parameterIndex) {
+                if (!seenTarget[parameterIndex] || omission != null
+                        || seenExplicitOmission[parameterIndex]) {
+                    throw new IllegalArgumentException(
+                            "checked call ABI source/omission metadata disagrees");
+                }
+                BoundSlot supplied = sourceOrder.stream()
+                        .filter(slot -> !slot.explicitOmission() && slot.sourceIndex() == source)
+                        .findFirst().orElseThrow();
+                if (supplied.parameterIndex() != parameterIndex) {
                     throw new IllegalArgumentException(
                             "checked call ABI source does not point back to its formal slot");
                 }
             }
+        }
+        if (omissionByFormal.size() != omittedSlots.size()) {
+            throw new IllegalArgumentException("duplicate omitted-slot metadata");
         }
     }
 
@@ -510,97 +757,123 @@ public record CheckedCallPlan(
             List<InputSlot> inputs) {
         Objects.requireNonNull(parameterNames, "parameterNames");
         Objects.requireNonNull(omittable, "omittable");
-        Objects.requireNonNull(inputs, "inputs");
-
         if (parameterNames.size() != omittable.size()) {
-            throw new IllegalArgumentException(
-                    "parameter/defaultability metadata size mismatch");
+            throw new IllegalArgumentException("parameter/defaultability metadata size mismatch");
         }
-        if (inputs.size() > parameterNames.size()) {
-            throw new IllegalArgumentException(
-                    "too many supplied arguments: expected at most "
-                            + parameterNames.size() + ", got " + inputs.size());
-        }
-
-        Map<String, Integer> parameterIndexByName = new HashMap<>();
+        List<FormalParameter> formals = new ArrayList<>(parameterNames.size());
         for (int i = 0; i < parameterNames.size(); i++) {
-            String name = Objects.requireNonNull(
-                    parameterNames.get(i), "parameter name");
-            if (name.isBlank()
-                    || parameterIndexByName.putIfAbsent(name, i) != null) {
-                throw new IllegalArgumentException(
-                        "duplicate or empty declared parameter name: " + name);
-            }
-            Objects.requireNonNull(
-                    omittable.get(i), "omittable flag");
+            boolean mayOmit = Objects.requireNonNull(omittable.get(i), "omittable flag");
+            formals.add(new FormalParameter(
+                    parameterNames.get(i), null, false, mayOmit,
+                    DefaultKind.UNRESOLVED, null));
+        }
+        return bind(formals, inputs);
+    }
+
+    /** Bind raw items to fixed ABI slots without evaluating/reordering expressions. */
+    public static CheckedCallPlan bind(
+            List<FormalParameter> formalParameters, List<InputSlot> inputs) {
+        Objects.requireNonNull(formalParameters, "formalParameters");
+        Objects.requireNonNull(inputs, "inputs");
+        if (inputs.size() > formalParameters.size()) {
+            throw new IllegalArgumentException(
+                    "too many call items: expected at most "
+                            + formalParameters.size() + ", got " + inputs.size());
         }
 
-        Integer[] abiToSource = new Integer[parameterNames.size()];
+        List<String> parameterNames = formalParameters.stream().map(FormalParameter::name).toList();
+        List<Boolean> omittable = formalParameters.stream().map(FormalParameter::omittable).toList();
+        Map<String, Integer> parameterIndexByName = new HashMap<>();
+        for (int i = 0; i < formalParameters.size(); i++) {
+            FormalParameter formal = Objects.requireNonNull(formalParameters.get(i), "formal parameter");
+            if (formal.name().isBlank()
+                    || parameterIndexByName.putIfAbsent(formal.name(), i) != null) {
+                throw new IllegalArgumentException(
+                        "duplicate or empty declared parameter name: " + formal.name());
+            }
+        }
+
+        Integer[] abiToSource = new Integer[formalParameters.size()];
         Arrays.fill(abiToSource, -1);
         Set<Integer> claimedTargets = new HashSet<>();
         List<BoundSlot> bound = new ArrayList<>(inputs.size());
+        List<OmittedSlot> omissions = new ArrayList<>();
         boolean namedStarted = false;
         int nextPositional = 0;
+        int nextSourceIndex = 0;
 
-        for (int sourceIndex = 0;
-                sourceIndex < inputs.size();
-                sourceIndex++) {
-            InputSlot input =
-                    Objects.requireNonNull(
-                            inputs.get(sourceIndex), "input slot");
+        for (InputSlot input : inputs) {
+            Objects.requireNonNull(input, "input slot");
             int target;
+            if (input.isExplicitOmission()) {
+                if (namedStarted) {
+                    throw new IllegalArgumentException("positional omission follows named argument");
+                }
+                target = nextPositional++;
+                if (target >= formalParameters.size()) {
+                    throw new IllegalArgumentException("too many positional arguments");
+                }
+                FormalParameter formal = formalParameters.get(target);
+                if (!formal.omittable()) {
+                    throw new IllegalArgumentException(
+                            "cannot explicitly omit required parameter '" + formal.name() + "'");
+                }
+                if (!claimedTargets.add(target)) {
+                    throw new IllegalArgumentException(
+                            "duplicate binding for parameter '" + formal.name() + "'");
+                }
+                bound.add(new BoundSlot(
+                        -1, target, null, input.callItemIndex(), -1, true));
+                omissions.add(new OmittedSlot(
+                        target, OmissionOrigin.EXPLICIT_MARKER,
+                        formal.defaultKind(), input.callItemIndex()));
+                continue;
+            }
+
             if (input.label() == null) {
                 if (namedStarted) {
                     throw new IllegalArgumentException(
                             "positional argument follows named argument or record spread");
                 }
                 target = nextPositional++;
-                if (target >= parameterNames.size()) {
-                    throw new IllegalArgumentException(
-                            "too many positional arguments");
+                if (target >= formalParameters.size()) {
+                    throw new IllegalArgumentException("too many positional arguments");
                 }
             } else {
                 namedStarted = true;
-                Integer declared =
-                        parameterIndexByName.get(input.label());
+                Integer declared = parameterIndexByName.get(input.label());
                 if (declared == null) {
-                    throw new IllegalArgumentException(
-                            "unknown named argument '" + input.label() + "'");
+                    throw new IllegalArgumentException("unknown named argument '" + input.label() + "'");
                 }
                 target = declared;
             }
 
+            FormalParameter formal = formalParameters.get(target);
             if (!claimedTargets.add(target)) {
                 throw new IllegalArgumentException(
-                        "duplicate binding for parameter '"
-                                + parameterNames.get(target) + "'");
+                        "duplicate binding for parameter '" + formal.name() + "'");
             }
-
-            abiToSource[target] = sourceIndex;
             bound.add(new BoundSlot(
-                    sourceIndex,
-                    target,
-                    input.label(),
-                    input.callItemIndex(),
-                    input.projectionIndex()));
+                    nextSourceIndex, target, input.label(),
+                    input.callItemIndex(), input.projectionIndex(), false));
+            abiToSource[target] = nextSourceIndex++;
         }
 
-        for (int parameterIndex = 0;
-                parameterIndex < parameterNames.size();
-                parameterIndex++) {
-            if (abiToSource[parameterIndex] == -1
-                    && !omittable.get(parameterIndex)) {
-                throw new IllegalArgumentException(
-                        "missing required argument for parameter '"
-                                + parameterNames.get(parameterIndex) + "'");
+        for (int parameterIndex = 0; parameterIndex < formalParameters.size(); parameterIndex++) {
+            if (!claimedTargets.contains(parameterIndex)) {
+                FormalParameter formal = formalParameters.get(parameterIndex);
+                if (!formal.omittable()) {
+                    throw new IllegalArgumentException(
+                            "missing required argument for parameter '" + formal.name() + "'");
+                }
+                omissions.add(new OmittedSlot(
+                        parameterIndex, OmissionOrigin.IMPLICIT_ABSENCE,
+                        formal.defaultKind(), -1));
             }
         }
 
         return new CheckedCallPlan(
-                parameterNames,
-                omittable,
-                bound,
-                List.of(abiToSource));
+                parameterNames, omittable, bound, List.of(abiToSource), formalParameters, omissions);
     }
 
     /**
@@ -623,7 +896,7 @@ public record CheckedCallPlan(
     }
 
     public int suppliedCount() {
-        return sourceOrder.size();
+        return (int) sourceOrder.stream().filter(slot -> !slot.explicitOmission()).count();
     }
 
     public int omittedCount() {
@@ -639,6 +912,11 @@ public record CheckedCallPlan(
     }
 
     public int parameterForSource(int sourceIndex) {
-        return sourceOrder.get(sourceIndex).parameterIndex();
+        return sourceOrder.stream()
+                .filter(slot -> !slot.explicitOmission() && slot.sourceIndex() == sourceIndex)
+                .findFirst()
+                .orElseThrow(() -> new IndexOutOfBoundsException(
+                        "no supplied source value at index " + sourceIndex))
+                .parameterIndex();
     }
 }
