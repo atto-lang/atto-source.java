@@ -1,0 +1,60 @@
+name: Proxy outbound loopback host proof
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ProxyOutboundLoopback.java'
+      - 'src/main/java/dev/oreslang/runtime/ProxyLoopbackBridge.java'
+      - 'src/main/java/dev/oreslang/runtime/OutboundHttpRequest.java'
+      - 'src/main/java/dev/oreslang/runtime/OutboundEgressPolicy.java'
+      - 'src/main/java/dev/oreslang/runtime/PinnedHttpTransport.java'
+      - 'src/main/java/dev/oreslang/runtime/BoundedDnsResolver.java'
+      - 'src/main/java/dev/oreslang/runtime/SelectorTransportConnection.java'
+      - 'src/test/java/dev/oreslang/runtime/Proxy*Check.java'
+      - 'src/test/java/dev/oreslang/runtime/ProxyOutboundLoopbackSuiteTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ProxyLoopbackBridgeContractTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OutboundHttpRequestGuestTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OutboundEgressPolicyTest.java'
+      - 'src/test/java/dev/oreslang/runtime/PinnedHttpTransportTest.java'
+      - 'src/test/java/dev/oreslang/runtime/BoundedDnsResolverTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SelectorTransportConnectionTest.java'
+      - 'src/test/resources/tls/origin-example-cert.pem'
+      - 'src/test/resources/tls/origin-example-key.pem'
+      - 'scripts/test-proxy-outbound-loopback.sh'
+      - '.github/workflows/proxy-outbound-loopback.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  jdk25-loopback:
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      - name: Set up GraalVM/JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.0'
+          distribution: 'graalvm'
+          check-for-updates: 'false'
+      - name: Verify exact source
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code
+          java -version
+          javac -version
+          javac -version 2>&1 | grep -Eq '^javac 25([.]|$)'
+      - name: Maven real-socket transport and guest-client suite
+        run: mvn -B -ntp -Dtest=ProxyOutboundLoopbackSuiteTest,OutboundHttpRequestGuestTest,OutboundEgressPolicyTest,PinnedHttpTransportTest,BoundedDnsResolverTest,SelectorTransportConnectionTest test
+      - name: Compile current-runtime bridge contract
+        run: mvn -B -ntp -Dtest=ProxyLoopbackBridgeContractTest test
+      - name: Real loopback socket/race regression
+        run: bash scripts/test-proxy-outbound-loopback.sh

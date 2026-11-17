@@ -1,7 +1,11 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
 source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
-namespace_decl  = "namespace" IDENT ";" ;
+namespace_decl  = [ "use" ] "namespace" IDENT ";" ;
+(* Canonical: "use namespace x;" only at the source-file header.
+   "use" is contextual and DOES NOT import module members into lexical scope;
+   an imported module requires "import module Name from \"./file.atto\";".
+   The legacy "namespace x;" header is still accepted for migration. *)
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
@@ -19,9 +23,12 @@ top_level_item  = annotated_module_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
+                | generator_decl
                 | class_decl
                 | interface_decl
+                | trait_decl
                 | type_decl
+                | forward_type_decl
                 | binding_decl ;
 
 annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type_ref { "," type_ref } ]
@@ -33,7 +40,9 @@ module_member   = contract_decl
                 | callable_decl
                 | class_decl
                 | interface_decl
+                | trait_decl
                 | type_decl
+                | forward_type_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
@@ -44,6 +53,14 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 callable_kind   = "fnc" | "routine" ;
+
+generator_decl  = { annotation } visibility [ "async" | "suspend" | "suspends" ]
+                  generator_marker callable_name [ generic_params ]
+                  ( "(" [ param_list ] ")" return_spec block
+                  | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
+generator_marker = "gen" "*" | "generator" "*" ;
+(* Legacy compatibility also permits generator/gen* in callable-modifier
+   position around fnc/routine. Canonical source omits fnc/routine. *)
 
 actor_callable_decl
                 = { annotation } visibility { "async" | "nlex" | "structural" | "shared" } "actor" "fnc" callable_name [ generic_params ]
@@ -104,15 +121,44 @@ static_function_decl
                 = { annotation } visibility "static" { "async" | "structural" } "fnc" callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
-contract_decl   = "define" "contract" IDENT [ generic_params ]
-                  [ "extends" type_ref { "," type_ref } ] interface_body ;
+contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ] module_contract_body ;
+module_contract_body = "{" { module_contract_member } "}"
+                     | { module_contract_member } "end" ;
+module_contract_member = interface_member
+                       | "actor" IDENT member_terminator
+                       | [ visibility ] "mtd" IDENT "(" type_ref IDENT ")"
+                         "(" [ param_list ] ")" [ (":" | "=>") type_ref ]
+                         member_terminator ;
+(* Stage 1: 'actor IDENT;' requires a public nominal actor declaration.
+   Stage 2: 'pub mtd f(Actor a)(Args...): T;' requires an existing
+   mailbox-dispatched actor method with an exact signature and visibility.
+   No external executable 'define mtd' declarations, standalone actor alias,
+   runtime witness, or actor-state capability is introduced by this rule.
+   Stage 2 currently rejects checked effects, generic receiver types,
+   structural arguments, and generic contracts with receiver requirements. *)
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   interface_body
-                | "define" "interface" IDENT [ generic_params ]
+                | "define" visibility "interface" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  interface_body
+                | visibility "define" "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   interface_body ;
+
+trait_decl      = visibility [ "define" ] "trait" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ] interface_body
+                | "define" visibility "trait" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ] interface_body ;
+
+(* 'declare' is contextual at declaration start: this grammar is NOT
+   an authorization for cross-file linker stubs or runtime type values.
+   Every forward must resolve to a unique same-scope definition with the
+   same declaration kind, visibility and generic parameters. *)
+forward_type_decl = "declare" visibility ( "type" | "trait" | "interface" )
+                    IDENT [ generic_params ] ";" ;
 
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;
@@ -121,7 +167,11 @@ interface_member= { annotation } [ "structural" ] "fnc" IDENT [ generic_params ]
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
-type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
+type_decl       = [ "define" ] visibility "type"
+                  ( IDENT [ generic_params ] "=" type_ref
+                  | "alias" IDENT [ generic_params ] "as" type_ref )
+                  stmt_terminator
+                | visibility "define" "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
 annotation      = "@" IDENT [ "<" [ annotation_args ] ">" | "(" [ annotation_args ] ")" ] ;
 annotation_args = annotation_arg { "," annotation_arg } ;
@@ -137,11 +187,19 @@ param           = type_ref [ "mut" ] IDENT
                 | IDENT "structural" type_ref ;
 
 binding_decl    = named_inferred_binding
+                | "const" "fnc" IDENT "=" lambda stmt_terminator
+                | "const" IDENT "<" function_type_signature ">" "=" expression stmt_terminator
                 | { annotation } binding_kind
                   ( IDENT ":" type_ref
                   | [ type_ref ] IDENT )
                   "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
+(* Type declarations use 'type T = <type_ref>'. Type names are immutable by
+   definition; 'const type T = ...' is not a declaration. Inside a callable
+   every 'const type' spelling (including 'const type T value = ...') is
+   rejected as redundant; write 'const T value = ...'.
+   Function/block-local type declarations and their public return ABI are
+   NOT enabled in this grammar revision. *)
 named_inferred_binding
                 = "const" IDENT IDENT "=" named_inferred_literal stmt_terminator ;
 named_inferred_literal
@@ -149,6 +207,11 @@ named_inferred_literal
                     "struct" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "record" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "tuple" "(" expression { "," expression } ")" ) ;
+(* 'const name<(Args...) => Result> = fnc(...) -> Result { ... };'
+   is an immutable binding with an explicit Fnc<Args..., Result> type.
+   The declared parameter count, parameter types, and return type must agree
+   with the initializer. Mismatched '=> void' versus '-> int' is an error.
+   The '<...>' is a callable-type ascription, not new runtime generic syntax. *)
 (* The first type IDENT of named_inferred_binding must equal the IDENT after infer<...>.
    Named inference captures a lexical compile-time type alias; it does not create a
    runtime type object. infer struct captures an exact closed struct shape. Record
@@ -199,14 +262,18 @@ loop_stmt       = "loop" block ;
 while_stmt      = "while" ( "(" condition_head ")" | condition_head ) [ ";" ] loop_body ;
 
 if_stmt         = "if" condition_head
-                  ( block
-                    { conditional_branch condition_head block }
-                    [ "else" block ]
+                  ( braced_if_tail
                   | [ ";" ] ( "then" | deprecated_if_do ) { statement }
                     { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement } }
                     [ "else" { statement } ]
                   )
                   "fi" ;
+braced_if_tail  = "{" { statement }
+                  { "}" conditional_branch condition_head "{" { statement } }
+                  [ "}" "else" "{" { statement } ]
+                  [ deprecated_if_close ] ;
+deprecated_if_close
+                = "}" ; (* accepted with migration diagnostic before fi *)
 conditional_branch
                 = "elif"
                 | "elseif"                 (* accepted alias *)
@@ -214,10 +281,13 @@ conditional_branch
 deprecated_if_do
                 = "do" ;                   (* accepted for migration; canonical spelling is then *)
 condition_head  = condition
+                | "let" refutable_pattern "=" logic_or [ "&&" condition ]
                 | logic_or "as" "let" IDENT "when" condition
                 | "(" logic_or "as" "let" IDENT "when" condition ")" ;
-condition       = condition_and { "|" condition_and } ;
-condition_and   = equality { "," equality } ;
+(* Condition heads use the canonical expression grammar plus two condition-only
+   aliases (spec ch.16): ',' means && and binds loosest, and a bare '|' between
+   bool operands means ||. Prefer && and || in new code. *)
+condition       = logic_or { "," logic_or } ;
 
 match_stmt      = [ "do" ] "match" [ "first" ] expression
                   ( "over"
@@ -243,22 +313,37 @@ switch_default  = "default" "->" block ;
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
 select_stmt     = ( "do" [ "nb" ] | [ select_wait_mode ] )
-                  "select" [ select_policy ]
-                  "{" select_arm { select_arm } [ select_default ] "}" ;
+                  "select" [ select_policy ] select_static_body ;
+select_static_body
+                = "{" select_arm_sequence "}"
+                | "over" select_arm_sequence "end" ;
+select_arm_sequence
+                = select_default
+                | select_arm { select_arm } [ select_default ] ;
 select_wait_mode= "nb" | "try" ;
 select_policy   = "first" | "fair" | "random" ;
-select_arm      = select_arm_keyword "readch" expression ":"
-                  [ binding_kind IDENT ] { statement }
-                | select_arm_keyword "writech" expression "," expression ":"
-                  { statement } ;
+select_arm      = select_arm_keyword select_read_arm
+                | select_arm_keyword select_write_arm
+                | select_arm_keyword select_legacy_read_arm ;
+select_read_arm = ( "readch" | "await" ) expression ":" select_read_tail ;
+select_read_tail
+                = block
+                | "->" block
+                | binding_kind IDENT [ "->" ] block
+                | [ binding_kind ] type_ref IDENT "->" block ;
+select_write_arm= "writech" expression "," expression ":" [ "->" ] block ;
+select_legacy_read_arm
+                = [ "mut" | binding_kind ] IDENT "="
+                  "readch" "(" expression ")" "->" block ;
 (* Static select arms cannot use nb/try modifiers on readch/writech; the enclosing select supplies wait mode. *)
 select_arm_keyword = "when" | "case" ; (* "when" is canonical; "case" is accepted for compatibility. *)
 (* "when" and "case" are contextual keywords: outside these grammar positions they are ordinary IDENT names. *)
-select_default  = "default" ":" { statement } ;
+select_default  = "default" ":" [ "->" ] block ;
 
-(* In select_arm/select_default bodies, the next when/case/default or the closing
-   brace is a structural arm boundary and is not consumed as a nested
-   statement. At most one default arm is permitted. *)
+(* Static select supports equivalent braced and over/end outer delimiters.
+   Every arm body remains a block in both forms; the optional slim arrow only
+   introduces that block and never changes wait mode or result semantics.
+   At most one default arm is permitted, and default must be last. *)
 
 for_stmt        = "for" "(" for_of_head ")" loop_body
                 | "for" "(" c_for_head ")" loop_body
@@ -283,15 +368,39 @@ for_of_destructure_item
 for_of_rest_item= [ for_of_binding ] "..." IDENT ;
 loop_body       = block | "do" { statement } "done" ;
 expression      = assignment ;
-assignment      = conditional [ "=" assignment ] ;
+assignment      = pipeline [ "=" assignment ] ;
+pipeline        = conditional { "|>" pipeline_stage } ;
+pipeline_stage  = IDENT [ call_suffix ]
+                | ( "Option" | "Result" ) "." IDENT call_suffix
+                | pipe_lambda
+                | "nlex" pipe_lambda ;
+(* Stages are existing callables, including existing |x| -> expr lambdas.
+   No separate |> (name) binding syntax. A single lambda parameter receives
+   the entire upstream value, including Tuple[T1,...,TN]. Two or more lambda
+   parameters destructure ONE statically typed, exact-arity Tuple of the same
+   length; they do not turn non-tuples or ordinary named calls into variadic
+   arguments. Tuple-valued stage results remain a single typed value.
+   An unparenthesized inline lambda body ends before the next top-level |>,
+   which begins the NEXT stage; parenthesize (x |> inner) for nesting.
+   Option.* and Result.* stages lower to receiver combinators, all other
+   stages receive the upstream value as argument 1. Value is evaluated once,
+   stages associate leftwards, and actor 'pipe' remains a distinct operator. *)
+
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
-logic_or        = equality { "|" equality } ;
+(* Canonical bool punctuation: && > ^^ > ||, left associative.
+   && and || short-circuit. ^^ evaluates both sides once, left-to-right.
+   Outside condition heads, bare |, bare &, single ^ and word operators are
+   not logical syntax. *)
+logic_or        = logic_xor { "||" logic_xor } ;
+logic_xor       = logic_and { "^^" logic_and } ;
+logic_and       = equality { "&&" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
                   { ( "<" | "<=" | ">" | ">=" ) additive
                   | "is" "type" type_ref [ IDENT ]
                   | "matches" pattern
                   | "as" [ "?" ] type_ref
+                  | "as" "let" IDENT        (* condition-local value capture *)
                   } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
@@ -335,16 +444,35 @@ primary         = literal
                 | explicit_struct_literal
                 | "(" expression ")" ;
 
-lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
+lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda | "fnc" typed_legacy_lambda ) ;
+(* Anonymous "fnc(args) -> Type { ... }" is syntactic sugar for a lambda,
+   not a separate callable or dispatch return destination. *)
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
-lambda_param    = IDENT | type_ref IDENT ;
+(* "const fnc name = |...| -> ...;" declares an immutable inferred callable binding. *)
+lambda_param    = IDENT | type_ref IDENT | IDENT ":" type_ref ;
 typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
-lambda_body     = block | expression ;
+lambda_body     = block | type_ref block | expression ;
+(* After a lambda's '->', an explicit result type is recognized only when
+   immediately followed by a braced block: || -> void { ... }. A bare
+   expression-bodied lambda (|| -> x + 1) remains inferable. The type checker
+   enforces declared return paths, and an inline defer lambda must produce
+   void. This does not introduce '=>' for executable function bodies or
+   per-arm '-> Type' result typing in match/switch/select. *)
 
 tuple_literal   = "tuple" "(" [ argument_list ] ")"
-                | "(" expression "," expression { "," expression } ")" ;
-array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
+                | "(" expression "," expression { "," expression } ")"
+                | tilde_tuple_literal ;
+array_literal   = "arr" "[" [ expression { "," expression } ] "]"
+                | tilde_array_literal ;
+tilde_tuple_literal = "~" "tuple" "(" [ argument_list ] ")" ;
+tilde_array_literal = "~" "array" "(" [ argument_list ] ")" ;
+(* The '~' sigil is adjacent to the following kind token. The '(' may be
+   separated by spaces. The two tilde literals lower to the same AST nodes
+   as tuple(...) and arr[...]. A spaced '~ tuple(...)' remains an ordinary
+   unary '~' applied to a call; likewise a spaced '<' is not a generic tilde
+   witness. Explicit '~kind<T>(...)' and other tilde constructor families
+   remain fail-closed until their typed runtime/compiler contracts exist. *)
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 record_literal  = "record"
                   "{" [ struct_value_field { "," struct_value_field } ] "}" ;
@@ -379,10 +507,12 @@ type_ref        = type_atom { "|" type_atom } ;
 
 type_atom       = borrow_type
                 | tuple_type
+                | empty_named_tuple_type
                 | record_type
                 | alias_marker
                 | callable_generic_type
                 | named_type
+                | tilde_named_type
                 | function_type
                 | grouped_type
                 | STRING_LITERAL
@@ -392,7 +522,13 @@ type_atom       = borrow_type
 
 borrow_type     = "&" [ "mut" ] type_atom ;
 tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
-record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
+(* A record or struct prefix in type position is a type-shape marker.
+   At a declaration initializer / return-expression site the same prefix
+   instead introduces a value literal; never inspect field payload spelling
+   to decide which grammar applies. *)
+empty_named_tuple_type = ( "Tuple" | "~tuple" ) "[" "]" ;
+record_type     = [ "record" | "struct" ]
+                  "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
 alias_marker    = "type" named_type ;
@@ -401,6 +537,24 @@ callable_generic_type
 named_type      = qualified_name
                   [ "<" [ type_arg_or_named { "," type_arg_or_named } ] ">" ]
                   { sequence_type_shape } ;
+tilde_named_type = "~" tilde_builtin_kind
+                  [ "<" [ type_arg_or_named { "," type_arg_or_named } ] ">" ]
+                  { sequence_type_shape } ;
+tilde_builtin_kind = "array" | "vector" | "tuple"
+                  | "fixed_array" | "fixed_list" | "list" | "slice"
+                  | "map" | "set" | "entry" | "pair" | "record" ;
+(* Canonical positional tuple annotations, including function returns, use
+   Tuple[T1,T2,...]. Tuple<T1,T2,...> and ~tuple<T1,T2,...>
+   remain compatibility type spellings when no separate '[...]' shape is
+   present; mixing the two forms is rejected. Intrinsic bracketed shapes
+   cannot be shadowed by nominal Tuple definitions.
+   The empty shape Tuple[] is legal and distinct from Tuple[T]; other
+   empty collection shape suffixes stay rejected.
+   Value-position ~tuple(v1,v2,...) constructs a tuple value and must not
+   be used as a return type. ~array(v1,v2,...) is explicitly an array,
+   never contextually coerced to a Tuple return; legacy arr[...] is equally
+   an explicit array while bare [...] retains contextual compatibility.
+   Other ~kind(...) value constructors remain independently gated. *)
 type_arg_or_named = type_ref | named_type_param ;
 named_type_param = IDENT "=" meta_value ;
 meta_value      = INT_LITERAL | STRING_LITERAL | "true" | "false" | type_ref ;
@@ -412,8 +566,10 @@ sequence_type_item
                 | INT_LITERAL "of" type_ref
                 | "..." type_ref
                 | "..." "(" sequence_type_item { "," sequence_type_item } ")" ;
-function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "=>" type_ref
-                | "(" [ function_type_params ] ")" "=>" type_ref ;
+function_type   = "typeof" "fnc" function_type_signature
+                | function_type_signature ;
+function_type_signature
+                = "(" [ function_type_params ] ")" "=>" type_ref ;
 grouped_type    = "(" type_ref ")" ;
 function_type_params
                 = function_type_param { "," function_type_param } ;
@@ -511,6 +667,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      branch introducer; deprecated "do" remains accepted for migration and may
      be mixed with "then" across branches. Canonical "elif" accepts "elseif"
      and single-fi "else if" as aliases. All forms lower to the same semantics.
+   - if_stmt is statement-only and never appears in expression. Branch bodies do
+     not synthesize values from their last expression statement. Use the ternary
+     conditional expression for value selection, or explicit return statements
+     inside a callable for multi-statement conditional return paths.
    - "loop" and "block" are contextual statement keywords: outside the
      statement-plus-"{" form they remain legal callable names/references.
    - Single- and double-quoted struct keys are equivalent static field names.
@@ -518,6 +678,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Anonymous structs always have a closed compile-time-known field set.
      infer struct{...} is canonical; whitespace before the initializer is optional.
      Computed/backtick struct keys are rejected.
+   - Type aliases are transparent and erased: type Pair = Entry and
+     define type alias Pair as Entry denote the same alias declaration.
+     Generic aliases substitute types recursively, without introducing a
+     nominal runtime tag, constructor or extra actor wire representation.
+     "alias" remains a contextual marker; a legacy type named alias is legal.
+     Entry/Pair are not implicit built-in primitives just because these names
+     appear in an alias; the target must be declared/imported by the program.
    - Local const T value = infer<T> struct{...} binds a compiler-only inferred
      type name T (a closed struct type, NOT structural{...}); const T value =
      infer<T> tuple (...) does the same for a finite positional tuple.
@@ -692,3 +859,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    rebinds before every test, including after continue. If bindings cover
    their predicate and remaining branch chain, but do not escape the if.
    See VALUE_BOUNDARIES.md for aggregate ordering and unsupported surfaces. *)
+
+(* refutable_pattern excludes a bare binding or wildcard; constructor/pattern
+   tests reuse existing pattern ownership. Expression captures retain ordinary
+   let move/borrow rules and only exist in their condition and matching body.
+   Skippable short-circuit/conditional capture paths are rejected. *)
+refutable_pattern = pattern ;
