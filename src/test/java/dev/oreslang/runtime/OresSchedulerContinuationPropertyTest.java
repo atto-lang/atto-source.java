@@ -30,6 +30,12 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>Ready-before-await: awaiting an already completed Future still resumes
  *       through the scheduler, exactly once.</li>
  * </ol>
+ *
+ * <p>Defense in depth, measured: when the carrier pool is made to dispatch
+ * every 10th local continuation twice, these properties still hold, because
+ * the task runner's phase machine discards a duplicate dispatch. The pool's
+ * own conservation property ({@link LocalityCarrierPoolPropertyTest}) is what
+ * catches a duplicating pool.</p>
  */
 final class OresSchedulerContinuationPropertyTest {
 
