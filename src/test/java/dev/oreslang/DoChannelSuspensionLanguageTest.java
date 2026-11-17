@@ -111,7 +111,7 @@ final class DoChannelSuspensionLanguageTest {
                           return;
                         }
                         """));
-        assertTrue(failure.getMessage().contains("channel"),
+        assertTrue(failure.getMessage().contains("requires Channel<T>"),
                 failure::getMessage);
     }
 
