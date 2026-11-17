@@ -31,6 +31,18 @@ final class OptionTypeSuffixAllContextsTest {
                     return values;
                 }
 
+                fnc union_left(): int? | bool {
+                    return None;
+                }
+
+                fnc union_right(): int | bool? {
+                    return 1;
+                }
+
+                fnc grouped_union(): (int | bool)? {
+                    return None;
+                }
+
                 pub routine main(): void {
                     const int? local = maybe();
                     return;
@@ -57,7 +69,22 @@ final class OptionTypeSuffixAllContextsTest {
         assertOptionOf(listValue.parameters().getFirst().type().arguments().getFirst(), "int");
         assertOptionOf(listValue.returnType().arguments().getFirst(), "int");
 
-        Ast.FunctionDecl main = (Ast.FunctionDecl) declarations.get(5);
+        Ast.FunctionDecl unionLeft = (Ast.FunctionDecl) declarations.get(5);
+        assertTrue(unionLeft.returnType().isUnion());
+        assertTrue(unionLeft.returnType().arguments().stream().anyMatch(t ->
+                t.name().equals("Option") && t.arguments().getFirst().name().equals("int")));
+        assertTrue(unionLeft.returnType().arguments().stream().anyMatch(t ->
+                t.name().equals("bool")));
+
+        Ast.FunctionDecl unionRight = (Ast.FunctionDecl) declarations.get(6);
+        assertTrue(unionRight.returnType().isUnion());
+        assertTrue(unionRight.returnType().arguments().stream().anyMatch(t ->
+                t.name().equals("Option") && t.arguments().getFirst().name().equals("bool")));
+
+        Ast.FunctionDecl groupedUnion = (Ast.FunctionDecl) declarations.get(7);
+        assertOptionOf(groupedUnion.returnType(), "int | bool");
+
+        Ast.FunctionDecl main = (Ast.FunctionDecl) declarations.get(8);
         Ast.BindingStmt local = (Ast.BindingStmt) main.body().getFirst();
         assertOptionOf(local.declaredType(), "int");
     }
