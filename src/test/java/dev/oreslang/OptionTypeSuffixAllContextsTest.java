@@ -82,7 +82,10 @@ final class OptionTypeSuffixAllContextsTest {
                 t.name().equals("Option") && t.arguments().getFirst().name().equals("bool")));
 
         Ast.FunctionDecl groupedUnion = (Ast.FunctionDecl) declarations.get(7);
-        assertOptionOf(groupedUnion.returnType(), "int | bool");
+        assertEquals("Option", groupedUnion.returnType().name());
+        Ast.TypeRef groupedInner = groupedUnion.returnType().arguments().getFirst();
+        assertTrue(groupedInner.isUnion());
+        assertEquals(2, groupedInner.arguments().size());
 
         Ast.FunctionDecl main = (Ast.FunctionDecl) declarations.get(8);
         Ast.BindingStmt local = (Ast.BindingStmt) main.body().getFirst();
