@@ -76,7 +76,11 @@ public final class OresMain {
                 + "\",\"managed_reference_mode\":\""
                 + NativeBuildMode.managedReferenceMode().name().toLowerCase(Locale.ROOT)
                 + "\",\"guest_execution\":\"" + (NativeBuildMode.kind() == NativeBuildMode.Kind.AOT
-                    ? "interpreter-no-jit" : "runtime-selected") + "\"}";
+                    ? "interpreter-no-jit" : "runtime-selected")
+                + "\",\"full_guest_aot_proven\":" + NativeBuildMode.fullGuestAotProven()
+                + ",\"zero_guest_tracing_gc_proven\":" + NativeBuildMode.zeroGuestTracingGcProven()
+                + ",\"zero_process_gc_proven\":" + NativeBuildMode.zeroProcessGcProven()
+                + "}";
     }
 
     private static int runForExitStatus(String[] args) throws Exception {
@@ -98,6 +102,8 @@ public final class OresMain {
         boolean checkOnly = false;
         boolean analyzeOnly = false;
         boolean buildAnalysis = false;
+        boolean requireFullGuestAot = false;
+        boolean requireZeroGuestTracingGc = false;
         String reachabilityReportPath = null;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
@@ -124,6 +130,8 @@ public final class OresMain {
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.equals("--require-full-guest-aot")) requireFullGuestAot = true;
+                else if (arg.equals("--require-zero-guest-tracing-gc")) requireZeroGuestTracingGc = true;
                 else if (arg.startsWith("--reachability-report=")) {
                     if (reachabilityReportPath != null) {
                         throw new UsageException("--reachability-report may be supplied only once");
@@ -213,6 +221,17 @@ public final class OresMain {
             NativeBuildMode.requireCompatible(ExecutionProfile.parse(mode, platform));
         } catch (IllegalArgumentException invalidOption) {
             throw new UsageException(invalidOption.getMessage());
+        }
+        // Admission happens before source discovery or guest execution. A
+        // Native Image of the Java host and a disabled collector do not
+        // constitute an authenticated guest AOT / ownership-drop proof.
+        if (requireFullGuestAot && !NativeBuildMode.fullGuestAotProven()) {
+            throw new UsageException("--require-full-guest-aot denied: this build "
+                    + "does not contain certified compiled guest machine code");
+        }
+        if (requireZeroGuestTracingGc && !NativeBuildMode.zeroGuestTracingGcProven()) {
+            throw new UsageException("--require-zero-guest-tracing-gc denied: "
+                    + "guest ownership/drop lowering is not certified");
         }
         Path path;
         if (filename == null) {
