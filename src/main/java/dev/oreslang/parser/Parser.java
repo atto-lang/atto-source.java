@@ -1929,7 +1929,7 @@ public final class Parser {
     }
 
     private FormalType parseFormalType() {
-        return optionSugar(parseTypeRef());
+        return parseTypeRefWithSugar();
     }
 
     private FormalType optionSugar(Ast.TypeRef type) {
@@ -2217,14 +2217,24 @@ public final class Parser {
         return List.copyOf(result);
     }
 
-    private Ast.TypeRef parseTypeRef() {
+    /**
+     * Parse a type reference with its optional-type suffix in every type
+     * position. The FormalType wrapper preserves whether the source used
+     * postfix '?' so formal metadata/formatting do not conflate it with an
+     * explicitly written Option<T>.
+     */
+    private FormalType parseTypeRefWithSugar() {
         Ast.TypeRef first = parseTypeAtom();
-        if (!match(PIPE)) return first;
+        if (!match(PIPE)) return optionSugar(first);
 
         List<Ast.TypeRef> options = new ArrayList<>();
         options.add(first);
         do options.add(parseTypeAtom()); while (match(PIPE));
-        return Ast.TypeRef.union(options);
+        return optionSugar(Ast.TypeRef.union(options));
+    }
+
+    private Ast.TypeRef parseTypeRef() {
+        return parseTypeRefWithSugar().type();
     }
 
     private Ast.TypeRef parseTypeAtom() {
