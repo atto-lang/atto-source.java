@@ -190,6 +190,12 @@ binding_decl    = named_inferred_binding
                   | [ type_ref ] IDENT )
                   "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
+(* Type declarations use 'type T = <type_ref>'. Type names are immutable by
+   definition; 'const type T = ...' is not a declaration. Inside a callable
+   every 'const type' spelling (including 'const type T value = ...') is
+   rejected as redundant; write 'const T value = ...'.
+   Function/block-local type declarations and their public return ABI are
+   NOT enabled in this grammar revision. *)
 named_inferred_binding
                 = "const" IDENT IDENT "=" named_inferred_literal stmt_terminator ;
 named_inferred_literal
@@ -512,8 +518,13 @@ type_atom       = borrow_type
 
 borrow_type     = "&" [ "mut" ] type_atom ;
 tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
+(* A record or struct prefix in type position is a type-shape marker.
+   At a declaration initializer / return-expression site the same prefix
+   instead introduces a value literal; never inspect field payload spelling
+   to decide which grammar applies. *)
 empty_named_tuple_type = ( "Tuple" | "~tuple" ) "[" "]" ;
-record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
+record_type     = [ "record" | "struct" ]
+                  "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
 alias_marker    = "type" named_type ;
