@@ -106,7 +106,15 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             Object executionDomain,
             SharedCodeImageStore.CodeImage codeImage,
-            String sourceActorType) { }
+            String sourceActorType,
+            /*
+             * Pointer-free logical identity of this physical actor dispatch.
+             * Its ACTOR allocation domain names the cell's heap/arena owner
+             * and is fenced by the incarnation generation. Every incarnation
+             * (spawn, STOP-then-respawn, hot reload) is a new cell with a new
+             * ordinal and generation, so incarnations never share a domain.
+             */
+            ExecutionContext logical) { }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -199,6 +207,25 @@ public final class ActorRuntime implements AutoCloseable {
     public static OptionalLong currentActorGeneration() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? OptionalLong.empty() : OptionalLong.of(current.actorGeneration());
+    }
+
+    /**
+     * Logical execution context of the current actor dispatch, or null when
+     * the caller is not inside an actor mailbox turn.
+     */
+    public static ExecutionContext currentActorExecutionContext() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.logical();
+    }
+
+    /**
+     * The innermost logical execution: the actor dispatch when inside an actor
+     * turn (even when that turn runs on an OresScheduler carrier), otherwise
+     * the OresScheduler task context, otherwise null.
+     */
+    public static ExecutionContext currentExecutionContext() {
+        ExecutionContext actor = currentActorExecutionContext();
+        return actor != null ? actor : OresScheduler.currentExecutionContext();
     }
 
     public static Object currentExecutionDomain() {
@@ -315,6 +342,16 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("WAL proof requires an admitted live physical actor turn");
         }
         return proof;
+    }
+
+    private ExecutionContext mintActorExecutionContext(long storageActorOrdinal, long generation) {
+        long execution = ExecutionContext.nextPositive(
+                nextActorExecution, "actor execution");
+        // Owner 0 is the actor's root allocation owner inside its domain.
+        // parentExecution/continuation stay 0 until compiler-lowered
+        // continuation storage is allocated in the actor's arena.
+        return ExecutionContext.actor(executionRuntimeDomain, execution,
+                storageActorOrdinal, 0L, generation, 0L, 0L);
     }
 
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
@@ -659,8 +696,15 @@ public final class ActorRuntime implements AutoCloseable {
             // Account for process CPU quotas once at VM construction, not on
             // every actor turn. Independently sized full-core pools multiply
             // runnable pthread carriers and can thrash cpuset-limited hosts.
-            CpuCarrierBudget.PoolSizes pools =
-                    CpuCarrierBudget.defaults(CpuCarrierBudget.effectiveProcessors());
+            // ores.runtime.actor.max-carriers (--actor-carriers-max) replaces
+            // the CPU count as the budget the actor pools are sized from.
+            int budget = Integer.getInteger("ores.runtime.actor.max-carriers", 0);
+            if (budget < 0 || budget > 1024) {
+                throw new IllegalArgumentException(
+                        "ores.runtime.actor.max-carriers must be in [1,1024]");
+            }
+            CpuCarrierBudget.PoolSizes pools = CpuCarrierBudget.defaults(
+                    budget == 0 ? CpuCarrierBudget.effectiveProcessors() : budget);
             int shared = Integer.getInteger(
                     "ores.runtime.actor.shared.parallelism", pools.sharedWorkers());
             return new DispatcherConfig(pools.privateWorkers(), shared, 64, 16_384);
@@ -806,6 +850,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     /** Stable *runtime-local* WAL actor slot, never a persistent database identity. */
     private final AtomicLong nextStorageActorOrdinal = new AtomicLong(1);
+    /** ExecutionId runtime domain shared by every actor dispatch of this runtime. */
+    private final long executionRuntimeDomain = ExecutionContext.allocateRuntimeDomain();
+    private final AtomicLong nextActorExecution = new AtomicLong();
     // Observation is host-only, runtime-local and metadata-only. Object identity
     // grants cannot be forged by supplying an ActorRef or a serialized ID.
     private long observationGeneration = 1;
@@ -6508,6 +6555,8 @@ public final class ActorRuntime implements AutoCloseable {
                         codeExecutor,
                         codeActorType,
                         parent);
+                // Lazy pools: the first actor of a kind creates its carrier here.
+                startCarrierForAdmission(kind, cell.dispatchLane);
 
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
@@ -9388,8 +9437,73 @@ public final class ActorRuntime implements AutoCloseable {
             cpus = java.util.Arrays.stream(configured.split(",", -1))
                     .map(String::trim).mapToInt(Integer::parseInt).toArray();
         }
+        // Lane carriers start lazily: the first admitted actor starts one,
+        // and further lanes start only for runnable work (see dispatcher doc).
         return new ActorAffinityDispatcher(parallelism, capacity, cpus,
-                lane -> newDispatcher(1, capacity, prefix + "lane-" + lane + "-"));
+                lane -> newDispatcher(1, capacity, prefix + "lane-" + lane + "-"),
+                true);
+    }
+
+    /**
+     * Make sure the pool that will run an actor of {@code kind} on
+     * {@code lane} has a live carrier. Called during spawn, before the actor
+     * is published, so a failed pthread_create rejects the spawn instead of
+     * leaving an actor that can never run.
+     */
+    private void startCarrierForAdmission(ActorKind kind, int lane) {
+        ExecutorService dispatcher = dispatcherFor(kind);
+        if (dispatcher instanceof ActorAffinityDispatcher lanes) {
+            lanes.ensureLaneStarted(lane);
+        } else if (dispatcher instanceof NativeCarrierExecutor carriers) {
+            carriers.ensureStarted();
+        } else if (dispatcher instanceof ThreadPoolExecutor pool) {
+            startUnlanedJvmCarrier(pool);
+        }
+    }
+
+    /** Require a live JVM carrier before publishing a non-affinity actor. */
+    static void startUnlanedJvmCarrier(ThreadPoolExecutor pool) {
+        Objects.requireNonNull(pool, "pool");
+        if (pool.isShutdown()) {
+            throw new RejectedExecutionException("actor pool already shut down");
+        }
+        if (pool.getPoolSize() == 0) {
+            boolean created = pool.prestartCoreThread();
+            if (!created && pool.getPoolSize() == 0) {
+                throw new RejectedExecutionException(
+                        "actor pool could not start its first JVM carrier");
+            }
+        }
+        if (pool.isShutdown() || pool.getPoolSize() == 0) {
+            throw new RejectedExecutionException(
+                    "actor pool unavailable for first-actor admission");
+        }
+    }
+
+    /**
+     * Started actor carriers per pool, for diagnostics and startup tests.
+     * A pool that has admitted no actor reports 0.
+     */
+    public record ActorCarrierCounts(int privateCarriers, int sharedCarriers, int untrustedCarriers) {
+        public int total() { return privateCarriers + sharedCarriers + untrustedCarriers; }
+    }
+
+    public ActorCarrierCounts startedActorCarriers() {
+        return new ActorCarrierCounts(
+                startedCarriers(privateDispatcher),
+                startedCarriers(sharedDispatcher),
+                startedCarriers(untrustedDispatcher));
+    }
+
+    private static int startedCarriers(ExecutorService dispatcher) {
+        if (dispatcher instanceof ActorAffinityDispatcher lanes) {
+            return lanes.startedCarriers();
+        }
+        if (dispatcher instanceof NativeCarrierExecutor carriers) {
+            return carriers.isStarted() ? carriers.getMaximumPoolSize() : 0;
+        }
+        if (dispatcher instanceof ThreadPoolExecutor pool) return pool.getPoolSize();
+        return 0;
     }
 
     private static ExecutorService newDispatcher(
@@ -9462,7 +9576,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Minted by this runtime, not supplied by a WAL frame or guest DATA. */
         private final long storageActorOrdinal;
         private final ActorKind kind;
-        private final int dispatchLane;
+        /** Home lane; under demand growth it follows the lane a busy turn moved to. */
+        private volatile int dispatchLane;
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
@@ -10498,6 +10613,26 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Reject only the dispatch whose identity is still current.
+         * A late gate/executor failure for an older callback must not
+         * revoke a replacement turn or stop its actor.
+         */
+        private boolean clearRejectedDispatchIfCurrent(Object dispatchTicket) {
+            synchronized (lifecycleLock) {
+                if (dispatchTicket == null || scheduledDispatchToken != dispatchTicket
+                        || !scheduled.get() || carrierActive) return false;
+                scheduledDispatchToken = null;
+                scheduled.set(false);
+                return true;
+            }
+        }
+
+        /** A gate rejection may run after the original callback was replaced. */
+        private void stopRejectedDispatchIfCurrent(Object dispatchTicket) {
+            if (clearRejectedDispatchIfCurrent(dispatchTicket)) stop();
+        }
+
         private void schedule() {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
@@ -10515,38 +10650,29 @@ public final class ActorRuntime implements AutoCloseable {
                 Runnable dispatch = () -> runBatch(dispatchTicket);
                 java.util.function.Consumer<Runnable> submit = runnable -> {
                     if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                        lanes.executeOnLane(dispatchLane, runnable);
+                        int placed = lanes.executeOnLane(dispatchLane, runnable);
+                        if (lanes.rehomesOnSpill()) dispatchLane = placed;
                     } else {
                         dispatcher.execute(runnable);
                     }
                 };
                 if (physicalTurnGate != null) {
-                    physicalTurnGate.dispatch(dispatch, submit, failure -> {
-                        synchronized (lifecycleLock) {
-                            if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
-                                scheduledDispatchToken = null;
-                                scheduled.set(false);
-                            }
-                        }
-                        stop();
-                    });
+                    physicalTurnGate.dispatch(dispatch, submit,
+                            failure -> stopRejectedDispatchIfCurrent(dispatchTicket));
                 } else {
                     submit.accept(dispatch);
                 }
             } catch (RejectedExecutionException rejected) {
-                synchronized (lifecycleLock) {
-                    if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
-                        scheduledDispatchToken = null;
-                        scheduled.set(false);
+                // A rejected queued callback can arrive after its ticket was
+                // cancelled or superseded. Do not poison a newer actor turn.
+                if (clearRejectedDispatchIfCurrent(dispatchTicket)) {
+                    synchronized (lifecycleLock) {
+                        gracefulTeardownPending = false;
+                        gracefulTeardownRevoked = true;
                     }
+                    fail(rejected);
+                    if (!closed.get()) throw rejected;
                 }
-                synchronized (lifecycleLock) {
-                    gracefulTeardownPending = false;
-                    gracefulTeardownRevoked = true;
-                }
-                fail(rejected);
-
-                if (!closed.get()) throw rejected;
             }
         }
 
@@ -10684,10 +10810,15 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "nested actor carrier admission would overwrite the current actor context");
             }
-            currentActor.set(this);
-            CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
+            // Mint before touching any ThreadLocal: this code is outside the
+            // try/finally that clears them, so a failure here must leave the
+            // carrier exactly as clean as the nested-admission check does.
+            ActorExecutionContext entered = new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), ref.generation(), kind, policy, executionDomain,
-                    codeImage, codeActorType));
+                    codeImage, codeActorType,
+                    mintActorExecutionContext(storageActorOrdinal, ref.generation()));
+            currentActor.set(this);
+            CURRENT_ACTOR_EXECUTION.set(entered);
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {

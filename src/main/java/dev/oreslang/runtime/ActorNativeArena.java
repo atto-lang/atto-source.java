@@ -49,6 +49,12 @@ public final class ActorNativeArena implements AutoCloseable {
         Runnable reserve(int bytes);
     }
 
+    /** Package-local pre-allocation fault injector; cannot return unsafe buffers. */
+    @FunctionalInterface
+    interface NativeAdmissionProbe {
+        void beforeAllocate(int bytes);
+    }
+
     /**
      * Weak keys with identity (not equals/hashCode) semantics. Native facades
      * such as Fields may have structural Map equality, so WeakHashMap would be
@@ -134,6 +140,7 @@ public final class ActorNativeArena implements AutoCloseable {
 
     private final Runnable checkOwner;
     private final Budget budget;
+    private final NativeAdmissionProbe nativeAdmissionProbe;
     private final long limit;
     private final ArrayList<ByteBuffer> slabs = new ArrayList<>();
     private final ArrayList<Long> slabBases = new ArrayList<>();
@@ -165,10 +172,16 @@ public final class ActorNativeArena implements AutoCloseable {
     private ActorLinearMemory linearMemory;
 
     ActorNativeArena(long limit, Runnable checkOwner, Budget budget) {
+        this(limit, checkOwner, budget, bytes -> { });
+    }
+
+    ActorNativeArena(long limit, Runnable checkOwner, Budget budget,
+                     NativeAdmissionProbe nativeAdmissionProbe) {
         if (limit <= 0) throw new IllegalArgumentException("native arena limit must be positive");
         this.limit = limit;
         this.checkOwner = Objects.requireNonNull(checkOwner);
         this.budget = Objects.requireNonNull(budget);
+        this.nativeAdmissionProbe = Objects.requireNonNull(nativeAdmissionProbe);
     }
 
     /** Fixed field names are layout metadata; values are stored only in native slots. */
@@ -767,17 +780,24 @@ public final class ActorNativeArena implements AutoCloseable {
         pendingBudgetRefunds.ensureCapacity(pendingBudgetRefunds.size() + 1);
         Runnable release = budget.reserve(bytes);
         ByteBuffer memory = null;
+        Region staged = null;
+        final long priorOffset = nextActorOffset;
         try {
+            nativeAdmissionProbe.beforeAllocate(bytes);
             NativeCarrierExecutor.ensureNativeLibraryLoaded();
             memory = allocateNative(bytes);
             if (memory == null) throw new OutOfMemoryError("native actor region allocation failed");
             long baseOffset = reserveActorOffset(bytes, Long.BYTES);
-            Region region = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
-            regions.add(region);
+            staged = new Region(memory.order(ByteOrder.LITTLE_ENDIAN), bytes, baseOffset, release);
+            regions.add(staged);
             committed += bytes;
             allocated += bytes;
-            return region;
+            return staged;
         } catch (RuntimeException | Error failure) {
+            // A failed never-published region must not burn a logical offset.
+            // The enclosing actor arena monitor excludes concurrent reservations.
+            if (staged != null) regions.remove(staged);
+            nextActorOffset = priorOffset;
             if (memory != null) releaseNative(memory);
             retainFailedAdmissionRefund(release, failure);
             throw failure;
@@ -1098,13 +1118,17 @@ public final class ActorNativeArena implements AutoCloseable {
             pendingBudgetRefunds.ensureCapacity(pendingBudgetRefunds.size() + 1);
             Runnable release = budget.reserve(capacity);
             ByteBuffer slab = null;
+            final long priorOffset = nextActorOffset;
+            final int oldSlabCount = slabs.size();
+            final int oldBaseCount = slabBases.size();
+            final int oldReleaseCount = releases.size();
             try {
-                // Grow both metadata arrays before owning native bytes, so an
-                // OOME cannot leave a freed slab published in only one list.
+                // Grow all metadata arrays before staging native ownership.
                 slabs.ensureCapacity(slabs.size() + 1);
                 slabBases.ensureCapacity(slabBases.size() + 1);
                 releases.ensureCapacity(releases.size() + 1);
                 long slabBase = reserveActorOffset(capacity, Long.BYTES);
+                nativeAdmissionProbe.beforeAllocate(capacity);
                 NativeCarrierExecutor.ensureNativeLibraryLoaded();
                 slab = allocateNative(capacity);
                 if (slab == null) throw new OutOfMemoryError("native actor arena allocation failed");
@@ -1113,6 +1137,12 @@ public final class ActorNativeArena implements AutoCloseable {
                 slabBases.add(slabBase);
                 releases.add(release);
             } catch (RuntimeException | Error failure) {
+                // A failed new slab cannot leave phantom logical addresses or
+                // partially published metadata. Existing slabs remain live.
+                while (slabs.size() > oldSlabCount) slabs.remove(slabs.size() - 1);
+                while (slabBases.size() > oldBaseCount) slabBases.remove(slabBases.size() - 1);
+                while (releases.size() > oldReleaseCount) releases.remove(releases.size() - 1);
+                nextActorOffset = priorOffset;
                 if (slab != null) releaseNative(slab);
                 retainFailedAdmissionRefund(release, failure);
                 throw failure;
