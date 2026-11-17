@@ -33,12 +33,11 @@ final class CallerTrapThreeBackendV1Test {
             return new Outcome(result.asLong(), stdout.toString(StandardCharsets.UTF_8));
         }
     }
-
     @Test
-    void successWrapsExactlyOneOption() throws Exception {
+    void successWrapsExactlyOneResult() throws Exception {
         Outcome actual = execute("""
                 pub fnc main(): int {
-                  val Option<int> value = trap (40 + 2);
+                  val Result<int, Error> value = trap (40 + 2);
                   return value.unwrap();
                 }
                 """);
@@ -47,29 +46,27 @@ final class CallerTrapThreeBackendV1Test {
     }
 
     @Test
-    void trapOfResultOkPreservesNestedTagAndPayload() throws Exception {
+    void trapOfResultOkIsNotWrappedAgain() throws Exception {
         Outcome actual = execute("""
                 fnc checked_id(int id): Result<int,String> { return Ok(id); }
                 pub fnc main(): int {
-                  val Option<Result<int,String>> outer = trap checked_id(42);
-                  return outer.unwrap().unwrap();
+                  val Result<int, String | Error> outer = trap checked_id(42);
+                  return outer.unwrap();
                 }
                 """);
         assertEquals(42, actual.value());
     }
 
     @Test
-    void resultErrDoesNotBecomeTrappedNone() throws Exception {
+    void resultErrPassesThroughAsErr() throws Exception {
         Outcome actual = execute("""
                 fnc checked_id(int id): Result<int,String> {
                   if id < 0 then return Err("invalid"); fi
                   return Ok(id);
                 }
                 pub fnc main(): int {
-                  val Option<Result<int,String>> outer = trap checked_id(-1);
-                  if outer.is_some() then
-                    if outer.unwrap().is_err() then return 7; fi
-                  fi
+                  val Result<int, String | Error> outer = trap checked_id(-1);
+                  if outer.is_err() then return 7; fi
                   return 0;
                 }
                 """);
@@ -77,12 +74,12 @@ final class CallerTrapThreeBackendV1Test {
     }
 
     @Test
-    void nestedSomeNoneIsNotFlattened() throws Exception {
+    void anOptionValueIsOrdinaryDataInsideOk() throws Exception {
         Outcome actual = execute("""
                 fnc missing(): Option<int> { return None; }
                 pub fnc main(): int {
-                  val Option<Option<int>> nested = trap missing();
-                  if nested.is_some() then
+                  val Result<Option<int>, Error> nested = trap missing();
+                  if nested.is_ok() then
                     if nested.unwrap().is_none() then return 13; fi
                   fi
                   return 0;
@@ -99,7 +96,7 @@ final class CallerTrapThreeBackendV1Test {
                   return 42;
                 }
                 pub fnc main(): int {
-                  val Option<int> value = trap checked();
+                  val Result<int, Error> value = trap checked();
                   return value.unwrap();
                 }
                 """);
@@ -108,7 +105,7 @@ final class CallerTrapThreeBackendV1Test {
     }
 
     @Test
-    void ordinaryCheckedCastFailureBecomesNone() throws Exception {
+    void ordinaryCheckedCastFailureBecomesErr() throws Exception {
         Outcome actual = execute("""
                 define class Animal as
                 end
@@ -118,8 +115,8 @@ final class CallerTrapThreeBackendV1Test {
                 end
                 fnc as_dog(Animal value): Dog { return value as Dog; }
                 pub fnc main(): int {
-                  val Option<Dog> outcome = trap as_dog(new Cat());
-                  if outcome.is_none() then return 9; fi
+                  val Result<Dog, Error> outcome = trap as_dog(new Cat());
+                  if outcome.is_err() then return 9; fi
                   return 0;
                 }
                 """);
@@ -131,7 +128,7 @@ final class CallerTrapThreeBackendV1Test {
         String source = """
                 pub fnc main(): int {
                   val Option<int> missing = None;
-                  val Option<int> ignored = trap missing.unwrap();
+                  val Result<int, Error> ignored = trap missing.unwrap();
                   return 0;
                 }
                 """;
@@ -141,7 +138,7 @@ final class CallerTrapThreeBackendV1Test {
     }
 
     @Test
-    void anOptionCannotSilentlyBecomeBareI64() {
+    void aTrappedResultCannotSilentlyBecomeBareI64() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 pub fnc main(): int {
                   val int bad = trap (40 + 2);
