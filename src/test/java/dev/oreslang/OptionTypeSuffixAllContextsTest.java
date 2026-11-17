@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Postfix type '?' is Option<T> in every type-reference context. */
 final class OptionTypeSuffixAllContextsTest {
@@ -45,7 +46,8 @@ final class OptionTypeSuffixAllContextsTest {
 
         Ast.FunctionDecl identity = (Ast.FunctionDecl) declarations.get(2);
         assertOptionOf(identity.parameters().getFirst().type().arguments().getFirst(), "int");
-        assertOptionOf(identity.returnType(), "Option<int>");
+        assertOptionOf(identity.returnType(), "Option");
+        assertOptionOf(identity.returnType().arguments().getFirst(), "int");
 
         Ast.FunctionDecl maybe = (Ast.FunctionDecl) declarations.get(3);
         assertOptionOf(maybe.returnType(), "int");
@@ -69,7 +71,8 @@ final class OptionTypeSuffixAllContextsTest {
                 """);
         Ast.FunctionDecl function = (Ast.FunctionDecl)
                 program.modules().getFirst().declarations().getFirst();
-        assertOptionOf(function.returnType(), "Option<int>");
+        assertOptionOf(function.returnType(), "Option");
+        assertOptionOf(function.returnType().arguments().getFirst(), "int");
     }
 
     @Test
@@ -93,8 +96,8 @@ final class OptionTypeSuffixAllContextsTest {
                     IllegalArgumentException.class,
                     () -> Parser.parse("fnc invalid(): " + type + " { return 1; }"),
                     type);
-            assertEquals(true, failure.getMessage().contains("?")
-                    || failure.getMessage().contains("type"));
+            assertTrue(failure.getMessage().contains("?")
+                    || failure.getMessage().contains("type"), failure.getMessage());
         }
     }
 
