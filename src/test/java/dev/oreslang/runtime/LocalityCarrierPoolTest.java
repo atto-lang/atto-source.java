@@ -133,17 +133,28 @@ final class LocalityCarrierPoolTest {
         AtomicInteger spins = new AtomicInteger();
         CountDownLatch sharedRan = new CountDownLatch(1);
         try {
+            // The loop itself submits the shared task at turn 10, so the count is
+            // exact: no other thread's scheduling enters the measurement.
+            AtomicInteger atSubmit = new AtomicInteger();
+            AtomicInteger atRun = new AtomicInteger();
+            Runnable shared = () -> {
+                atRun.set(spins.get());
+                sharedRan.countDown();
+            };
             Runnable[] loop = new Runnable[1];
             loop[0] = () -> {
-                spins.incrementAndGet();
+                int turn = spins.incrementAndGet();
+                if (turn == 10) {
+                    atSubmit.set(turn);
+                    pool.execute(shared);
+                }
                 if (sharedRan.getCount() > 0) pool.executeNear(loop[0], pool.currentSlot());
             };
             pool.execute(loop[0]);
-            while (spins.get() < 10) Thread.onSpinWait();
-            pool.execute(sharedRan::countDown);
             assertTrue(sharedRan.await(5, TimeUnit.SECONDS));
-            assertTrue(spins.get() <= 10 + 2 * LocalityCarrierPool.SHARED_CHECK_INTERVAL,
-                    "shared work waited " + spins.get() + " local turns");
+            int waited = atRun.get() - atSubmit.get();
+            assertTrue(waited <= LocalityCarrierPool.SHARED_CHECK_INTERVAL + 1,
+                    "shared work waited " + waited + " local turns");
         } finally {
             close(pool);
         }
