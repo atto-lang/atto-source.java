@@ -61,6 +61,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
     private static final int MAX_ACTOR_GROUP_MEMBERSHIPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
+    private static final int MAX_SUPPRESSED_CLEANUP_FAILURES = 64;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
@@ -340,6 +341,29 @@ public final class ActorRuntime implements AutoCloseable {
         public Resource resource() { return resource; }
     }
 
+    private static Throwable accumulateCleanupFailure(
+            Throwable primary,
+            Throwable failure) {
+        Objects.requireNonNull(failure, "failure");
+        if (primary == null) return failure;
+        if (primary != failure
+                && primary.getSuppressed().length < MAX_SUPPRESSED_CLEANUP_FAILURES) {
+            primary.addSuppressed(failure);
+        }
+        return primary;
+    }
+
+    private static <E extends Error> E preservePriorCleanupFailure(
+            Throwable prior,
+            E fatal) {
+        Objects.requireNonNull(fatal, "fatal");
+        if (prior != null && prior != fatal
+                && fatal.getSuppressed().length < MAX_SUPPRESSED_CLEANUP_FAILURES) {
+            fatal.addSuppressed(prior);
+        }
+        return fatal;
+    }
+
     private static boolean isPrivateKind(ActorKind kind) {
         return kind == ActorKind.PRIVATE || kind == ActorKind.UNTRUSTED;
     }
@@ -570,7 +594,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         public T value() {
             rejectPrivateActorSharedMemoryAccess("Shared.value");
-            if (sharedClosed.get()) throw new IllegalStateException("Shared value belongs to a closed actor runtime");
+            if (sharedClosed.get() || ActorRuntime.this.closed.get()) {
+                throw new IllegalStateException(
+                        "Shared value belongs to a closed actor runtime");
+            }
             return value;
         }
 
@@ -1952,7 +1979,9 @@ public final class ActorRuntime implements AutoCloseable {
             this.reservedBytes = bytes;
         }
 
-        public boolean closed() { return cellClosed.get(); }
+        public boolean closed() {
+            return cellClosed.get() || ActorRuntime.this.closed.get();
+        }
 
         private boolean ownedBy(ActorRuntime runtime) {
             return ActorRuntime.this == runtime;
@@ -2019,7 +2048,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void requireOpen() {
-            if (cellClosed.get()) throw new IllegalStateException("SyncCell is closed");
+            if (cellClosed.get() || ActorRuntime.this.closed.get()) {
+                throw new IllegalStateException("SyncCell is closed");
+            }
         }
 
         @Override
@@ -2130,15 +2161,39 @@ public final class ActorRuntime implements AutoCloseable {
             return actorId;
         }
 
-        public boolean isDone() {
+        private boolean physicallyDrained() {
             return channel.isClosed() && channel.isEmpty();
         }
 
+        public boolean isDone() {
+            return ActorRuntime.this.closed.get() || physicallyDrained();
+        }
+
         public OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> next() {
+            if (ActorRuntime.this.closed.get()) {
+                return OresFuture.completed(GeneratorRuntime.Step.doneStep());
+            }
             OresFuture<ActorOutputEnvelope> read = channel.readAsync();
             OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> result =
                     new OresFuture<>(() -> read.cancel(false));
             read.whenCompleteRuntime((envelope, failure) -> {
+                final boolean shutdownWon;
+                synchronized (runtimeLifecycleLock) {
+                    // Linearize output observation against admission sealing.
+                    // A read whose channel receipt settles before shutdown may
+                    // still publish after this monitor is released. If shutdown
+                    // acquires this monitor first, no buffered value or terminal
+                    // actor error may escape through a retained output handle.
+                    shutdownWon = ActorRuntime.this.closed.get();
+                }
+                if (shutdownWon) {
+                    if (envelope != null) envelope.close();
+                    result.completeFromRuntime(
+                            GeneratorRuntime.Step.doneStep());
+                    if (physicallyDrained()) actorOutputStreams.remove(this);
+                    return;
+                }
+
                 if (failure != null) {
                     Throwable terminal = OresFuture.unwrap(failure);
                     if (terminal instanceof ChannelRuntime.ChannelClosedException
@@ -2154,7 +2209,7 @@ public final class ActorRuntime implements AutoCloseable {
                                                 ? terminal.getCause()
                                                 : terminal);
                     }
-                    if (isDone()) actorOutputStreams.remove(this);
+                    if (physicallyDrained()) actorOutputStreams.remove(this);
                     return;
                 }
 
@@ -2163,7 +2218,7 @@ public final class ActorRuntime implements AutoCloseable {
                 envelope.close();
                 result.completeFromRuntime(
                         GeneratorRuntime.Step.yielded(output));
-                if (isDone()) actorOutputStreams.remove(this);
+                if (physicallyDrained()) actorOutputStreams.remove(this);
             });
             return result;
         }
@@ -3699,6 +3754,9 @@ public final class ActorRuntime implements AutoCloseable {
         // group admission revocation and clearing managed-worker references.
         private final OresFuture<Void> closedWorkersDone =
                 new OresFuture<>(() -> false, () -> { });
+        // Protected by authorityLock. Cardinality of the workers captured at
+        // close admission, after their public ActorRefs have been revoked.
+        private int closedWorkerCount;
         private final Object authorityLock = new Object();
         // Trusted runtime resource closures, not guest callbacks. Invoked
         // outside authorityLock after the group is fenced but before worker
@@ -3869,7 +3927,9 @@ public final class ActorRuntime implements AutoCloseable {
             return Optional.ofNullable(creator);
         }
 
-        public boolean closed() { return groupClosed.get(); }
+        public boolean closed() {
+            return groupClosed.get() || ActorRuntime.this.closed.get();
+        }
 
         void registerInfrastructureClose(Runnable hook) {
             Objects.requireNonNull(hook, "hook");
@@ -3881,12 +3941,12 @@ public final class ActorRuntime implements AutoCloseable {
 
         public int memberCount() {
             requireObserver("inspect ActorGroup membership");
-            return members.size();
+            return closed() ? 0 : members.size();
         }
 
         public Set<ActorId> memberIds() {
             requireObserver("inspect ActorGroup membership");
-            return Set.copyOf(members);
+            return closed() ? Set.of() : Set.copyOf(members);
         }
 
         /**
@@ -3962,8 +4022,10 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (RuntimeException | Error failure) {
                     try {
                         worker.cancel();
-                    } catch (RuntimeException cleanup) {
-                        failure.addSuppressed(cleanup);
+                    } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                        throw preservePriorCleanupFailure(failure, fatal);
+                    } catch (RuntimeException | Error cleanup) {
+                        accumulateCleanupFailure(failure, cleanup);
                     }
                     throw failure;
                 }
@@ -4134,24 +4196,64 @@ public final class ActorRuntime implements AutoCloseable {
         /** Live managed workers at a point in time; never exposes cancellation authority. */
         public List<ActorRef<?>> workers() {
             requireObserver("inspect ActorGroup workers");
-            return List.copyOf(managedWorkers.values());
+            return closed() ? List.of() : List.copyOf(managedWorkers.values());
         }
 
         public int workerCount() {
             requireObserver("inspect ActorGroup workers");
-            return managedWorkers.size();
+            return closed() ? 0 : managedWorkers.size();
+        }
+
+        private List<ActorRef<?>> barrierWorkerSnapshot() {
+            synchronized (authorityLock) {
+                // Runtime shutdown seals admission before physical actor
+                // retirement. Do not route lifecycle barriers through workers(),
+                // which intentionally hides retained ActorRefs as soon as the
+                // enclosing runtime is closed. Until this group itself closes,
+                // its managed-worker snapshot remains the barrier authority.
+                return groupClosed.get()
+                        ? List.of()
+                        : List.copyOf(managedWorkers.values());
+            }
         }
 
         /** The snapshot can be awaited without blocking an OresVM carrier. */
         public OresFuture<List<Void>> workersReady() {
             requireObserver("await ActorGroup workers readiness");
-            return OresFutures.all(workers().stream().map(ActorRef::ready).toList());
+            return OresFutures.all(
+                    barrierWorkerSnapshot().stream().map(ActorRef::ready).toList());
         }
 
-        /** Completion snapshot; new worker admissions are not included. */
+        /**
+         * Completion snapshot; new worker admissions are not included.
+         *
+         * After group close, managedWorkers is intentionally cleared to revoke
+         * observation/cancellation authority. Its emptiness is not evidence
+         * that already-admitted workers have retired. Reuse the runtime-owned
+         * close barrier instead of completing an empty worker snapshot.
+         */
         public OresFuture<List<Void>> workersDone() {
             requireObserver("await ActorGroup workers completion");
-            return OresFutures.all(workers().stream().map(ActorRef::done).toList());
+            final List<ActorRef<?>> snapshot;
+            final boolean groupWasClosed;
+            final int closeCount;
+            synchronized (authorityLock) {
+                groupWasClosed = groupClosed.get();
+                closeCount = closedWorkerCount;
+                snapshot = groupWasClosed
+                        ? List.of()
+                        : List.copyOf(managedWorkers.values());
+            }
+            if (groupWasClosed) {
+                // Preserve the completion-result shape (one Void slot per
+                // worker owned at close), including an empty closed group.
+                // Every slot observes the same noncancellable close fence;
+                // no actor references are retained or re-exposed.
+                return OresFutures.all(
+                        Collections.nCopies(closeCount, closedWorkersDone));
+            }
+            return OresFutures.all(
+                    snapshot.stream().map(ActorRef::done).toList());
         }
 
         /**
@@ -4259,6 +4361,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public boolean hasMailman() {
             requireObserver("inspect ActorGroup Mailman");
+            if (closed()) return false;
             GroupMailmanState<?> state = mailmanState.get();
             return state != null && !state.stopped();
         }
@@ -4369,7 +4472,7 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean contains(ActorRef<?> ref) {
             Objects.requireNonNull(ref, "ref");
             requireObserver("inspect ActorGroup membership");
-            if (!ref.ownedBy(ActorRuntime.this)) return false;
+            if (closed() || !ref.ownedBy(ActorRuntime.this)) return false;
             return members.contains(ref.id());
         }
 
@@ -4383,7 +4486,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         boolean isMember(ActorId actorId) {
-            return !groupClosed.get() && members.contains(actorId);
+            return !groupClosed.get()
+                    && !ActorRuntime.this.closed.get()
+                    && members.contains(actorId);
         }
 
         ActorId requireCurrentMember(String operation) {
@@ -4491,25 +4596,16 @@ public final class ActorRuntime implements AutoCloseable {
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
                 owned = List.copyOf(managedWorkers.values());
+                closedWorkerCount = owned.size();
                 infrastructureClosures = List.copyOf(infrastructureCloseHooks);
                 infrastructureCloseHooks.clear();
                 managedWorkers.clear();
                 stoppingWorkers.clear();
             }
-            // Runtime resources are fenced immediately; this must happen
-            // without authorityLock and failures must not strand other hooks.
-            Throwable infrastructureFailure = null;
-            for (Runnable closure : infrastructureClosures) {
-                try {
-                    closure.run();
-                } catch (RuntimeException | Error failure) {
-                    if (infrastructureFailure == null) infrastructureFailure = failure;
-                    else infrastructureFailure.addSuppressed(failure);
-                }
-            }
-            // Revoke every membership before asynchronous worker cleanup. A
-            // room close frees membership quota without stopping unrelated
-            // members or tearing down their other room subscriptions.
+            // Revoke authority/membership metadata before invoking any
+            // fallible cleanup hook. A fail-fast fatal JVM error may stop
+            // subsequent cleanup, but must not leave a closed group published
+            // as live or allow stale membership authority to survive.
             synchronized (groupMembershipLock) {
                 for (ActorId member : members) {
                     Set<ActorGroupId> joined = groupMemberships.get(member);
@@ -4550,39 +4646,63 @@ public final class ActorRuntime implements AutoCloseable {
                     });
                 }
             }
-            // Closing a cooperating group never cancels ordinary members.
-            // Only explicitly managed workers are structurally cancelled.
-            // Never abort event-bus and Mailman teardown because one worker's
-            // cancellation hook failed. Preserve the failure for the manager.
-            RuntimeException cancellationFailure = null;
-            for (ActorRef<?> worker : owned) {
-                try {
-                    worker.cancel();
-                } catch (RuntimeException failure) {
-                    if (worker.isAlive()) {
-                        if (cancellationFailure == null) cancellationFailure = failure;
-                        else cancellationFailure.addSuppressed(failure);
+
+            Throwable closeFailure = null;
+            try {
+                // Runtime resources are fenced after authority metadata has
+                // retired. Ordinary unchecked failures aggregate; fatal JVM
+                // errors remain fail-fast.
+                for (Runnable closure : infrastructureClosures) {
+                    try {
+                        closure.run();
+                    } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                        throw preservePriorCleanupFailure(closeFailure, fatal);
+                    } catch (RuntimeException | Error failure) {
+                        closeFailure = accumulateCleanupFailure(closeFailure, failure);
                     }
                 }
-            }
-            try {
-                GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
-                if (mailman != null) mailman.close();
-            } finally {
+
+                // Closing a cooperating group never cancels ordinary members.
+                // Only explicitly managed workers are structurally cancelled.
+                // Never abort event-bus and Mailman teardown because one worker's
+                // ordinary cancellation hook failed. Preserve the failure for
+                // the manager.
+                for (ActorRef<?> worker : owned) {
+                    try {
+                        worker.cancel();
+                    } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                        throw preservePriorCleanupFailure(closeFailure, fatal);
+                    } catch (RuntimeException | Error failure) {
+                        if (worker.isAlive()) {
+                            closeFailure = accumulateCleanupFailure(closeFailure, failure);
+                        }
+                    }
+                }
+                try {
+                    GroupMailmanState<?> mailman = mailmanState.getAndSet(null);
+                    if (mailman != null) mailman.close();
+                } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                    throw preservePriorCleanupFailure(closeFailure, fatal);
+                } catch (RuntimeException | Error failure) {
+                    closeFailure = accumulateCleanupFailure(closeFailure, failure);
+                }
                 try {
                     eventBus.closeFromGroup();
-                } finally {
-                    actorGroups.remove(id, this);
+                } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                    throw preservePriorCleanupFailure(closeFailure, fatal);
+                } catch (RuntimeException | Error failure) {
+                    closeFailure = accumulateCleanupFailure(closeFailure, failure);
                 }
+            } finally {
+                // Publication retirement is structural, not best-effort
+                // cleanup. It must happen even when a fatal JVM error escapes.
+                actorGroups.remove(id, this);
             }
-            if (infrastructureFailure != null) {
-                if (cancellationFailure != null)
-                    infrastructureFailure.addSuppressed(cancellationFailure);
-                if (infrastructureFailure instanceof RuntimeException runtimeFailure)
+            if (closeFailure != null) {
+                if (closeFailure instanceof RuntimeException runtimeFailure)
                     throw runtimeFailure;
-                throw (Error) infrastructureFailure;
+                throw (Error) closeFailure;
             }
-            if (cancellationFailure != null) throw cancellationFailure;
         }
 
         @Override
@@ -6280,8 +6400,10 @@ public final class ActorRuntime implements AutoCloseable {
             staged.failFromRuntime(failure);
             try {
                 if (ref.isAlive()) stop(ref);
-            } catch (RuntimeException cleanup) {
-                failure.addSuppressed(cleanup);
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                throw preservePriorCleanupFailure(failure, fatal);
+            } catch (RuntimeException | Error cleanup) {
+                accumulateCleanupFailure(failure, cleanup);
             }
         }
         return completion;
@@ -6324,10 +6446,8 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable failure) {
                 // One broken ActorGroup must not prevent removal from every
                 // other group, actor count retirement or done notification.
-                if (deregistrationFailure == null) deregistrationFailure = failure;
-                else if (deregistrationFailure != failure) {
-                    deregistrationFailure.addSuppressed(failure);
-                }
+                deregistrationFailure =
+                        accumulateCleanupFailure(deregistrationFailure, failure);
             }
         }
         ActorObservation retiredObservation = observeCell(cell, true);
@@ -8725,31 +8845,68 @@ public final class ActorRuntime implements AutoCloseable {
         }
         // Only after physical actor and carrier retirement may we invalidate
         // shared/actor-group registries or erase their resource ownership.
-        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
+        // Once shutdown is committed, one trusted cleanup failure must not
+        // strand unrelated runtime-owned resources.
+        Throwable cleanupFailure = null;
+        for (ActorGroup group : List.copyOf(actorGroups.values())) {
+            try {
+                group.closeFromRuntime();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                throw preservePriorCleanupFailure(cleanupFailure, fatal);
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = accumulateCleanupFailure(cleanupFailure, failure);
+            }
+        }
         actorGroups.clear();
         // Supervisor policy images retire only AFTER physical actor/carrier exit
         // and actor-group shutdown, so outstanding CONTROL turns keep their leases.
-        RuntimeException policyCleanupFailure = null;
         for (ActorSupervisor supervisor : List.copyOf(supervisors.values())) {
             try {
                 supervisor.retireCodeFromRuntime();
-            } catch (RuntimeException failure) {
-                if (policyCleanupFailure == null) policyCleanupFailure = failure;
-                else policyCleanupFailure.addSuppressed(failure);
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                throw preservePriorCleanupFailure(cleanupFailure, fatal);
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = accumulateCleanupFailure(cleanupFailure, failure);
             }
         }
         for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
-            stream.closeAndDrainFromRuntime();
+            try {
+                stream.closeAndDrainFromRuntime();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                throw preservePriorCleanupFailure(cleanupFailure, fatal);
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = accumulateCleanupFailure(cleanupFailure, failure);
+            }
         }
         actorOutputStreams.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.reclaimAfterRuntimeQuiescence();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) {
+            try {
+                cell.reclaimAfterRuntimeQuiescence();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                throw preservePriorCleanupFailure(cleanupFailure, fatal);
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = accumulateCleanupFailure(cleanupFailure, failure);
+            }
+        }
         syncCells.clear();
-        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+        for (Shared<?> shared : List.copyOf(sharedValues)) {
+            try {
+                shared.closeFromRuntime();
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                throw preservePriorCleanupFailure(cleanupFailure, fatal);
+            } catch (RuntimeException | Error failure) {
+                cleanupFailure = accumulateCleanupFailure(cleanupFailure, failure);
+            }
+        }
         sharedValues.clear();
         sharedMemoryBytes.set(0L);
         actors.clear();
         actorCount.set(0);
-        if (policyCleanupFailure != null) throw policyCleanupFailure;
+        if (cleanupFailure != null) {
+            if (cleanupFailure instanceof RuntimeException runtimeFailure)
+                throw runtimeFailure;
+            throw (Error) cleanupFailure;
+        }
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
@@ -10282,7 +10439,7 @@ public final class ActorRuntime implements AutoCloseable {
             Throwable original = ref.terminationCause.get();
             if (original == null && ref.terminationCause.compareAndSet(null, failure)) return;
             original = ref.terminationCause.get();
-            if (original != null && original != failure) original.addSuppressed(failure);
+            if (original != null) accumulateCleanupFailure(original, failure);
         }
 
         private void fail(Throwable failure) {
@@ -10554,11 +10711,8 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (RuntimeException | Error failure) {
                     // A registration failure cannot be mistaken for a drain
                     // receipt. The outstanding count deliberately quarantines.
-                    if (notificationRegistrationFailure == null) {
-                        notificationRegistrationFailure = failure;
-                    } else if (notificationRegistrationFailure != failure) {
-                        notificationRegistrationFailure.addSuppressed(failure);
-                    }
+                    notificationRegistrationFailure =
+                            accumulateCleanupFailure(notificationRegistrationFailure, failure);
                 }
             }
             if (notificationRegistrationFailure != null) {
@@ -10582,10 +10736,8 @@ public final class ActorRuntime implements AutoCloseable {
                     try {
                         future.cancel(false);
                     } catch (RuntimeException | Error failure) {
-                        if (revocationFailure == null) revocationFailure = failure;
-                        else if (revocationFailure != failure) {
-                            revocationFailure.addSuppressed(failure);
-                        }
+                        revocationFailure =
+                                accumulateCleanupFailure(revocationFailure, failure);
                     }
                 }
             } finally {
@@ -10668,10 +10820,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // A failed observer registration/settlement cannot count
                     // as a completed drain. Preserve the count and quarantine,
                     // but always attempt every remaining observer.
-                    if (drainPublishFailure == null) drainPublishFailure = failure;
-                    else if (drainPublishFailure != failure) {
-                        drainPublishFailure.addSuppressed(failure);
-                    }
+                    drainPublishFailure =
+                            accumulateCleanupFailure(drainPublishFailure, failure);
                 }
             }
             if (drainPublishFailure != null) {
