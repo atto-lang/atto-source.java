@@ -100,7 +100,8 @@ public final class OresVM implements AutoCloseable {
         }
     }
 
-    private final ThreadPoolExecutor controlExecutor;
+    /** Root and CONTROL carriers; root-task continuations prefer their last carrier. */
+    private final LocalityCarrierPool controlExecutor;
     private final ThreadPoolExecutor physicalStopExecutor;
     private final OresScheduler rootScheduler;
     private final NioReadinessGroup nioReadiness;
@@ -133,14 +134,8 @@ public final class OresVM implements AutoCloseable {
                 .name("ores-control-plane-" + carrierId.getAndIncrement())
                 .unstarted(runnable);
 
-        this.controlExecutor = new ThreadPoolExecutor(
-                controlParallelism,
-                controlParallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
-                factory,
-                new ThreadPoolExecutor.AbortPolicy());
+        this.controlExecutor = new LocalityCarrierPool(
+                controlParallelism, DEFAULT_QUEUE_CAPACITY, factory);
 
         // Limits are fixed at VM startup; no mutable global/test properties
         // may affect physical STOP capacity after admission.
@@ -259,10 +254,9 @@ public final class OresVM implements AutoCloseable {
         }
 
         try {
-            controlExecutor.allowCoreThreadTimeOut(false);
-            int required = controlExecutor.getCorePoolSize();
-            int newlyStarted = controlExecutor.prestartAllCoreThreads();
-            int live = controlExecutor.getPoolSize();
+            int required = controlExecutor.carrierCount();
+            int newlyStarted = controlExecutor.prestartAll();
+            int live = controlExecutor.liveCarriers();
             if (live != required) {
                 throw new IllegalStateException(
                         "CONTROL dispatcher bootstrap incomplete: required="
@@ -281,7 +275,7 @@ public final class OresVM implements AutoCloseable {
     }
 
     int controlCarrierCount() {
-        return controlExecutor.getPoolSize();
+        return controlExecutor.liveCarriers();
     }
 
     /** Trusted runtime-only shared readiness domain; guest access is permission-gated above it. */
