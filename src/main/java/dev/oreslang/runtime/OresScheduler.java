@@ -268,6 +268,8 @@ public final class OresScheduler implements AutoCloseable {
     private final int parallelism;
     private final Executor executor;
     private final ExecutorService ownedExecutor;
+    /** Non-null when carriers honor a preferred-carrier hint. */
+    private final LocalityCarrierPool localityPool;
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     /**
@@ -333,17 +335,13 @@ public final class OresScheduler implements AutoCloseable {
                         state().schedulerCarrier = null;
                     }
                 });
-        ThreadPoolExecutor pool = new ThreadPoolExecutor(
-                parallelism,
-                parallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>(queueCapacity),
-                factory,
-                new ThreadPoolExecutor.AbortPolicy());
-        pool.prestartAllCoreThreads();
+        // Continuations prefer the carrier that last ran their task
+        // (CONTINUATION_LOCALITY_V1 rule 5); see LocalityCarrierPool.
+        LocalityCarrierPool pool = new LocalityCarrierPool(parallelism, queueCapacity, factory);
+        pool.prestartAll();
         this.executor = pool;
         this.ownedExecutor = pool;
+        this.localityPool = pool;
     }
 
     private OresScheduler(
@@ -361,6 +359,7 @@ public final class OresScheduler implements AutoCloseable {
         this.executor = Objects.requireNonNull(executor, "executor");
         this.ownedExecutor = ownedExecutor;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this.localityPool = executor instanceof LocalityCarrierPool pool ? pool : null;
     }
 
     /**
@@ -759,11 +758,11 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private void executeTurn(Runnable turn, Runnable afterTurn,
-            java.util.function.Consumer<Throwable> admissionFailure) {
+            java.util.function.Consumer<Throwable> admissionFailure, int preferredCarrier) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
-        executor.execute(() -> {
+        Runnable carrierTurn = () -> {
             ThreadState state = state();
             boolean priorCarrier = Boolean.TRUE.equals(state.schedulerCarrier);
             OresScheduler previousCarrierScheduler = state.carrierScheduler;
@@ -786,7 +785,9 @@ public final class OresScheduler implements AutoCloseable {
                     state.schedulerCarrier = priorCarrier ? Boolean.TRUE : null;
                 }
             }
-        });
+        };
+        if (localityPool != null) localityPool.executeNear(carrierTurn, preferredCarrier);
+        else executor.execute(carrierTurn);
     }
 
     private void ensureTaskAdmissionOpen() {
@@ -862,6 +863,10 @@ public final class OresScheduler implements AutoCloseable {
 
         private final Task<T> task;
         private final ExecutionContext executionContext;
+        /** Carrier slot that ran the previous turn; a soft placement hint only. */
+        private volatile int preferredCarrier = LocalityCarrierPool.NO_PREFERENCE;
+        /** A cooperate yield requeues behind runnable work, so it forfeits locality. */
+        private volatile boolean cooperateYield;
         /** Immutable logical trace identity persists across await/cooperate turns. */
         private volatile TraceContext traceContext;
         private final Runnable onQuiescent;
@@ -1016,14 +1021,35 @@ public final class OresScheduler implements AutoCloseable {
             AtomicBoolean ownsExecution = new AtomicBoolean();
             try {
                 executeTurn(() -> {
+                    // Remember this carrier so the next turn (a resumed
+                    // continuation) prefers it. A hint never grants authority.
+                    if (localityPool != null) preferredCarrier = localityPool.currentSlot();
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn(ownsExecution);
                     }
-                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal);
+                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal, nextCarrierHint());
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
             }
+        }
+
+        /**
+         * A continuation prefers the carrier that ran its previous turn. A new
+         * task started from one of this pool's carriers prefers that carrier,
+         * which keeps a parent and its child warm in one cache. Either way an
+         * idle carrier takes the turn if it waits longer than the pool grace.
+         * A cooperate yield has no preference: it must queue behind work that
+         * is already runnable.
+         */
+        private int nextCarrierHint() {
+            if (localityPool == null) return LocalityCarrierPool.NO_PREFERENCE;
+            if (cooperateYield) {
+                cooperateYield = false;
+                return LocalityCarrierPool.NO_PREFERENCE;
+            }
+            int hint = preferredCarrier;
+            return hint != LocalityCarrierPool.NO_PREFERENCE ? hint : localityPool.currentSlot();
         }
 
         private void runTurn(AtomicBoolean ownsExecution) {
@@ -1201,6 +1227,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void armCooperate() {
+            cooperateYield = true;
             Resume resume = Resume.completed(null, null);
             if (!pendingResume.compareAndSet(null, resume)) {
                 failTerminal(new IllegalStateException(
