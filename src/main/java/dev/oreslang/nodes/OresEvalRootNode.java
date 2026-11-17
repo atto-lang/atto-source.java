@@ -12,6 +12,7 @@ import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresVector;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -1140,7 +1141,24 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
+        private Object admitDeclaredVector(Ast.TypeRef declared, Object value) {
+            if (declared == null || !declared.name().equals("Vector")
+                    || findClass("Vector") != null || !(value instanceof List<?> sequence)) {
+                return value;
+            }
+            // All source-declared Vector boundaries must preserve a bound,
+            // including literals, parameter binding and function returns.
+            OresVector admitted = allocateGuestVector(declared);
+            if (value instanceof OresVector existing
+                    && existing.maxCapacity() <= admitted.maxCapacity()) {
+                return existing;
+            }
+            admitted.addAll(sequence);
+            return admitted;
+        }
+
         private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
+            value = admitDeclaredVector(binding.declaredType(), value);
             Ast.ClassDecl view = staticClassView(binding.declaredType());
             if (view == null) view = staticClassView(binding.initializer(), env);
             env.define(binding.name(), value, binding.kind(), view);
@@ -1178,7 +1196,7 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Object> tuple = new ArrayList<>(args.size());
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
-                Object value = args.get(i);
+                Object value = admitDeclaredVector(param.type(), args.get(i));
                 tuple.add(value);
                 env.define(
                         param.name(),
@@ -6124,6 +6142,31 @@ public final class OresEvalRootNode extends RootNode {
                     "unsupported assignment target");
         }
 
+        private static OresVector allocateGuestVector(Ast.TypeRef type) {
+            long max = OresVector.MAX_CAPACITY;
+            long inline = 0;
+            for (Ast.TypeRef argument : type.arguments()) {
+                if (!argument.isNamedParameter()) continue;
+                String key = argument.namedParameterName();
+                if (!key.equals("max_capacity") && !key.equals("inline_capacity")) continue;
+                Ast.TypeRef amount = argument.namedParameterValue();
+                if (!amount.isIntLiteral()) {
+                    throw new IllegalArgumentException("Vector " + key
+                            + " must be an integer compile-time constant");
+                }
+                long number = amount.intLiteralValue();
+                if (key.equals("max_capacity")) max = number;
+                else inline = number;
+            }
+            if (max < 0 || max > OresVector.MAX_CAPACITY
+                    || inline < 0 || inline > max) {
+                throw new IllegalArgumentException(
+                        "Vector capacity metadata violates supported max_capacity="
+                                + OresVector.MAX_CAPACITY);
+            }
+            return new OresVector((int) max, (int) inline);
+        }
+
         private Object instantiateEvaluated(
                 Ast.NewExpr created,
                 List<Object> args,
@@ -6142,6 +6185,13 @@ public final class OresEvalRootNode extends RootNode {
                                     + "<T> constructor takes no positional arguments");
                 }
                 return new ArrayList<>();
+            }
+            if (created.type().name().equals("Vector") && findClass("Vector") == null) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Vector[T] constructor takes no positional arguments");
+                }
+                return allocateGuestVector(created.type());
             }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
@@ -6431,6 +6481,15 @@ public final class OresEvalRootNode extends RootNode {
                 if (value instanceof GeneratorRuntime.Step<?> step) {
                     return step.done() ? GeneratorRuntime.Step.doneStep()
                             : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
+                }
+                if (value instanceof OresVector vector) {
+                    // Detached async values cannot silently lose max_capacity by
+                    // widening a bounded Vector into an unrestricted ArrayList.
+                    OresVector copy = new OresVector(vector.maxCapacity(), 0);
+                    for (Object item : vector) {
+                        copy.add(detachAsyncValue(item, visiting));
+                    }
+                    return copy;
                 }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
@@ -7541,6 +7600,42 @@ public final class OresEvalRootNode extends RootNode {
                         arguments -> applyIntegerIntrinsic(integerIntrinsic, arguments),
                         values);
             }
+            // Resolve lexical self using the compiler-linked instance slot.
+            // Do not dynamically search arbitrary runtime receiver members:
+            // that could expose subtype-only methods or imported capabilities.
+            if (call.callee() instanceof Ast.NameExpr unqualified
+                    && env.lexicalContainerClass() != null
+                    && env.accessClass() != null // nlex closures lose receiver authority
+                    && env.lookup(unqualified.name()) == Env.MISSING
+                    && !Set.of("init", "Some", "Ok", "Err", "And", "Or", "Xor",
+                            "print", "task_context", "task_cancel_requested",
+                            "$task_context_enter", "$task_context_exit").contains(unqualified.name())) {
+                Object lexicalSelf = env.lookup("self");
+                if (lexicalSelf instanceof OresObject receiver) {
+                    CallableSelector selector =
+                            CallableSelector.instance(unqualified.name(), call.arguments().size());
+                    Ast.MethodDecl declared = findMethod(env.lexicalContainerClass(), selector);
+                    if (declared != null) {
+                        if (findFunction(unqualified.name(), call.arguments().size()) != null
+                                || namedImports.containsKey(unqualified.name())) {
+                            throw new IllegalArgumentException(
+                                    "ambiguous unqualified call '" + unqualified.name()
+                                            + "': both a self method and a free/imported callable match; "
+                                            + "write self." + unqualified.name() + "(...) or qualify the function");
+                        }
+                        Ast.MethodDecl selected = receiver.owner.findMethod(receiver.klass, selector);
+                        if (selected == null) {
+                            throw new IllegalStateException(
+                                    "linked receiver is missing a lexically checked method slot");
+                        }
+                        receiver.owner.requireClassMemberVisible(
+                                selected.visibility(), receiver.owner.declaringClass(selected),
+                                env.accessClass(), "method", selected.name());
+                        List<Object> args = evaluateArguments(call.arguments(), env);
+                        return receiver.owner.methodInvocation(receiver, selected, args);
+                    }
+                }
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 // Immutable checked target within this evaluator's code image.
@@ -7558,6 +7653,17 @@ public final class OresEvalRootNode extends RootNode {
                     List<Object> args = evaluateArguments(call.arguments(), env);
                     return functionInvocation(direct, args);
                 }
+            }
+
+            if (call.callee() instanceof Ast.NameExpr builtin
+                    && builtin.name().equals("to_string")
+                    && env.lookup("to_string") == Env.MISSING) {
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                return invokableInvocation(
+                        values -> {
+                            requireOne(values, "to_string");
+                            return guestPrimitiveToString(values.getFirst());
+                        }, args);
             }
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
@@ -8164,6 +8270,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
                 }
+                if (name.name().equals("to_string")) return (Invokable) args -> {
+                    requireOne(args, "to_string");
+                    return guestPrimitiveToString(args.getFirst());
+                };
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
@@ -8385,6 +8495,13 @@ public final class OresEvalRootNode extends RootNode {
                                         + "<T> constructor takes no positional arguments");
                     }
                     return new ArrayList<>();
+                }
+                if (created.type().name().equals("Vector") && findClass("Vector") == null) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "Vector[T] constructor takes no positional arguments");
+                    }
+                    return allocateGuestVector(created.type());
                 }
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(
@@ -8613,7 +8730,30 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
 
+        // Checked scalar conversion only. Do not expose Java host toString(),
+        // class internals, identity strings, or implicit interpolation coercion.
+        private static String guestPrimitiveToString(Object value) {
+            if (value instanceof String text) return text;
+            if (value instanceof Boolean flag) return flag ? "true" : "false";
+            if (value instanceof Long number) return Long.toString(number);
+            if (value instanceof Integer number) return Integer.toString(number);
+            if (value instanceof Short number) return Short.toString(number);
+            if (value instanceof Byte number) return Byte.toString(number);
+            throw new IllegalArgumentException(
+                    "to_string requires int, bool or String; invoke an explicit class method for objects");
+        }
+
         private Object member(Object receiver, String name, Env env) {
+            if (name.equals("to_string") && (receiver instanceof String
+                    || receiver instanceof Boolean || receiver instanceof Long
+                    || receiver instanceof Integer || receiver instanceof Short
+                    || receiver instanceof Byte)) {
+                return (Invokable) args -> {
+                    requireZero(args, "to_string");
+                    return guestPrimitiveToString(receiver);
+                };
+            }
+
             if (receiver instanceof dev.oreslang.runtime.TelemetrySpanScope scope) {
                 return switch (name) {
                     case "attribute" -> (Invokable) args -> {
@@ -8738,6 +8878,33 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (name.equals("trim")) {
                     return (Invokable) args -> { requireZero(args, "string.trim"); return text.trim(); };
+                }
+                // Storage-only Unicode scalar snapshot intrinsic. Classification
+                // and route/identifier policy belong in native std/text.atto.
+                if (name.equals("codepoints")) {
+                    return (Invokable) args -> {
+                        requireZero(args, "string.codepoints");
+                        // A bounded owned snapshot prevents host allocation attacks.
+                        // Supplementary scalars occupy one element, not two UTF-16 code units.
+                        final int maxCodepoints = 65_536;
+                        if (text.length() > maxCodepoints * 2) {
+                            throw new IllegalArgumentException("string.codepoints exceeds 65536 scalar limit");
+                        }
+                        java.util.ArrayList<Long> values =
+                                new java.util.ArrayList<>(Math.min(text.length(), maxCodepoints));
+                        for (int offset = 0; offset < text.length();) {
+                            if (values.size() == maxCodepoints) {
+                                throw new IllegalArgumentException("string.codepoints exceeds 65536 scalar limit");
+                            }
+                            int scalar = text.codePointAt(offset);
+                            if (scalar >= 0xD800 && scalar <= 0xDFFF) {
+                                throw new IllegalArgumentException("string.codepoints rejects unpaired surrogate");
+                            }
+                            values.add((long) scalar);
+                            offset += Character.charCount(scalar);
+                        }
+                        return values;
+                    };
                 }
                 if (name.equals("is_identifier") || name.equals("is_route_segment")) {
                     return (Invokable) args -> {
@@ -9101,6 +9268,17 @@ public final class OresEvalRootNode extends RootNode {
                         if (size < 1 || size > 4096) throw new IllegalArgumentException("HTTP pool size must be 1..4096");
                         return handler.pooled((int) size);
                     };
+                    case "scoped" -> (Invokable) args -> {
+                        if (args.size() != 3 || !(args.get(2) instanceof Number generation)
+                                || !isIntegral(generation)) {
+                            throw new IllegalArgumentException(
+                                    "HttpHandler.scoped requires binding, authority class and generation");
+                        }
+                        return handler.scoped(
+                                requireString(args.get(0), "binding"),
+                                requireString(args.get(1), "authority class"),
+                                generation.longValue());
+                    };
                     case "dispatch" -> (Invokable) args -> {
                         if (args.size() != 1 || !(args.get(0) instanceof NativeHttp.Exchange exchange))
                             throw new IllegalArgumentException("dispatch requires HTTP exchange");
@@ -9132,6 +9310,25 @@ public final class OresEvalRootNode extends RootNode {
                     case "move_to_claim_ns" -> exchange.transferNanos();
                     case "request_id" -> exchange.requestId();
                     case "admitted_ns" -> exchange.admittedNanos();
+                    case "dispatch_handler" -> exchange.dispatchHandler();
+                    case "dispatch_binding" -> exchange.dispatchBinding();
+                    case "dispatch_authority_class" -> exchange.dispatchAuthorityClass();
+                    case "dispatch_scope_generation" -> exchange.dispatchScopeGeneration();
+                    case "dispatch_actor_generation" -> exchange.dispatchActorGeneration();
+                    case "dispatch_exchange_generation" -> exchange.dispatchExchangeGeneration();
+                    case "dispatch_sequence" -> exchange.dispatchSequence();
+                    case "dispatch_receipt_valid" -> (Invokable) args -> {
+                        if (args.size() != 4 || !(args.get(3) instanceof Number generation)
+                                || !isIntegral(generation)) {
+                            throw new IllegalArgumentException(
+                                    "dispatch_receipt_valid requires handler, binding, authority class and generation");
+                        }
+                        return exchange.dispatchReceiptValid(
+                                requireString(args.get(0), "handler"),
+                                requireString(args.get(1), "binding"),
+                                requireString(args.get(2), "authority class"),
+                                generation.longValue());
+                    };
                     case "completion" -> exchange.completion();
                     case "operation_id" -> exchange.operationId();
                     case "pipeline_id" -> (long) exchange.pipelineId();
@@ -9771,6 +9968,37 @@ public final class OresEvalRootNode extends RootNode {
                         @SuppressWarnings("unchecked")
                         List<Object> list = (List<Object>) rawList;
                         list.add(args.getFirst());
+                        return null;
+                    };
+                    case "push" -> (Invokable) args -> {
+                        requireOne(args, "Vector.push");
+                        @SuppressWarnings("unchecked")
+                        List<Object> list = (List<Object>) rawList;
+                        list.add(args.getFirst());
+                        return null;
+                    };
+                    case "pop" -> (Invokable) args -> {
+                        requireZero(args, "Vector.pop");
+                        if (rawList.isEmpty()) return new OptionValue(false, null);
+                        @SuppressWarnings("unchecked")
+                        List<Object> list = (List<Object>) rawList;
+                        return new OptionValue(true, list.remove(list.size() - 1));
+                    };
+                    case "reserve" -> (Invokable) args -> {
+                        requireOne(args, "Vector.reserve");
+                        int required = sequenceIndex(args.getFirst());
+                        if (required < 0 || required > OresVector.MAX_CAPACITY) {
+                            throw new IllegalArgumentException(
+                                    "Vector reserve capacity is outside supported range");
+                        }
+                        if (rawList instanceof OresVector vector) {
+                            vector.reserve(required);
+                        } else if (rawList instanceof ArrayList<?> array) {
+                            array.ensureCapacity(required);
+                        } else {
+                            throw new IllegalArgumentException(
+                                    "collection cannot reserve backing storage");
+                        }
                         return null;
                     };
                     case "set" -> (Invokable) args -> {
@@ -11640,6 +11868,10 @@ public final class OresEvalRootNode extends RootNode {
                     shapeReturnedValue(member.getValue(), nested, callable + "." + member.getKey(), resolving);
                 }
                 return value;
+            }
+
+            if (declared.name().equals("Vector") && value instanceof List<?>) {
+                return admitDeclaredVector(declared, value);
             }
 
             if (declared.name().equals("Array") || declared.name().equals("List")) {

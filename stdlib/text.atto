@@ -1,0 +1,73 @@
+// Source-owned ASCII identifier and route-segment classification.
+// Java/GraalVM exposes only String.codepoints(): a bounded, fresh scalar
+// snapshot. Validation rules and characters permitted are AttoLang policy.
+// This portable reference matches the legacy String member regex dialect
+// for inputs within the scalar-snapshot quota.
+define module text as
+  fnc ascii_alpha(int scalar): bool {
+    return (scalar >= 65 && scalar <= 90) ||
+           (scalar >= 97 && scalar <= 122);
+  }
+
+  fnc ascii_digit(int scalar): bool {
+    return scalar >= 48 && scalar <= 57;
+  }
+
+  fnc identifier_start(int scalar): bool {
+    return ascii_alpha(scalar) || scalar == 95;
+  }
+
+  fnc identifier_continue(int scalar): bool {
+    return identifier_start(scalar) || ascii_digit(scalar);
+  }
+
+  pub fnc is_identifier(String value): bool {
+    val points = value.codepoints();
+    val int count = points.size;
+    if count == 0; do
+      return false;
+    fi
+    if !identifier_start(points.get(0)); do
+      return false;
+    fi
+    for (let int index = 1; index < count; index = index + 1) {
+      if !identifier_continue(points.get(index)); do
+        return false;
+      fi
+    }
+    return true;
+  }
+
+  pub fnc is_route_segment(String value): bool {
+    val points = value.codepoints();
+    val int count = points.size;
+    if count == 0; do
+      return false;
+    fi
+
+    if count >= 2; do
+      if points.get(0) == 91 && points.get(count - 1) == 93; do
+        if count == 2; do
+          return false;
+        fi
+        if !identifier_start(points.get(1)); do
+          return false;
+        fi
+        for (let int index = 2; index < count - 1; index = index + 1) {
+          if !identifier_continue(points.get(index)); do
+            return false;
+          fi
+        }
+        return true;
+      fi
+    fi
+
+    for (let int index = 0; index < count; index = index + 1) {
+      val int scalar = points.get(index);
+      if !(identifier_continue(scalar) || scalar == 45); do
+        return false;
+      fi
+    }
+    return true;
+  }
+end
