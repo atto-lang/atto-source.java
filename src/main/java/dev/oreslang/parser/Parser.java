@@ -62,6 +62,42 @@ public final class Parser {
     }
 
     /**
+     * Narrow compiler-only query parser for the first closed-world AOT
+     * reflection metadata bootstrap. This reuses the production expression
+     * parser but does NOT admit a guest runtime type_of<T>() intrinsic.
+     *
+     * The caller must independently bind the returned nominal TypeRef against
+     * a fully typechecked source program and a verified package identity.
+     */
+    public static Ast.TypeRef parseStaticTypeOfQueryV1(String sourceExpression) {
+        if (sourceExpression == null || sourceExpression.isBlank()
+                || sourceExpression.length() > 512) {
+            throw new IllegalArgumentException("bounded type_of<T>() query required");
+        }
+        Parser parser = new Parser(new Lexer(sourceExpression).scan());
+        Ast.Expr expression = parser.parseExpression();
+        parser.consume(EOF, "expected end of static type_of query");
+        if (!(expression instanceof Ast.CallExpr call)
+                || call.origin() != Ast.CallOrigin.DIRECT
+                || !(call.callee() instanceof Ast.NameExpr callee)
+                || !callee.name().equals("type_of")
+                || !call.typeArgumentsPresent()
+                || call.typeArguments().size() != 1
+                || !call.arguments().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "static reflection query must be exactly type_of<Nominal>()");
+        }
+        Ast.TypeRef nominal = call.typeArguments().getFirst();
+        if (nominal.inferArguments() || !nominal.arguments().isEmpty()
+                || !nominal.name().matches("[A-Za-z_][A-Za-z0-9_]*")
+                || nominal.name().startsWith("_")) {
+            throw new IllegalArgumentException(
+                    "static reflection v1 requires one closed public nominal type");
+        }
+        return nominal;
+    }
+
+    /**
      * Explicit opt-in strict AttoLang v1 syntax admission. This is not inferred
      * from the filename: existing .ores and .atto legacy callers remain intact.
      * Fail before AST lowering on C-style equality or opaque template payloads,
