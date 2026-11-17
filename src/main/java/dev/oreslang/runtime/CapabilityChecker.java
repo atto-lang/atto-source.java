@@ -433,6 +433,15 @@ public final class CapabilityChecker {
                 }
                 return;
             }
+            if (runtime.operation().equals("workflow_request")) {
+                require(policy, IsolatePolicy.Capability.WORKFLOW_STORAGE,
+                        "rt workflow_request");
+                if (runtime.arguments().size() != 1) {
+                    throw new SecurityException("rt workflow_request requires one scalar payload");
+                }
+                for (Ast.Expr argument : runtime.arguments()) checkExpr(argument, policy);
+                return;
+            }
             if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
@@ -516,6 +525,8 @@ public final class CapabilityChecker {
                 if (path.startsWith("process.spawn")) require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
             }
             checkExpr(m.receiver(), policy);
+        } else if (expr instanceof Ast.CaptureExpr e) {
+            checkExpr(e.value(), policy);
         } else if (expr instanceof Ast.SpreadExpr e) {
             checkExpr(e.expression(), policy);
         } else if (expr instanceof Ast.BinaryExpr e) { checkExpr(e.left(), policy); checkExpr(e.right(), policy); }
@@ -532,6 +543,12 @@ public final class CapabilityChecker {
         }
         else if (expr instanceof Ast.AwaitExpr e) checkExpr(e.expression(), policy);
         else if (expr instanceof Ast.TaskExpr e) {
+            // The type checker and evaluator still reject gpu task outright;
+            // isolate policy must also deny device work independently, so
+            // enabling a GPU provider can never bypass the GPU capability.
+            if (e.domain() == Ast.ExecutionDomain.GPU) {
+                require(policy, IsolatePolicy.Capability.GPU, "gpu task");
+            }
             checkStatements(e.body(), policy);
         }
         else if (expr instanceof Ast.ChannelOpExpr e) {

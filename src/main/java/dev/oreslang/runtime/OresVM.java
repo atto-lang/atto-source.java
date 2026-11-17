@@ -23,14 +23,40 @@ import java.util.concurrent.atomic.AtomicInteger;
  * root continuations without lazily creating runtime infrastructure.</p>
  */
 public final class OresVM implements AutoCloseable {
-    private static final int DEFAULT_CONTROL_PARALLELISM =
-            Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+    // Two VM-owned CONTROL workers are enough for the cold startup barrier,
+    // independent of the number of host CPUs. Extra idle CONTROL workers do
+    // not improve actor carrier availability, which is managed separately.
+    // Explicit -Dores.runtime.control.parallelism overrides remain supported.
+    // This counts Oreslang CONTROL workers, not all JVM or OS threads.
+    private static final int DEFAULT_CONTROL_PARALLELISM = 2;
+    // Do not allow a malformed/hostile runtime property to request an
+    // unbounded number of eagerly created platform threads.
+    private static final int MAX_CONTROL_PARALLELISM = 128;
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
     // Resource revokers may block. They must never occupy the CONTROL pool.
     // One bounded, VM-owned executor serves all actors and supervisors.
     private static final int DEFAULT_PHYSICAL_STOP_PARALLELISM =
             Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors()));
     private static final int DEFAULT_PHYSICAL_STOP_QUEUE_CAPACITY = 16_384;
+
+    /** NIO selector/completion plumbing is host runtime code, never guest execution. */
+    private static final ThreadLocal<Boolean> ON_NIO_WORKER = new ThreadLocal<>();
+
+    static boolean onNioWorker() {
+        return Boolean.TRUE.equals(ON_NIO_WORKER.get());
+    }
+
+    static void runAsNioWorker(Runnable work) {
+        Objects.requireNonNull(work, "work");
+        Boolean previous = ON_NIO_WORKER.get();
+        ON_NIO_WORKER.set(Boolean.TRUE);
+        try {
+            work.run();
+        } finally {
+            if (previous == null) ON_NIO_WORKER.remove();
+            else ON_NIO_WORKER.set(previous);
+        }
+    }
 
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
@@ -77,6 +103,7 @@ public final class OresVM implements AutoCloseable {
     private final ThreadPoolExecutor controlExecutor;
     private final ThreadPoolExecutor physicalStopExecutor;
     private final OresScheduler rootScheduler;
+    private final NioReadinessGroup nioReadiness;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -93,8 +120,11 @@ public final class OresVM implements AutoCloseable {
             Executor rootAdmission, int physicalParallelism, int physicalQueue) {
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
-        if (controlParallelism <= 0) {
-            throw new IllegalArgumentException("control parallelism must be positive");
+        ActorHeapAdmission.requireSupportedTenantIsolationMode(
+                System.getProperty("ores.runtime.tenant.isolation", "trusted-inprocess"));
+        if (controlParallelism < 1 || controlParallelism > MAX_CONTROL_PARALLELISM) {
+            throw new IllegalArgumentException(
+                    "control parallelism must be in [1," + MAX_CONTROL_PARALLELISM + "]");
         }
 
         AtomicInteger carrierId = new AtomicInteger();
@@ -145,6 +175,9 @@ public final class OresVM implements AutoCloseable {
             throw failure;
         }
         this.rootScheduler = initializedRoot;
+        // Construction owns no selector or reactor thread. The first accepted
+        // readiness watch starts the VM-owned reactor lazily.
+        this.nioReadiness = new NioReadinessGroup();
         try {
             startup();
         } catch (RuntimeException | Error failure) {
@@ -155,24 +188,54 @@ public final class OresVM implements AutoCloseable {
         }
     }
 
+    /**
+     * Resolve the process-level override once at VM creation, using a bounded
+     * decimal integer. Unlike Integer.getInteger, malformed overrides must
+     * fail closed rather than silently fall back to the default.
+     */
+    static int configuredControlParallelism(String configured) {
+        if (configured == null) return DEFAULT_CONTROL_PARALLELISM;
+        final int requested;
+        try {
+            requested = Integer.parseInt(configured);
+        } catch (NumberFormatException malformed) {
+            throw new IllegalArgumentException(
+                    "ores.runtime.control.parallelism must be a decimal integer in [1,"
+                            + MAX_CONTROL_PARALLELISM + "]", malformed);
+        }
+        if (requested < 1 || requested > MAX_CONTROL_PARALLELISM) {
+            throw new IllegalArgumentException(
+                    "ores.runtime.control.parallelism must be in [1,"
+                            + MAX_CONTROL_PARALLELISM + "]");
+        }
+        return requested;
+    }
+
     static OresVM create(OresScheduler.TurnExecutor turnExecutor) {
         return create(turnExecutor, null);
     }
 
     static OresVM create(OresScheduler.TurnExecutor turnExecutor, Executor rootAdmission) {
+        return createConfigured(turnExecutor, rootAdmission,
+                System.getProperty("ores.runtime.control.parallelism"));
+    }
+
+    /**
+     * Shared production factory path, with explicit configuration for
+     * deterministic tests; no test needs to change process-wide properties.
+     */
+    static OresVM createConfigured(OresScheduler.TurnExecutor turnExecutor,
+            Executor rootAdmission, String configuredControl) {
         return new OresVM(
-                Integer.getInteger(
-                        "ores.runtime.control.parallelism",
-                        DEFAULT_CONTROL_PARALLELISM),
-                turnExecutor,
-                rootAdmission);
+                configuredControlParallelism(configuredControl),
+                turnExecutor, rootAdmission);
     }
 
     /** Test-only deterministic executor limits; no global property mutation. */
     static OresVM createWithPhysicalStopLimits(int parallelism, int queueCapacity) {
         return new OresVM(
-                Integer.getInteger("ores.runtime.control.parallelism",
-                        DEFAULT_CONTROL_PARALLELISM),
+                configuredControlParallelism(
+                        System.getProperty("ores.runtime.control.parallelism")),
                 Runnable::run,
                 null, parallelism, queueCapacity);
     }
@@ -219,6 +282,16 @@ public final class OresVM implements AutoCloseable {
 
     int controlCarrierCount() {
         return controlExecutor.getPoolSize();
+    }
+
+    /** Trusted runtime-only shared readiness domain; guest access is permission-gated above it. */
+    NioReadinessGroup nioReadiness() {
+        if (!started()) throw new IllegalStateException("Oreslang VM is not running");
+        return nioReadiness;
+    }
+
+    int nioReactorCount() {
+        return nioReadiness.reactorCount();
     }
 
     public OresScheduler rootScheduler() {
@@ -303,6 +376,26 @@ public final class OresVM implements AutoCloseable {
         return OresScheduler.current() == rootScheduler;
     }
 
+    /**
+     * Fence readiness admission and prove the selector has physically exited
+     * before actor/root CONTROL teardown. Return the failure so the remaining
+     * VM-owned executors are still retired even when NIO quiescence fails.
+     */
+    private RuntimeException closeNioReadiness() {
+        nioReadiness.close();
+        try {
+            if (!nioReadiness.awaitStopped(5, TimeUnit.SECONDS)) {
+                return new IllegalStateException(
+                        "Oreslang NIO reactor did not terminate before CONTROL shutdown");
+            }
+            return null;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return new IllegalStateException(
+                    "interrupted while closing Oreslang NIO reactor", interrupted);
+        }
+    }
+
     @Override
     public void close() {
         // A CONTROL/root task cannot wait for its own carrier to leave. Reject
@@ -311,6 +404,7 @@ public final class OresVM implements AutoCloseable {
         // An ordinary actor/Mailman must likewise delegate blocking VM teardown
         // to its supervising host after its turn finishes.
         if (OresScheduler.current() != null
+                || onNioWorker()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException(
@@ -319,8 +413,14 @@ public final class OresVM implements AutoCloseable {
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;
             startupState = StartupState.CLOSED;
+            RuntimeException nioFailure = closeNioReadiness();
             try {
-                rootScheduler.close();
+                try {
+                    rootScheduler.close();
+                } catch (RuntimeException | Error failure) {
+                    if (nioFailure != null) failure.addSuppressed(nioFailure);
+                    throw failure;
+                }
             } finally {
                 // ActorRuntime has already requested structured closure. A
                 // failed close may leave an actor quarantined; never assume a
@@ -347,16 +447,23 @@ public final class OresVM implements AutoCloseable {
                         if (physicalShutdownFailure != null) {
                             incomplete.addSuppressed(physicalShutdownFailure);
                         }
+                        if (nioFailure != null) incomplete.addSuppressed(nioFailure);
                         throw incomplete;
                     }
-                    if (physicalShutdownFailure != null) throw physicalShutdownFailure;
+                    if (physicalShutdownFailure != null) {
+                        if (nioFailure != null) physicalShutdownFailure.addSuppressed(nioFailure);
+                        throw physicalShutdownFailure;
+                    }
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    throw new IllegalStateException(
+                    IllegalStateException failure = new IllegalStateException(
                             "interrupted while closing Oreslang CONTROL scheduler",
                             interrupted);
+                    if (nioFailure != null) failure.addSuppressed(nioFailure);
+                    throw failure;
                 }
             }
+            if (nioFailure != null) throw nioFailure;
         }
     }
 }

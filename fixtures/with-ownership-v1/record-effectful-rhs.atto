@@ -1,0 +1,6 @@
+fnc calculate(int seed): int { return seed + 1; }
+pub routine main(): void {
+    const point = record{x: 3};
+    const next = point with {x => calculate(3)};
+    return;
+}

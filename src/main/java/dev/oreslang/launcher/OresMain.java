@@ -3,6 +3,7 @@ package dev.oreslang.launcher;
 import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.CompilerEffectAnalysisV0;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.SourceUnitDiagnosticException;
 import dev.oreslang.compiler.ReachabilityReport;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.ast.Ast;
@@ -58,12 +59,12 @@ public final class OresMain {
             }
             return status;
         } catch (UsageException failure) {
-            System.err.println("oreslang: " + failure.getMessage());
+            System.err.println("oreslang: " + safeDiagnosticText(failure.getMessage()));
             return 2;
         } catch (Exception failure) {
             String message = failure.getMessage();
-            System.err.println("oreslang: " +
-                    ((message == null || message.isBlank())
+            System.err.println("oreslang: " + safeDiagnosticText(
+                    message == null || message.isBlank()
                             ? failure.getClass().getSimpleName() : message));
             return 1;
         }
@@ -75,10 +76,19 @@ public final class OresMain {
                 + "\",\"managed_reference_mode\":\""
                 + NativeBuildMode.managedReferenceMode().name().toLowerCase(Locale.ROOT)
                 + "\",\"guest_execution\":\"" + (NativeBuildMode.kind() == NativeBuildMode.Kind.AOT
-                    ? "interpreter-no-jit" : "runtime-selected") + "\"}";
+                    ? "interpreter-no-jit" : "runtime-selected")
+                + "\",\"full_guest_aot_proven\":" + NativeBuildMode.fullGuestAotProven()
+                + ",\"zero_guest_tracing_gc_proven\":" + NativeBuildMode.zeroGuestTracingGcProven()
+                + ",\"zero_process_gc_proven\":" + NativeBuildMode.zeroProcessGcProven()
+                + "}";
     }
 
     private static int runForExitStatus(String[] args) throws Exception {
+        // Explicit on-device LLVM AOT build path. Never interpret "build" as a source file.
+        // This is intentionally limited to LLVM's currently supported host subset.
+        if (args.length > 0 && args[0].equals("build")) {
+            return DeviceBuildCommand.run(args);
+        }
         if (args.length == 1 && args[0].equals("--build-info")) {
             System.out.println(buildInfoJson());
             return 0;
@@ -92,6 +102,8 @@ public final class OresMain {
         boolean checkOnly = false;
         boolean analyzeOnly = false;
         boolean buildAnalysis = false;
+        boolean requireFullGuestAot = false;
+        boolean requireZeroGuestTracingGc = false;
         String reachabilityReportPath = null;
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
@@ -118,6 +130,8 @@ public final class OresMain {
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.equals("--require-full-guest-aot")) requireFullGuestAot = true;
+                else if (arg.equals("--require-zero-guest-tracing-gc")) requireZeroGuestTracingGc = true;
                 else if (arg.startsWith("--reachability-report=")) {
                     if (reachabilityReportPath != null) {
                         throw new UsageException("--reachability-report may be supplied only once");
@@ -167,6 +181,14 @@ public final class OresMain {
                     if (raw.isEmpty()) {
                         throw new IllegalArgumentException("--allow-host-class requires a fully qualified Java class name");
                     }
+                    if (raw.indexOf('#') >= 0)
+                        throw new UsageException("method selectors require --allow-host-method, not --allow-host-class");
+                    allowedHostClasses.add(raw);
+                } else if (arg.startsWith("--allow-host-method=")) {
+                    String raw = arg.substring("--allow-host-method=".length()).trim();
+                    // Exact manifest validation happens in IsolatePolicy
+                    // before building a guest Graal Context.
+                    dev.oreslang.runtime.SafeHostMemberManifest.className(raw);
                     allowedHostClasses.add(raw);
                 } else if (arg.startsWith("--")) {
                     throw new UsageException("unknown option: " + arg);
@@ -200,6 +222,17 @@ public final class OresMain {
         } catch (IllegalArgumentException invalidOption) {
             throw new UsageException(invalidOption.getMessage());
         }
+        // Admission happens before source discovery or guest execution. A
+        // Native Image of the Java host and a disabled collector do not
+        // constitute an authenticated guest AOT / ownership-drop proof.
+        if (requireFullGuestAot && !NativeBuildMode.fullGuestAotProven()) {
+            throw new UsageException("--require-full-guest-aot denied: this build "
+                    + "does not contain certified compiled guest machine code");
+        }
+        if (requireZeroGuestTracingGc && !NativeBuildMode.zeroGuestTracingGcProven()) {
+            throw new UsageException("--require-zero-guest-tracing-gc denied: "
+                    + "guest ownership/drop lowering is not certified");
+        }
         Path path;
         if (filename == null) {
             OresProjectConfig project = OresProjectConfig.discover(
@@ -208,7 +241,8 @@ public final class OresMain {
             path = project.mainEntrypoint().orElse(null);
             if (path == null) {
                 printUsage();
-                System.err.println("or define [entrypoints].main in " + OresProjectConfig.MANIFEST_NAME);
+                System.err.println("or define [entrypoints].main in " + OresProjectConfig.ATTO_MANIFEST_NAME
+                        + " (legacy: " + OresProjectConfig.MANIFEST_NAME + ")");
                 return 2;
             }
             filename = path.toString();
@@ -262,9 +296,13 @@ public final class OresMain {
             Map<String, String> defines = BuildOptions.mergeDefines(System.getenv(), buildDefines);
             Set<String> entries = buildEntryPoints.isEmpty() ? Set.of("main") : Set.copyOf(buildEntryPoints);
             BuildOptions buildOptions = new BuildOptions(defines, entries, false);
-            TreeShaker.Result result = OresCompiler.compileForBuild(
-                    directOresSource,
-                    buildOptions);
+            final TreeShaker.Result result;
+            try {
+                result = OresCompiler.compileForBuild(directOresSource, buildOptions);
+            } catch (IllegalArgumentException error) {
+                System.err.println(formatCheckDiagnostic(path, error));
+                return 1;
+            }
 
             if (reachabilityReportPath != null) {
                 final Path reportPath;
@@ -330,7 +368,11 @@ public final class OresMain {
         }
 
         ExecutionProfile profile = ExecutionProfile.parse(mode, platform);
-        int exitStatus = LinkedProgramRunner.runWithExitStatus(
+        int exitStatus = (policy.capabilities().contains(IsolatePolicy.Capability.STDIN)
+                ? LinkedProgramRunner.runWithInput(
+                        path, policy, permissions, permissionCheckMode, profile,
+                        allowedHostClasses, System.getenv(), System.in, System.out, System.err)
+                : LinkedProgramRunner.runWithExitStatus(
                 path,
                 policy,
                 permissions,
@@ -339,7 +381,7 @@ public final class OresMain {
                 allowedHostClasses,
                 System.getenv(),
                 System.out,
-                System.err).exitStatus();
+                System.err)).exitStatus();
         return exitStatus;
     }
 
@@ -418,7 +460,7 @@ public final class OresMain {
                         + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] "
                         + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
-                        + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
+                        + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] [--allow-host-method=java.lang.Long#sum(long,long)] "
                         + "[file.atto|file.ores|file.java]");
     }
 
@@ -457,18 +499,56 @@ public final class OresMain {
         }
     }
 
-    static String formatCheckDiagnostic(Path path, Exception error) {
-        String message = error.getMessage();
-        if (message == null || message.isBlank()) message = error.getClass().getSimpleName();
+    /** Keep CLI diagnostics bounded and safe to print on an ANSI terminal. */
+    private static String safeDiagnosticText(String value) {
+        if (value == null || value.isBlank()) return "<unknown error>";
+        StringBuilder safe = new StringBuilder(Math.min(2048, value.length()));
+        for (int i = 0; i < value.length() && safe.length() < 2048; i++) {
+            char ch = value.charAt(i);
+            // Reject ASCII/C1 controls and Unicode format controls (including
+            // bidi overrides and zero-width reordering) in untrusted text.
+            safe.append(Character.isISOControl(ch)
+                    || Character.getType(ch) == Character.FORMAT ? '?' : ch);
+        }
+        if (value.length() > 2048) safe.append("...");
+        return safe.toString();
+    }
 
+    private static String diagnosticUnit(Path entry, String sourceId) {
+        Path fallback = entry.toAbsolutePath().normalize();
+        try {
+            Path unit = Path.of(sourceId).toAbsolutePath().normalize();
+            Path cwd = Path.of("").toAbsolutePath().normalize();
+            if (unit.startsWith(cwd)) return safeDiagnosticText(cwd.relativize(unit).toString());
+            Path parent = fallback.getParent();
+            if (parent != null && unit.startsWith(parent))
+                return safeDiagnosticText(parent.relativize(unit).toString());
+            // Avoid printing out-of-workspace absolute paths in CI logs.
+            return safeDiagnosticText(unit.getFileName() == null ? "<source>" : unit.getFileName().toString());
+        } catch (java.nio.file.InvalidPathException invalid) {
+            return "<source>";
+        }
+    }
+
+    static String formatCheckDiagnostic(Path path, Exception error) {
+        String unit = diagnosticUnit(path, path.toString());
+        String message = error.getMessage();
+        String context = "";
+        if (error instanceof SourceUnitDiagnosticException linked) {
+            unit = diagnosticUnit(path, linked.unitId());
+            message = linked.detail();
+            if (!linked.moduleName().isBlank())
+                context += "[module: " + safeDiagnosticText(linked.moduleName()) + "] ";
+            if (!linked.namespaceName().isBlank())
+                context += "[namespace: " + safeDiagnosticText(linked.namespaceName()) + "] ";
+        }
+        if (message == null || message.isBlank()) message = error.getClass().getSimpleName();
         Matcher matcher = POSITIONED_DIAGNOSTIC.matcher(message);
         if (matcher.matches()) {
-            return path.toAbsolutePath().normalize()
-                    + ":" + matcher.group(1)
+            return unit + ":" + matcher.group(1)
                     + ":" + matcher.group(2)
-                    + ": error: " + matcher.group(3);
+                    + ": error: " + context + safeDiagnosticText(matcher.group(3));
         }
-
-        return path.toAbsolutePath().normalize() + ":1:1: error: " + message;
+        return unit + ":1:1: error: " + context + safeDiagnosticText(message);
     }
 }
