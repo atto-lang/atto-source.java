@@ -8,6 +8,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(10)
@@ -87,4 +88,52 @@ final class ActorAffinityDispatcherTest {
         }
     }
 
+
+    @Test
+    void nativeLaneMayRequestOwnDispatcherShutdownWithoutLosingQueuedWork()
+            throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        var dispatcher = new ActorAffinityDispatcher(1, 8, new int[0],
+                i -> new NativeCarrierExecutor(
+                        1, 1, 8, "ores-affinity-self-close-" + System.nanoTime() + "-"), true);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch authorizeClose = new CountDownLatch(1);
+        CountDownLatch finished = new CountDownLatch(1);
+        AtomicReference<List<Runnable>> abandoned = new AtomicReference<>();
+        AtomicReference<Throwable> unexpected = new AtomicReference<>();
+        AtomicInteger queuedRuns = new AtomicInteger();
+        Runnable pending = queuedRuns::incrementAndGet;
+        try {
+            dispatcher.ensureLaneStarted(0);
+            dispatcher.executeOnLane(0, () -> {
+                entered.countDown();
+                try {
+                    if (!authorizeClose.await(3, TimeUnit.SECONDS)) {
+                        throw new AssertionError("timed out waiting to request self-shutdown");
+                    }
+                    abandoned.set(dispatcher.shutdownNow());
+                } catch (Throwable failure) {
+                    unexpected.set(failure);
+                } finally {
+                    finished.countDown();
+                }
+            });
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            dispatcher.executeOnLane(0, pending);
+            authorizeClose.countDown();
+            assertTrue(finished.await(3, TimeUnit.SECONDS));
+            assertNull(unexpected.get(), () -> String.valueOf(unexpected.get()));
+            assertEquals(List.of(pending), abandoned.get(),
+                    "self-shutdown must return the queued, unexecuted command");
+            assertEquals(0, queuedRuns.get());
+            assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS),
+                    "all native pthread joins must complete after the active turn unwinds");
+            assertTrue(dispatcher.isTerminated());
+        } finally {
+            authorizeClose.countDown();
+            dispatcher.shutdownNow();
+        }
+    }
 }
