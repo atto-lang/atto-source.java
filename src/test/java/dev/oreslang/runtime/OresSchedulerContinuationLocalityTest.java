@@ -16,6 +16,9 @@ final class OresSchedulerContinuationLocalityTest {
 
     @Test
     void aResumedContinuationReturnsToItsIdleCarrier() throws Exception {
+        // ores.scheduler.locality.grace-micros=0 turns locality off by design.
+        org.junit.jupiter.api.Assumptions.assumeTrue(LocalityCarrierPool.DEFAULT_GRACE_NANOS > 0,
+                "continuation locality disabled");
         try (OresScheduler scheduler = new OresScheduler(4, 64)) {
             for (int round = 0; round < 50; round++) {
                 OresFuture<Integer> pending = new OresFuture<>();
