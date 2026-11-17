@@ -67,8 +67,9 @@ final class ActorLogicalStackOverflowTest {
             assertNotNull(run.failure, "awaiting the failed actor reports its failure");
             assertTrue(run.failure.getMessage().contains(LogicalStackOverflowException.class.getName()),
                     run.failure::getMessage);
-            assertTrue(run.failure.getMessage().contains("quota of " + LogicalStackQuota.segmentFrames()),
-                    "the per-invocation quota, not the carrier ceiling, must trip: " + run.failure.getMessage());
+            // Observers see only the failure type (#1223 snapshot), not its message, so
+            // quota-vs-carrier-ceiling is proven by LogicalStackQuotaTest
+            // #segmentQuotaIsIndependentOfHowDeepTheCarrierAlreadyIs (carrierCeiling() == false).
             assertFalse(run.failure.getMessage().contains("StackOverflowError"), run.failure::getMessage);
         } finally {
             Thread.setDefaultUncaughtExceptionHandler(previous);

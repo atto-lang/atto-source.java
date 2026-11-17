@@ -65,7 +65,8 @@ final class PanicUnwindDeferTest {
                   return;
                 }
                 """, output));
-        assertTrue(failure.getMessage().contains("Option::unwrap"), failure::getMessage);
+        // The observer sees the cause-free #1223 snapshot: the panic type, not its text.
+        assertTrue(failure.getMessage().contains("OresPanic"), failure::getMessage);
         assertEquals("actor-cleanup|", output.toString(StandardCharsets.UTF_8));
     }
 
