@@ -6,18 +6,112 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.BorrowMirAuditV1;
 
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
     private OresCompiler() { }
 
+    /**
+     * Opt-in first protected-state MIR slice. This executes the production
+     * parser first, then admits only one verified i64 state-root region.
+     * It does NOT bypass or relax ordinary TypeChecker/OwnershipChecker
+     * admission for general compilation and does not claim native AOT.
+     */
+    public static ProtectedScalarMirV1.Plan compileProtectedScalarI64(String source) {
+        return ProtectedScalarMirV1.lower(Parser.parse(source));
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
+    }
+
+    /**
+     * Explicit, opt-in Atto v1/v2 callable-body admission through the REAL
+     * parser, strict TypeChecker and OwnershipChecker. Never change the
+     * unversioned JVM/Truffle source default or accept an unverified import
+     * graph under a local-only language-version selection.
+     *
+     * This returns a checked AST for a trusted one-shot Truffle guest lease;
+     * it does not claim general actor/suspension or native-AOT parity.
+     */
+    public static Ast.Program parseAndTypeCheckVersionedAtto(String source, int version) {
+        Ast.Program program = Parser.parseVersionedAtto(source, version);
+        if (!program.imports().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "ATTO_LANGUAGE_VERSION_IMPORT_GRAPH_UNVERIFIED: imported units must be checked under the same version");
+        }
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(program, true);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
+    /**
+     * Run the real Parser -> TypeChecker -> OwnershipChecker only once while
+     * collecting a bounded, fail-closed MIR shadow event stream.
+     *
+     * This does not run the Rust oracle or certify compiled guest execution.
+     * The ordinary production compilation entry point remains unchanged.
+     */
+    public static BorrowMirAuditV1.Report analyzeBorrowMirV1(String source) {
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(source));
+        return OwnershipChecker.checkWithBorrowMirAuditV1(
+                checked.program(), checked.shortInferredAliases());
+    }
+
+    /**
+     * Explicit AttoLang strict-v1 *front-end* admission for AOT build pipelines.
+     * It emits a checked AST, not native code or a guest-AOT proof. The caller
+     * must still use an AOT backend and verify a program-specific executable.
+     */
+    public static Ast.Program parseAndTypeCheckStrictAtto(String source) {
+        Ast.Program program = Parser.parseStrictAtto(source);
+        // Profile evidence must cover the complete compilation closure.
+        // The single-unit API cannot validate imported source transitively,
+        // so fail closed rather than linking a legacy-checked dependency.
+        if (!program.imports().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "ATTO_STRICT_IMPORT_GRAPH_UNVERIFIED: every imported unit must use the same source profile");
+        }
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(program, true);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
+    /**
+     * Validate a complete source graph under the strict profile. Every source
+     * unit, including import targets, must be supplied and checked; unresolved
+     * external imports fail closed. Returns linked checked AST units, not an
+     * emitted native program or proof of AOT execution.
+     */
+    public static IncrementalCompiler.BuildResult parseAndTypeCheckStrictAttoGraph(
+            java.util.Map<String, String> sources,
+            java.util.Map<String, java.util.Map<String, String>> importResolutions) {
+        return new IncrementalCompiler().compileStrictAtto(sources, importResolutions);
+    }
+
+    /** Strict source-profile front end for closed-world build optimization. */
+    public static TreeShaker.Result compileForBuildStrictAtto(
+            String source, BuildOptions options) {
+        return TreeShaker.shake(parseAndTypeCheckStrictAtto(source), options);
     }
 
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
+    /** Imported module contracts participate in type proofs, not runtime declarations. */
+    public static Ast.Program analyze(
+            Ast.Program program, java.util.Map<String, Ast.InterfaceDecl> importedContracts) {
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
+                        program, java.util.Map.of(), java.util.Map.of(), importedContracts);
         OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
         return checked.program();
     }
@@ -33,8 +127,11 @@ public final class OresCompiler {
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
-        return new AnalysisResult(checked.program(), checked.warnings());
+        OwnershipChecker.OwnershipCheckResult owned =
+                OwnershipChecker.checkWithDiagnostics(checked.program(), checked.shortInferredAliases());
+        java.util.List<String> warnings = new java.util.ArrayList<>(checked.warnings());
+        warnings.addAll(owned.warnings());
+        return new AnalysisResult(checked.program(), warnings);
     }
 
     /**
@@ -52,11 +149,162 @@ public final class OresCompiler {
     }
 
     /**
+     * Opt-in compiler-only AOT metadata closure for explicit, public,
+     * non-actor, non-generic source classes and closed scalar public fields.
+     *
+     * Runs the regular parser, type checker and ownership checker first.
+     * Returns immutable descriptor bytes, NOT an AttoLang guest value,
+     * executable code, GraalVM image, or type_of<T>() intrinsic.
+     *
+     * Unsupported type shapes, private roots and missing symbols reject.
+     */
+    public static byte[] compileAotReflectionTableV1(
+            String source, String packageIdentityClaim,
+            java.util.List<String> explicitQualifiedRoots) {
+        Ast.Program checked = parseAndTypeCheck(source);
+        return AotReflectionSourceRootsV1.lowerChecked(
+                checked, packageIdentityClaim, explicitQualifiedRoots).bytes();
+    }
+
+    /**
+     * Immutable compiler-side result of an independently parsed, closed
+     * type_of<Nominal>() query. No guest runtime lookup or invocation is exposed.
+     */
+    public record StaticTypeOfQueryV1(
+            String qualifiedType, String typeIdHex, byte[] descriptorTable) {
+        public StaticTypeOfQueryV1 {
+            java.util.Objects.requireNonNull(qualifiedType, "qualified type");
+            java.util.Objects.requireNonNull(typeIdHex, "type ID");
+            descriptorTable = java.util.Objects.requireNonNull(
+                    descriptorTable, "descriptor table").clone();
+        }
+        @Override public byte[] descriptorTable() { return descriptorTable.clone(); }
+    }
+
+    /**
+     * Opt-in static type_of<Nominal>() compiler metadata bootstrap.
+     *
+     * This method checks real source declarations with the production Parser,
+     * TypeChecker and OwnershipChecker. The standalone query is parsed as a
+     * real generic CallExpr, then bound to a single public class from that
+     * checked program through AotReflectionSourceRootsV1. Its name cannot be
+     * shadowed by a user-declared same-name callable.
+     *
+     * The caller's package identity is a CLAIM, not authenticated provenance.
+     * A separate build admission gate must bind it to a reviewed manifest,
+     * exact source tree and compiler artifact before any parity promotion.
+     *
+     * THIS DOES NOT make type_of<T>() valid inside an AttoLang guest function,
+     * lower guest bytecode, or prove native execution. Those are separate gates.
+     */
+    public static StaticTypeOfQueryV1 compileStaticTypeOfQueryV1(
+            String sourceDeclarations, String packageIdentityClaim,
+            String staticQuery) {
+        Ast.Program checked = parseAndTypeCheck(sourceDeclarations);
+        for (Ast.ModuleDecl module : checked.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl function
+                        && function.name().equals("type_of")) {
+                    throw new IllegalArgumentException(
+                            "static type_of intrinsic conflicts with a user-declared function");
+                }
+            }
+        }
+        Ast.TypeRef nominal = Parser.parseStaticTypeOfQueryV1(staticQuery);
+        String qualified = "__root__." + nominal.name();
+        byte[] encoded = AotReflectionSourceRootsV1.lowerChecked(
+                checked, packageIdentityClaim, java.util.List.of(qualified)).bytes();
+        AotReflectionTableV1Reader.Table table = AotReflectionTableV1Reader.decode(encoded);
+        if (table.types().size() != 1 ||
+                !table.types().getFirst().resolvedSymbol().equals(qualified)) {
+            throw new IllegalStateException("static type_of descriptor identity mismatch");
+        }
+        return new StaticTypeOfQueryV1(
+                qualified, table.types().getFirst().typeIdHex(), encoded);
+    }
+
+    /**
+     * Compiler-only typed MIR from the strict single-return descriptor subset.
+     * This does not admit type_of<T>() in ordinary guest compilation and does
+     * not emit JVM bytecode, native objects or runnable AttoLang binaries.
+     */
+    public static AotReflectionTypedMirV1.Plan lowerAotReflectionTypedMirV1(
+            String guestSource, String packageIdentityClaim) {
+        return AotReflectionTypedMirV1.lowerSource(guestSource, packageIdentityClaim);
+    }
+
+    /**
+     * Compile a bounded JSON/MessagePack scalar decoding schema from the same
+     * explicit, source-checked nominal descriptor used by static type_of.
+     *
+     * Decoding returns immutable scalar slots only: it does NOT construct
+     * guest objects, reflect on host classes, or prove Native Image execution.
+     * Field aliases/defaults/nested values are rejected until a versioned
+     * compiler-generated schema and constructor ABI exist.
+     */
+    public static AotScalarWireV1.Schema compileAotScalarWireSchemaV1(
+            String sourceDeclarations, String packageIdentityClaim,
+            String staticTypeQuery) {
+        return AotScalarWireV1.fromCheckedQuery(
+                compileStaticTypeOfQueryV1(
+                        sourceDeclarations, packageIdentityClaim, staticTypeQuery));
+    }
+
+    /**
+     * Emit a real Java 8 classfile for the explicitly admitted, bounded
+     * AttoLang primitive subset. The source profile and ownership pass are
+     * enforced BEFORE code generation. This is an executable bytecode build
+     * artifact, not a Graal Native Image or no-JIT certificate.
+     */
+    public static RealtimePrimitiveCompiler.Artifact compileRealtimePrimitiveStrictAtto(
+            String source, String entry, int arity,
+            RealtimePrimitiveCompiler.Budget budget, java.nio.file.Path outputDirectory)
+            throws java.io.IOException {
+        Ast.Program checked = parseAndTypeCheckStrictAtto(source);
+        return RealtimePrimitiveCompiler.compile(checked, entry, arity, budget, outputDirectory);
+    }
+
+    /**
+     * Conservative checked-AST actor callback preflight. This proves only
+     * scalar syntax/effect exclusion, not actor heap or hard-RT execution.
+     * The checked AST is produced here, never supplied by the caller.
+     */
+    public static RealtimeActorSourceEffects.Report analyzeRealtimeActorCallback(
+            String source, String actorName, String callbackName, int arity,
+            RealtimeActorSourceEffects.Budget budget) {
+        Ast.Program checked = parseAndTypeCheck(source);
+        return RealtimeActorSourceEffects.analyzeChecked(
+                checked, actorName, callbackName, arity, budget);
+    }
+
+    /**
+     * Experimental public interface emission. Static analysis and ownership
+     * admission are mandatory before extracting metadata. This does not execute
+     * guest code, persist a cache, or authorize a decoded external interface.
+     */
+    public static ExportInterfaceCodec.InterfaceFile emitPublicInterface(
+            String source, ExportInterfaceCodec.Header header) {
+        return ExportInterfaceCollector.collect(parseAndTypeCheck(source), header);
+    }
+
+    /**
      * Parse and type-check the complete source first, then perform closed-world
      * build optimization. Type errors in code that later becomes unreachable
      * are still reported; tree shaking is an optimization, not conditional
      * compilation that hides invalid source.
      */
+    // FULL_GUEST_AOT_TODO (platform-conformance #321): This source-graph
+    // optimization returns AST/tree-shake metadata, not guest-specific
+    // executable methods. Preserve this path for hybrid/interpreter use.
+    // A strict AOT path must lower a finite resolved graph (imports, generic
+    // specializations, class/actor dispatch, macro output, init/drop and
+    // suspension/exception continuations) to executable guest code before
+    // native-image, and fail closed on unknown targets with no fallback.
+    // ZERO_TRACING_GC_TODO: Native Image of the Truffle evaluator, even with
+    // Epsilon and zero observed collections, does not show zero managed
+    // allocations or deterministic reclamation of guest graph objects.
+    // Every actor-owned native arena needs checked 32-bit region offsets,
+    // generation fences and unwind/restart/cancel/FFI pin quiescence proofs.
     public static TreeShaker.Result compileForBuild(String source, BuildOptions options) {
         return TreeShaker.shake(parseAndTypeCheck(source), options);
     }

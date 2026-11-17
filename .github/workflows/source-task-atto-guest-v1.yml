@@ -1,0 +1,89 @@
+name: Real Java .atto Task guest slices (exact head)
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  task-jvm-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source commit
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Build JVM guest launcher
+        run: |
+          mvn -B -ntp -DskipTests package
+          mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Execute exact-head borrow and Task ownership JUnit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Tests execute against the exact checked-out PR head verified above.
+          # Including the real guest test is mandatory: host-only trait tests
+          # cannot independently establish .atto source behavior.
+          mvn -B -ntp -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true \
+            -Dtest=AutoTraitRulesTest,TaskCaptureAdmissionIdentityTest,TaskBorrowBoundaryV2Test,LogicalBorrowCompilerGuestTest \
+            test
+      - name: Fail closed unless each required JUnit suite actually executed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Surefire can match a subset of a comma-separated -Dtest filter.
+          # Exact file existence and nonzero executed tests per suite prevent
+          # a missing/misnamed required class from silently counting as green.
+          for suite in \
+            dev.oreslang.types.AutoTraitRulesTest \
+            dev.oreslang.TaskCaptureAdmissionIdentityTest \
+            dev.oreslang.TaskBorrowBoundaryV2Test \
+            dev.oreslang.LogicalBorrowCompilerGuestTest; do
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report" || { echo "MISSING_REQUIRED_JUNIT_REPORT $suite" >&2; exit 1; }
+            grep -Eq 'tests="[1-9][0-9]*"' "$report" || {
+              echo "NO_EXECUTED_JUNIT_TESTS $suite" >&2; exit 1;
+            }
+            if grep -Eq '(<skipped|<failure|<error|skipped="[1-9]|failures="[1-9]|errors="[1-9])' "$report"; then
+              echo "UNACCEPTED_JUNIT_SKIP_OR_FAILURE $suite" >&2
+              exit 1
+            fi
+            echo "EXACT_HEAD_JUNIT_SUITE_PASS $suite"
+          done
+      - name: Static shell syntax and Bash expansion admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/test-source-task-v1-java.sh
+          if grep -Fq '\${' scripts/test-source-task-v1-java.sh; then echo 'Escaped Bash expansion detected' >&2; exit 1; fi
+      - name: Execute actual .atto source guest (backend-specific slice only)
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/test-source-task-v1-java.sh | tee target/task-v1-guest.log
+          test "$(grep -c '^JAVA_FUTURE_TASK_ATTO_GUEST_PASS|' target/task-v1-guest.log)" = 2
+          test "$(grep -c '^JAVA_TASK_CAPTURE_REJECT_PASS|' target/task-v1-guest.log)" = 2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: task-v1-java-source-local
+          path: target/task-v1-guest.log
+          if-no-files-found: ignore

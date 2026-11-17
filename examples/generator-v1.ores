@@ -1,0 +1,30 @@
+pub gen* sync_values(): Iterator<int> {
+  yield 20;
+  yield 22;
+  return;
+}
+
+pub suspend gen* cooperative_values(): AsyncIterator<int> {
+  rt cooperate;
+  yield 20;
+  rt cooperate;
+  yield 22;
+  return;
+}
+
+pub async routine main(): void {
+  let int sync_total = 0;
+  for const value of sync_values() {
+    sync_total = sync_total + value;
+  }
+
+  let int async_total = 0;
+  for await const value of cooperative_values() {
+    async_total = async_total + value;
+  }
+
+  stdio.stdout.write(sync_total);
+  stdio.stdout.write(":");
+  stdio.stdout.write(async_total);
+  return;
+}
