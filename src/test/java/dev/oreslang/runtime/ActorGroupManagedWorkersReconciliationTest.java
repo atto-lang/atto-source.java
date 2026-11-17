@@ -408,7 +408,9 @@ final class ActorGroupManagedWorkersReconciliationTest {
             java.util.concurrent.ExecutionException exception = assertThrows(
                     java.util.concurrent.ExecutionException.class,
                     () -> failed.get(5, TimeUnit.SECONDS));
-            assertEquals("worker-init-failed", exception.getCause().getMessage());
+            // #1223: readiness observers see the cause-free snapshot.
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, exception.getCause());
+            assertTrue(exception.getCause().getMessage().contains("IllegalStateException"));
 
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             while (group.workerCount() != 0 && System.nanoTime() < until) Thread.yield();
