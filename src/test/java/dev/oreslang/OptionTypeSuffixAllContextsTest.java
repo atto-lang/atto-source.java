@@ -13,7 +13,7 @@ final class OptionTypeSuffixAllContextsTest {
     @Test
     void suffixWrapsAliasesFieldsFormalsReturnsLocalsAndNestedGenericArguments() {
         Ast.Program program = Parser.parse("""
-                type MaybeInt = int?;
+                define type MaybeInt = int?;
 
                 define class Box as
                     final string? label: None;
