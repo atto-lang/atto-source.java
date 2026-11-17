@@ -1,0 +1,4 @@
+pub define class Person as
+  pub int visible: 7
+  int hidden_secret_marker: 9
+end

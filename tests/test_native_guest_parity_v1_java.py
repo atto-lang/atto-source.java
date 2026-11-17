@@ -16,6 +16,13 @@ SCALAR = """pub fnc main(): int {
 }
 """
 SCALAR_SHA256 = "ab1ac790ba3928b8876b428230ae4215984380a221c02c604f85cd3fca1d790f"
+FLAGS2ENV_STATUS = """// Shared scalar ABI smoke for every Oreslang backend, including Cranelift.
+// Encodes public host statuses 0..4 without imports, strings or control flow.
+pub fnc main(): int {
+  return (0 * 10000) + (1 * 1000) + (2 * 100) + (3 * 10) + 4 - 1192;
+}
+"""
+FLAGS2ENV_STATUS_SHA256 = "9add46476c703374f76dd1a0a5827fbad0eb69ff703f4f3cf302604a6f506750"
 
 
 def run(argv, cwd):
@@ -55,7 +62,25 @@ def main():
             execution = run([sys.executable, str(probe), str(fixture), "--execute"], root)
             if execution.returncode != 42 or execution.stdout:
                 raise RuntimeError("guest main() did not return exact exit code 42 with empty stdout")
+
+            flags_fixture = root / "contracts/v1/fixtures/flags2env-client-abi-status.ores"
+            if flags_fixture.is_symlink() or not flags_fixture.is_file():
+                raise RuntimeError("flags2env parity fixture must be a regular in-repository file")
+            flags_bytes = flags_fixture.read_bytes()
+            if hashlib.sha256(flags_bytes).hexdigest() != FLAGS2ENV_STATUS_SHA256:
+                raise RuntimeError("flags2env parity fixture bytes differ from canonical pinned fixture")
+            if flags_bytes != FLAGS2ENV_STATUS.encode("utf-8"):
+                raise RuntimeError("flags2env parity fixture text does not match canonical bytes")
+            flags_check = run([sys.executable, str(probe), str(flags_fixture)], root)
+            if flags_check.returncode != 0:
+                raise RuntimeError("real Oreslang Java guest compiler rejected flags2env ABI fixture: " +
+                                   flags_check.stderr[:1200].decode("utf-8", "replace"))
+            flags_execution = run([sys.executable, str(probe), str(flags_fixture), "--execute"], root)
+            if flags_execution.returncode != 42 or flags_execution.stdout:
+                raise RuntimeError("flags2env ABI fixture did not return exit code 42 with empty stdout")
         print("PASS: real JVM/Truffle guest scalar-main SHA256=" + SCALAR_SHA256,
+              flush=True)
+        print("PASS: flags2env ABI scalar SHA256=" + FLAGS2ENV_STATUS_SHA256,
               flush=True)
         print("NOT CERTIFIED: guest Native Image AOT; owned array; private field diagnostics")
         return 0

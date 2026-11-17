@@ -4,6 +4,8 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.ast.CheckedDispatchPlansV1;
+import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
@@ -129,6 +131,28 @@ public final class TypeChecker {
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
+    /** Identity-indexed call proofs, published only on successful type checking. */
+    private final IdentityHashMap<Ast.CallExpr, CheckedDispatchPlansV1.Plan> checkedDispatchPlans =
+            new IdentityHashMap<>();
+
+    private void recordCheckedDispatch(
+            Ast.CallExpr call, AotDispatchPlannerV1.CallKind kind,
+            String name, int arity, Ast.FunctionDecl function,
+            Ast.ClassDecl receiverClass, Ast.MethodDecl method) {
+        AotDispatchPlannerV1.Strategy strategy = AotDispatchPlannerV1.classify(
+                new AotDispatchPlannerV1.Evidence(
+                        kind, AotDispatchPlannerV1.ReceiverProof.NONE,
+                        AotDispatchPlannerV1.Linkage.FROZEN_CODE_GENERATION, true));
+        CheckedDispatchPlansV1.Plan plan = new CheckedDispatchPlansV1.Plan(
+                kind, strategy, name, arity, function, receiverClass, method);
+        plan.requireCallShape(call);
+        CheckedDispatchPlansV1.Plan previous = checkedDispatchPlans.putIfAbsent(call, plan);
+        if (previous != null && !plan.sameTargets(previous)) {
+            throw new IllegalStateException(
+                    "same checker call identity acquired incompatible dispatch targets");
+        }
+    }
+
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
     public record TypeCheckResult(
@@ -169,8 +193,25 @@ public final class TypeChecker {
      * projection could silently discard the metadata.
      */
     private static void rejectUnloweredCheckedEffects(Ast.Program program) {
+        // Validate external receiver coherence before the still-mandatory
+        // executable-lowering rejection. This pass confers no actor authority.
+        ActorReceiverBinder.bind(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ExternalActorMethodDecl method) {
+                    throw new IllegalArgumentException(
+                            "EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED: '" + method.name()
+                                    + "' on actor '" + method.actorName()
+                                    + "' requires actor-context authority, mailbox dispatch "
+                                    + "and activation-generation fencing");
+                }
+                if (declaration instanceof Ast.StandaloneActorDecl actor) {
+                    throw new IllegalArgumentException(
+                            "STANDALONE_ACTOR_LOWERING_UNSUPPORTED: '" + actor.name()
+                                    + "' parsed with receiver binding '" + actor.receiverName()
+                                    + "' but requires checked actor context, mailbox dispatch, "
+                                    + "state ownership and generation-fenced runtime lowering");
+                }
                 if (declaration instanceof Ast.FunctionDecl fn && !fn.effects().isEmpty()) {
                     throw new IllegalArgumentException(
                             "checked exceptional effect on function '" + fn.name()
@@ -294,6 +335,7 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -456,6 +498,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
+        CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -769,6 +812,71 @@ public final class TypeChecker {
                 }
                 continue;
             }
+            if (member instanceof Ast.InterfaceActorMethodDecl required) {
+                // Static witness checking only. No implicit receiver body or
+                // actor-state capability can be materialized by this contract.
+                Ast.ClassDecl receiver = null;
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.ClassDecl klass
+                            && klass.name().equals(required.actorName())) {
+                        receiver = klass;
+                        break;
+                    }
+                }
+                if (receiver == null || receiver.actorKind() == Ast.ActorKind.NONE
+                        || receiver.visibility() != Ast.Visibility.PUBLIC
+                        || !receiver.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "module '" + module.name() + "' is missing required public non-generic actor '"
+                                    + required.actorName() + "' for receiver method '"
+                                    + required.name() + "'");
+                }
+                Ast.MethodDecl implementation = null;
+                for (Ast.MethodDecl method : receiver.methods()) {
+                    if (!method.isStatic() && method.name().equals(required.name())
+                            && method.arity() == required.parameters().size()) {
+                        implementation = method;
+                        break;
+                    }
+                }
+                if (implementation == null || implementation.isAbstract()) {
+                    throw new IllegalArgumentException(
+                            "actor '" + receiver.name() + "' is missing required receiver method '"
+                                    + required.name() + "' of arity " + required.parameters().size());
+                }
+                if (required.visibility() == Ast.Visibility.PUBLIC
+                        && implementation.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "actor '" + receiver.name() + "." + required.name()
+                                    + "' must be public to satisfy its receiver contract");
+                }
+                if (implementation.async() || implementation.suspends()
+                        || !implementation.genericParameters().isEmpty()
+                        || !implementation.effects().isEmpty()
+                        || implementation.structural()) {
+                    throw new IllegalArgumentException(
+                            "actor '" + receiver.name() + "." + required.name()
+                                    + "' has unsupported receiver method effects or generics");
+                }
+                for (int index = 0; index < required.parameters().size(); index++) {
+                    Ast.Param expectedParam = required.parameters().get(index);
+                    Ast.Param actualParam = implementation.parameters().get(index);
+                    if (actualParam.structural() || expectedParam.mutable() != actualParam.mutable()
+                            || !resolve(expectedParam.type(), Set.of(), null)
+                                    .equals(resolve(actualParam.type(), Set.of(), null))) {
+                        throw new IllegalArgumentException(
+                                "actor '" + receiver.name() + "." + required.name()
+                                        + "' has incompatible parameter " + (index + 1));
+                    }
+                }
+                if (!resolve(required.returnType(), Set.of(), null)
+                        .equals(resolve(implementation.returnType(), Set.of(), null))) {
+                    throw new IllegalArgumentException(
+                            "actor '" + receiver.name() + "." + required.name()
+                                    + "' has incompatible receiver contract return type");
+                }
+                continue;
+            }
             if (!(member instanceof Ast.InterfaceFieldDecl required)) continue;
             Ast.FieldDecl actual = actualFields.get(required.name());
             if (actual == null) {
@@ -908,6 +1016,76 @@ public final class TypeChecker {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
+            } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                if (!iface.moduleContract()) {
+                    throw new IllegalArgumentException("receiver requirements are permitted only in module contracts");
+                }
+                if (!generics.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "generic module contract receiver methods require type-substitution witness lowering");
+                }
+                // These names are runtime/control-plane hooks or compiler-owned
+                // intrinsics. Matching a source method may not establish a
+                // mailbox-callable user API or grant supervisor authority.
+                // on_start and tear_down already have checked actor-local
+                // implementations. Requiring them is safe only as private,
+                // synchronous, zero-argument void hooks: never as exported
+                // mailbox-callable APIs. Other control hooks stay reserved.
+                if (method.name().equals("on_start") || method.name().equals("tear_down")) {
+                    if (method.visibility() != Ast.Visibility.PRIVATE
+                            || !method.parameters().isEmpty()
+                            || !method.returnType().name().equals("void")
+                            || !method.returnType().arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "actor-local lifecycle contract hook '" + method.name()
+                                        + "' must be private, zero-argument and return void");
+                    }
+                } else if (Set.of("handle_state", "on_panic", "on_throw",
+                        "on_throws", "on_raise", "on_recover",
+                        "on_stop", "on_restart").contains(method.name())) {
+                    throw new IllegalArgumentException(
+                            "reserved actor lifecycle/control hook '" + method.name()
+                                    + "' is not a mailbox receiver contract method");
+                }
+                // Unlike public mailbox-dispatched actor APIs, receive is a
+                // runtime-owned, actor-local entry point. A module contract
+                // must never turn it into a public method or permit an
+                // arbitrary argument shape that the scheduler cannot deliver.
+                if (method.name().equals("receive")) {
+                    if (method.visibility() != Ast.Visibility.PRIVATE
+                            || method.parameters().size() != 1
+                            || !method.parameters().getFirst().type().name().equals("ActorMail")
+                            || method.parameters().getFirst().type().arguments().size() != 1
+                            || method.parameters().getFirst().type().inferArguments()
+                            || !method.returnType().name().equals("void")
+                            || !method.returnType().arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "actor mailbox receiver contract 'receive' must be private, "
+                                        + "accept exactly one ActorMail<T>, and return void");
+                    }
+                }
+                Set<String> declaredActors = new LinkedHashSet<>();
+                collectModuleContractActorNames(iface, declaredActors, new LinkedHashSet<>());
+                if (!declaredActors.contains(method.actorName())) {
+                    throw new IllegalArgumentException(
+                            "receiver method '" + method.name() + "' refers to unrequired actor '"
+                                    + method.actorName() + "'; declare actor " + method.actorName() + ";");
+                }
+                String key = "actor-mtd:" + method.actorName() + ":" + method.name()
+                        + "#" + method.parameters().size();
+                if (!memberKeys.add(key)) {
+                    throw new IllegalArgumentException(
+                            "duplicate contract receiver method slot '" + method.actorName()
+                                    + "." + method.name() + "' with arity " + method.parameters().size());
+                }
+                for (Ast.Param param : method.parameters()) {
+                    if (param.structural()) {
+                        throw new IllegalArgumentException(
+                                "structural argument cannot cross an actor receiver boundary");
+                    }
+                    resolveParam(param, generics, null);
+                }
+                resolve(method.returnType(), generics, null);
             } else if (member instanceof Ast.InterfaceActorDecl actor) {
                 if (!iface.moduleContract()) {
                     throw new IllegalArgumentException("nominal interfaces cannot require actor declarations");
@@ -2860,7 +3038,126 @@ public final class TypeChecker {
         return java.util.Collections.unmodifiableSet(declared);
     }
 
+    /**
+     * Narrow derived copy-contract for the first nominal with slice:
+     * immutable, non-actor, ctorless products of builtin Copy scalar fields.
+     * This is an explicit rt copy operation, NOT implicit Copy for classes.
+     */
+    /**
+     * A with receiver may be an explicit copy/take or a chained with value.
+     * Those wrappers do not authorize suspending or effectful original sources.
+     * Inspect the underlying expression rather than blanket-rejecting the
+     * copy/take syntax that v1 explicitly supports.
+     */
+    private boolean withReceiverMaySuspend(Ast.Expr source) {
+        if (source instanceof Ast.RuntimeCallExpr runtime
+                && (runtime.operation().equals("copy") || runtime.operation().equals("take"))) {
+            return runtime.arguments().size() != 1
+                    || withReceiverMaySuspend(runtime.arguments().getFirst());
+        }
+        if (source instanceof Ast.WithExpr nested) {
+            return withReceiverMaySuspend(nested.source())
+                    || nested.changes().stream().anyMatch(
+                            change -> fieldInitializerMaySuspend(change.value()));
+        }
+        return fieldInitializerMaySuspend(source);
+    }
+
+    private boolean withCopyEligibleClass(Ast.ClassDecl klass) {
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
+                || klass.constructor() != null || klass.isAbstract()
+                || !klass.parents().isEmpty()
+                || !klass.genericParameters().isEmpty()
+                || klass.fields().isEmpty()) return false;
+        for (Ast.FieldDecl field : klass.fields()) {
+            Ast.TypeRef slot = field.type();
+            if (field.bindingKind() == Ast.BindingKind.LET
+                    || field.mutableReferent()
+                    || slot == null || slot.isBorrow() || slot.inferArguments()
+                    || !slot.arguments().isEmpty()
+                    || !Set.of("int", "bool", "float", "string", "String").contains(slot.name())
+                    || findClass(slot.name()) != null
+                    || findTypeAlias(slot.name()) != null
+                    || linkedClassAliases.getOrDefault(klass, Map.of()).containsKey(slot.name())) {
+                return false;
+            }
+            Type resolved = classFieldType(klass, field);
+            if (resolved != Primitive.INT && resolved != Primitive.BOOL
+                    && resolved != Primitive.FLOAT && resolved != Primitive.STRING) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.WithExpr update) {
+            if (withReceiverMaySuspend(update.source())) {
+                throw new IllegalArgumentException(
+                        "with receiver must be a synchronous, effect-safe value source; "
+                                + "await, calls with unproven effects and side effects are not admitted");
+            }
+            Type receiver = typeOf(update.source(), env, generics, self);
+            Type projected = receiver instanceof SelfType receiverSelf
+                    ? receiverSelf.bound() : receiver;
+            Record record = projected instanceof Record row
+                    && row.kind() == AggregateKind.RECORD && row.readOnly()
+                            ? row : null;
+            Ast.ClassDecl copyClass = null;
+            if (record == null && projected instanceof Named named) {
+                copyClass = findClass(named.name());
+                if (!withCopyEligibleClass(copyClass)) copyClass = null;
+            }
+            if (record == null && copyClass == null) {
+                throw new IllegalArgumentException(
+                        "with requires a readonly structural record or a "
+                                + "compiler-certified immutable scalar-field class; "
+                                + "mutable classes, structs, actors and borrowed updates are disabled");
+            }
+            if (copyClass != null) {
+                if (!(update.source() instanceof Ast.RuntimeCallExpr ownership)
+                        || (!ownership.operation().equals("copy")
+                                && !ownership.operation().equals("take"))) {
+                    throw new IllegalArgumentException(
+                            "nominal class with updates require explicit rt copy or rt take");
+                }
+            }
+            for (Ast.WithField change : update.changes()) {
+                Type expected;
+                if (record != null) {
+                    expected = record.members().get(change.name());
+                } else {
+                    Ast.FieldDecl matched = null;
+                    for (Ast.FieldDecl field : copyClass.fields()) {
+                        if (field.name().equals(change.name())) matched = field;
+                    }
+                    if (matched == null) {
+                        throw new IllegalArgumentException(
+                                "unknown with field '" + change.name() + "'");
+                    }
+                    requireClassMemberVisible(matched.visibility(),
+                            copyClass, "field", matched.name());
+                    expected = classFieldType(copyClass, matched);
+                }
+                if (expected == null) {
+                    throw new IllegalArgumentException(
+                            "unknown with field '" + change.name() + "'");
+                }
+                // Only synchronous/pure RHSs may participate in the first
+                // class/record reconstruction slice.
+                if (fieldInitializerMaySuspend(change.value())) {
+                    throw new IllegalArgumentException(
+                            "with field '" + change.name()
+                                    + "' requires a non-suspending, effect-safe value expression");
+                }
+                Type actual = typeOf(change.value(), env, generics, self);
+                requireReadonlyCapabilityPreserved(
+                        actual, expected, "with field '" + change.name() + "'");
+                requireAssignable(actual, expected,
+                        "with field '" + change.name() + "'");
+            }
+            return receiver;
+        }
         if (expr instanceof Ast.LocalAggregateConstructExpr construct) {
             throw new IllegalArgumentException(
                     "local aggregate constructor '" + construct.typeName()
@@ -2966,6 +3263,10 @@ public final class TypeChecker {
                                     + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                 }
                 return trapFunctionType(fn, Set.of(), null);
+            }
+            if (name.name().equals("to_string")) {
+                throw new IllegalArgumentException(
+                        "to_string is a direct-call-only primitive conversion: use to_string(value)");
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
@@ -3416,6 +3717,17 @@ public final class TypeChecker {
                         "io.out.write payload");
                 return new Named("Future", List.of(Primitive.VOID));
             }
+            // A host/compiler-side type_of query table exists, but the guest
+            // intrinsic has no typed HIR or AOT machine-code lowering yet.
+            // Fail closed rather than resolving a user-defined generic
+            // function or silently falling back to runtime reflection.
+            if (call.callee() instanceof Ast.NameExpr intrinsic
+                    && intrinsic.name().equals("type_of")
+                    && call.typeArgumentsPresent()) {
+                throw new IllegalArgumentException(
+                        "type_of<T>() requires compiler-backed guest AOT lowering; "
+                        + "static descriptor query admission is not guest execution");
+            }
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr inlineLambda) {
                 if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
@@ -3525,8 +3837,34 @@ public final class TypeChecker {
                         checkStrictNumericCallArguments(target, call.arguments(), env);
                     }
                     requireSuspendableCall(target.suspends() && !target.generator(), "function '" + target.name() + "'");
+                    // This target is a checked local function declaration in the
+                    // immutable, macro-expanded program. A runtime lexical value
+                    // still wins if the identifier is shadowed.
+                    if (target.genericParameters().isEmpty()
+                            && CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                        recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.FREE_FUNCTION,
+                                target.name(), arity, target, null, null);
+                    }
                     return trapResult(target.trapped(), callableResult(target.async(), target.suspends(), target.generator(), result));
                 }
+            }
+            // Primitive display is explicit, deterministic, and not a host
+            // Object.toString() escape hatch. Declared user functions win at
+            // their exact arity; custom classes must call their own method.
+            if (call.callee() instanceof Ast.NameExpr converter
+                    && converter.name().equals("to_string")
+                    && env.lookup("to_string") == null) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException(
+                            "to_string expects exactly one primitive value with no type arguments");
+                }
+                Type argument = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                if (argument != Primitive.INT && argument != Primitive.BOOL && !isStringLike(argument)) {
+                    throw new IllegalArgumentException(
+                            "to_string requires int, bool or String; call a declared class to_string() method explicitly");
+                }
+                return Primitive.STRING;
             }
             String integerIntrinsic = integerIntrinsicName(call, env);
             if (integerIntrinsic != null) {
@@ -3912,7 +4250,7 @@ public final class TypeChecker {
                 if (receiver instanceof Named typedFuture
                         && typedFuture.name().equals("Future")
                         && typedFuture.arguments().size() == 1
-                        && Set.of("map", "compose", "flatMap", "onSuccess")
+                        && Set.of("map", "compose", "flatMap", "flat_map", "onSuccess")
                                 .contains(member.member())) {
                     String operation = "Future." + member.member();
                     if (call.typeArgumentsPresent()) {
@@ -4155,6 +4493,14 @@ public final class TypeChecker {
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
                 if (collectionBuiltin != null) {
+                    if (member.member().equals("get_copy")
+                            && !(member.receiver() instanceof Ast.NameExpr)) {
+                        // The first scalar Copy lane requires an explicit
+                        // compiler-checked named owner. Nested projections
+                        // and temporaries need stronger root provenance.
+                        throw new IllegalArgumentException(
+                                "get_copy requires a named builtin Array<int>/List<int> receiver");
+                    }
                     if (receiver instanceof Named map && map.name().equals("Map")
                             && (member.member().equals("set")
                                     || member.member().equals("delete"))) {
@@ -4349,6 +4695,13 @@ public final class TypeChecker {
                             explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
                     requireSuspendableCall(fn.suspends(), "static function '" + fn.name() + "'");
+                    // Only the exact class identity can consume this direct
+                    // target: a new code generation has different AST owners.
+                    if (klass.genericParameters().isEmpty() && fn.genericParameters().isEmpty()
+                            && CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                        recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.STATIC_METHOD,
+                                fn.name(), staticArity, null, klass, fn);
+                    }
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
@@ -4452,7 +4805,7 @@ public final class TypeChecker {
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type result = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -4461,6 +4814,16 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
+                        // No sealed/final proof exists here. Record an open
+                        // method slot, not a direct-call assertion. Runtime may
+                        // skip the slot lookup only if the receiver's *actual*
+                        // class identity equals the checked class identity.
+                        if (klass.genericParameters().isEmpty() && method.genericParameters().isEmpty()
+                                && CheckedDispatchPlansV1.fixedSourceArity(call)) {
+                            recordCheckedDispatch(call, AotDispatchPlannerV1.CallKind.INSTANCE_METHOD,
+                                    method.name(), methodArity, null, klass, method);
+                        }
+                        return result;
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
@@ -4731,6 +5094,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("unknown function member '" + member.member()
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
             }
+            if (member.member().equals("to_string")
+                    && (sumReceiver == Primitive.INT || sumReceiver == Primitive.BOOL)) {
+                return new Function(List.of(), Primitive.STRING);
+            }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (collectionMember != null
                     && sumReceiver instanceof Named map && map.name().equals("Map")
@@ -4742,10 +5109,12 @@ public final class TypeChecker {
             }
             if (isStringLike(sumReceiver)) {
                 return switch (member.member()) {
+                    case "to_string" -> new Function(List.of(), Primitive.STRING);
                     case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
                     case "split_literal" -> new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
                     case "trim" -> new Function(List.of(), Primitive.STRING);
                     case "is_identifier", "is_route_segment" -> new Function(List.of(), Primitive.BOOL);
+                    case "codepoints" -> new Function(List.of(), new ListType(Primitive.INT));
                     case "starts_with", "ends_with", "contains_literal" ->
                             new Function(List.of(Primitive.STRING), Primitive.BOOL);
                     default -> throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
@@ -6989,6 +7358,9 @@ public final class TypeChecker {
                 case "isolated" -> Primitive.BOOL;
                 case "created", "reused" -> Primitive.INT;
                 case "pooled" -> new Function(List.of(Primitive.INT), new Named("HttpHandler", List.of()));
+                case "scoped" -> new Function(
+                        List.of(Primitive.STRING, Primitive.STRING, Primitive.INT),
+                        new Named("HttpHandler", List.of()));
                 case "dispatch" -> new Function(List.of(new Borrow(exchange, true)), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
             };
@@ -7028,8 +7400,14 @@ public final class TypeChecker {
             };
             case "HttpExchange" -> switch (name) {
                 case "can_respond" -> Primitive.BOOL;
-                case "method", "target", "request_id", "operation_id", "server_timing" -> Primitive.STRING;
-                case "pipeline_id", "contract_id", "actor_startup_ns", "move_to_claim_ns", "admitted_ns" -> Primitive.INT;
+                case "method", "target", "request_id", "operation_id", "server_timing",
+                     "dispatch_handler", "dispatch_binding", "dispatch_authority_class" -> Primitive.STRING;
+                case "pipeline_id", "contract_id", "actor_startup_ns", "move_to_claim_ns", "admitted_ns",
+                     "dispatch_scope_generation", "dispatch_actor_generation",
+                     "dispatch_exchange_generation", "dispatch_sequence" -> Primitive.INT;
+                case "dispatch_receipt_valid" -> new Function(
+                        List.of(Primitive.STRING, Primitive.STRING, Primitive.STRING, Primitive.INT),
+                        Primitive.BOOL);
                 case "completion" -> new Named("Future", List.of(Primitive.INT));
                 case "set_route" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT), Primitive.VOID);
                 case "add_param" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.VOID);
@@ -8588,7 +8966,7 @@ public final class TypeChecker {
             case "map" -> new Function(
                     List.of(new Function(List.of(element), Unknown.INSTANCE)),
                     unknownFuture);
-            case "compose", "flatMap" -> new Function(
+            case "compose", "flatMap", "flat_map" -> new Function(
                     List.of(new Function(List.of(element), unknownFuture)),
                     unknownFuture);
             case "onSuccess" -> new Function(
@@ -9168,6 +9546,18 @@ public final class TypeChecker {
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), list.element());
+                case "get_copy" -> {
+                    // Candidate safe-collection-access-v1: only concrete Copy<int>
+                    // is admitted until generic Copy and provenance obligations
+                    // are implemented. Legacy get(int) remains direct-value.
+                    if (!list.element().equals(Primitive.INT)) {
+                        throw new IllegalArgumentException(
+                                "collection get_copy requires a proven Copy<int> element; "
+                                        + "other element types are not admitted yet");
+                    }
+                    yield new Function(List.of(Primitive.INT),
+                            new Named("Option", List.of(Primitive.INT)));
+                }
                 case "add" -> new Function(List.of(list.element()), Primitive.VOID);
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),
