@@ -1436,7 +1436,7 @@ public final class OresEvalRootNode extends RootNode {
                     // or resumed continuation wraps the original exception.
                     if (!cancellationUnwinding && function != null
                             && function.trapped() && isTrappableFailure(failure)) {
-                        return OresScheduler.done(new OptionValue(false, null));
+                        return OresScheduler.done(trapErr(failure));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
                             function != null ? function.name() : method != null ? method.name() : "<block>",
@@ -1774,7 +1774,7 @@ public final class OresEvalRootNode extends RootNode {
                                 : "method " + method.name();
                 Object shaped = shapeReturnedValue(returnType, value, label);
                 return function != null && function.trapped()
-                        ? new OptionValue(true, shaped) : shaped;
+                        ? trapOk(shaped) : shaped;
             }
         }
 
@@ -4381,10 +4381,10 @@ public final class OresEvalRootNode extends RootNode {
                     evalSuspendableExpr(task, trapped.expression(), env,
                             (t, value, failure) -> {
                                 if (failure == null) {
-                                    continuation.accept(t, new OptionValue(true, value), null);
+                                    continuation.accept(t, trapOk(value), null);
                                 } else if (failure instanceof RuntimeException ordinary
                                         && isTrappableFailure(ordinary)) {
-                                    continuation.accept(t, new OptionValue(false, null), null);
+                                    continuation.accept(t, trapErr(ordinary), null);
                                 } else {
                                     continuation.accept(t, null, failure);
                                 }
@@ -6536,12 +6536,12 @@ public final class OresEvalRootNode extends RootNode {
                 return callFunctionBodyUnchecked(fn, args);
             }
             try {
-                return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
+                return trapOk(callFunctionBodyUnchecked(fn, args));
             } catch (RuntimeException failure) {
                 if (!isTrappableFailure(failure)) throw failure;
-                // trap is deliberately lossy: ordinary guest/runtime failure
-                // becomes None. Control and authority failures always escape.
-                return new OptionValue(false, null);
+                // An ordinary failure becomes Err(Error), sanitized. Control and
+                // authority failures always escape.
+                return trapErr(failure);
             }
         }
 
@@ -8342,10 +8342,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 try {
-                    return new OptionValue(true, eval(trapped.expression(), env));
+                    return trapOk(eval(trapped.expression(), env));
                 } catch (RuntimeException failure) {
                     if (!isTrappableFailure(failure)) throw failure;
-                    return new OptionValue(false, null);
+                    return trapErr(failure);
                 }
             }
             if (expr instanceof Ast.UnaryExpr unary) {
@@ -13094,6 +13094,35 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){
             return CycleSafeDisplay.render(this);
         }
+    }
+    /**
+     * Guest-visible value of an ordinary failure caught by `trap`: a bounded,
+     * printable kind, type name and message. It never carries the host
+     * exception, its cause chain or a stack trace across the trap boundary.
+     */
+    private record TrapError(String type, String message) {
+        private static final int MAX_TEXT = 256;
+        static TrapError of(Throwable failure) {
+            return new TrapError(bounded(failure.getClass().getSimpleName()),
+                    bounded(failure.getMessage() == null ? "" : failure.getMessage()));
+        }
+        private static String bounded(String text) {
+            StringBuilder out = new StringBuilder(Math.min(text.length(), MAX_TEXT));
+            for (int i = 0; i < text.length() && out.length() < MAX_TEXT; i++) {
+                char c = text.charAt(i);
+                out.append(c >= 0x20 && c < 0x7f ? c : '?');
+            }
+            return out.toString();
+        }
+        @Override public String toString() { return "Error(" + type + ": " + message + ")"; }
+    }
+    /** `trap` success: a value that is already a Result is not wrapped again. */
+    private static Object trapOk(Object value) {
+        return value instanceof ResultValue result ? result : new ResultValue(true, value);
+    }
+    /** `trap` failure: Err(Error) with a sanitized payload. */
+    private static ResultValue trapErr(Throwable failure) {
+        return new ResultValue(false, TrapError.of(failure));
     }
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}

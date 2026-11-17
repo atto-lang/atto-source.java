@@ -1,6 +1,6 @@
 // Java/Graal-only ordinary failure witness until LLVM and .NET support
 // an identical typed ordinary guest throw and unwind source contract.
-// Expected real guest main() return: 7 (None from failed checked cast).
+// Expected real guest main() return: 7 (Err from a failed checked cast).
 define class Animal as
 end
 define class Dog extends Animal as
@@ -12,7 +12,7 @@ fnc cast_dog(Animal animal): Dog {
   return animal as Dog;
 }
 pub fnc main(): int {
-  val Option<Dog> ordinary_failure = trap cast_dog(new Cat());
-  if ordinary_failure.is_none(); then return 7; fi
+  val Result<Dog, Error> ordinary_failure = trap cast_dog(new Cat());
+  if ordinary_failure.is_err(); then return 7; fi
   return 1;
 }
