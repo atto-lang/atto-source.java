@@ -15,7 +15,10 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorAffinityDispatcherTest {
     @Test
     void aBusyLaneDoesNotMigrateItsQueuedWorkAndShutdownReclaimsCapacity() throws Exception {
-        var dispatcher = new ActorAffinityDispatcher(2, 1, new int[0], i -> Executors.newSingleThreadExecutor());
+        // Queued work stays home only with idle stealing off (ActorLaneIdleStealTest
+        // covers migration of a turn stuck behind a busy lane).
+        var dispatcher = new ActorAffinityDispatcher(2, 1, new int[0],
+                i -> Executors.newSingleThreadExecutor(), false, -1L);
         CountDownLatch running = new CountDownLatch(1), release = new CountDownLatch(1);
         AtomicInteger abandonedRuns = new AtomicInteger();
         Runnable pending = abandonedRuns::incrementAndGet;

@@ -18,7 +18,8 @@ final class ActorAffinitySoftSpillTest {
     @Test
     void idleSoftLaneAcceptsOverflowWhilePreferredLaneIsBusy() throws Exception {
         ActorAffinityDispatcher dispatcher = new ActorAffinityDispatcher(
-                2, 4, new int[0], index -> Executors.newSingleThreadExecutor());
+                // Spill semantics in isolation: idle stealing off.
+                2, 4, new int[0], index -> Executors.newSingleThreadExecutor(), false, -1L);
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         CountDownLatch migrated = new CountDownLatch(1);
