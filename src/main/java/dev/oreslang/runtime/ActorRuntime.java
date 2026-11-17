@@ -4935,6 +4935,27 @@ public final class ActorRuntime implements AutoCloseable {
             leaveId(actorId);
         }
 
+        /**
+         * Explicit membership revocation for a same-runtime ActorRef.
+         * Host/supervisor code may remove a member; actor code may remove only
+         * itself. Lifecycle ownership remains completely independent.
+         */
+        public void leave(ActorRef<?> ref) {
+            Objects.requireNonNull(ref, "ref");
+            requireCallerRuntimeAffinity("leave an ActorGroup");
+            if (!ref.ownedBy(ActorRuntime.this)) {
+                throw new ActorInvalidReferenceException(
+                        "ActorRef belongs to a different ActorRuntime");
+            }
+            ActorId caller = currentActorId().orElse(null);
+            if (caller != null && !caller.equals(ref.id())) {
+                throw new SecurityException(
+                        "actor code may only remove itself from an ActorGroup");
+            }
+            if (caller == null) requireManager("remove an ActorGroup member");
+            leaveId(ref.id());
+        }
+
         public boolean contains(ActorRef<?> ref) {
             Objects.requireNonNull(ref, "ref");
             requireObserver("inspect ActorGroup membership");

@@ -1,0 +1,55 @@
+name: Actor pubsub v1 exact-head guest and stress gate
+
+on:
+  push:
+    branches: [feat/actor-pubsub-v1]
+  pull_request:
+    paths:
+      - 'contracts/v1/actor-pubsub*'
+      - 'contracts/v1/fixtures/actor-pubsub*'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/ChannelCallableTransportTest.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorEventBus.java'
+      - 'src/main/java/dev/oreslang/runtime/SourceActorPubSub.java'
+      - 'src/test/java/dev/oreslang/*PubSub*'
+      - 'src/test/java/dev/oreslang/runtime/*PubSub*'
+      - 'scripts/verify-actor-pubsub-v1.sh'
+      - 'scripts/verify-raw-worktree.py'
+      - '.github/workflows/actor-pubsub-v1-exact-head.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actor-pubsub-exact-head-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-head:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ORESLANG_PUBSUB_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact source head (not synthetic PR merge ref)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.ORESLANG_PUBSUB_EXPECTED_SHA }}
+          persist-credentials: false
+      - name: Configure GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute exact-head native runtime and shared guest fixtures
+        run: bash scripts/verify-actor-pubsub-v1.sh
+      - name: Preserve Surefire evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pubsub-exact-head-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn
