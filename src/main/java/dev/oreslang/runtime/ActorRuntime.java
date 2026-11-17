@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -92,6 +93,7 @@ public final class ActorRuntime implements AutoCloseable {
     private record ActorExecutionContext(
             ActorRuntime runtime,
             ActorId actorId,
+            long actorGeneration,
             ActorKind kind,
             IsolatePolicy policy,
             Object executionDomain,
@@ -183,6 +185,12 @@ public final class ActorRuntime implements AutoCloseable {
     public static Optional<ActorId> currentActorId() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Optional.empty() : Optional.of(current.actorId());
+    }
+
+    /** Runtime-minted actor incarnation for transport/capability receipt checks. */
+    public static OptionalLong currentActorGeneration() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? OptionalLong.empty() : OptionalLong.of(current.actorGeneration());
     }
 
     public static Object currentExecutionDomain() {
@@ -10000,7 +10008,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain,
+                    ActorRuntime.this, ref.id(), ref.generation(), kind, policy, executionDomain,
                     codeImage, codeActorType));
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;

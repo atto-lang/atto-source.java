@@ -7208,6 +7208,9 @@ public final class TypeChecker {
                 case "isolated" -> Primitive.BOOL;
                 case "created", "reused" -> Primitive.INT;
                 case "pooled" -> new Function(List.of(Primitive.INT), new Named("HttpHandler", List.of()));
+                case "scoped" -> new Function(
+                        List.of(Primitive.STRING, Primitive.STRING, Primitive.INT),
+                        new Named("HttpHandler", List.of()));
                 case "dispatch" -> new Function(List.of(new Borrow(exchange, true)), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
             };
@@ -7247,8 +7250,14 @@ public final class TypeChecker {
             };
             case "HttpExchange" -> switch (name) {
                 case "can_respond" -> Primitive.BOOL;
-                case "method", "target", "request_id", "operation_id", "server_timing" -> Primitive.STRING;
-                case "pipeline_id", "contract_id", "actor_startup_ns", "move_to_claim_ns", "admitted_ns" -> Primitive.INT;
+                case "method", "target", "request_id", "operation_id", "server_timing",
+                     "dispatch_handler", "dispatch_binding", "dispatch_authority_class" -> Primitive.STRING;
+                case "pipeline_id", "contract_id", "actor_startup_ns", "move_to_claim_ns", "admitted_ns",
+                     "dispatch_scope_generation", "dispatch_actor_generation",
+                     "dispatch_exchange_generation", "dispatch_sequence" -> Primitive.INT;
+                case "dispatch_receipt_valid" -> new Function(
+                        List.of(Primitive.STRING, Primitive.STRING, Primitive.STRING, Primitive.INT),
+                        Primitive.BOOL);
                 case "completion" -> new Named("Future", List.of(Primitive.INT));
                 case "set_route" -> new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT), Primitive.VOID);
                 case "add_param" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.VOID);
