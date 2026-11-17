@@ -6385,7 +6385,7 @@ public final class Parser {
         java.util.Set<String> seenLabels = new java.util.LinkedHashSet<>();
         boolean namedStarted = false;
         do {
-            rejectEmptyListItem(terminator, "call argument");
+            if (check(terminator)) throw error(peek(), "empty call argument");
             if (match(ELLIPSIS)) {
                 if (namedStarted) {
                     throw error(previous(),
