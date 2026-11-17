@@ -4805,6 +4805,8 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.NewExpr created) {
+                    rejectUnloweredNamedArguments(
+                            created.arguments(), "suspendable constructor");
                     evalSuspendableArguments(
                             task,
                             created.arguments(),
