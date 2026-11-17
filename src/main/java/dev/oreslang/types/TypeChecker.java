@@ -867,6 +867,33 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        if (klass.actorKind() != Ast.ActorKind.NONE && klass.pipeTransformSpec() == null
+                && klass.methods().stream().anyMatch(method ->
+                        method.name().equals("receive_forward")
+                        || method.name().equals("receive_backward"))) {
+            throw new IllegalArgumentException(
+                    "directional receive hooks require compiler-authenticated transform pipe actor role");
+        }
+        // Role signatures parse, but Java's live mailbox still dispatches
+        // only receive(ActorMail<T>). Treating receive_forward/backward as
+        // ordinary methods would silently drop guest DATA. Reject before
+        // codegen until authenticated two-direction ingress and state loans
+        // are wired through the actor scheduler.
+        if (klass.pipeTransformSpec() != null) {
+            throw new IllegalArgumentException(
+                    "transform pipe actor requires Java directional DATA ingress "
+                    + "dispatcher and typed port lowering (not implemented)");
+        }
+        // Parsing a state map is not permission to run source-level state
+        // operations through the legacy class-field scheduler. No ordinary
+        // actor instance property may stand in for the hidden state loan.
+        if (klass.actorKind() != Ast.ActorKind.NONE && !klass.fields().isEmpty())
+            throw new IllegalArgumentException(
+                    "actor class instance data must be declared in its state map");
+        if (klass.stateSpec() != null)
+            throw new IllegalArgumentException(
+                    "actor state map requires scoped handle_state compiler/runtime lowering "
+                    + "(not implemented on Java)");
         if (inheritsBuiltinSerialActor(klass, new HashSet<>())) {
             if (klass.actorKind() != Ast.ActorKind.SHARED || klass.proxySpec() != null
                     || (klass.concurrencySpec() != null
@@ -1894,7 +1921,7 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.NameExpr name) {
-            Env.Binding local = env.lookup(name.name());
+            Env.Binding local = name.namespaceOnly() ? null : env.lookup(name.name());
             if (local != null) {
                 if (local.hasUninitializedFields()) {
                     throw new IllegalArgumentException(
@@ -2178,6 +2205,21 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr pipe
+                    && pipe.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("ActorUtils") && pipe.member().equals("pipe")
+                    && (namespace.namespaceOnly() || env.lookup("ActorUtils") == null)
+                    && !classes.containsKey("ActorUtils") && !modules.containsKey("ActorUtils")) {
+                if (call.typeArgumentsPresent())
+                    throw new IllegalArgumentException("ActorUtils.pipe infers port types; explicit type arguments are unsupported");
+                if (call.arguments().size() < 2)
+                    throw new IllegalArgumentException("ActorUtils.pipe requires at least two stages");
+                Ast.Expr graph = call.arguments().getFirst();
+                for (int i = 1; i < call.arguments().size(); i++)
+                    graph = new Ast.BinaryExpr("pipe", graph, call.arguments().get(i));
+                return typeOf(graph, env, generics, self);
+            }
+
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -2248,7 +2290,7 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
-                    && env.lookup(namespace.name()) == null
+                    && (namespace.namespaceOnly() || env.lookup(namespace.name()) == null)
                     && modules.containsKey(namespace.name())) {
                 rejectUnimportedModuleNamespace(namespace.name());
                 int arity = fixedCallArity(
@@ -2974,7 +3016,7 @@ public final class TypeChecker {
                                 + " must be called so arity can select the scalar or list overload");
             }
             if (member.receiver() instanceof Ast.NameExpr namespace
-                    && env.lookup(namespace.name()) == null
+                    && (namespace.namespaceOnly() || env.lookup(namespace.name()) == null)
                     && modules.containsKey(namespace.name())) {
                 rejectUnimportedModuleNamespace(namespace.name());
                 Ast.FunctionDecl moduleFunction = findSingleQualifiedFunction(
@@ -4598,7 +4640,7 @@ public final class TypeChecker {
             Type self,
             boolean writing) {
         Type rawReceiver;
-        if (member.receiver() instanceof Ast.NameExpr name && env.lookup(name.name()) != null) {
+        if (member.receiver() instanceof Ast.NameExpr name && !name.namespaceOnly() && env.lookup(name.name()) != null) {
             Env.Binding binding = env.lookup(name.name());
             if (!writing && binding.isUninitialized(member.member())) {
                 throw new IllegalArgumentException(

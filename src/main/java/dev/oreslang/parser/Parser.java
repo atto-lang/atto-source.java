@@ -105,6 +105,19 @@ public final class Parser {
                     rootDeclarations.add(parseProxyActor(modifiers.visibility));
                     continue;
                 }
+                if (matchContextualIdentifier("transform")) {
+                    consumeContextualIdentifier("pipe", "transform must be followed by 'pipe actor'");
+                    consume(ACTOR, "transform pipe must modify an actor");
+                    rejectCallableStructuralAnnotation(annotations, "transform pipe actor declarations");
+                    if (modifiers.async || modifiers.generator || modifiers.structural
+                            || modifiers.nonLexical || modifiers.trapped
+                            || modifiers.isStatic || modifiers.isAbstract
+                            || modifiers.shared || modifiers.untrusted)
+                        throw error(previous(), "transform pipe actor accepts only visibility modifiers");
+                    rootDeclarations.add(parseActorClass(
+                            Ast.ActorKind.SHARED, modifiers.visibility, null, false, true));
+                    continue;
+                }
                 Ast.ClassDecl configuredActor = parseProtocolActorHeader(modifiers, annotations);
                 if (configuredActor != null) {
                     rootDeclarations.add(configuredActor);
@@ -299,6 +312,20 @@ public final class Parser {
                 }
                 rejectCallableStructuralAnnotation(annotations, "proxy actor declarations");
                 return parseProxyActor(modifiers.visibility);
+            }
+            if (matchContextualIdentifier("transform")) {
+                consumeContextualIdentifier("pipe",
+                        "transform must be followed by 'pipe actor'");
+                consume(ACTOR, "transform pipe must modify an actor");
+                rejectCallableStructuralAnnotation(annotations,
+                        "transform pipe actor declarations");
+                if (modifiers.async || modifiers.generator || modifiers.structural
+                        || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                        || modifiers.isAbstract || modifiers.shared || modifiers.untrusted)
+                    throw error(previous(),
+                        "transform pipe actor accepts only visibility modifiers");
+                return parseActorClass(
+                        Ast.ActorKind.SHARED, modifiers.visibility, null, false, true);
             }
             Ast.ClassDecl configuredActor = parseProtocolActorHeader(modifiers, annotations);
             if (configuredActor != null) return configuredActor;
@@ -755,8 +782,36 @@ public final class Parser {
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility,
             Ast.ActorConcurrencySpec policy, boolean declaredSerial) {
+        return parseActorClass(actorKind, visibility, policy, declaredSerial, false);
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility,
+            Ast.ActorConcurrencySpec policy, boolean declaredSerial, boolean transformPipe) {
         String name = consume(IDENT, "expected actor name").lexeme();
-        List<String> generics = parseGenericParameters();
+        Ast.ActorPipeTransformSpec pipeRole = null;
+        List<String> generics;
+        if (transformPipe) {
+            consume(LT, "transform pipe actor requires forward_messages and backward_messages");
+            String forward = null;
+            String backward = null;
+            for (int i = 0; i < 2; i++) {
+                String key = consume(IDENT, "expected directional domain key").lexeme();
+                consume(EQUAL, "directional domain requires '='");
+                String domain = consume(IDENT, "expected nominal message domain").lexeme();
+                if (key.equals("forward_messages") && forward == null) forward = domain;
+                else if (key.equals("backward_messages") && backward == null) backward = domain;
+                else throw error(previous(),
+                        "transform pipe actor requires distinct forward_messages and backward_messages");
+                if (i == 0) consume(COMMA, "transform pipe actor requires two directional domains");
+            }
+            consume(GT, "expected '>' after transform pipe domains");
+            if (forward == null || backward == null)
+                throw error(previous(),
+                        "transform pipe actor requires both forward_messages and backward_messages");
+            pipeRole = new Ast.ActorPipeTransformSpec(forward, backward);
+            generics = List.of();
+        } else generics = parseGenericParameters();
 
         // This is a builtin actor superclass, not a class reference. The
         // runtime supplies its final lifecycle and exclusive scheduling
@@ -783,6 +838,7 @@ public final class Parser {
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        Ast.ActorStateSpec stateSpec = null;
         int requestConcurrency = policy == null ? 1 : policy.requestConcurrency();
         int messageConcurrency = policy == null ? 1 : policy.messageConcurrency();
         boolean requestDeclared = false;
@@ -829,6 +885,32 @@ public final class Parser {
                 }
                 continue;
             }
+            if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                if (stateSpec != null)
+                    throw error(peek(), "actor may declare exactly one state map");
+                advance(); // state: compiler-owned state keys, not class members
+                consume(LBRACE, "state map requires '{'");
+                List<Ast.FieldDecl> stateEntries = new ArrayList<>();
+                java.util.Set<String> keys = new java.util.HashSet<>();
+                while (!check(RBRACE) && !check(EOF)) {
+                    if (stateEntries.size() >= 64)
+                        throw error(peek(), "actor state map exceeds 64 fixed keys");
+                    String key = consume(IDENT, "state map requires a fixed key").lexeme();
+                    if (!keys.add(key))
+                        throw error(previous(), "duplicate actor state key '" + key + "'");
+                    consume(COLON, "actor state key requires ': Type'");
+                    Ast.TypeRef type = parseTypeRef();
+                    consume(EQUAL, "actor state key requires an initializer");
+                    Ast.Expr initializer = parseExpression();
+                    consume(SEMICOLON, "actor state entry requires ';'");
+                    stateEntries.add(new Ast.FieldDecl(key, Ast.Visibility.PRIVATE,
+                            Ast.BindingKind.LET, type, List.of(), initializer));
+                }
+                consume(RBRACE, "unterminated actor state map");
+                match(SEMICOLON);
+                stateSpec = new Ast.ActorStateSpec(stateEntries);
+                continue;
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (isLegacyFnSpelling()) {
@@ -846,9 +928,8 @@ public final class Parser {
             }
 
             if (isBindingKind(peek().type())) {
-                validateActorFieldModifiers(mods);
-                fields.add(parseField(annotations, mods.visibility));
-                continue;
+                throw error(peek(),
+                        "actor class instance data must be declared in its state map");
             }
 
             boolean explicitFnc = match(FNC);
@@ -870,9 +951,54 @@ public final class Parser {
                 : new Ast.ActorConcurrencySpec(
                         policy == null ? "actor" : policy.protocol(),
                         requestConcurrency, messageConcurrency);
+        if (transformPipe) validateTransformPipeHandlerContract(name, pipeRole, methods);
+        else if (methods.stream().anyMatch(method ->
+                method.name().equals("receive_forward")
+                || method.name().equals("receive_backward")))
+            throw error(previous(),
+                    "receive_forward/receive_backward require define transform pipe actor");
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces,
-                fields, null, methods, null, configured, builtinBase);
+                fields, null, methods, null, configured, builtinBase, pipeRole, stateSpec);
+    }
+
+    private void validateTransformPipeHandlerContract(
+            String actorName, Ast.ActorPipeTransformSpec contract,
+            List<Ast.MethodDecl> methods) {
+        int forwardCount = 0, backwardCount = 0;
+        for (Ast.MethodDecl method : methods) {
+            final String expected;
+            if (method.name().equals("receive_forward")) {
+                forwardCount++;
+                expected = contract.forwardMessages();
+            } else if (method.name().equals("receive_backward")) {
+                backwardCount++;
+                expected = contract.backwardMessages();
+            } else if (method.name().equals("receive"))
+                throw error(previous(), "transform pipe actor rejects ordinary receive");
+            else continue;
+            if (method.isStatic() || method.async() || method.isAbstract()
+                    || method.visibility() == Ast.Visibility.PUBLIC
+                    || !method.genericParameters().isEmpty()
+                    || method.explicitReceiverType() != null
+                    || method.structural()
+                    || method.parameters().size() != 1
+                    || method.parameters().get(0).structural()
+                    || method.parameters().get(0).mutable()
+                    || !method.parameters().get(0).type().name().equals(expected)
+                    || !method.parameters().get(0).type().arguments().isEmpty()
+                    || method.parameters().get(0).type().inferArguments()
+                    || !method.returnType().name().equals("void")
+                    || !method.returnType().arguments().isEmpty()
+                    || method.returnType().inferArguments())
+                throw error(previous(), "transform pipe actor '" + actorName
+                        + "' method '" + method.name()
+                        + "' must be an instance void handler taking exactly one "
+                        + expected + " parameter");
+        }
+        if (forwardCount != 1 || backwardCount != 1)
+            throw error(previous(),
+                    "transform pipe actor requires exactly one receive_forward and receive_backward");
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -3048,6 +3174,9 @@ public final class Parser {
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
+            } else if (match(DOUBLE_COLON)) {
+                String namespace = staticNamespaceName(expr);
+                expr = new Ast.MemberExpr(new Ast.NameExpr(namespace, true), consumeMemberName());
             } else if (match(DOT)) {
                 String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
@@ -3058,6 +3187,13 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    private String staticNamespaceName(Ast.Expr expr) {
+        if (expr instanceof Ast.NameExpr name) return name.name();
+        if (expr instanceof Ast.MemberExpr member)
+            return staticNamespaceName(member.receiver()) + "." + member.member();
+        throw error(previous(), "'::' requires a class or module namespace");
     }
 
     private List<Ast.TypeRef> parseCallTypeArguments() {
@@ -3163,6 +3299,20 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // Preserve the planned "using state.read/write" spelling without
+        // letting it degrade into an arbitrary member invocation. Java
+        // currently lacks authenticated state-loan runtime lowering, so
+        // reject the capability syntax rather than running it unsafely.
+        if (isContextualIdentifier("using") && current + 3 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("state")
+                && tokens.get(current + 2).type() == DOT
+                && (tokens.get(current + 3).lexeme().equals("read")
+                    || tokens.get(current + 3).lexeme().equals("write"))) {
+            throw error(peek(),
+                    "using state.read/write requires Java scoped actor-state "
+                    + "capability lowering (not implemented)");
+        }
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
@@ -3173,6 +3323,18 @@ public final class Parser {
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
+        // self.handle_state is an actor state capability intrinsic, not
+        // an ordinary callable. The Java backend cannot yet lower scoped
+        // read/write loans, so reject both read-by-default and critical
+        // write forms until it has real authenticated state execution.
+        if (check(SELF) && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == DOT
+                && tokens.get(current + 2).type() == IDENT
+                && tokens.get(current + 2).lexeme().equals("handle_state")) {
+            throw error(peek(),
+                    "self.handle_state requires Java scoped actor-state "
+                    + "read/write lowering (not implemented)");
+        }
         if (match(SELF)) return new Ast.NameExpr("self");
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).

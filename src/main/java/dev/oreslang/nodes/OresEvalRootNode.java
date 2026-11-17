@@ -5587,7 +5587,7 @@ public final class OresEvalRootNode extends RootNode {
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
-                Object local = env.lookup(name.name());
+                Object local = name.namespaceOnly() ? Env.MISSING : env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("std")) return new StdFacade(context);

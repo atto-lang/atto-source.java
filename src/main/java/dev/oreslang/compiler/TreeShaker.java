@@ -257,7 +257,7 @@ public final class TreeShaker {
                 Set<String> shadowed) {
             if (expression == null || expression instanceof Ast.LiteralExpr) return expression;
             if (expression instanceof Ast.NameExpr name) {
-                if (!shadowed.contains(name.name()) && substitutions.containsKey(name.name())) {
+                if (!name.namespaceOnly() && !shadowed.contains(name.name()) && substitutions.containsKey(name.name())) {
                     return substitutions.get(name.name());
                 }
                 return expression;
@@ -449,7 +449,7 @@ public final class TreeShaker {
             if (expression == null) return UNKNOWN;
             if (expression instanceof Ast.LiteralExpr literal) return literal.value();
             if (expression instanceof Ast.NameExpr name) {
-                if (locals.containsKey(name.name())) return locals.get(name.name());
+                if (!name.namespaceOnly() && locals.containsKey(name.name())) return locals.get(name.name());
                 String key = resolveConstantReference(name.name(), module);
                 return key == null ? UNKNOWN : constantValue(key);
             }
@@ -602,7 +602,9 @@ public final class TreeShaker {
                         methods,
                         klass.proxySpec(),
                         klass.concurrencySpec(),
-                        klass.builtinActorBase());
+                        klass.builtinActorBase(),
+                        klass.pipeTransformSpec(),
+                        klass.stateSpec());
             }
             return declaration;
         }
@@ -1214,7 +1216,7 @@ public final class TreeShaker {
         private void scanExpression(String module, Ast.Expr expression, Set<String> locals) {
             if (expression == null || expression instanceof Ast.LiteralExpr) return;
             if (expression instanceof Ast.NameExpr name) {
-                if (locals.contains(name.name())) return;
+                if (!name.namespaceOnly() && locals.contains(name.name())) return;
 
                 // Reifying a module namespace (for example `val api = service`)
                 // allows later member selection through a local alias, where
@@ -1232,7 +1234,7 @@ public final class TreeShaker {
             }
             if (expression instanceof Ast.MemberExpr member) {
                 if (member.receiver() instanceof Ast.NameExpr namespace
-                        && !locals.contains(namespace.name())) {
+                        && (namespace.namespaceOnly() || !locals.contains(namespace.name()))) {
                     String qualified = qualify(namespace.name(), member.member());
                     if (symbols.containsKey(qualified)) {
                         mark(qualified);

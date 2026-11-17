@@ -303,6 +303,20 @@ public final class Ast {
         }
     }
 
+    /** Closed nominal message domains for native-directional pipeline roles. */
+    /** State keys are compiler-owned, not ordinary actor class members. */
+    public record ActorStateSpec(List<FieldDecl> entries) {
+        public ActorStateSpec { entries = List.copyOf(entries); }
+    }
+
+    public record ActorPipeTransformSpec(String forwardMessages, String backwardMessages) {
+        public ActorPipeTransformSpec {
+            if (forwardMessages == null || forwardMessages.isBlank()
+                    || backwardMessages == null || backwardMessages.isBlank())
+                throw new IllegalArgumentException("transform pipe role requires two nominal domains");
+        }
+    }
+
     /** Built-in actor superclass is a scheduling/ownership type, never an ordinary class. */
     public enum BuiltinActorBase { SERIAL }
 
@@ -319,13 +333,53 @@ public final class Ast {
             List<MethodDecl> methods,
             ProxyActorSpec proxySpec,
             ActorConcurrencySpec concurrencySpec,
-            BuiltinActorBase builtinActorBase) implements Decl {
+            BuiltinActorBase builtinActorBase,
+            ActorPipeTransformSpec pipeTransformSpec,
+            ActorStateSpec stateSpec) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            if (pipeTransformSpec != null
+                    && (actorKind == ActorKind.NONE || proxySpec != null)) {
+                throw new IllegalArgumentException(
+                        "directional transform actor role requires a local actor declaration");
+            }
+            if (stateSpec != null && (actorKind == ActorKind.NONE || proxySpec != null))
+                throw new IllegalArgumentException(
+                        "actor state map requires a local actor declaration");
+            if (actorKind != ActorKind.NONE && !fields.isEmpty())
+                throw new IllegalArgumentException(
+                        "actor class instance data must be declared in its state map");
+        }
+
+        /** Preserve transform contract metadata for pre-state callers. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ProxyActorSpec proxySpec,
+                         ActorConcurrencySpec concurrencySpec,
+                         BuiltinActorBase builtinActorBase,
+                         ActorPipeTransformSpec pipeTransformSpec) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    proxySpec, concurrencySpec, builtinActorBase, pipeTransformSpec, null);
+        }
+
+        /** Compatibility with existing class/actor AST constructors. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ProxyActorSpec proxySpec,
+                         ActorConcurrencySpec concurrencySpec,
+                         BuiltinActorBase builtinActorBase) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    proxySpec, concurrencySpec, builtinActorBase, null);
         }
 
         /** Existing compiler constructors do not declare a builtin superclass. */
@@ -839,7 +893,9 @@ public final class Ast {
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
-    public record NameExpr(String name) implements Expr { }
+    public record NameExpr(String name, boolean namespaceOnly) implements Expr {
+        public NameExpr(String name) { this(name, false); }
+    }
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }

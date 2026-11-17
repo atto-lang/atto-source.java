@@ -163,7 +163,9 @@ public final class AnnotationExpander {
                 methods,
                 klass.proxySpec(),
                 klass.concurrencySpec(),
-                klass.builtinActorBase());
+                klass.builtinActorBase(),
+                klass.pipeTransformSpec(),
+                klass.stateSpec());
     }
 
     private static void addGeneratedAccessor(
