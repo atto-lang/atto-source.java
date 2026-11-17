@@ -12,7 +12,7 @@ public final class Lexer {
 
     static {
         KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
-        KEYWORDS.put("import", IMPORT); KEYWORDS.put("from", FROM); KEYWORDS.put("as", AS);
+        KEYWORDS.put("import", IMPORT); KEYWORDS.put("export", EXPORT); KEYWORDS.put("from", FROM); KEYWORDS.put("as", AS);
         KEYWORDS.put("extends", EXTENDS); KEYWORDS.put("implements", IMPLEMENTS);
         KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
         KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("guard", GUARD); KEYWORDS.put("do", DO);
@@ -84,7 +84,20 @@ public final class Lexer {
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(match('>') ? PIPE_FORWARD : PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE);
             case '-' -> add(match('>') ? ARROW : MINUS);
-            case '!' -> add(match('=') ? BANG_EQUAL : BANG);
+            // AttoLang !eq is a single contiguous inequality token. Use the
+            // canonical NEQ token kind so precedence and typed backend lowering
+            // are identical to the word 'neq', without a runtime rewrite.
+            // A following identifier character prevents prefix tokenization.
+            case '!' -> {
+                if (match('=')) add(BANG_EQUAL); // .ores legacy != remains valid
+                else if (source.startsWith("eq", current)
+                        && (current + 2 == source.length()
+                            || !isIdentPart(source.charAt(current + 2)))) {
+                    advance();
+                    advance();
+                    add(NEQ);
+                } else add(BANG);
+            }
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
             case '<' -> add(match('=') ? LTE : LT); case '>' -> add(match('=') ? GTE : GT);
             case '/' -> {

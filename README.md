@@ -44,7 +44,7 @@ The language is intentionally opinionated:
 - class-level `static fnc` functions separated from receiver methods;
 - first-class function aliases/types and block-only `|args| -> { ... }` lambdas;
 - lexical closures with persistent captured environments;
-- affine ownership, move checking, borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax - see [ft borrow, ft copy, ft take, ft share]
+- affine ownership, move checking, borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax; source ownership uses `rt copy`, `rt share`, `rt take`, `rt borrow`, and `rt mut borrow` (no `&`/`*` pointer/reference/dereference syntax)
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; instance/actor methods are direct-call-only, and callbacks use explicit lambdas instead of implicit bound-method values;
 - multiple named modules may appear in one source file;
@@ -54,6 +54,12 @@ The first implementation is developed on a feature branch and will land with an 
 
 Native inbound HTTP capabilities and actor-owned request transfer are documented in [docs/HTTP_SERVER.md](docs/HTTP_SERVER.md).
 
+The [Java/.NET host import, native AOT and actor-memory acceptance contract](docs/JAVA_DOTNET_AOT_ACTOR_HEAPS_V0.md)
+distinguishes existing trusted Java library imports, the bounded experimental
+`import dotnet` path, true native binaries, per-actor unsigned-32 offsets,
+guest borrow checking, and measurable near-zero-GC goals. Native Image host
+AOT and Epsilon host-only tests are **not** full guest AOT or GC-free proofs.
+
 The implemented actor scheduling guarantees, native descriptor-transfer experiment,
 and remaining physical-isolation work are tracked in
 [Actor physical boundaries](docs/runtime/actor-physical-boundaries.md).
@@ -61,6 +67,8 @@ and remaining physical-isolation work are tracked in
 Async filesystem, TCP and HTTP client APIs: [usage and execution guarantees](docs/ASYNC_IO.md).
 
 Core assertions: see [Assert API and trap behavior](docs/ASSERT.md).
+
+CPU/GPU execution expressions, nested placement and `nb`/stream parity: see [proposed v1 contract](docs/CPU_GPU_NB_GRAPH_V1.md). This is **not** a claim that the backend executes GPU or streamed source blocks.
 
 ## Rust-only tooling policy (no Python)
 
@@ -98,3 +106,14 @@ been executed against Maven, Native Image, or LLVM's real binary at this
 exact head. Run `mvn test -Dtest=CompilerEffectAnalysisV0Test`, the
 real cross-backend conformance fixtures, and pinned-binary
 no-guest-execution/no-artifact checks before promoting this mode.
+
+## Repository ownership and migration (2026-11-08)
+
+**Current home:** `ores-truffle-oreslang/oreslang-source.java` (legacy Oreslang organization). **Language name:** AttoLang; historical `oreslang-*` CLI/package identities and existing `.ores` files remain compatibility interfaces until independently migrated and tested.
+
+- **What belongs in this repository:** Java/Truffle/GraalVM reference compiler, interpreter, source admission, actor/runtime host primitives and their executable tests.
+- **What belongs elsewhere:** LLVM/.NET/Wasm implementation details, managed cloud control plane, or portable core/std semantics unnecessarily duplicated in Java. Shared portable AttoLang language semantics and core/std should be authored in canonical `.atto` modules and reconciled with `oreslang-common-source`; indispensable host compiler, scheduler and ABI primitives remain backend-specific here.
+- **Organization boundary:** language/compiler/tooling/conformance work belongs to [`atto-lang`](https://github.com/atto-lang); commercial deployment, identity, billing, hosted runtime and multi-tenant cloud operations belong to separately governed [`atto-co`](https://github.com/atto-co). The existence of similarly named `atto-*` repositories is **not** proof of a Git repository transfer or tested feature parity.
+- **Proposed first migration:** transfer this *existing repository identity* to `atto-lang/oreslang-source.java` retaining its name and history, **only after** individual source/target owner and independent security approvals. No direct transfer to `atto-co` is authorized in the current migration wave. A future product carve-out requires separate approval.
+
+**Maintainer cutover instructions:** coordinate under [migration issue #26](https://github.com/ores-truffle-oreslang/.github/issues/26) and the private [migration runbook draft #25](https://github.com/ores-truffle-oreslang/.github/pull/25); check stable repository numeric ID, exact head SHA/tree, branch protection/rulesets, reviewers, GitHub Apps, secrets, deploys, dependencies, releases, packages, Pages and remote URLs. Transfer using an approved GitHub ownership operation rather than mirroring private source; validate the unchanged ID/tree and rerun exact-head CI at destination. **`steps=[]` or `steps=null` means `NOT_EXECUTED`; host-only tests do not establish native AttoLang guest parity.** Do not combine transfer with forced `.ores`→`.atto` syntax changes, repo renames, CI policy relaxation or AOT/zero-GC claims.

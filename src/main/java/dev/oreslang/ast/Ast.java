@@ -25,10 +25,25 @@ public final class Ast {
         return name;
     }
 
-    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+    public enum ExportScope { PUBLIC, PACKAGE }
+    public enum ExportKind { CLASS, FNC, ROUTINE, ACTOR, INTERFACE, TRAIT, TYPE }
+    /** Compile-time export authority, resolved after collecting every file-root declaration. */
+    public record ExportDecl(String name, ExportScope scope, ExportKind kind) {
+        public ExportDecl {
+            java.util.Objects.requireNonNull(name);
+            java.util.Objects.requireNonNull(scope);
+        }
+    }
+
+    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules,
+                          List<ExportDecl> exports) {
         public Program {
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
+            exports = List.copyOf(exports);
+        }
+        public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(namespace, imports, modules, List.of());
         }
         public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
@@ -61,7 +76,8 @@ public final class Ast {
      * effects, and for virtual actors logical-identity incarnation fencing.
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
-            TypeAliasDecl, StateContainerDecl, VirtualActorDecl { }
+            TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
+            ExternalActorMethodDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -116,6 +132,71 @@ public final class Ast {
                                    List<ProtectedMethod> methods) implements Decl {
         public VirtualActorDecl {
             java.util.Objects.requireNonNull(name, "virtual actor name");
+            java.util.Objects.requireNonNull(visibility, "visibility");
+            stateFields = List.copyOf(stateFields);
+            methods = List.copyOf(methods);
+        }
+    }
+
+    /**
+     * Parsed source-level actor identity plus its local receiver-binding name.
+     * Deliberately distinct from an executable ClassDecl: until the actor
+     * dispatcher, state-loan and activation-generation checks understand this
+     * declaration, it must not be turned into an empty actor class.
+     */
+    public record StandaloneActorDecl(
+            String name, String receiverName, Visibility visibility, ActorKind actorKind)
+            implements Decl {
+        public StandaloneActorDecl {
+            if (name == null || name.isBlank() || receiverName == null
+                    || receiverName.isBlank() || name.equals(receiverName)) {
+                throw new IllegalArgumentException(
+                        "standalone actor requires distinct nominal type and receiver binding names");
+            }
+            java.util.Objects.requireNonNull(visibility, "standalone actor visibility");
+            if (actorKind != ActorKind.SHARED) {
+                throw new IllegalArgumentException(
+                        "standalone actor AST currently supports only generic shared actors");
+            }
+        }
+    }
+
+    /**
+     * Parsed external actor receiver method. The receiver is a nominal
+     * actor name, NOT a normal value parameter. Until compiler-controlled
+     * dispatch and execution permits exist, type checking must reject this
+     * node instead of lowering it as a free FunctionDecl.
+     */
+    public record ExternalActorMethodDecl(
+            String actorName, String receiverName, String name,
+            Visibility visibility, List<Param> parameters,
+            TypeRef returnType, List<Stmt> body) implements Decl {
+        public ExternalActorMethodDecl {
+            if (actorName == null || actorName.isBlank()
+                    || receiverName == null || receiverName.isBlank()
+                    || name == null || name.isBlank()) {
+                throw new IllegalArgumentException(
+                        "external actor method requires nominal actor, receiver and method names");
+            }
+            java.util.Objects.requireNonNull(visibility, "external method visibility");
+            java.util.Objects.requireNonNull(returnType, "external method return type");
+            parameters = List.copyOf(parameters);
+            body = List.copyOf(body);
+        }
+    }
+
+
+    /**
+     * A GPU actor is NOT a ClassDecl or a CPU ActorKind: GPU state and
+     * actor-mailbox effects require a separate typed MIR and physical device
+     * admission. Bodies remain source-token-provenance-bearing until checked
+     * lowering is implemented. Parsing does not authorize execution.
+     */
+    public record GpuActorDecl(String name, Visibility visibility,
+                               List<ProtectedStateField> stateFields,
+                               List<ProtectedMethod> methods) implements Decl {
+        public GpuActorDecl {
+            java.util.Objects.requireNonNull(name, "GPU actor name");
             java.util.Objects.requireNonNull(visibility, "visibility");
             stateFields = List.copyOf(stateFields);
             methods = List.copyOf(methods);
@@ -495,9 +576,12 @@ public final class Ast {
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods,
-            ActorConcurrency actorConcurrency) implements Decl {
+            ActorConcurrency actorConcurrency,
+            List<ProtectedStateField> sealedStateFields,
+            List<Annotation> annotations) implements Decl {
         public ClassDecl {
             actorConcurrency = java.util.Objects.requireNonNull(actorConcurrency);
+            annotations = List.copyOf(annotations);
             if (actorKind == ActorKind.NONE && actorConcurrency.transport() != ActorTransport.GENERIC)
                 throw new IllegalArgumentException("ordinary classes cannot carry actor transport policy");
             genericParameters = List.copyOf(genericParameters);
@@ -505,6 +589,36 @@ public final class Ast {
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            sealedStateFields = List.copyOf(sealedStateFields);
+            if (!sealedStateFields.isEmpty()) {
+                if (actorKind == ActorKind.NONE)
+                    throw new IllegalArgumentException("sealed state requires an actor");
+                if (!fields.isEmpty())
+                    throw new IllegalArgumentException("sealed actor state cannot mix ordinary actor fields");
+            }
+        }
+
+        /** Existing actor concurrency call sites default to no sealed state or annotations. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, List.of(), List.of());
+        }
+
+        /** Sealed-state call sites (main) default to no class annotations. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods, ActorConcurrency actorConcurrency,
+                         List<ProtectedStateField> sealedStateFields) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods,
+                    actorConcurrency, sealedStateFields, List.of());
         }
 
         /** Compatibility constructor for all existing AST/JIT compiler clients. */
@@ -555,7 +669,39 @@ public final class Ast {
         public int arity() { return parameters.size(); }
     }
 
-    public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl { }
+    public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl,
+            InterfaceActorDecl, InterfaceActorMethodDecl { }
+
+    /**
+     * A required mailbox-dispatched receiver method on a nominal actor.
+     * This is compile-time metadata only. It is NOT an executable extension
+     * method or a source of ActorContext/state-loan capabilities.
+     */
+    public record InterfaceActorMethodDecl(
+            String actorName,
+            String name,
+            Visibility visibility,
+            List<Param> parameters,
+            TypeRef returnType) implements InterfaceMember {
+        public InterfaceActorMethodDecl {
+            if (actorName == null || actorName.isBlank()
+                    || name == null || name.isBlank()) {
+                throw new IllegalArgumentException("contract receiver method requires actor and method names");
+            }
+            java.util.Objects.requireNonNull(visibility, "required receiver visibility");
+            java.util.Objects.requireNonNull(returnType, "required receiver return type");
+            parameters = List.copyOf(parameters);
+        }
+    }
+
+    /** A nominal actor type that a conforming module must publicly declare. */
+    public record InterfaceActorDecl(String name) implements InterfaceMember {
+        public InterfaceActorDecl {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("contract actor requirement needs a name");
+            }
+        }
+    }
 
     public record InterfaceFunctionDecl(
             String name,
@@ -652,7 +798,20 @@ public final class Ast {
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body,
-            EffectSpec effects) {
+            EffectSpec effects,
+            boolean critical) {
+        /** Legacy AST call sites cannot accidentally invent a critical method. */
+        public MethodDecl(String name, Visibility visibility, boolean isStatic,
+                          boolean isAbstract, boolean async, boolean suspends,
+                          boolean structural, TypeRef explicitReceiverType,
+                          List<String> genericParameters, List<Param> parameters,
+                          TypeRef returnType, List<Annotation> annotations,
+                          List<Stmt> body, EffectSpec effects) {
+            this(name, visibility, isStatic, isAbstract, async, suspends, structural,
+                    explicitReceiverType, genericParameters, parameters,
+                    returnType, annotations, body, effects, false);
+        }
+
         /** Existing methods retain empty effects until declared by source. */
         public MethodDecl(String name, Visibility visibility, boolean isStatic,
                           boolean isAbstract, boolean async, boolean suspends,
@@ -681,6 +840,12 @@ public final class Ast {
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
             java.util.Objects.requireNonNull(effects, "method checked effects");
+            if (critical && (isStatic || isAbstract || async || suspends || structural
+                    || explicitReceiverType != null || !genericParameters.isEmpty()
+                    || !annotations.isEmpty() || !effects.equals(EffectSpec.none()))) {
+                throw new IllegalArgumentException(
+                        "critical actor method cannot carry unresolved modifiers or effects");
+            }
         }
 
         /** Compatibility constructor for methods that do not use declaration-level structural matching. */
@@ -734,7 +899,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, TaskScopeStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            BlockStmt, TaskScopeStmt, UsingBorrowStmt, UsingTelemetrySpanStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt, LocalTypeDeclStmt { }
 
     /** Compile-time declaration within a lexical callable/block scope.
@@ -870,6 +1035,22 @@ public final class Ast {
         public UsingBorrowStmt {
             if (resource == null || binding == null || binding.isBlank() || body == null) {
                 throw new IllegalArgumentException("using borrowed scope needs resource, alias and body");
+            }
+            body = List.copyOf(body);
+        }
+    }
+    /**
+     * Compiler-recognized, suspends-safe tracing scope.
+     * This is deliberately distinct from UsingBorrowStmt: a span context is
+     * immutable continuation metadata, NOT a live transport memory loan.
+     * Only compiler-lowered entry/exit may create or end the scope.
+     */
+    public record UsingTelemetrySpanStmt(Expr name, String binding, List<Stmt> body)
+            implements Stmt {
+        public UsingTelemetrySpanStmt {
+            if (name == null || binding == null || binding.isBlank() || body == null) {
+                throw new IllegalArgumentException(
+                        "using telemetry.span requires name, alias and body");
             }
             body = List.copyOf(body);
         }
@@ -1157,8 +1338,8 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
+    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr, WithExpr,
+            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
             TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
@@ -1184,6 +1365,34 @@ public final class Ast {
                     throw new IllegalArgumentException("duplicate aggregate constructor field '" + field.name() + "'");
                 }
             }
+        }
+    }
+
+    /**
+     * Parsed immutable field-update expression. Admission of nominal/record
+     * reconstruction remains blocked until type, ownership and backend
+     * lowering are all checked; preserving it as a distinct node prevents
+     * callers from treating it as an unchecked mutable field assignment.
+     */
+    public record WithExpr(Expr source, List<WithField> changes) implements Expr {
+        public WithExpr {
+            java.util.Objects.requireNonNull(source, "with source");
+            changes = List.copyOf(java.util.Objects.requireNonNull(changes, "with changes"));
+            if (changes.isEmpty()) throw new IllegalArgumentException("with update requires at least one field");
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (WithField change : changes) {
+                if (!names.add(change.name())) {
+                    throw new IllegalArgumentException("duplicate with field '" + change.name() + "'");
+                }
+            }
+        }
+    }
+
+    /** RHSs are expressions, not implicit function returns or setter calls. */
+    public record WithField(String name, Expr value) {
+        public WithField {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("with field name required");
+            java.util.Objects.requireNonNull(value, "with field expression");
         }
     }
 
@@ -1307,6 +1516,9 @@ public final class Ast {
         if (statement instanceof UsingBorrowStmt loan) {
             return loan.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
         }
+        if (statement instanceof UsingTelemetrySpanStmt scope) {
+            return scope.body().stream().anyMatch(Ast::valueArmPrefixContainsReturn);
+        }
         if (statement instanceof IfStmt conditional) {
             return conditional.branches().stream()
                             .anyMatch(branch -> branch.body().stream()
@@ -1378,6 +1590,9 @@ public final class Ast {
 
     /** "value matches Pattern" -- full pattern predicate, with bindings scoped by the enclosing condition. */
     public record PatternTestExpr(Expr value, Pattern pattern) implements Expr { }
+
+    /** Condition-local capture: bind the value once and yield that same value. */
+    public record CaptureExpr(Expr value, String name) implements Expr { }
 
     public enum CastMode { CHECKED, OPTIONAL }
 
@@ -2109,8 +2324,14 @@ public final class Ast {
         }
     }
 
-    public record ListExpr(List<Expr> elements) implements Expr {
+    /**
+     * Array-shaped expression. A bare legacy [...] literal may be interpreted
+     * contextually as a finite tuple. The explicit ~array(...) constructor
+     * must remain an array even when the expected return type is Tuple[...].
+     */
+    public record ListExpr(List<Expr> elements, boolean explicitArrayConstructor) implements Expr {
         public ListExpr { elements = List.copyOf(elements); }
+        public ListExpr(List<Expr> elements) { this(elements, false); }
     }
 
     public record TupleExpr(List<Expr> elements) implements Expr {
