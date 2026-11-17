@@ -2278,6 +2278,9 @@ public final class OresEvalRootNode extends RootNode {
                 return runtime.arguments().stream()
                         .anyMatch(argument -> expressionContainsPotentialSuspension(argument, seen));
             }
+            if (expr instanceof Ast.NamedArgExpr named) {
+                return expressionContainsPotentialSuspension(named.value(), seen);
+            }
             if (expr instanceof Ast.CallExpr call) {
                 for (Ast.Expr argument : call.arguments()) {
                     if (expressionContainsPotentialSuspension(argument, seen)) return true;
