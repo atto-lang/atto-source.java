@@ -311,6 +311,11 @@ public final class TypeChecker {
                                 // Stage one is restricted to immutable scalar fields.
                                 // Nested ownership, recursive messages and actor transport
                                 // need a separate, proven lifetime/serialization boundary.
+                                if (record.members().size() > 128) {
+                                    throw new IllegalArgumentException(
+                                            "enum " + declarationEnum.name() + "." + variant.name()
+                                                    + " exceeds the 128-field transport limit");
+                                }
                                 for (Type fieldType : record.members().values()) {
                                     if (fieldType != Primitive.INT && fieldType != Primitive.FLOAT
                                             && fieldType != Primitive.BOOL && fieldType != Primitive.STRING) {
