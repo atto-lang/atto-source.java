@@ -21,14 +21,33 @@ bash "$source_dir/tools/verify-exact-source-tree.sh" "$expected" "$source_dir" |
 printf 'NESTED_EXTRACTION_CI|TREE_VERIFIED|%s|%s\n' "$expected" "$source_dir"
 command -v java >/dev/null || die 'Java unavailable' 69
 command -v mvn >/dev/null || die 'Maven unavailable' 69
-java_major="$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
+# JVM option injection can forge java.vendor.version on ordinary OpenJDK.
+# Refuse ambient options rather than certifying an altered toolchain identity.
+for injected in JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS _JAVA_OPTIONS; do
+    if [[ -n "${!injected:-}" ]]; then
+        die "ambient JVM option injection forbidden: $injected" 69
+    fi
+done
+java_details="$(java -XshowSettings:properties -version 2>&1)" || die 'Java version probe failed' 69
+java_major="$(printf '%s\n' "$java_details" | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
+# Pin the actual JVM installation used by the PATH launcher. Maven may
+# instead invoke $JAVA_HOME/bin/java, so a matching vendor/version is not
+# enough to establish that both executions use the same runtime image.
+path_java_home="$(printf '%s\n' "$java_details" | sed -n 's/^[[:space:]]*java.home = //p' | head -n 1)"
+[[ -n "$path_java_home" ]] || die 'PATH Java home missing from JVM properties' 69
 [[ "$java_major" == '25' ]] || die 'GraalVM JDK 25 required' 69
+printf '%s\n' "$java_details" | grep -Eqi '^[[:space:]]*java\.(runtime\.name|vendor\.version)[[:space:]]*=[[:space:]]*.*graalvm' || die 'GraalVM JDK 25 runtime identity required' 69
 # Maven may ignore PATH's java and use JAVA_HOME instead. Never certify a
 # JDK 25 run if the Maven JVM is pointed at an older/different installation.
 if [[ -n "${JAVA_HOME:-}" ]]; then
     [[ -x "$JAVA_HOME/bin/java" ]] || die 'JAVA_HOME does not contain executable java' 69
-    home_major="$("$JAVA_HOME/bin/java" -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
+    home_details="$("$JAVA_HOME/bin/java" -XshowSettings:properties -version 2>&1)" || die 'JAVA_HOME version probe failed' 69
+    home_major="$(printf '%s\n' "$home_details" | sed -n 's/^[[:space:]]*java.specification.version = //p' | head -n 1)"
+    home_java_home="$(printf '%s\n' "$home_details" | sed -n 's/^[[:space:]]*java.home = //p' | head -n 1)"
+    [[ -n "$home_java_home" && "$home_java_home" == "$path_java_home" ]] \
+      || die 'PATH and JAVA_HOME launch distinct Java installations' 69
     [[ "$home_major" == '25' ]] || die 'JAVA_HOME JVM must be JDK 25 for Maven' 69
+    printf '%s\n' "$home_details" | grep -Eqi '^[[:space:]]*java\.(runtime\.name|vendor\.version)[[:space:]]*=[[:space:]]*.*graalvm' || die 'JAVA_HOME must use GraalVM JDK 25 runtime' 69
 fi
 if [[ "$phase" == native-* || "$phase" == all ]]; then
     [[ "$(uname -s)" == Linux ]] || die 'native smoke phase requires Linux' 69
@@ -37,7 +56,9 @@ if [[ "$phase" == native-* || "$phase" == all ]]; then
 fi
 cd "$source_dir"
 run_targeted() {
-    local tests='AffineSumProjectionExtractionTest,BorrowedSumExtractionOwnershipTest,CheckedOptionDepthMetadataTest,FutureCompositionLanguageTest,NestedExtractionArityDiagnosticsTest,NestedFutureAffineReceiverTest,NestedFutureFlattenArityTest,NestedFutureSchedulerContractTest,NestedFutureCycleInterleavingTest,NestedFutureFlattenCycleRegressionTest,NestedOptionDepthConformanceTest,NestedOptionFutureExtractionLanguageTest,NestedOptionNoneBoundaryTest,NestedOptionResultBoundaryRegressionTest'
+    # Include the full Future chaining/cancellation contract on this source tree.
+    # Do not silently promote this PR on an unrelated nested-only test pass.
+    local tests='OresFuturesTest,NestedWrapperSemanticsContractTest,AffineSumProjectionExtractionTest,BorrowedSumExtractionOwnershipTest,CheckedOptionDepthMetadataTest,NestedExtractionCallableEscapeTest,FutureCompositionLanguageTest,NestedExtractionArityDiagnosticsTest,NestedFutureAffineReceiverTest,NestedFutureFlattenArityTest,NestedFutureSchedulerContractTest,NestedFutureCycleInterleavingTest,NestedFutureFlattenCycleRegressionTest,NestedOptionDepthConformanceTest,NestedOptionFutureExtractionLanguageTest,NestedOptionNoneBoundaryTest,NestedOptionResultBoundaryRegressionTest,FutureChainingV2PinnedGuestTest,FutureSnakeCaseChainingTest,OresFutureHostAdapterIsolationTest,OresFutureCallbackRetentionTest,FutureCombinatorsTest'
     mvn -B -ntp "-Dtest=$tests" -DfailIfNoTests=true test
 }
 run_full() { mvn -B -ntp -Dores.runtime.carriers=native verify; }

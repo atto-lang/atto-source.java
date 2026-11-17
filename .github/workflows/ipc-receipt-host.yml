@@ -1,0 +1,35 @@
+name: Java IPC receipt ledger (host reference)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/IpcReceiptLedger.java'
+      - 'src/test/java/dev/oreslang/runtime/IpcReceiptLedgerTest.java'
+      - 'src/test/java/dev/oreslang/runtime/IpcReceiptLedgerSmoke.java'
+      - '.github/workflows/ipc-receipt-host.yml'
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  host-ipc-receipts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Setup runtime
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Compile and run dependency-free thread/correlation check
+        run: |
+          mkdir -p target/ipc-smoke
+          javac -d target/ipc-smoke src/main/java/dev/oreslang/runtime/IpcReceiptLedger.java src/test/java/dev/oreslang/runtime/IpcReceiptLedgerSmoke.java
+          java -cp target/ipc-smoke dev.oreslang.runtime.IpcReceiptLedgerSmoke
+      - name: Run actual JUnit receipts
+        run: mvn -B -ntp -Dtest=IpcReceiptLedgerTest test
+      - name: Classify evidence
+        run: echo 'HOST_REFERENCE_ONLY not authenticated transport, guest compiler or JVM/LLVM parity'

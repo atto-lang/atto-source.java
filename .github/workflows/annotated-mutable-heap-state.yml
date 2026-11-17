@@ -1,0 +1,42 @@
+name: Annotated mutable heap state admission
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/compiler/StateRegionLoanReceipt.java'
+      - 'src/test/java/dev/oreslang/AnnotatedMutableHeapStateAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/StateRegionLoanReceiptTest.java'
+      - '.github/workflows/annotated-mutable-heap-state.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ownership:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Reject mismatched or dirty checkout
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          echo "ANNOTATED_HEAP_STATE_HEAD=$EXPECTED_SHA"
+          git rev-parse HEAD^{tree}
+      - name: Setup JDK25 GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Run actual parser, ownership and guest tests
+        run: |
+          mvn -B -ntp -Dtest=AnnotatedMutableHeapStateAdmissionTest,StateRegionLoanReceiptTest test

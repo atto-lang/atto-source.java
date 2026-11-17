@@ -108,6 +108,16 @@ end
 
 ### Unary HTTP: one typed return -> exactly one HTTP reply
 
+A newer, narrower **design-only** specialization is specified in
+[Fetch-style `HttpResponse` for unary HTTP actors](HTTP_RESPONSE_FETCH_API_V1.md).
+`run(HttpMessage): HttpResponse` must transfer one response object and its
+readable body stream to the transport after return; this is **not** serialized
+as the data-only JSON reply described below. Its `trailers` initializer field
+is an Oreslang extension, not a WHATWG Fetch `Response` field. The following
+scalar/`HttpReply<T>` path remains a distinct proposed codec and must not
+be conflated with a writable unary response handle.
+
+
 ```ores
 define unary http actor Calculate as
     async run(HttpMessage m): int with io, suspend {

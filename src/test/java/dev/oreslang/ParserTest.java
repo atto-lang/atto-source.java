@@ -604,6 +604,70 @@ final class ParserTest {
     }
 
     @Test
+    void ifIsStatementOnlyAndValueSelectionUsesTernaryOrExplicitReturns() {
+        assertFalse(Ast.Expr.class.isAssignableFrom(Ast.IfStmt.class));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc choose(bool condition): int {
+                  const y = if condition then
+                    1;
+                  else
+                    2;
+                  fi;
+                  return y;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc choose_return(bool condition): int {
+                  return if condition then
+                    1;
+                  else
+                    2;
+                  fi;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc identity(int value): int { return value; }
+                fnc choose_argument(bool condition): int {
+                  return identity(if condition then
+                    1;
+                  else
+                    2;
+                  fi);
+                }
+                """));
+
+        IllegalArgumentException implicitBranchValues = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc choose(bool condition): int {
+                          if condition then
+                            1;
+                          else
+                            2;
+                          fi
+                        }
+                        """)));
+        assertTrue(implicitBranchValues.getMessage().contains("must explicitly return on every path"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc choose(bool condition): int {
+                  if condition then
+                    return 1;
+                  else
+                    return 2;
+                  fi
+                }
+
+                fnc choose_expression(bool condition): int {
+                  return condition ? 1 : 2;
+                }
+                """)));
+    }
+
+    @Test
     void legacyIfDoAndElseifRemainAcceptedForMigration() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define module app as
@@ -929,8 +993,8 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak(): &mut Account {
-                        return &mut self;
+                      pub fnc leak(): borrow mut Account {
+                        return rt mut borrow self;
                       }
                     }
                     """));
@@ -942,8 +1006,8 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak(): &mut Account {
-                        val alias = &mut self;
+                      pub fnc leak(): borrow mut Account {
+                        val alias = rt mut borrow self;
                         return alias;
                       }
                     }
@@ -982,7 +1046,7 @@ final class ParserTest {
 
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    fnc inspect(&Account account): int {
+                    fnc inspect(borrow Account account): int {
                       return 1;
                     }
 
@@ -990,7 +1054,7 @@ final class ParserTest {
                       let balance = 100;
 
                       pub fnc inspectSelf(): int {
-                        return inspect(&self);
+                        return inspect(rt borrow self);
                       }
                     }
                     """));
@@ -1219,6 +1283,117 @@ final class ParserTest {
                         """));
 
         assertTrue(failure.getMessage().contains("expected 'as' after class header"));
+    }
+
+
+    @Test
+    void acceleratorExecutionDomainsRemainFailClosedAfterG2RuntimeIr() {
+        for (String domain : List.of("gpu", "cpu", "quantum")) {
+            String source = """
+                    pub fnc main(): int {
+                        return %s {
+                            return 1;
+                        };
+                    }
+                    """.formatted(domain);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(source),
+                    domain);
+            assertTrue(
+                    failure.getMessage().contains("execution domain '" + domain + "'"),
+                    failure::toString);
+            assertTrue(
+                    failure.getMessage().contains("no implicit CPU fallback"),
+                    failure::toString);
+        }
+    }
+
+    @Test
+    void acceptsCanonicalRtMutBorrowSyntax() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = rt mut borrow value;
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void rejectsPointerSigilsAndLegacyMutableBorrowSyntaxAtParseTime() {
+        List<String> invalid = List.of(
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = &value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = &mut value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val invalid = *value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(int* value): void {
+                  return;
+                }
+                """,
+                """
+                pub fnc leak(borrow Account account): &Account {
+                  return account;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = rt borrow mut value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val pointer = rt ref value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = rt deref pointer;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = rt unref pointer;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(Pointer<int> pointer): void {
+                  return;
+                }
+                """,
+                """
+                pub fnc main(RawPointer<int> pointer): void {
+                  return;
+                }
+                """
+        );
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
+        }
     }
 
     private static List<List<String>> permutations(String... tokens) {
