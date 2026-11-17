@@ -9357,7 +9357,10 @@ public final class TypeChecker {
                     yield new Function(List.of(Primitive.INT),
                             new Named("Option", List.of(Primitive.INT)));
                 }
-                case "add" -> new Function(List.of(list.element()), Primitive.VOID);
+                case "add", "push" -> new Function(List.of(list.element()), Primitive.VOID);
+                case "pop" -> new Function(List.of(),
+                        new Named("Option", List.of(list.element())));
+                case "reserve" -> new Function(List.of(Primitive.INT), Primitive.VOID);
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),
                         Primitive.VOID);
@@ -11475,6 +11478,14 @@ public final class TypeChecker {
                 }
             }
         }
+        Ast.TypeRef inlineCapacity = metadata.get("inline_capacity");
+        Ast.TypeRef maxCapacity = metadata.get("max_capacity");
+        if (inlineCapacity != null && maxCapacity != null
+                && inlineCapacity.intLiteralValue() > maxCapacity.intLiteralValue()) {
+            throw new IllegalArgumentException(collectionName + " inline_capacity="
+                    + inlineCapacity.intLiteralValue()
+                    + " exceeds max_capacity=" + maxCapacity.intLiteralValue());
+        }
     }
 
     private void validateFixedExtentMetadata(
@@ -11523,8 +11534,18 @@ public final class TypeChecker {
         String name = declared.name();
         if (!Set.of("Array", "List", "Vector", "Slice", "FixedArray", "FixedList").contains(name)) return;
         List<Ast.TypeRef> dimensions = sequenceShapeDimensions(declared);
+        // The initializer quota applies to both canonical Vector[T] and
+        // legacy Vector<T> spelling; neither may bypass max_capacity by
+        // changing sequence-shape syntax or dimensionality.
+        Map<String, Ast.TypeRef> metadata = namedTypeParameters(declared);
+        Ast.TypeRef maxCapacity = metadata.get("max_capacity");
+        if (maxCapacity != null && literal.elements().size() > maxCapacity.intLiteralValue()) {
+            throw new IllegalArgumentException(name + " literal length "
+                    + literal.elements().size() + " exceeds max_capacity="
+                    + maxCapacity.intLiteralValue());
+        }
         if (dimensions.isEmpty() || dimensions.size() > 1) return;
-        Integer declaredRank = metadataRank(namedTypeParameters(declared));
+        Integer declaredRank = metadataRank(metadata);
         if (declaredRank != null && declaredRank > 1) {
             // Nested list literals are checked against the fully resolved rank-N
             // type by the ordinary assignability pass below. Phase-by-phase

@@ -2294,7 +2294,11 @@ public final class OwnershipChecker {
             if (stringCall != null) return stringCall;
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
-            // A const/let read-only view must not gain mutation via .add/.set.
+            // A const/let read-only view must not gain mutation through
+            // add/set or Vector's push/pop/reserve entry points. Reserve is
+            // also a write effect because it can relocate backing storage.
+            boolean mutatingCollectionMember = java.util.Set.of(
+                    "add", "set", "push", "pop", "reserve").contains(member.member());
             Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
             // First compiler-owned Copy<int> access path. The value is owned,
             // not a ReadLoan, and the receiver must have a stable named root.
@@ -2335,7 +2339,7 @@ public final class OwnershipChecker {
                 return new ValueInfo(result, ValueKind.COPY, null);
             }
             if (memberReceiverType == null
-                    && (member.member().equals("add") || member.member().equals("set"))
+                    && mutatingCollectionMember
                     && (member.receiver() instanceof Ast.MemberExpr
                         || member.receiver() instanceof Ast.IndexExpr)) {
                 // Nested collection receivers are mutable *places*, not opaque
@@ -2347,8 +2351,9 @@ public final class OwnershipChecker {
                 Ast.TypeRef concreteCollection = memberReceiverType.isBorrow()
                         ? memberReceiverType.borrowedTarget() : memberReceiverType;
                 if ((concreteCollection.name().equals("Array")
-                        || concreteCollection.name().equals("List"))
-                        && (member.member().equals("add") || member.member().equals("set"))) {
+                        || concreteCollection.name().equals("List")
+                        || concreteCollection.name().equals("Vector"))
+                        && mutatingCollectionMember) {
                     ensureMutableReceiver(
                             member.receiver(),
                             scope,
@@ -2458,7 +2463,9 @@ public final class OwnershipChecker {
                     }
                     if (isMutexGuardType(receiverType)) {
                         Ast.TypeRef protectedType = receiverType.arguments().getFirst();
-                        if ((protectedType.name().equals("List") || protectedType.name().equals("Array"))
+                        if ((protectedType.name().equals("List")
+                                || protectedType.name().equals("Array")
+                                || protectedType.name().equals("Vector"))
                                 && protectedType.arguments().size() == 1) {
                             Ast.TypeRef element = protectedType.arguments().getFirst();
                             switch (member.member()) {
@@ -2477,12 +2484,25 @@ public final class OwnershipChecker {
                                         return new ValueInfo(element, ValueKind.COPY, null);
                                     }
                                 }
-                                case "add" -> {
+                                case "add", "push" -> {
                                     if (call.arguments().size() == 1) {
                                         ValueInfo value = checkExpr(call.arguments().getFirst(), scope, true);
                                         if (containsMutexGuardType(value.type)) {
                                             throw error("MutexGuard cannot be stored inside protected List state");
                                         }
+                                        return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                                    }
+                                }
+                                case "pop" -> {
+                                    // Moving the last element out of a guarded
+                                    // collection needs an explicit owned-result
+                                    // proof. Do not fabricate raw Option arity
+                                    // or treat a live MutexGuard as a move token.
+                                    throw error("cannot pop from protected Vector through MutexGuard without an owned-result transfer proof");
+                                }
+                                case "reserve" -> {
+                                    if (call.arguments().size() == 1) {
+                                        checkExpr(call.arguments().getFirst(), scope, false);
                                         return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
                                     }
                                 }

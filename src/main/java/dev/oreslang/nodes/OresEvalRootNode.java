@@ -12,6 +12,7 @@ import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresVector;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -1140,7 +1141,24 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
+        private Object admitDeclaredVector(Ast.TypeRef declared, Object value) {
+            if (declared == null || !declared.name().equals("Vector")
+                    || findClass("Vector") != null || !(value instanceof List<?> sequence)) {
+                return value;
+            }
+            // All source-declared Vector boundaries must preserve a bound,
+            // including literals, parameter binding and function returns.
+            OresVector admitted = allocateGuestVector(declared);
+            if (value instanceof OresVector existing
+                    && existing.maxCapacity() <= admitted.maxCapacity()) {
+                return existing;
+            }
+            admitted.addAll(sequence);
+            return admitted;
+        }
+
         private void defineBinding(Env env, Ast.BindingStmt binding, Object value) {
+            value = admitDeclaredVector(binding.declaredType(), value);
             Ast.ClassDecl view = staticClassView(binding.declaredType());
             if (view == null) view = staticClassView(binding.initializer(), env);
             env.define(binding.name(), value, binding.kind(), view);
@@ -1178,7 +1196,7 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Object> tuple = new ArrayList<>(args.size());
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
-                Object value = args.get(i);
+                Object value = admitDeclaredVector(param.type(), args.get(i));
                 tuple.add(value);
                 env.define(
                         param.name(),
@@ -6124,6 +6142,31 @@ public final class OresEvalRootNode extends RootNode {
                     "unsupported assignment target");
         }
 
+        private static OresVector allocateGuestVector(Ast.TypeRef type) {
+            long max = OresVector.MAX_CAPACITY;
+            long inline = 0;
+            for (Ast.TypeRef argument : type.arguments()) {
+                if (!argument.isNamedParameter()) continue;
+                String key = argument.namedParameterName();
+                if (!key.equals("max_capacity") && !key.equals("inline_capacity")) continue;
+                Ast.TypeRef amount = argument.namedParameterValue();
+                if (!amount.isIntLiteral()) {
+                    throw new IllegalArgumentException("Vector " + key
+                            + " must be an integer compile-time constant");
+                }
+                long number = amount.intLiteralValue();
+                if (key.equals("max_capacity")) max = number;
+                else inline = number;
+            }
+            if (max < 0 || max > OresVector.MAX_CAPACITY
+                    || inline < 0 || inline > max) {
+                throw new IllegalArgumentException(
+                        "Vector capacity metadata violates supported max_capacity="
+                                + OresVector.MAX_CAPACITY);
+            }
+            return new OresVector((int) max, (int) inline);
+        }
+
         private Object instantiateEvaluated(
                 Ast.NewExpr created,
                 List<Object> args,
@@ -6142,6 +6185,13 @@ public final class OresEvalRootNode extends RootNode {
                                     + "<T> constructor takes no positional arguments");
                 }
                 return new ArrayList<>();
+            }
+            if (created.type().name().equals("Vector") && findClass("Vector") == null) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Vector[T] constructor takes no positional arguments");
+                }
+                return allocateGuestVector(created.type());
             }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
@@ -6431,6 +6481,15 @@ public final class OresEvalRootNode extends RootNode {
                 if (value instanceof GeneratorRuntime.Step<?> step) {
                     return step.done() ? GeneratorRuntime.Step.doneStep()
                             : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
+                }
+                if (value instanceof OresVector vector) {
+                    // Detached async values cannot silently lose max_capacity by
+                    // widening a bounded Vector into an unrestricted ArrayList.
+                    OresVector copy = new OresVector(vector.maxCapacity(), 0);
+                    for (Object item : vector) {
+                        copy.add(detachAsyncValue(item, visiting));
+                    }
+                    return copy;
                 }
                 if (value instanceof List<?> list) {
                     ArrayList<Object> copy = new ArrayList<>(list.size());
@@ -8437,6 +8496,13 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new ArrayList<>();
                 }
+                if (created.type().name().equals("Vector") && findClass("Vector") == null) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "Vector[T] constructor takes no positional arguments");
+                    }
+                    return allocateGuestVector(created.type());
+                }
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(
                             "DynamicStruct has been removed; use infer struct{...} or an explicit closed struct");
@@ -9902,6 +9968,37 @@ public final class OresEvalRootNode extends RootNode {
                         @SuppressWarnings("unchecked")
                         List<Object> list = (List<Object>) rawList;
                         list.add(args.getFirst());
+                        return null;
+                    };
+                    case "push" -> (Invokable) args -> {
+                        requireOne(args, "Vector.push");
+                        @SuppressWarnings("unchecked")
+                        List<Object> list = (List<Object>) rawList;
+                        list.add(args.getFirst());
+                        return null;
+                    };
+                    case "pop" -> (Invokable) args -> {
+                        requireZero(args, "Vector.pop");
+                        if (rawList.isEmpty()) return new OptionValue(false, null);
+                        @SuppressWarnings("unchecked")
+                        List<Object> list = (List<Object>) rawList;
+                        return new OptionValue(true, list.remove(list.size() - 1));
+                    };
+                    case "reserve" -> (Invokable) args -> {
+                        requireOne(args, "Vector.reserve");
+                        int required = sequenceIndex(args.getFirst());
+                        if (required < 0 || required > OresVector.MAX_CAPACITY) {
+                            throw new IllegalArgumentException(
+                                    "Vector reserve capacity is outside supported range");
+                        }
+                        if (rawList instanceof OresVector vector) {
+                            vector.reserve(required);
+                        } else if (rawList instanceof ArrayList<?> array) {
+                            array.ensureCapacity(required);
+                        } else {
+                            throw new IllegalArgumentException(
+                                    "collection cannot reserve backing storage");
+                        }
                         return null;
                     };
                     case "set" -> (Invokable) args -> {
@@ -11771,6 +11868,10 @@ public final class OresEvalRootNode extends RootNode {
                     shapeReturnedValue(member.getValue(), nested, callable + "." + member.getKey(), resolving);
                 }
                 return value;
+            }
+
+            if (declared.name().equals("Vector") && value instanceof List<?>) {
+                return admitDeclaredVector(declared, value);
             }
 
             if (declared.name().equals("Array") || declared.name().equals("List")) {
