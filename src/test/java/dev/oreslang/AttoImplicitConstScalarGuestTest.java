@@ -47,25 +47,25 @@ final class AttoImplicitConstScalarGuestTest {
         rejected("const mut int value = 10; return value;", "E_CONST_MUT_UNSUPPORTED");
     }
 
-    @Test void valMutIsExplicitAndNoLongerAnImplicitValCapability() {
-        var parsed = Parser.parse("pub fnc main(): int { val int readonly = 10; val mut int writable = 20;"
-                + " return readonly + writable; }");
+    @Test void runtimeValKeepsMainReferentSemantics() {
+        // Decision 1 (spec #49) changes only type-first/typed scalar const.
+        // `val` stays the runtime fixed binding of docs/LANGUAGE.md: it keeps
+        // its referent-mutation permission, so `val mut` stays a duplicate.
+        var parsed = Parser.parse(HELPER + "pub fnc main(): int { val int runtime = runtime_value();"
+                + " return runtime; }");
         var function = parsed.modules().stream()
                 .flatMap(module -> module.declarations().stream())
                 .filter(declaration -> declaration instanceof dev.oreslang.ast.Ast.FunctionDecl fn
                         && fn.name().equals("main"))
                 .map(declaration -> (dev.oreslang.ast.Ast.FunctionDecl) declaration)
                 .findFirst().orElseThrow();
-        var plain = (dev.oreslang.ast.Ast.BindingStmt) function.body().get(0);
-        var writable = (dev.oreslang.ast.Ast.BindingStmt) function.body().get(1);
-        assertFalse(plain.mutableReferent(), "plain val must not imply mut");
-        assertTrue(writable.mutableReferent(), "val mut must request mutable referent access");
-        assertFalse(new dev.oreslang.ast.Ast.BindingStmt(plain.kind(), plain.declaredType(),
-                plain.name(), plain.initializer()).mutableReferent(),
-                "AST convenience constructor must not regrant legacy val mut");
-        assertFalse(new dev.oreslang.ast.Ast.DestructureBinding(
-                dev.oreslang.ast.Ast.BindingKind.VAL, "item").mutableReferent(),
-                "destructure AST convenience constructor must default read-only");
+        var binding = (dev.oreslang.ast.Ast.BindingStmt) function.body().get(0);
+        assertEquals(dev.oreslang.ast.Ast.BindingKind.VAL, binding.kind());
+        assertTrue(binding.mutableReferent(), "val keeps its referent permission");
+        valid("val int runtime = runtime_value(); return runtime;");
+        valid("val runtime = runtime_value(); return runtime;");
+        assertThrows(RuntimeException.class, () -> Parser.parse(
+                "pub fnc main(): int { val mut int x = 1; return x; }"));
     }
 
     @Test void bothSpellingRequirePureAndCheckedConstantEvaluation() {
@@ -82,6 +82,19 @@ final class AttoImplicitConstScalarGuestTest {
         rejected("int x = runtime_value(); return x;", "E_NON_CONST_INITIALIZER");
         rejected("const int x = runtime_value(); return x;", "E_NON_CONST_INITIALIZER");
         rejected("bool x = runtime_value() == 42; return 42;", "E_NON_CONST_INITIALIZER");
+    }
+
+    @Test void untypedConstAndIdentityCastsFeedTypedConstantsOnlyWhenFoldable() {
+        // Untyped const stays a readonly binding (stage one); its value feeds a
+        // typed constant only when it folds. Identity casts are not conversions.
+        valid("const base = 40; int answer = base + 2; return answer;");
+        valid("const base = (true ? 40 : 0) as int; const int answer = base + 2; return answer;");
+        valid("const yes = true; bool same = yes as bool; return 42;");
+        valid("const runtime = runtime_value(); return runtime;");
+        rejected("const runtime = runtime_value(); int copy = runtime; return copy;",
+                "E_NON_CONST_INITIALIZER");
+        rejected("val runtime = runtime_value(); const int copy = runtime as int; return copy;",
+                "E_NON_CONST_INITIALIZER");
     }
 
     @Test void checkedOverflowAndMutableConstantFailClosed() {

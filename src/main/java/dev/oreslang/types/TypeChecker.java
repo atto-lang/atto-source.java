@@ -2438,6 +2438,7 @@ public final class TypeChecker {
             // Aggregate const / legacy const mut have a separately tracked
             // ownership migration; this gate cannot certify those shapes.
             Object scalarConstant = null;
+            Object untypedScalarConstant = null;
             if (binding.kind() == Ast.BindingKind.CONST && isScalarConstLocal(binding)) {
                 if (binding.mutableReferent()) {
                     throw new IllegalArgumentException(
@@ -2453,6 +2454,17 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "E_NON_CONST_INITIALIZER: constant initializer for '" + binding.name()
                                     + "' is not compile-time evaluable");
+                }
+            } else if (binding.kind() == Ast.BindingKind.CONST && binding.declaredType() == null
+                    && !binding.mutableReferent()) {
+                // Untyped const keeps its stage-one meaning (a readonly binding,
+                // runtime-initialised when needed). Record a value only when it
+                // folds, so later typed constants may reference it; an
+                // overflow or budget failure stays a runtime evaluation.
+                try {
+                    untypedScalarConstant = evaluateScalarConstant(binding.initializer(), env, 0);
+                } catch (ArithmeticException | IllegalArgumentException notConstant) {
+                    untypedScalarConstant = null;
                 }
             }
 
@@ -2490,6 +2502,8 @@ public final class TypeChecker {
                 if (constantBoolean != null) {
                     env.defineConstantBoolean(binding.name(), constantBoolean);
                 }
+                Object evaluated = scalarConstant != null ? scalarConstant : untypedScalarConstant;
+                if (evaluated != null) env.defineScalarConstant(binding.name(), evaluated);
             }
             return;
         }
@@ -9352,6 +9366,8 @@ public final class TypeChecker {
                     || literal.value() instanceof String ? literal.value() : null;
         }
         if (expression instanceof Ast.NameExpr name) {
+            Object scalar = env.lookupScalarConstant(name.name());
+            if (scalar != null) return scalar;
             Long integer = env.lookupConstantInteger(name.name());
             if (integer != null) return integer;
             Boolean bool = env.lookupConstantBoolean(name.name());
@@ -9411,6 +9427,17 @@ public final class TypeChecker {
                 };
             }
             return null;
+        }
+        if (expression instanceof Ast.CastExpr cast && cast.mode() == Ast.CastMode.CHECKED
+                && cast.targetType() != null && cast.targetType().arguments().isEmpty()) {
+            // Only exact scalar identity casts are constant; no conversion.
+            Object value = evaluateScalarConstant(cast.value(), env, depth + 1);
+            return switch (cast.targetType().name()) {
+                case "int" -> value instanceof Long ? value : null;
+                case "bool" -> value instanceof Boolean ? value : null;
+                case "string", "String" -> value instanceof String ? value : null;
+                default -> null;
+            };
         }
         if (expression instanceof Ast.ConditionalExpr conditional) {
             Object predicate = evaluateScalarConstant(conditional.condition(), env, depth + 1);
@@ -12222,6 +12249,8 @@ public final class TypeChecker {
         private final Map<String, String> constantStrings = new HashMap<>();
         /** Evaluated bool constants for independent, immutable nested declarations. */
         private final Map<String, Boolean> constantBooleans = new HashMap<>();
+        /** Folded scalar const values (typed, or untyped when foldable) for the const evaluator only. */
+        private final Map<String, Object> scalarConstants = new HashMap<>();
         private final Map<String, Type> inferredTypes = new HashMap<>();
         private final Set<String> reservedInferredNames = new HashSet<>();
         /**
@@ -12321,6 +12350,16 @@ public final class TypeChecker {
         private Boolean lookupConstantBoolean(String name) {
             if (bindings.containsKey(name)) return constantBooleans.get(name);
             return parent == null ? null : parent.lookupConstantBoolean(name);
+        }
+        private void defineScalarConstant(String name, Object value) {
+            if (!bindings.containsKey(name)) {
+                throw new IllegalStateException("scalar constant metadata requires existing binding");
+            }
+            scalarConstants.put(name, value);
+        }
+        private Object lookupScalarConstant(String name) {
+            if (bindings.containsKey(name)) return scalarConstants.get(name);
+            return parent == null ? null : parent.lookupScalarConstant(name);
         }
         private Binding lookup(String name) {
             Binding binding = bindings.get(name);

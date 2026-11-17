@@ -6320,9 +6320,12 @@ public final class Parser {
     }
 
     private boolean parseReferentMutability(Ast.BindingKind kind) {
-        // Name rebinding is controlled by const/val/let; writable referent
-        // access is independently and explicitly requested by 'mut'.
-        // Legacy val => const mut compatibility is intentionally removed.
+        if (kind == Ast.BindingKind.VAL) {
+            if (match(MUT)) {
+                throw error(previous(), "'val' already means 'const mut'; 'val mut' is a duplicate mutability qualifier");
+            }
+            return true;
+        }
         return match(MUT);
     }
 

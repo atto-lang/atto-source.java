@@ -824,9 +824,7 @@ public final class Ast {
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
                               boolean mutableReferent, String inferredTypeName) implements Stmt {
         public BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) {
-            // The unqualified AST constructor grants no referent write.
-            // 'val mut' must carry an explicit capability bit from the parser.
-            this(kind, declaredType, name, initializer, false, null);
+            this(kind, declaredType, name, initializer, kind == BindingKind.VAL, null);
         }
         public BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer,
                            boolean mutableReferent) {
@@ -854,10 +852,10 @@ public final class Ast {
             boolean rest,
             boolean mutableReferent) {
         public DestructureBinding(BindingKind kind, String name, boolean rest) {
-            this(kind, name, rest, false);
+            this(kind, name, rest, kind == BindingKind.VAL);
         }
         public DestructureBinding(BindingKind kind, String name) {
-            this(kind, name, false, false);
+            this(kind, name, false, kind == BindingKind.VAL);
         }
 
         public DestructureBinding {
