@@ -219,7 +219,7 @@ final class OptionalParameterMainStageTest {
                   }
                 end
                 define interface Calculates {
-                  fnc calculate(x: int, y?: int = 10, z?: int?) -> int;
+                  fnc calculate(x: int, y?: int = 10, z?: int?) => int;
                 }
                 """);
         Ast.ClassDecl klass = (Ast.ClassDecl)

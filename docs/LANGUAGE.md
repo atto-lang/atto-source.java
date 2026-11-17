@@ -593,6 +593,61 @@ end
 
 Anonymous structs and array literals are values, not classes, and cannot be inherited from.
 
+## Record type positions versus record value positions
+
+`record { ... }` is unambiguous because the *enclosing grammar* selects
+whether the braces contain field types or field values. The compiler must not
+infer the grammar from whether a field payload is a literal or an identifier.
+
+```ores
+type T = record { foo: string };       // type declaration; foo has type string
+
+pub fnc make(string value): T {
+    const T x = record { foo: value }; // value binding; foo evaluates value
+    return x;
+}
+
+pub fnc inline(): record { foo: string } {
+    return record { foo: "hello" };
+}
+```
+
+A plain record literal is a value and never implicitly binds an undeclared type
+name. In the current compiler, `const T x = record {...}` requires `T` to be
+an existing type alias. `const T x = infer<T> record {...}` or the proven
+short named-inference form may instead capture a *lexical*, readonly structural
+type alias, but must not manufacture nominal identity or a runtime type object.
+
+The equivalent name-first declaration syntax is supported for explicit
+inferred-struct capture. It preserves the same lexical type identity and
+closed-shape checking as the type-first spelling:
+
+```ores
+fnc create(): float {
+    const point: Point = infer<Point> struct { x: 3.0, y: 4.0 };
+    const next: Point = infer struct { x: 5.0, y: 6.0 };
+    return next.y;
+}
+```
+
+The checked short capture `const point: Point = infer struct {...}` may
+also introduce `Point` if that name is unbound and safe to introduce. The
+corresponding type-first spelling is `const Point point = infer struct {...}`.
+These are compile-time aliases, not runtime type objects; they do not
+permit record-to-struct coercion, field-set growth, or mutation through a
+readonly `const` value.
+
+Type declarations are immutable by definition. `const type T = ...` is invalid;
+`type T = ...` defines a type, whereas `const type T x = ...` may use
+`type T` as an explicit named-type marker in a value binding.
+
+Function-/routine-local standalone declarations such as
+`fnc make(): T { type T = record { foo: string }; ... }` remain **proposed**,
+not executable in this compiler revision. Supporting them requires
+compile-time lexical type registration, return-signature dependency resolution,
+public ABI serialization, and ownership/backend conformance. Do not treat a
+local `type` statement as a runtime value or silently export its name.
+
 ## Inline values
 
 Oreslang structs always have a compile-time-known, closed field shape. The
@@ -1992,7 +2047,7 @@ fnc inspect(borrow Bar value): void {
 }
 ```
 
-Exclusive mutable borrowing uses `rt borrow mut value` and `borrow mut T`:
+Exclusive mutable borrowing uses `rt mut borrow value` and `borrow mut T`:
 
 ```ores
 fnc change(borrow mut Bar value): void {
@@ -2002,7 +2057,7 @@ fnc change(borrow mut Bar value): void {
 
 fnc example(): void {
   val Bar b = new Bar();
-  change(rt borrow mut b);
+  change(rt mut borrow b);
   stdio.println(b.foo);
   return;
 }

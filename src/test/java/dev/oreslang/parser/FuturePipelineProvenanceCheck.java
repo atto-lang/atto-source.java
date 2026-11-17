@@ -114,7 +114,7 @@ public final class FuturePipelineProvenanceCheck {
                 () -> new Ast.CallExpr(null, List.of()), "null callee accepted");
         failure(NullPointerException.class,
                 () -> new Ast.CallExpr(new Ast.NameExpr("f"), List.of(), false,
-                        List.of(), null), "null origin accepted");
+                        List.of(), (Ast.CallOrigin) null), "null origin accepted");
         rejected(() -> new Ast.CallExpr(new Ast.NameExpr("f"),
                 List.of(new Ast.TypeRef("int", List.of(), false)), false, List.of()),
                 "unmarked generic arguments accepted");

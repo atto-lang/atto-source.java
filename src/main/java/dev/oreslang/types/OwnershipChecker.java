@@ -52,6 +52,9 @@ public final class OwnershipChecker {
     private final Ast.Program checkedProgram;
     /** Monotonic epoch published only if this whole ownership pass succeeds. */
     private final long taskCheckEpoch;
+    private final List<String> copyWarnings = new ArrayList<>();
+    /** Opt-in in-pass trace; never permits guest code emission. */
+    private BorrowMirAuditV1.Collector borrowMirAudit;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -85,6 +88,19 @@ public final class OwnershipChecker {
         index(program);
     }
 
+    /** Copy-policy warnings are compile-time diagnostics, never runtime effects. */
+    public record OwnershipCheckResult(Ast.Program program, List<String> warnings) {
+        public OwnershipCheckResult { warnings = List.copyOf(warnings); }
+    }
+
+    public static OwnershipCheckResult checkWithDiagnostics(
+            Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
+        checker.validate(program);
+        checker.publishTaskAdmissions();
+        return new OwnershipCheckResult(program, checker.copyWarnings);
+    }
+
     public static Ast.Program check(Ast.Program program) {
         return check(program, Map.of());
     }
@@ -97,6 +113,26 @@ public final class OwnershipChecker {
         checker.validate(program);
         checker.publishTaskAdmissions();
         return program;
+    }
+
+    /**
+     * Opt-in, compiler-originated straight-line shadow ownership trace.
+     * The ordinary OwnershipChecker still validates the complete program.
+     * Unsupported constructs yield NOT_PROVEN; never treat this output
+     * as Rust equivalence, compiled AttoLang guest, or emitted-code proof.
+     */
+    public static BorrowMirAuditV1.Report checkWithBorrowMirAuditV1(Ast.Program program) {
+        return checkWithBorrowMirAuditV1(program, Map.of());
+    }
+
+    /** Must use TypeChecker-validated short aliases when invoked by OresCompiler. */
+    public static BorrowMirAuditV1.Report checkWithBorrowMirAuditV1(
+            Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
+        OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
+        checker.borrowMirAudit = new BorrowMirAuditV1.Collector();
+        checker.validate(program);
+        checker.publishTaskAdmissions();
+        return checker.borrowMirAudit.finishReport();
     }
 
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
@@ -217,8 +253,20 @@ public final class OwnershipChecker {
 
     private void checkFunction(Ast.FunctionDecl fn) {
         Scope scope = new Scope(null, fn.nonLexical());
+        if (borrowMirAudit != null) {
+            borrowMirAudit.beginFunction(fn.name(),
+                    fn.kind() == Ast.CallableKind.FNC
+                    && fn.actorKind() == Ast.ActorKind.NONE
+                    && !fn.async() && !fn.suspends() && !fn.generator()
+                    && !fn.structural() && !fn.nonLexical()
+                    && !fn.trapped() && fn.effects().isEmpty());
+        }
         for (Ast.Param param : fn.parameters()) {
-            scope.define(param.name(), stateForParam(param));
+            VarState value = stateForParam(param);
+            scope.define(param.name(), value);
+            if (borrowMirAudit != null) {
+                borrowMirAudit.parameter(value, value.kind == ValueKind.COPY);
+            }
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
@@ -228,6 +276,9 @@ public final class OwnershipChecker {
         } finally {
             currentAsyncGenerator = previousAsyncGenerator;
             scope.close();
+            if (borrowMirAudit != null) {
+                borrowMirAudit.finishFunction();
+            }
         }
     }
 
@@ -238,7 +289,13 @@ public final class OwnershipChecker {
     private Set<String> constructorFixedFieldWrites;
 
     private void checkClass(Ast.ClassDecl klass) {
+        validateCopyPolicyAnnotations(klass.annotations(), "class " + klass.name());
+        if (hasCopyPolicy(klass.annotations(), "Copyable")) {
+            throw error("E_COPY_UNPROVEN: @" + "Copyable on class '" + klass.name()
+                    + "' requires compiler-verified duplication lowering; no class copy contract is enabled");
+        }
         for (Ast.FieldDecl field : klass.fields()) {
+            validateCopyPolicyAnnotations(field.annotations(), "field " + klass.name() + "." + field.name());
             Ast.TypeRef fieldType = ownershipFieldType(field);
             if (fieldType != null && fieldType.isBorrow()) {
                 throw error("field '" + klass.name() + "." + field.name()
@@ -415,6 +472,10 @@ public final class OwnershipChecker {
     private boolean discardingSelectReturn;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
+        if (borrowMirAudit != null
+                && !(stmt instanceof Ast.ReturnStmt ret && ret.value() instanceof Ast.NameExpr)) {
+            borrowMirAudit.unsupported("statement outside the linear parameter-return profile");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
             return;
@@ -466,6 +527,21 @@ public final class OwnershipChecker {
             checkBlock(block.body(), scope, returnType);
             return;
         }
+        if (stmt instanceof Ast.UsingTelemetrySpanStmt span) {
+            checkExpr(span.name(), scope, false);
+            Scope local = new Scope(scope);
+            local.define(span.binding(), new VarState(
+                    Ast.TypeRef.simple("$TelemetrySpan"), false, false,
+                    ValueKind.MOVE_ONLY, Origin.LOCAL));
+            try {
+                checkBlock(span.body(), local, returnType);
+            } finally {
+                local.close();
+            }
+            // Unlike a transport borrow, immutable trace identity is safe
+            // across suspension. Other live loans still obey their own rules.
+            return;
+        }
         if (stmt instanceof Ast.TaskScopeStmt taskScope) {
             checkBlock(taskScope.body(), scope, returnType);
             // Structured scope exit is an implicit asynchronous wait for
@@ -503,11 +579,18 @@ public final class OwnershipChecker {
                         throw error("actor self cannot escape its mailbox turn as a returned borrow");
                     }
                 }
+                if (borrowMirAudit != null && ret.value() instanceof Ast.NameExpr named
+                        && scope.lookup(named.name()) == null) {
+                    borrowMirAudit.unsupported("return refers to an untracked global or module");
+                }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
                 validateReturnedBorrow(ret.value(), returned);
+            }
+            if (borrowMirAudit != null) {
+                borrowMirAudit.returned();
             }
             return;
         }
@@ -861,9 +944,13 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.ForStmt loop) {
             Scope loopScope = new Scope(scope);
+            // An initializer executes once; the predicate and update may
+            // execute repeatedly. Snapshot BEFORE the predicate, or a MOVE
+            // inside that predicate will be misclassified as pre-loop state
+            // and permitted again on the next iteration.
             if (loop.initializer() != null) checkStatement(loop.initializer(), loopScope, returnType);
-            if (loop.condition() != null) checkExpr(loop.condition(), loopScope, false);
             Map<VarState,Boolean> before = movedSnapshot(scope);
+            if (loop.condition() != null) checkExpr(loop.condition(), loopScope, false);
             checkLoopBlock(loop.body(), loopScope, returnType);
             if (loop.update() != null) checkExpr(loop.update(), loopScope, false);
             rejectLoopMoves(before, scope);
@@ -1076,6 +1163,55 @@ public final class OwnershipChecker {
             mergeBranchState(base, exits);
             return result;
         }
+        if (expr instanceof Ast.WithExpr update) {
+            // Reprove copyability independently: the ownership checker may
+            // be invoked directly without type-checker provenance.
+            ValueInfo source = checkExpr(update.source(), scope, false);
+            boolean recordCopy = source.type != null
+                    && source.type.isReadonlyRecordType()
+                    && isCopyType(source.type)
+                    && source.kind == ValueKind.COPY
+                    && source.borrowSource == null;
+            boolean nominalCopy = source.type != null
+                    && withCopyEligibleClass(source.type)
+                    && source.kind == ValueKind.MOVE_ONLY
+                    && source.borrowSource == null
+                    && update.source() instanceof Ast.RuntimeCallExpr ownership
+                    && (ownership.operation().equals("copy")
+                            || ownership.operation().equals("take"));
+            if (!recordCopy && !nominalCopy) {
+                throw error("with requires an owned readonly Copy record or "
+                        + "explicit rt copy/take of a certified immutable scalar-field class");
+            }
+            Map<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+            if (recordCopy) fields.putAll(source.type.recordMembers());
+            else {
+                Ast.ClassDecl klass = findClass(source.type.name());
+                for (Ast.FieldDecl field : klass.fields()) {
+                    fields.put(field.name(), field.type());
+                }
+            }
+            for (Ast.WithField change : update.changes()) {
+                Ast.TypeRef slot = fields.get(change.name());
+                if (slot == null) {
+                    throw error("unknown with field '" + change.name() + "'");
+                }
+                if (!isCopyType(slot) || containsMutexGuardType(slot)) {
+                    throw error("with field '" + change.name()
+                            + "' is not a verified Copy field");
+                }
+                ValueInfo replacement = checkExpr(change.value(), scope, true);
+                if (replacement.kind != ValueKind.COPY
+                        || replacement.borrowSource != null
+                        || isBorrowValue(replacement)
+                        || containsMutexGuardType(replacement.type)) {
+                    throw error("with replacement '" + change.name()
+                            + "' must be an owned Copy value, never a borrow or guard");
+                }
+            }
+            return new ValueInfo(source.type,
+                    recordCopy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
@@ -1090,6 +1226,9 @@ public final class OwnershipChecker {
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
+            if (consuming && state.type.name().equals("$TelemetrySpan")) {
+                throw error("lexical telemetry span handle cannot escape via assignment, return, or ownership transfer");
+            }
             if (consuming && initializingClass != null && name.name().equals("self")) {
                 throw error("partially initialized constructor self cannot escape");
             }
@@ -1107,6 +1246,13 @@ public final class OwnershipChecker {
                 move(state, name.name());
                 transferredBorrowLease = state.borrowLease;
                 state.borrowLease = false;
+            }
+            if (borrowMirAudit != null && consuming) {
+                if (state.kind == ValueKind.COPY) {
+                    borrowMirAudit.readCopyParameter(ownershipRoot(state));
+                } else {
+                    borrowMirAudit.unsupported("affine consumption or borrowed return not modeled");
+                }
             }
             return new ValueInfo(state.type, state.kind, provenance, transferredBorrowLease);
         }
@@ -1200,10 +1346,11 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
-                    if (argument instanceof Ast.IndexExpr) {
-                        throw error("rt take cannot move an indexed projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
+                    Ast.Expr transferPlace = unwrappedMoveProjection(argument);
+                    if (transferPlace instanceof Ast.IndexExpr) {
+                        throw error("E_MOVE_UNPROVEN: rt take cannot move an indexed projection without an invalidation ledger; move the containing owner");
                     }
-                    if (argument instanceof Ast.MemberExpr member) {
+                    if (transferPlace instanceof Ast.MemberExpr member) {
                         Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
                         if (ownerClass != null) {
                             Ast.FieldDecl slot = findField(
@@ -1213,6 +1360,25 @@ public final class OwnershipChecker {
                                         + ownerClass.name() + "." + member.member() + "'");
                             }
                         }
+                        // A member selection must never be assumed to transfer
+                        // ownership: without an invalidation ledger, a second
+                        // owner could be fabricated, including through a cast
+                        // or imported/unknown receiver.
+                        throw error("E_MOVE_UNPROVEN: rt take of member projection '"
+                                + member.member()
+                                + "' lacks invalidation proof; move the containing owner instead");
+                    }
+                    // A field projection is not a new owned value. In particular an
+                    // @NoCopy field must not be reclassified as a forbidden COPY
+                    // merely because rt take consumes its operand. Unlike a
+                    // whole-owner move, partial moves currently have no field
+                    // invalidation ledger. Reject until that proof exists.
+                    CopyPolicyProjection moveProjection = copyProjectionPolicy(argument, scope);
+                    if (moveProjection != null && moveProjection.noCopy()) {
+                        throw error("E_MOVE_UNPROVEN: rt take of @NoCopy field '"
+                                + moveProjection.origin()
+                                + "' requires projection-level move/invalidation proof; "
+                                + "rt take the containing owner instead");
                     }
                     ValueInfo taken = checkExpr(argument, scope, true);
                     if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
@@ -1230,15 +1396,43 @@ public final class OwnershipChecker {
                 }
                 case "copy" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
-                    if (source.kind != ValueKind.COPY) {
-                        throw error(
-                                "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
-                                        + "this current-main convergence patch fails closed instead of aliasing");
+                    CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
+                    if (projected != null && projected.noCopy()) {
+                        throw error("E_COPY_FORBIDDEN: rt copy of @NoCopy field '" + projected.origin() + "'");
                     }
-                    yield source;
+                    Ast.ClassDecl sourceClass = source.type == null ? null : findClass(source.type.name());
+                    if (sourceClass != null && hasCopyPolicy(sourceClass.annotations(), "NoCopy")) {
+                        throw error("E_COPY_FORBIDDEN: rt copy of @NoCopy class '" + sourceClass.name() + "'");
+                    }
+                    ValueInfo copied = null;
+                    if (source.kind == ValueKind.COPY) {
+                        copied = source;
+                    } else if (source.type != null && withCopyEligibleClass(source.type)
+                            && source.kind != ValueKind.MUT_BORROW
+                            && !scope.hasLiveMutexGuard()) {
+                        // An explicit class copy constructs a NEW owned value
+                        // from certified immutable fields. The source may be
+                        // an implicit immutable self receiver, never an actor
+                        // or a mutable/exclusive borrow.
+                        copied = new ValueInfo(source.type, ValueKind.MOVE_ONLY, null);
+                    }
+                    if (copied == null) {
+                        throw error("rt copy of move-only values needs a checked copy contract; "
+                                + "only immutable scalar-field product classes are enabled");
+                    }
+                    if (projected != null && projected.warnOnCopy()) {
+                        copyWarnings.add("W_COPY_DISCOURAGED: rt copy of @"
+                                + "WarnOnCopy field '" + projected.origin() + "'");
+                    }
+                    yield copied;
                 }
                 case "share" -> {
                     ValueInfo source = checkExpr(argument, scope, false);
+                    CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
+                    if (projected != null && projected.noCopy()) {
+                        throw error("E_COPY_FORBIDDEN: cannot materialize @NoCopy field '"
+                                + projected.origin() + "' through legacy rt share; use a scoped borrow");
+                    }
                     if (source.kind != ValueKind.COPY) {
                         throw error(
                                 "rt share of move-only values requires the owning Shared<T> convergence; "
@@ -1348,6 +1542,7 @@ public final class OwnershipChecker {
                     if (klass != null) {
                         ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                         if (target != null) {
+                            if (consuming) rejectConsumingCopyProjection(expr, scope);
                             Ast.TypeRef fieldType = substituteType(
                                     ownershipFieldType(target.field()),
                                     genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
@@ -1367,10 +1562,47 @@ public final class OwnershipChecker {
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
+            if (receiverValue.type.name().equals("$TelemetrySpan")) {
+                throw error("lexical telemetry span methods are direct-call-only; do not extract a callable");
+            }
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver == null) concreteReceiver = receiverValue.type;
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
+            }
+            // Built-in ActorMail<T>/ActorOutput<T> fields are VM-owned immutable
+            // projections, not arbitrary mutable guest-class fields. The type
+            // checker already recognizes their exact nominal protocol shapes.
+            // Mirror that recognition here so Copy scalar payloads and fixed
+            // metadata are not misclassified as unknown move-only aliases.
+            // Never extend this path to a user class/type alias that shadows
+            // the runtime envelope, or to a non-Copy payload projection.
+            if (member.receiver() instanceof Ast.NameExpr envelopeName
+                    && isBuiltinActorEnvelopeValue(scope.lookup(envelopeName.name()))) {
+                if (concreteReceiver == null || concreteReceiver.arguments().size() != 1) {
+                    throw error("invalid built-in actor envelope ownership type");
+                }
+                Ast.TypeRef actorId = Ast.TypeRef.simple("ActorId");
+                Ast.TypeRef fieldType = switch (member.member()) {
+                    case "value" -> concreteReceiver.arguments().getFirst();
+                    case "sequence" -> Ast.TypeRef.simple("int");
+                    case "recipient", "actor_id" -> actorId;
+                    case "sender" -> new Ast.TypeRef("Option", List.of(actorId), false);
+                    default -> null;
+                };
+                boolean valid = concreteReceiver.name().equals("ActorMail")
+                        ? Set.of("value", "sequence", "recipient", "sender")
+                                .contains(member.member())
+                        : Set.of("value", "sequence", "actor_id")
+                                .contains(member.member());
+                if (!valid || fieldType == null) {
+                    throw error("unknown built-in actor envelope field '" + member.member() + "'");
+                }
+                return new ValueInfo(
+                        fieldType,
+                        member.member().equals("value")
+                                ? kindOfType(fieldType) : ValueKind.COPY,
+                        null);
             }
             // A collection's element count is a copyable scalar read, never a
             // projection into the collection: `val int n = list.size` must
@@ -1390,6 +1622,18 @@ public final class OwnershipChecker {
                 ValueKind valueKind = kindOfType(valueType);
                 return new ValueInfo(valueType, valueKind, null);
             }
+            // Built-in Array/List.size is a computed Copy scalar, not
+            // a borrowable or movable class field. Preserve that distinction
+            // in the ownership checker as well as the type checker, so
+            // formatting borrowedCollection.size cannot invent a projected
+            // field loan for a non-existent slot.
+            if (concreteReceiver != null
+                    && member.member().equals("size")
+                    && Set.of("Array", "List").contains(concreteReceiver.name())
+                    && concreteReceiver.arguments().size() == 1
+                    && findClass(concreteReceiver.name()) == null) {
+                return new ValueInfo(Ast.TypeRef.simple("int"), ValueKind.COPY, null);
+            }
             // An actor ref exposes a VM-owned output stream, not a field on
             // the actor's sealed state. Retain its nominal protocol type so
             // an async for-of binding has a verifiable origin.
@@ -1405,6 +1649,7 @@ public final class OwnershipChecker {
             if (klass != null) {
                 ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                 if (target != null) {
+                    if (consuming) rejectConsumingCopyProjection(expr, scope);
                     Ast.TypeRef fieldType = substituteType(
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
@@ -1424,6 +1669,7 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.IndexExpr indexed) {
+            if (consuming) rejectConsumingCopyProjection(indexed, scope);
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
@@ -1763,7 +2009,10 @@ public final class OwnershipChecker {
             if (object.structuralRecord()) type = Ast.TypeRef.readonlyRecordType(members);
             else if (object.inferredStruct() || object.explicitStruct()) type = Ast.TypeRef.structType(members);
             else throw error("unknown anonymous aggregate kind " + object.kind());
-            return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(type,
+                    type.isReadonlyRecordType() && isCopyType(type)
+                            ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
@@ -1983,6 +2232,36 @@ public final class OwnershipChecker {
             checkFormattingArguments(call.arguments(), scope);
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
         }
+        if (call.callee() instanceof Ast.MemberExpr spanCall
+                && spanCall.receiver() instanceof Ast.NameExpr spanName) {
+            VarState handle = scope.lookup(spanName.name());
+            if (handle != null && handle.type.name().equals("$TelemetrySpan")) {
+                requireUsable(handle, spanName.name(), false);
+                Ast.TypeRef result;
+                switch (spanCall.member()) {
+                    case "attribute" -> {
+                        if (call.arguments().size() != 2) {
+                            throw error("telemetry span attribute requires exactly two arguments");
+                        }
+                        checkExpr(call.arguments().get(0), scope, true);
+                        checkExpr(call.arguments().get(1), scope, true);
+                        result = Ast.TypeRef.simple("void");
+                    }
+                    case "recording" -> {
+                        if (!call.arguments().isEmpty()) throw error("span.recording takes no arguments");
+                        result = Ast.TypeRef.simple("bool");
+                    }
+                    case "trace_id", "span_id" -> {
+                        if (!call.arguments().isEmpty()) throw error("span IDs take no arguments");
+                        result = Ast.TypeRef.simple("String");
+                    }
+                    default -> throw error("unsupported telemetry span member: " + spanCall.member());
+                }
+                // Only a direct call may use the live span; extracting a bound
+                // callable could retain the handle after lexical scope exit.
+                return new ValueInfo(result, ValueKind.COPY, null);
+            }
+        }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -2064,10 +2343,52 @@ public final class OwnershipChecker {
             if (stringCall != null) return stringCall;
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
-            // A const/let read-only view must not gain mutation via .add/.set.
+            // A const/let read-only view must not gain mutation through
+            // add/set or Vector's push/pop/reserve entry points. Reserve is
+            // also a write effect because it can relocate backing storage.
+            boolean mutatingCollectionMember = java.util.Set.of(
+                    "add", "set", "push", "pop", "reserve").contains(member.member());
             Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
+            // First compiler-owned Copy<int> access path. The value is owned,
+            // not a ReadLoan, and the receiver must have a stable named root.
+            // Reserve a shared loan across index-argument evaluation so a
+            // nested mutation or move cannot sneak between root validation
+            // and the eventual checked-copy read.
+            if (member.member().equals("get_copy")
+                    && memberReceiverType != null
+                    && (memberReceiverType.name().equals("Array")
+                            || memberReceiverType.name().equals("List"))) {
+                if (!(member.receiver() instanceof Ast.NameExpr receiverName)
+                        || call.arguments().size() != 1
+                        || memberReceiverType.arguments().size() != 1
+                        || !memberReceiverType.arguments().getFirst().name().equals("int")
+                        || !memberReceiverType.arguments().getFirst().arguments().isEmpty()
+                        || findClass(memberReceiverType.name()) != null
+                        || hasLocalTypeAliasNamed(memberReceiverType.name())) {
+                    throw error("get_copy requires a named builtin Array<int>/List<int> "
+                            + "receiver and one checked index");
+                }
+                VarState owner = requireState(scope, receiverName.name());
+                requireUsable(owner, receiverName.name(), false);
+                beginPersistentBorrow(owner, false);
+                VarState root = ownershipRoot(owner);
+                try {
+                    ValueInfo index = checkExpr(call.arguments().getFirst(), scope, false);
+                    if (isBorrowValue(index) || containsMutexGuardType(index.type)) {
+                        throw error("get_copy index cannot smuggle a borrowed capability");
+                    }
+                } finally {
+                    if (root.immutableBorrows <= 0) {
+                        throw new IllegalStateException("missing get_copy shared root loan");
+                    }
+                    root.immutableBorrows--;
+                }
+                Ast.TypeRef intType = Ast.TypeRef.simple("int");
+                Ast.TypeRef result = new Ast.TypeRef("Option", List.of(intType), false);
+                return new ValueInfo(result, ValueKind.COPY, null);
+            }
             if (memberReceiverType == null
-                    && (member.member().equals("add") || member.member().equals("set"))
+                    && mutatingCollectionMember
                     && (member.receiver() instanceof Ast.MemberExpr
                         || member.receiver() instanceof Ast.IndexExpr)) {
                 // Nested collection receivers are mutable *places*, not opaque
@@ -2079,8 +2400,9 @@ public final class OwnershipChecker {
                 Ast.TypeRef concreteCollection = memberReceiverType.isBorrow()
                         ? memberReceiverType.borrowedTarget() : memberReceiverType;
                 if ((concreteCollection.name().equals("Array")
-                        || concreteCollection.name().equals("List"))
-                        && (member.member().equals("add") || member.member().equals("set"))) {
+                        || concreteCollection.name().equals("List")
+                        || concreteCollection.name().equals("Vector"))
+                        && mutatingCollectionMember) {
                     ensureMutableReceiver(
                             member.receiver(),
                             scope,
@@ -2190,7 +2512,9 @@ public final class OwnershipChecker {
                     }
                     if (isMutexGuardType(receiverType)) {
                         Ast.TypeRef protectedType = receiverType.arguments().getFirst();
-                        if ((protectedType.name().equals("List") || protectedType.name().equals("Array"))
+                        if ((protectedType.name().equals("List")
+                                || protectedType.name().equals("Array")
+                                || protectedType.name().equals("Vector"))
                                 && protectedType.arguments().size() == 1) {
                             Ast.TypeRef element = protectedType.arguments().getFirst();
                             switch (member.member()) {
@@ -2209,12 +2533,25 @@ public final class OwnershipChecker {
                                         return new ValueInfo(element, ValueKind.COPY, null);
                                     }
                                 }
-                                case "add" -> {
+                                case "add", "push" -> {
                                     if (call.arguments().size() == 1) {
                                         ValueInfo value = checkExpr(call.arguments().getFirst(), scope, true);
                                         if (containsMutexGuardType(value.type)) {
                                             throw error("MutexGuard cannot be stored inside protected List state");
                                         }
+                                        return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                                    }
+                                }
+                                case "pop" -> {
+                                    // Moving the last element out of a guarded
+                                    // collection needs an explicit owned-result
+                                    // proof. Do not fabricate raw Option arity
+                                    // or treat a live MutexGuard as a move token.
+                                    throw error("cannot pop from protected Vector through MutexGuard without an owned-result transfer proof");
+                                }
+                                case "reserve" -> {
+                                    if (call.arguments().size() == 1) {
+                                        checkExpr(call.arguments().getFirst(), scope, false);
                                         return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
                                     }
                                 }
@@ -3401,7 +3738,7 @@ public final class OwnershipChecker {
 
         String name = source == null ? "<unknown>" : source.debugName;
         throw error("cannot return borrow rooted in '" + name
-                + "'; returned borrows must originate from an incoming borrowed parameter/receiver so they cannot outlive their owner");
+                + "'; returned borrows must originate from an incoming borrowed parameter/receiver so it cannot outlive its owner");
     }
 
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
@@ -3460,6 +3797,9 @@ public final class OwnershipChecker {
             }
             if (containsMutexGuardType(source.type)) {
                 throw error("closure cannot capture guard-bearing value '" + capture.name + "'; MutexGuard values are lexical");
+            }
+            if (source.type.name().equals("$TelemetrySpan") && !deferredCleanup) {
+                throw error("lexical telemetry span handle cannot escape into a closure");
             }
 
             if (capture.write) {
@@ -3624,6 +3964,11 @@ public final class OwnershipChecker {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.TaskScopeStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.UsingTelemetrySpanStmt s) {
+                scanExpr(s.name(), blockLocals, outer, recursiveBinding, captures, false);
+                Set<String> scoped = new HashSet<>(blockLocals);
+                scoped.add(s.binding());
+                scanStatements(s.body(), scoped, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.IfStmt s) {
@@ -4176,7 +4521,38 @@ public final class OwnershipChecker {
         } else if (receiver instanceof Ast.CaptureExpr capture) {
             VarState state = scope.lookup(capture.name());
             type = state == null ? syntacticType(capture.value(), scope) : state.type;
-        } else if (receiver instanceof Ast.NewExpr created) type = created.type();
+        } else if (receiver instanceof Ast.NewExpr created) {
+            type = created.type();
+        } else if (receiver instanceof Ast.MemberExpr member) {
+            Ast.TypeRef base = receiverType(member.receiver(), scope);
+            if (base != null) {
+                Ast.ClassDecl klass = findClass(base.name());
+                if (klass != null) {
+                    ResolvedField field = findFieldTarget(
+                            klass, base, member.member(), new LinkedHashSet<>());
+                    if (field != null) {
+                        type = substituteType(ownershipFieldType(field.field()),
+                                genericBindings(field.owner().genericParameters(),
+                                        field.ownerType().arguments()));
+                    }
+                }
+            }
+        } else if (receiver instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef base = receiverType(indexed.receiver(), scope);
+            Object key = computedIndexConstant(indexed.index(), scope);
+            if (base != null && key instanceof String fieldName) {
+                Ast.ClassDecl klass = findClass(base.name());
+                if (klass != null) {
+                    ResolvedField field = findFieldTarget(
+                            klass, base, fieldName, new LinkedHashSet<>());
+                    if (field != null) {
+                        type = substituteType(ownershipFieldType(field.field()),
+                                genericBindings(field.owner().genericParameters(),
+                                        field.ownerType().arguments()));
+                    }
+                }
+            }
+        }
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         if (isMutexGuardType(type)) type = type.arguments().getFirst();
@@ -4633,6 +5009,8 @@ public final class OwnershipChecker {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt scope
+                    && definitelyReturns(scope.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional
                     && !conditional.branches().isEmpty()
                     && conditional.branches().stream().allMatch(branch -> definitelyReturns(branch.body()))
@@ -4789,6 +5167,9 @@ public final class OwnershipChecker {
      * MOVE rather than duplicating cancellation/consumer authority.
      */
     private boolean forbiddenTaskCapability(Ast.TypeRef type) {
+        // TraceContext is safe to inherit; the mutable lexical span HANDLE is
+        // not a Send capability even when its underlying IDs are immutable.
+        if (type != null && type.name().equals("$TelemetrySpan")) return true;
         return forbiddenTaskCapability(type, new TaskCaptureProofBudget());
     }
 
@@ -5593,6 +5974,175 @@ public final class OwnershipChecker {
                 && actorTarget.actorKind() != Ast.ActorKind.NONE;
     }
 
+    private Ast.Expr unwrappedMoveProjection(Ast.Expr expression) {
+        if (expression instanceof Ast.CastExpr cast) {
+            return unwrappedMoveProjection(cast.value());
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return unwrappedMoveProjection(spread.expression());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            Ast.Expr trueBranch = unwrappedMoveProjection(conditional.whenTrue());
+            if (trueBranch instanceof Ast.MemberExpr || trueBranch instanceof Ast.IndexExpr) {
+                return trueBranch;
+            }
+            return unwrappedMoveProjection(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.MatchExpr match) {
+            for (Ast.MatchValueArm arm : match.arms()) {
+                Ast.Expr branch = unwrappedMoveProjection(arm.value());
+                if (branch instanceof Ast.MemberExpr || branch instanceof Ast.IndexExpr) {
+                    return branch;
+                }
+            }
+        }
+        return expression;
+    }
+
+    /** A policy on any owning projection prevents laundering via a nested field. */
+    private record CopyPolicyProjection(String origin, boolean noCopy, boolean warnOnCopy) { }
+
+    private static boolean hasCopyPolicy(List<Ast.Annotation> annotations, String name) {
+        return annotations.stream().anyMatch(annotation -> annotation.name().equals(name));
+    }
+
+    private void validateCopyPolicyAnnotations(List<Ast.Annotation> annotations, String owner) {
+        Set<String> seen = new HashSet<>();
+        for (Ast.Annotation annotation : annotations) {
+            String name = annotation.name();
+            if (!Set.of("NoCopy", "WarnOnCopy", "Copyable").contains(name)) continue;
+            if (!annotation.arguments().isEmpty() || !seen.add(name)) {
+                throw error("E_COPY_ANNOTATION: invalid or duplicate @" + name + " on " + owner);
+            }
+            if (name.equals("Copyable") && owner.startsWith("field ")) {
+                throw error("E_COPY_ANNOTATION: @Copyable is only valid on a class declaration");
+            }
+        }
+        if (seen.contains("NoCopy") && (seen.contains("Copyable") || seen.contains("WarnOnCopy"))) {
+            throw error("E_COPY_ANNOTATION: conflicting copy policies on " + owner);
+        }
+    }
+
+    private static CopyPolicyProjection strictestCopyPolicy(
+            CopyPolicyProjection first, CopyPolicyProjection second) {
+        if (first == null) return second;
+        if (second == null) return first;
+        if (first.noCopy()) return first;
+        if (second.noCopy()) return second;
+        return first;
+    }
+
+    private CopyPolicyProjection copyProjectionPolicy(Ast.Expr expr, Scope scope) {
+        // Branch expressions preserve the strictest policy from any arm;
+        // choosing a copyable branch at runtime does not permit copying a
+        // protected branch through the same static expression.
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return strictestCopyPolicy(
+                    copyProjectionPolicy(conditional.whenTrue(), scope),
+                    copyProjectionPolicy(conditional.whenFalse(), scope));
+        }
+        if (expr instanceof Ast.MatchExpr match) {
+            CopyPolicyProjection result = null;
+            for (Ast.MatchValueArm arm : match.arms()) {
+                result = strictestCopyPolicy(result, copyProjectionPolicy(arm.value(), scope));
+            }
+            return result;
+        }
+        // Explicit casts and syntax-only spreads cannot wash away the
+        // ownership policy attached to a logical source place. A cast which
+        // creates a distinct value still needs explicit audited lowering.
+        if (expr instanceof Ast.CastExpr cast) {
+            return copyProjectionPolicy(cast.value(), scope);
+        }
+        if (expr instanceof Ast.SpreadExpr spread) {
+            return copyProjectionPolicy(spread.expression(), scope);
+        }
+        if (expr instanceof Ast.UnaryExpr unary
+                && !unary.operator().equals("&")
+                && !unary.operator().equals("&mut")) {
+            return copyProjectionPolicy(unary.operand(), scope);
+        }
+        Ast.Expr receiver;
+        String fieldName;
+        if (expr instanceof Ast.MemberExpr member) {
+            receiver = member.receiver();
+            fieldName = member.member();
+        } else if (expr instanceof Ast.IndexExpr indexed) {
+            receiver = indexed.receiver();
+            Object key = computedIndexConstant(indexed.index(), scope);
+            if (!(key instanceof String name)) {
+                CopyPolicyProjection parent = copyProjectionPolicy(receiver, scope);
+                if (parent != null && parent.noCopy()) return parent;
+                Ast.TypeRef receiverClassType = receiverType(receiver, scope);
+                if (receiverClassType != null) {
+                    if (receiverClassType.isBorrow()) {
+                        receiverClassType = receiverClassType.borrowedTarget();
+                    }
+                    Ast.ClassDecl dynamicClass = findClass(receiverClassType.name());
+                    if (dynamicClass != null) {
+                        for (ResolvedField field : effectiveFieldTargets(
+                                dynamicClass, receiverClassType, new LinkedHashSet<>())) {
+                            if (hasCopyPolicy(field.field().annotations(), "NoCopy")) {
+                                return new CopyPolicyProjection(
+                                        field.owner().name() + ".[dynamic:" + field.field().name() + "]",
+                                        true, false);
+                            }
+                        }
+                    }
+                }
+                return parent;
+            }
+            fieldName = name;
+        } else return null;
+
+        CopyPolicyProjection parent = copyProjectionPolicy(receiver, scope);
+        if (parent != null && parent.noCopy()) return parent;
+        Ast.TypeRef receiverClassType = receiverType(receiver, scope);
+        if (receiverClassType == null) return parent;
+        if (receiverClassType.isBorrow()) receiverClassType = receiverClassType.borrowedTarget();
+        Ast.ClassDecl klass = findClass(receiverClassType.name());
+        if (klass == null) return parent;
+        ResolvedField field = findFieldTarget(
+                klass, receiverClassType, fieldName, new LinkedHashSet<>());
+        if (field == null) return parent;
+        boolean forbidden = hasCopyPolicy(field.field().annotations(), "NoCopy");
+        boolean warned = hasCopyPolicy(field.field().annotations(), "WarnOnCopy");
+        if (!forbidden && !warned) return parent;
+        CopyPolicyProjection local = new CopyPolicyProjection(
+                field.owner().name() + "." + field.field().name(), forbidden, warned);
+        return parent != null && parent.warnOnCopy() && !local.noCopy() ? parent : local;
+    }
+
+    private void rejectConsumingCopyProjection(Ast.Expr expr, Scope scope) {
+        CopyPolicyProjection policy = copyProjectionPolicy(expr, scope);
+        if (policy != null && policy.noCopy()) {
+            throw error("E_COPY_FORBIDDEN: cannot duplicate @NoCopy field '"
+                    + policy.origin() + "' by owned projection; use rt borrow");
+        }
+    }
+
+    /** Explicit-only nominal copy contract; classes never become implicit Copy. */
+    private boolean withCopyEligibleClass(Ast.TypeRef source) {
+        if (source == null || source.isBorrow() || source.inferArguments()
+                || source.isClosedAggregateType() || !source.arguments().isEmpty()) return false;
+        Ast.ClassDecl klass = findClass(source.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE
+                || klass.constructor() != null || klass.isAbstract()
+                || !klass.parents().isEmpty()
+                || !klass.genericParameters().isEmpty()
+                || klass.fields().isEmpty()) return false;
+        for (Ast.FieldDecl field : klass.fields()) {
+            Ast.TypeRef slot = field.type();
+            if (field.bindingKind() == Ast.BindingKind.LET || field.mutableReferent()
+                    || slot == null || slot.isBorrow() || slot.inferArguments()
+                    || !slot.arguments().isEmpty()
+                    || !Set.of("int", "bool", "float", "string", "String").contains(slot.name())
+                    || findClass(slot.name()) != null
+                    || hasLocalTypeAliasNamed(slot.name())) return false;
+        }
+        return true;
+    }
+
     private boolean isCopyType(Ast.TypeRef type) {
         // Inference markers and compiler-only unverified shapes carry no
         // structural Copy proof. Task Send already rejects them; Copy must
@@ -5604,6 +6154,10 @@ public final class OwnershipChecker {
         if (type.isUnion()) return !type.arguments().isEmpty()
                 && type.arguments().stream().allMatch(this::isCopyType);
         if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        // Only immutable RECORDs can be copied structurally; a mutable
+        // struct remains affine even if every field is a scalar.
+        if (type.isRecordType()) return type.isReadonlyRecordType()
+                && type.recordMembers().values().stream().allMatch(this::isCopyType);
         if (hasLocalTypeAliasNamed(type.name())) return false;
         // Same spelling is not enough to bestow a runtime wrapper's Copy
         // semantics on a locally declared nominal class.
