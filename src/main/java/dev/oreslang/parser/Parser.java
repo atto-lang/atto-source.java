@@ -10,6 +10,8 @@ import static dev.oreslang.parser.Token.Type.*;
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
 
+    public enum AttoCallableVersion { V1, V2 }
+
     public record SyntaxWarning(int line, int column, String message) { }
 
     public record ParseResult(Ast.Program program, List<SyntaxWarning> warnings) {
@@ -19,6 +21,8 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    // Null preserves the shipping Oreslang parser's historical behavior.
+    private final AttoCallableVersion attoCallableVersion;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
@@ -43,6 +47,11 @@ public final class Parser {
             new java.util.IdentityHashMap<>();
 
     public Parser(List<Token> tokens) {
+        this(tokens, null);
+    }
+
+    private Parser(List<Token> tokens, AttoCallableVersion version) {
+        this.attoCallableVersion = version;
         this.tokens = List.copyOf(tokens);
         // A public parser must not trust an externally supplied Token stream to
         // have come from Lexer. In particular, a synthesized IDENT("unsafe")
@@ -59,6 +68,17 @@ public final class Parser {
 
     public static Ast.Program parse(String source) {
         return new Parser(new Lexer(source).scan()).parseProgram();
+    }
+
+    /** Explicit draft v1/v2 source grammar. This is a real parser entrypoint,
+     * not a completed package-edition/Truffle guest integration. Unsupported
+     * compound/effectful comma body shapes fail before AST emission. */
+    public static Ast.Program parseVersionedAtto(String source, int version) {
+        if (version != 1 && version != 2)
+            throw new IllegalArgumentException("E_LANGUAGE_VERSION: expected 1 or 2");
+        return new Parser(new Lexer(source).scan(),
+                version == 1 ? AttoCallableVersion.V1 : AttoCallableVersion.V2)
+                .parseProgram();
     }
 
     /**
@@ -876,7 +896,10 @@ public final class Parser {
     private List<Ast.Stmt> parseFreeCallableBody(boolean arrowReturn) {
         if (check(LBRACE) || !arrowReturn) return parseBlock();
         boolean explicit = match(DOUBLE_COLON);
-        if (!explicit && !isImplicitNewlineTerminator()) {
+        if (attoCallableVersion != null &&
+                (explicit || attoCallableVersion == AttoCallableVersion.V1))
+            return parseVersionedCommaTailBody();
+        if (!explicit && attoCallableVersion == null && !isImplicitNewlineTerminator()) {
             throw error(peek(), "end-delimited callable needs a newline or '::' after its return type");
         }
         localTypeScopes.push(new java.util.HashSet<>());
@@ -884,6 +907,40 @@ public final class Parser {
             List<Ast.Stmt> body = parseUntil(END);
             consume(END, "expected 'end' after callable body");
             return body;
+        } finally {
+            localTypeScopes.pop();
+        }
+    }
+
+    /** Restricted, executable pure expression sequence. The enclosing
+     * checker/runtime still checks calls and types; declarations, statement
+     * effects and nested control-flow are deliberately not flattened.
+     * Commas inside call arguments are consumed by parseExpression and cannot
+     * masquerade as body separators. */
+    private List<Ast.Stmt> parseVersionedCommaTailBody() {
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> body = new ArrayList<>();
+            for (int count = 0; count < 1024; ++count) {
+                if (check(END) || check(EOF) || check(COMMA))
+                    throw error(peek(), "E_SYNTAX: missing comma-body expression");
+                if (check(LET) || check(VAL) || check(CONST)
+                        || check(RETURN) || check(CARET))
+                    throw error(peek(), "E_UNSUPPORTED: versioned comma body currently requires checked expression items");
+                Ast.Expr value = parseExpression();
+                if (match(COMMA)) {
+                    if (check(END) || check(EOF) || check(COMMA))
+                        throw error(peek(), "E_SYNTAX: empty/trailing comma-body item");
+                    body.add(new Ast.ExprStmt(value));
+                    continue;
+                }
+                if (check(SEMICOLON))
+                    throw error(peek(), "E_SYNTAX: comma body uses ',' not ';'");
+                body.add(new Ast.ReturnStmt(value));
+                consume(END, "expected 'end' after versioned comma body");
+                return List.copyOf(body);
+            }
+            throw error(peek(), "E_SOURCE_LIMIT: comma body exceeds 1024 items");
         } finally {
             localTypeScopes.pop();
         }
@@ -2026,9 +2083,20 @@ public final class Parser {
             if (!arrowMethodBody) {
                 throw error(previous(), "end-delimited methods require '-> ReturnType ::'");
             }
-            body = new ArrayList<>();
-            while (!check(END) && !check(EOF)) body.add(parseStatement());
-            consume(END, "expected 'end' to close method '" + name + "'");
+            if (attoCallableVersion != null) {
+                body = parseVersionedCommaTailBody();
+            } else {
+                body = new ArrayList<>();
+                while (!check(END) && !check(EOF)) body.add(parseStatement());
+                consume(END, "expected 'end' to close method '" + name + "'");
+            }
+        } else if (attoCallableVersion == AttoCallableVersion.V1
+                && arrowMethodBody && !check(LBRACE)) {
+            body = parseVersionedCommaTailBody();
+        } else if (attoCallableVersion == AttoCallableVersion.V2
+                && arrowMethodBody && !check(LBRACE)) {
+            body = parseUntil(END);
+            consume(END, "expected 'end' after v2 statement method body");
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body, effects);
@@ -3085,6 +3153,12 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        if (attoCallableVersion != null && match(CARET)) {
+            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary()
+                    ? null : parseExpression();
+            consumeExpressionStatementTerminator(value, "caret return requires ';'");
+            return new Ast.ReturnStmt(value);
+        }
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
         // parsed distinctly so compiler admission cannot silently desugar it.

@@ -27,6 +27,27 @@ public final class OresCompiler {
     }
 
     /**
+     * Explicit, opt-in Atto v1/v2 callable-body admission through the REAL
+     * parser, strict TypeChecker and OwnershipChecker. Never change the
+     * unversioned JVM/Truffle source default or accept an unverified import
+     * graph under a local-only language-version selection.
+     *
+     * This returns a checked AST for a trusted one-shot Truffle guest lease;
+     * it does not claim general actor/suspension or native-AOT parity.
+     */
+    public static Ast.Program parseAndTypeCheckVersionedAtto(String source, int version) {
+        Ast.Program program = Parser.parseVersionedAtto(source, version);
+        if (!program.imports().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "ATTO_LANGUAGE_VERSION_IMPORT_GRAPH_UNVERIFIED: imported units must be checked under the same version");
+        }
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(program, true);
+        OwnershipChecker.check(checked.program(), checked.shortInferredAliases());
+        return checked.program();
+    }
+
+    /**
      * Run the real Parser -> TypeChecker -> OwnershipChecker only once while
      * collecting a bounded, fail-closed MIR shadow event stream.
      *
