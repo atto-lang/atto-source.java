@@ -32,6 +32,7 @@ import dev.oreslang.runtime.TaskScope;
 import dev.oreslang.runtime.TaskHandle;
 import dev.oreslang.runtime.SourceTaskHandles;
 import dev.oreslang.runtime.SourceCooperationQuantum;
+import dev.oreslang.runtime.SourceActorPubSub;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
@@ -9562,7 +9563,115 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ActorFacade actor) {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
+                    case "group" -> (Invokable) actor::group;
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver instanceof SourceActorPubSub.Group group) {
+                return switch (name) {
+                    case "name" -> group.name();
+                    case "join" -> (Invokable) args -> {
+                        requireOne(args, "ActorGroup.join");
+                        if (!(args.getFirst() instanceof ActorRuntime.ActorRef<?> ref)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.join expects ActorRef<T>");
+                        }
+                        group.join(ref);
+                        return null;
+                    };
+                    case "leave" -> (Invokable) args -> {
+                        requireOne(args, "ActorGroup.leave");
+                        if (!(args.getFirst() instanceof ActorRuntime.ActorRef<?> ref)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.leave expects ActorRef<T>");
+                        }
+                        group.leave(ref);
+                        return null;
+                    };
+                    case "contains" -> (Invokable) args -> {
+                        requireOne(args, "ActorGroup.contains");
+                        if (!(args.getFirst() instanceof ActorRuntime.ActorRef<?> ref)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.contains expects ActorRef<T>");
+                        }
+                        return group.contains(ref);
+                    };
+                    case "member_count" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.member_count");
+                        return (long) group.memberCount();
+                    };
+                    case "topic" -> (Invokable) args -> {
+                        if (args.size() == 1) {
+                            return group.topic(
+                                    requireString(args.getFirst(), "ActorGroup.topic name"));
+                        }
+                        if (args.size() != 3) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.topic<T> expects name or name, policy, capacity");
+                        }
+                        String topicName =
+                                requireString(args.get(0), "ActorGroup.topic name");
+                        String policy =
+                                requireString(args.get(1), "ActorGroup.topic policy");
+                        if (!(args.get(2) instanceof Number number) || !isIntegral(number)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.topic capacity must be an integer");
+                        }
+                        long capacity = number.longValue();
+                        if (capacity < 1 || capacity > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.topic capacity must be 1..2147483647");
+                        }
+                        return group.topic(topicName, policy, (int) capacity);
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.close");
+                        group.close();
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorGroup member " + name);
+                };
+            }
+            if (receiver instanceof SourceActorPubSub.Topic topic) {
+                return switch (name) {
+                    case "name" -> topic.name();
+                    case "publish" -> (Invokable) args -> {
+                        requireOne(args, "Topic.publish");
+                        return topic.publish(args.getFirst());
+                    };
+                    case "subscribe" -> (Invokable) args -> {
+                        requireZero(args, "Topic.subscribe");
+                        return topic.subscribe();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Topic member " + name);
+                };
+            }
+            if (receiver instanceof SourceActorPubSub.Subscription subscription) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.next");
+                        return subscription.next();
+                    };
+                    case "try_read" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.try_read");
+                        java.util.Optional<Object> value = subscription.tryRead();
+                        return value.isPresent()
+                                ? new OptionValue(true, value.get())
+                                : new OptionValue(false, null);
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.close");
+                        subscription.close();
+                        return null;
+                    };
+                    case "closed" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.closed");
+                        return subscription.closed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Subscription member " + name);
                 };
             }
             if (receiver instanceof ChannelRuntime.Channel<?> channel) {
@@ -13188,6 +13297,9 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record ActorFacade(OresContext context) {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
+        private Object group(List<Object> args){
+            return context.actorPubSub().group(requireStringArg(args, "actor.group"));
+        }
     }
     private static List<Object> expandArgumentSequence(Object value,String name){
         if(value instanceof List<?> list)return new ArrayList<>(list);
