@@ -10,6 +10,8 @@ import dev.oreslang.ast.Ast;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -39,7 +41,45 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
+    // Host-provisioned at context creation; default is DENY with no service.
+    private final WorkflowHostServiceRegistry workflowHostServices;
     public AsyncNativeIo nativeIo() { return nativeIo; }
+    // Guest-visible timers (process.sleep_async). Revoked before actor and
+    // native I/O retirement so no clock callback outlives the context.
+    private final OresTimers guestTimers = new OresTimers();
+    public OresTimers guestTimers() { return guestTimers; }
+    /** Typed intrinsic only; returns guest-owned scalar data, never host handles. */
+    public OresFuture<java.util.List<Object>> submitWorkflowGuest(Object payload) {
+        requireCapability(IsolatePolicy.Capability.WORKFLOW_STORAGE, "rt workflow_request");
+        if (isolatePolicy.adversarial()
+                || ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+            throw new SecurityException("untrusted actor/isolate cannot invoke workflow host services");
+        }
+        return WorkflowGuestPort.submit(workflowHostServices, payload);
+    }
+    private final OutboundEgressPolicy.Policy outboundHttpPolicy =
+            OutboundEgressPolicy.Policy.loopbackOnly();
+    private final PinnedHttpTransport.ConnectionBudget outboundHttpBudget =
+            new PinnedHttpTransport.ConnectionBudget(
+                    outboundHttpPolicy.limits());
+    private BoundedDnsResolver outboundDnsResolver;
+
+    OutboundEgressPolicy.Policy outboundHttpPolicy() {
+        return outboundHttpPolicy;
+    }
+
+    PinnedHttpTransport.ConnectionBudget outboundHttpBudget() {
+        return outboundHttpBudget;
+    }
+
+    synchronized BoundedDnsResolver outboundDnsResolver() {
+        if (outboundDnsResolver == null) {
+            outboundDnsResolver = BoundedDnsResolver.system(
+                    nativeIo,
+                    outboundHttpPolicy.limits().connectTimeout());
+        }
+        return outboundDnsResolver;
+    }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
 
@@ -80,9 +120,14 @@ public final class OresContext implements AutoCloseable {
         long contextPerf = CorePerf.start();
         this.language = language;
         this.env = env;
-        this.input = new BufferedReader(new InputStreamReader(env.in()));
-        this.output = new PrintWriter(env.out(), true);
+        this.input = new BufferedReader(new InputStreamReader(env.in(), StandardCharsets.UTF_8));
+        this.output = new PrintWriter(new OutputStreamWriter(env.out(), StandardCharsets.UTF_8), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
+        // No host workflow service may enter an adversarial VM context.
+        // Consume a one-shot provision even when forbidden so it cannot leak
+        // into a later trusted context on this embedding thread.
+        this.workflowHostServices = WorkflowHostServiceRegistry.forNewContext(
+                !isolatePolicy.adversarial());
         this.runtimePermissions = RuntimePermissions.fromApplicationArguments(
                 env.getApplicationArguments(), isolatePolicy);
         this.permissionCheckMode = PermissionCheckMode.fromApplicationArguments(
@@ -485,6 +530,17 @@ public final class OresContext implements AutoCloseable {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
+        guestTimers.close();
+        // Revoke workflow admission and drain callbacks before JNI teardown.
+        // On timeout, retain the context rather than freeing live host state.
+        try {
+            workflowHostServices.close();
+        } catch (RuntimeException incomplete) {
+            output.flush();
+            throw new IllegalStateException(
+                    "workflow host service retirement incomplete; context quarantined",
+                    incomplete);
+        }
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {
