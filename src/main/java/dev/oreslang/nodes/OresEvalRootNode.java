@@ -8777,6 +8777,33 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.equals("trim")) {
                     return (Invokable) args -> { requireZero(args, "string.trim"); return text.trim(); };
                 }
+                // Storage-only Unicode scalar snapshot intrinsic. Classification
+                // and route/identifier policy belong in native std/text.atto.
+                if (name.equals("codepoints")) {
+                    return (Invokable) args -> {
+                        requireZero(args, "string.codepoints");
+                        // A bounded owned snapshot prevents host allocation attacks.
+                        // Supplementary scalars occupy one element, not two UTF-16 code units.
+                        final int maxCodepoints = 65_536;
+                        if (text.length() > maxCodepoints * 2) {
+                            throw new IllegalArgumentException("string.codepoints exceeds 65536 scalar limit");
+                        }
+                        java.util.ArrayList<Long> values =
+                                new java.util.ArrayList<>(Math.min(text.length(), maxCodepoints));
+                        for (int offset = 0; offset < text.length();) {
+                            if (values.size() == maxCodepoints) {
+                                throw new IllegalArgumentException("string.codepoints exceeds 65536 scalar limit");
+                            }
+                            int scalar = text.codePointAt(offset);
+                            if (scalar >= 0xD800 && scalar <= 0xDFFF) {
+                                throw new IllegalArgumentException("string.codepoints rejects unpaired surrogate");
+                            }
+                            values.add((long) scalar);
+                            offset += Character.charCount(scalar);
+                        }
+                        return values;
+                    };
+                }
                 if (name.equals("is_identifier") || name.equals("is_route_segment")) {
                     return (Invokable) args -> {
                         requireZero(args, "string." + name);
