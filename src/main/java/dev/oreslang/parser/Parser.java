@@ -2729,14 +2729,33 @@ public final class Parser {
         return List.copyOf(result);
     }
 
+    /**
+     * Parse a type reference and apply postfix '?' in type context only.
+     *
+     * This is Option<T> sugar, not an omittable parameter marker and not
+     * expression-level postfix propagation or the ternary operator. Because
+     * every declaration, binding, generic argument, field and return parser
+     * comes through this method, the spelling has one consistent meaning.
+     */
     private Ast.TypeRef parseTypeRef() {
-        Ast.TypeRef first = parseTypeAtom();
-        if (!match(PIPE)) return first;
-
-        List<Ast.TypeRef> options = new ArrayList<>();
-        options.add(first);
-        do options.add(parseTypeAtom()); while (match(PIPE));
-        return Ast.TypeRef.union(options);
+        Ast.TypeRef type = parseTypeAtom();
+        if (match(PIPE)) {
+            List<Ast.TypeRef> options = new ArrayList<>();
+            options.add(type);
+            do options.add(parseTypeAtom()); while (match(PIPE));
+            type = Ast.TypeRef.union(options);
+        }
+        if (match(QUESTION)) {
+            if (type.name().equals("void") || type.name().equals("null")
+                    || type.inferArguments()) {
+                throw error(previous(), "type-level '?' requires a concrete value type");
+            }
+            type = new Ast.TypeRef("Option", List.of(type), false);
+            if (check(QUESTION)) {
+                throw error(peek(), "a type may have only one postfix '?' suffix; use Option<Option<T>> for nested Option");
+            }
+        }
+        return type;
     }
 
     private Ast.TypeRef parseTypeAtom() {
