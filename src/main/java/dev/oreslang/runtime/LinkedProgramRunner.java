@@ -221,12 +221,17 @@ public final class LinkedProgramRunner {
                     List<String> ids = new ArrayList<>(build.units().keySet());
                     ids.sort(String::compareTo);
 
-                    for (String id : ids) {
-                        IncrementalCompiler.CompiledUnit unit = build.units().get(id);
-                        Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
-                                .mimeType(OresLanguage.MIME_TYPE)
-                                .buildLiteral();
-                        parsedUnits.put(id, context.parse(source));
+                    // The incremental compiler proved imports, enum identities,
+                    // types and ownership for this exact source set. Preserve
+                    // those checked ASTs across Truffle's parsing boundary.
+                    try (var linked = dev.oreslang.compiler.OresCompiler.beginLinkedParse(build)) {
+                        for (String id : ids) {
+                            IncrementalCompiler.CompiledUnit unit = build.units().get(id);
+                            Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
+                                    .mimeType(OresLanguage.MIME_TYPE)
+                                    .buildLiteral();
+                            parsedUnits.put(id, context.parse(source));
+                        }
                     }
 
                     for (Map.Entry<String, Map<String, String>> importer : importResolutions.entrySet()) {

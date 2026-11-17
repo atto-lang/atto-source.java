@@ -11,6 +11,60 @@ import dev.oreslang.types.OwnershipChecker;
 public final class OresCompiler {
     private OresCompiler() { }
 
+    /**
+     * Trusted host linkage handoff. IncrementalCompiler has already checked
+     * every imported declaration and its ownership rules; Truffle must execute
+     * that exact AST rather than re-typecheck it without the linked signatures.
+     * This is scoped to the parsing carrier and fails closed on source drift.
+     */
+    private static final ThreadLocal<MapSourceScope> LINKED_PARSE = new ThreadLocal<>();
+
+    private record MapSourceScope(java.util.Map<String, IncrementalCompiler.CompiledUnit> units,
+                                  Thread owner) { }
+
+    public static final class LinkedParseScope implements AutoCloseable {
+        private final MapSourceScope state;
+        private boolean closed;
+
+        private LinkedParseScope(MapSourceScope state) { this.state = state; }
+
+        @Override public void close() {
+            if (closed) return;
+            if (Thread.currentThread() != state.owner() || LINKED_PARSE.get() != state) {
+                throw new SecurityException("linked parser scope closed outside owning compilation carrier");
+            }
+            LINKED_PARSE.remove();
+            closed = true;
+        }
+    }
+
+    public static LinkedParseScope beginLinkedParse(IncrementalCompiler.BuildResult checked) {
+        java.util.Objects.requireNonNull(checked, "checked link build");
+        if (!IncrementalCompiler.isCheckedBuild(checked)) {
+            throw new SecurityException(
+                    "linked parse requires an exact compiler-issued, fully validated build result");
+        }
+        if (LINKED_PARSE.get() != null) throw new IllegalStateException(
+                "nested linked parse scopes are prohibited");
+        MapSourceScope state = new MapSourceScope(java.util.Map.copyOf(checked.units()),
+                Thread.currentThread());
+        LINKED_PARSE.set(state);
+        return new LinkedParseScope(state);
+    }
+
+    /** Returns null outside the trusted linked-loader parse scope. */
+    public static Ast.Program linkedProgramOrNull(String codeUnitId, String sourceText) {
+        MapSourceScope active = LINKED_PARSE.get();
+        if (active == null) return null;
+        if (Thread.currentThread() != active.owner()) throw new SecurityException(
+                "linked source parser moved across compilation carriers");
+        IncrementalCompiler.CompiledUnit unit = active.units().get(codeUnitId);
+        if (unit == null) return null;
+        if (!unit.sourceText().equals(sourceText)) throw new SecurityException(
+                "linked source bytes changed after type/ownership validation: " + codeUnitId);
+        return unit.program();
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
     }
