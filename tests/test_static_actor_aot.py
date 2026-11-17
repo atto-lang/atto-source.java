@@ -190,9 +190,10 @@ class StaticActorPilotTests(unittest.TestCase):
                          "return 43;", "guard false { 7; }\n  return 43;"))
 
     def test_guard_rejects_redundant_else(self):
+        original = self.source.read_text()
         for marker in ("return", "^"):
             self.rejects("E_GUARD_ELSE_NOT_REQUIRED",
-                         self.source.read_text().replace(
+                         original.replace(
                              "return 43;",
                              "guard false { " + marker + " 7; } else { " +
                              marker + " 8; }\n  return 43;"))
