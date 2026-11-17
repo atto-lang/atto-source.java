@@ -44,7 +44,7 @@ The language is intentionally opinionated:
 - class-level `static fnc` functions separated from receiver methods;
 - first-class function aliases/types and block-only `|args| -> { ... }` lambdas;
 - lexical closures with persistent captured environments;
-- affine ownership, move checking, borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax - see [ft borrow, ft copy, ft take, ft share]
+- affine ownership, move checking, borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax; source ownership uses `rt copy`, `rt share`, `rt take`, `rt borrow`, and `rt mut borrow` (no `&`/`*` pointer/reference/dereference syntax)
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; instance/actor methods are direct-call-only, and callbacks use explicit lambdas instead of implicit bound-method values;
 - multiple named modules may appear in one source file;
@@ -67,6 +67,8 @@ and remaining physical-isolation work are tracked in
 Async filesystem, TCP and HTTP client APIs: [usage and execution guarantees](docs/ASYNC_IO.md).
 
 Core assertions: see [Assert API and trap behavior](docs/ASSERT.md).
+
+CPU/GPU execution expressions, nested placement and `nb`/stream parity: see [proposed v1 contract](docs/CPU_GPU_NB_GRAPH_V1.md). This is **not** a claim that the backend executes GPU or streamed source blocks.
 
 ## Rust-only tooling policy (no Python)
 

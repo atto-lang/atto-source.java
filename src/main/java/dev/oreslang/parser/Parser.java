@@ -10,6 +10,8 @@ import static dev.oreslang.parser.Token.Type.*;
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
 
+    public enum AttoCallableVersion { V1, V2 }
+
     public record SyntaxWarning(int line, int column, String message) { }
 
     public record ParseResult(Ast.Program program, List<SyntaxWarning> warnings) {
@@ -19,6 +21,8 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
+    // Null preserves the shipping Oreslang parser's historical behavior.
+    private final AttoCallableVersion attoCallableVersion;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
@@ -43,6 +47,11 @@ public final class Parser {
             new java.util.IdentityHashMap<>();
 
     public Parser(List<Token> tokens) {
+        this(tokens, null);
+    }
+
+    private Parser(List<Token> tokens, AttoCallableVersion version) {
+        this.attoCallableVersion = version;
         this.tokens = List.copyOf(tokens);
         // A public parser must not trust an externally supplied Token stream to
         // have come from Lexer. In particular, a synthesized IDENT("unsafe")
@@ -59,6 +68,53 @@ public final class Parser {
 
     public static Ast.Program parse(String source) {
         return new Parser(new Lexer(source).scan()).parseProgram();
+    }
+
+    /** Explicit draft v1/v2 source grammar. This is a real parser entrypoint,
+     * not a completed package-edition/Truffle guest integration. Unsupported
+     * compound/effectful comma body shapes fail before AST emission. */
+    public static Ast.Program parseVersionedAtto(String source, int version) {
+        if (version != 1 && version != 2)
+            throw new IllegalArgumentException("E_LANGUAGE_VERSION: expected 1 or 2");
+        return new Parser(new Lexer(source).scan(),
+                version == 1 ? AttoCallableVersion.V1 : AttoCallableVersion.V2)
+                .parseProgram();
+    }
+
+    /**
+     * Narrow compiler-only query parser for the first closed-world AOT
+     * reflection metadata bootstrap. This reuses the production expression
+     * parser but does NOT admit a guest runtime type_of<T>() intrinsic.
+     *
+     * The caller must independently bind the returned nominal TypeRef against
+     * a fully typechecked source program and a verified package identity.
+     */
+    public static Ast.TypeRef parseStaticTypeOfQueryV1(String sourceExpression) {
+        if (sourceExpression == null || sourceExpression.isBlank()
+                || sourceExpression.length() > 512) {
+            throw new IllegalArgumentException("bounded type_of<T>() query required");
+        }
+        Parser parser = new Parser(new Lexer(sourceExpression).scan());
+        Ast.Expr expression = parser.parseExpression();
+        parser.consume(EOF, "expected end of static type_of query");
+        if (!(expression instanceof Ast.CallExpr call)
+                || call.origin() != Ast.CallOrigin.DIRECT
+                || !(call.callee() instanceof Ast.NameExpr callee)
+                || !callee.name().equals("type_of")
+                || !call.typeArgumentsPresent()
+                || call.typeArguments().size() != 1
+                || !call.arguments().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "static reflection query must be exactly type_of<Nominal>()");
+        }
+        Ast.TypeRef nominal = call.typeArguments().getFirst();
+        if (nominal.inferArguments() || !nominal.arguments().isEmpty()
+                || !nominal.name().matches("[A-Za-z_][A-Za-z0-9_]*")
+                || nominal.name().startsWith("_")) {
+            throw new IllegalArgumentException(
+                    "static reflection v1 requires one closed public nominal type");
+        }
+        return nominal;
     }
 
     /**
@@ -162,13 +218,23 @@ public final class Parser {
         }
 
         List<Ast.ImportDecl> imports = new ArrayList<>();
-        while (match(IMPORT)) imports.add(parseImport());
+        List<Ast.ExportDecl> exports = new ArrayList<>();
+        // File exports can appear before imports as well as after them.
+        while (true) {
+            if (match(IMPORT)) imports.add(parseImport());
+            else if (match(EXPORT)) exports.add(parseExport());
+            else break;
+        }
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
         while (!check(EOF)) {
             rejectUnsupportedAcceleratorSyntax();
+            if (match(EXPORT)) {
+                exports.add(parseExport());
+                continue;
+            }
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -183,12 +249,9 @@ public final class Parser {
                 if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
-                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                validateCopyPolicyClassAnnotations(annotations);
                 validateClassModifiers(modifiers);
-                rootDeclarations.add(parseClass(
-                        modifiers.visibility,
-                        modifiers.isAbstract,
-                        modifiers.visibility != Ast.Visibility.PUBLIC));
+                rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
                 continue;
             }
 
@@ -218,6 +281,10 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (isExternalActorMethodHead()) {
+                    rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
+                    continue;
+                }
                 if (isProtectedDeclarationHead()) {
                     rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
                     continue;
@@ -251,12 +318,9 @@ public final class Parser {
                 if (match(CLASS)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
-                    rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                    validateCopyPolicyClassAnnotations(annotations);
                     validateClassModifiers(modifiers);
-                    rootDeclarations.add(parseClass(
-                            modifiers.visibility,
-                            modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC));
+                    rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
@@ -294,11 +358,77 @@ public final class Parser {
         }
 
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
+        validateExports(exports, rootDeclarations);
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
-        return new Ast.Program(namespace, imports, modules);
+        return new Ast.Program(namespace, imports, modules, exports);
+    }
+
+    /** `export pub Foo;` and `export pub[pkg] class Bar;` are file-level declarations. */
+    private Ast.ExportDecl parseExport() {
+        Token at = previous();
+        consume(PUB, "export requires 'pub' visibility");
+        Ast.ExportScope scope = Ast.ExportScope.PUBLIC;
+        if (match(LBRACKET)) {
+            Token value = consume(IDENT, "expected pkg in pub[pkg]");
+            if (!"pkg".equals(value.lexeme()))
+                throw error(value, "only pub[pkg] export visibility is supported");
+            consume(RBRACKET, "expected ']' after pub[pkg]");
+            scope = Ast.ExportScope.PACKAGE;
+        }
+        Ast.ExportKind kind = null;
+        if (match(CLASS)) kind = Ast.ExportKind.CLASS;
+        else if (match(FNC)) kind = Ast.ExportKind.FNC;
+        else if (match(ROUTINE)) kind = Ast.ExportKind.ROUTINE;
+        else if (match(ACTOR)) kind = Ast.ExportKind.ACTOR;
+        else if (match(INTERFACE)) kind = Ast.ExportKind.INTERFACE;
+        else if (match(TRAIT)) kind = Ast.ExportKind.TRAIT;
+        else if (match(TYPE)) kind = Ast.ExportKind.TYPE;
+        String name = consume(IDENT, "expected a declaration name after export").lexeme();
+        consume(SEMICOLON, "export declaration requires ';'");
+        return new Ast.ExportDecl(name, scope, kind);
+    }
+
+    /** Validate after all declarations, so placement never changes binding. */
+    private void validateExports(List<Ast.ExportDecl> exports, List<Ast.Decl> declarations) {
+        java.util.Set<String> exportedNames = new java.util.HashSet<>();
+        for (Ast.ExportDecl entry : exports) {
+            if (!exportedNames.add(entry.name()))
+                throw error(previous(), "duplicate export: " + entry.name());
+            Ast.ExportKind kind = null;
+            for (Ast.Decl decl : declarations) {
+                Ast.ExportKind found = null;
+                Ast.Visibility visibility = Ast.Visibility.PRIVATE;
+                String name = null;
+                if (decl instanceof Ast.ClassDecl c) {
+                    name = c.name(); visibility = c.visibility();
+                    found = c.actorKind() == Ast.ActorKind.NONE
+                            ? Ast.ExportKind.CLASS : Ast.ExportKind.ACTOR;
+                } else if (decl instanceof Ast.FunctionDecl f) {
+                    name = f.name(); visibility = f.visibility();
+                    found = f.kind() == Ast.CallableKind.FNC
+                            ? Ast.ExportKind.FNC : Ast.ExportKind.ROUTINE;
+                } else if (decl instanceof Ast.TypeAliasDecl t) {
+                    name = t.name(); visibility = t.visibility(); found = Ast.ExportKind.TYPE;
+                } else if (decl instanceof Ast.InterfaceDecl i) {
+                    name = i.name(); visibility = i.visibility();
+                    found = interfaceKinds.getOrDefault(i, INTERFACE) == TRAIT
+                            ? Ast.ExportKind.TRAIT : Ast.ExportKind.INTERFACE;
+                }
+                if (!entry.name().equals(name)) continue;
+                if (kind != null && kind != found)
+                    throw error(previous(), "ambiguous export target: " + entry.name());
+                if (entry.scope() == Ast.ExportScope.PACKAGE && visibility == Ast.Visibility.PUBLIC)
+                    throw error(previous(), "pub[pkg] export conflicts with public declaration: " + entry.name());
+                kind = found;
+            }
+            if (kind == null)
+                throw error(previous(), "export references undeclared file-root symbol: " + entry.name());
+            if (entry.kind() != null && entry.kind() != kind)
+                throw error(previous(), "export declaration kind mismatch for " + entry.name());
+        }
     }
 
     private Ast.ImportDecl parseImport() {
@@ -467,9 +597,9 @@ public final class Parser {
             if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
             modifiers = mergeModifiers(modifiers, parseModifiers());
             rejectCallableStructuralAnnotation(annotations, "class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+            validateCopyPolicyClassAnnotations(annotations);
             validateClassModifiers(modifiers);
-            return parseClass(modifiers.visibility, modifiers.isAbstract, false);
+            return parseClass(modifiers.visibility, modifiers.isAbstract, false, annotations);
         }
 
         if (check(CONTRACT) && defineFollowsAfterVisibilityModifiers()) {
@@ -496,6 +626,9 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (isExternalActorMethodHead()) {
+                return parseExternalActorMethod(annotations, modifiers);
+            }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
             }
@@ -517,10 +650,9 @@ public final class Parser {
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
-                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                validateCopyPolicyClassAnnotations(annotations);
                 validateClassModifiers(modifiers);
-                return parseClass(modifiers.visibility,
-                        modifiers.isAbstract, false);
+                return parseClass(modifiers.visibility, modifiers.isAbstract, false, annotations);
             }
             if (match(INTERFACE, TRAIT)) {
                 Token.Type declarationKind = previous().type();
@@ -714,11 +846,60 @@ public final class Parser {
                 returnType, annotations, body, specs, effects);
     }
 
+    /** Contextual mtd only counts as a source receiver declaration in a define head. */
+    private boolean isExternalActorMethodHead() {
+        return isContextualIdentifier("mtd")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == LPAREN;
+    }
+
+    private Ast.ExternalActorMethodDecl parseExternalActorMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
+        rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
+        rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
+        consumeContextualIdentifier("mtd", "expected external receiver method declaration");
+        String name = consumeCallableName("expected external actor method name");
+        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
+                "on_recover").contains(name)) {
+            throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
+        }
+        consume(LPAREN, "external receiver method requires '(Actor receiver)'");
+        Ast.TypeRef receiverType = parseTypeRef();
+        if (receiverType.inferArguments() || !receiverType.arguments().isEmpty()
+                || receiverType.isBorrow()) {
+            throw error(previous(), "external receiver must be a non-generic nominal actor");
+        }
+        String receiverName = consume(IDENT, "expected external receiver binding name").lexeme();
+        consume(RPAREN, "expected ')' after external actor receiver");
+        consume(LPAREN, "expected '(' before external receiver method parameters");
+        List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after external receiver method parameters");
+        if (parameters.stream().anyMatch(p -> p.structural()
+                || p.name().equals(receiverName))) {
+            throw error(previous(), "external receiver methods cannot use structural parameters "
+                    + "or shadow the receiver binding");
+        }
+        Ast.TypeRef returns = match(FAT_ARROW, COLON)
+                ? parseTypeRef() : Ast.TypeRef.simple("void");
+        if (!parseCheckedEffects().isEmpty()) {
+            throw error(previous(), "external receiver effects require checked actor-effect lowering");
+        }
+        List<Ast.Stmt> body = parseBlock();
+        return new Ast.ExternalActorMethodDecl(
+                receiverType.name(), receiverName, name,
+                modifiers.visibility, parameters, returns, body);
+    }
+
     /** Free/module functions may use '-> Type' then newline/end or '::' body/end. */
     private List<Ast.Stmt> parseFreeCallableBody(boolean arrowReturn) {
         if (check(LBRACE) || !arrowReturn) return parseBlock();
         boolean explicit = match(DOUBLE_COLON);
-        if (!explicit && !isImplicitNewlineTerminator()) {
+        if (attoCallableVersion != null &&
+                (explicit || attoCallableVersion == AttoCallableVersion.V1))
+            return parseVersionedCommaTailBody();
+        if (!explicit && attoCallableVersion == null && !isImplicitNewlineTerminator()) {
             throw error(peek(), "end-delimited callable needs a newline or '::' after its return type");
         }
         localTypeScopes.push(new java.util.HashSet<>());
@@ -731,10 +912,45 @@ public final class Parser {
         }
     }
 
+    /** Restricted, executable pure expression sequence. The enclosing
+     * checker/runtime still checks calls and types; declarations, statement
+     * effects and nested control-flow are deliberately not flattened.
+     * Commas inside call arguments are consumed by parseExpression and cannot
+     * masquerade as body separators. */
+    private List<Ast.Stmt> parseVersionedCommaTailBody() {
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> body = new ArrayList<>();
+            for (int count = 0; count < 1024; ++count) {
+                if (check(END) || check(EOF) || check(COMMA))
+                    throw error(peek(), "E_SYNTAX: missing comma-body expression");
+                if (check(LET) || check(VAL) || check(CONST)
+                        || check(RETURN) || check(CARET))
+                    throw error(peek(), "E_UNSUPPORTED: versioned comma body currently requires checked expression items");
+                Ast.Expr value = parseExpression();
+                if (match(COMMA)) {
+                    if (check(END) || check(EOF) || check(COMMA))
+                        throw error(peek(), "E_SYNTAX: empty/trailing comma-body item");
+                    body.add(new Ast.ExprStmt(value));
+                    continue;
+                }
+                if (check(SEMICOLON))
+                    throw error(peek(), "E_SYNTAX: comma body uses ',' not ';'");
+                body.add(new Ast.ReturnStmt(value));
+                consume(END, "expected 'end' after versioned comma body");
+                return List.copyOf(body);
+            }
+            throw error(peek(), "E_SOURCE_LIMIT: comma body exceeds 1024 items");
+        } finally {
+            localTypeScopes.pop();
+        }
+    }
+
     private Ast.ClassDecl parseClass(
             Ast.Visibility visibility,
             boolean isAbstract,
-            boolean filePrivateScope) {
+            boolean filePrivateScope,
+            List<Ast.Annotation> classAnnotations) {
         String name = consumeTypeDeclarationName("expected class name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -852,7 +1068,8 @@ public final class Parser {
                         : "expected 'end' to close class " + name);
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
-                parents, interfaces, fields, constructor, methods);
+                parents, interfaces, fields, constructor, methods,
+                Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC), List.of(), classAnnotations);
     }
 
     private Ast.ConstructorDecl parseConstructor(
@@ -986,7 +1203,7 @@ public final class Parser {
         return new ActorPrefix(transport, serial);
     }
 
-    private Ast.ClassDecl parseDefinedActorClass(
+    private Ast.Decl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
             List<Ast.Annotation> annotations,
@@ -1178,16 +1395,34 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
-    private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+    private Ast.Decl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
     }
 
-    private Ast.ClassDecl parseActorClass(
+    private Ast.Decl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        // Standalone actor declaration: retain the receiver-binding name in
+        // its own AST node. Never synthesize an empty class, dispatch table,
+        // or executable actor when receiver lowering has not been certified.
+        if (check(AS) && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 2).type() == SEMICOLON) {
+            if (!generics.isEmpty() || !parents.isEmpty() || !interfaces.isEmpty()
+                    || actorKind != Ast.ActorKind.SHARED
+                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
+                throw error(peek(), "standalone actor declarations currently require a plain "
+                        + "non-generic actor without transport or inheritance modifiers");
+            }
+            advance(); // as
+            String receiverName = consume(IDENT, "expected standalone actor receiver binding").lexeme();
+            consume(SEMICOLON, "standalone actor declaration requires ';'");
+            return new Ast.StandaloneActorDecl(name, receiverName, visibility, actorKind);
+        }
 
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
@@ -1514,6 +1749,47 @@ public final class Parser {
             if (!moduleContract && check(ACTOR)) {
                 throw error(peek(), "actor requirements belong only in module contracts");
             }
+            // A receiver method in a module contract requires an actor's
+            // existing mailbox-dispatched instance method. This spelling is
+            // deliberately NOT an executable free-function declaration.
+            // Keep "mtd" available as a type/identifier in field positions.
+            boolean actorMethodHead = isContextualIdentifier("mtd")
+                    && current + 2 < tokens.size()
+                    && tokens.get(current + 1).type() == IDENT
+                    && tokens.get(current + 2).type() == LPAREN;
+            if (moduleContract && actorMethodHead) {
+                advance(); // contextual mtd
+                validateOnlyVisibilityModifiers(memberModifiers, "module contract receiver requirements");
+                if (!memberAnnotations.isEmpty()) {
+                    throw error(previous(), "contract receiver requirements do not accept annotations");
+                }
+                String methodName = consumeCallableName("expected receiver method name");
+                consume(LPAREN, "expected '(' before nominal actor receiver");
+                Ast.TypeRef receiver = parseTypeRef();
+                if (!receiver.arguments().isEmpty() || receiver.inferArguments()
+                        || receiver.isBorrow()) {
+                    throw error(previous(), "contract receiver must name a non-generic nominal actor");
+                }
+                consume(IDENT, "expected actor receiver parameter name");
+                consume(RPAREN, "expected ')' after actor receiver");
+                consume(LPAREN, "expected '(' before receiver method parameters");
+                List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+                consume(RPAREN, "expected ')' after receiver method parameters");
+                if (parameters.stream().anyMatch(Ast.Param::structural)) {
+                    throw error(previous(), "structural arguments cannot cross an actor receiver boundary");
+                }
+                Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                if (!parseCheckedEffects().isEmpty()) {
+                    throw error(previous(), "receiver contract checked effects require typed actor-effect lowering");
+                }
+                consumeMemberTerminator(terminator, "actor receiver requirement should end with ';'");
+                members.add(new Ast.InterfaceActorMethodDecl(
+                        receiver.name(), methodName, memberModifiers.visibility, parameters, returns));
+                continue;
+            }
+            if (!moduleContract && actorMethodHead) {
+                throw error(peek(), "actor receiver requirements belong only in module contracts");
+            }
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
             }
@@ -1589,6 +1865,7 @@ public final class Parser {
         rejectNonCallableReturnAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         Ast.BindingKind kind = parseBindingKind();
+        rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
@@ -1673,6 +1950,7 @@ public final class Parser {
         rejectNonCallableReturnAnnotation(annotations, "module bindings");
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
+        rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
@@ -1805,9 +2083,20 @@ public final class Parser {
             if (!arrowMethodBody) {
                 throw error(previous(), "end-delimited methods require '-> ReturnType ::'");
             }
-            body = new ArrayList<>();
-            while (!check(END) && !check(EOF)) body.add(parseStatement());
-            consume(END, "expected 'end' to close method '" + name + "'");
+            if (attoCallableVersion != null) {
+                body = parseVersionedCommaTailBody();
+            } else {
+                body = new ArrayList<>();
+                while (!check(END) && !check(EOF)) body.add(parseStatement());
+                consume(END, "expected 'end' to close method '" + name + "'");
+            }
+        } else if (attoCallableVersion == AttoCallableVersion.V1
+                && arrowMethodBody && !check(LBRACE)) {
+            body = parseVersionedCommaTailBody();
+        } else if (attoCallableVersion == AttoCallableVersion.V2
+                && arrowMethodBody && !check(LBRACE)) {
+            body = parseUntil(END);
+            consume(END, "expected 'end' after v2 statement method body");
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body, effects);
@@ -1976,7 +2265,13 @@ public final class Parser {
                     "Critical", "RequiresPermission", "Permission",
                     "GrantPermission", "Unsafe", "Trusted", "Untrusted",
                     "AllowAll", "CallerRole", "CallableBy", "ActorMiddleware",
-                    "ActorMaxThreads").contains(name)) {
+                    "ActorMaxThreads",
+                    // An injected state handle is a capability, not inert metadata.
+                    // Reject before parsing nested arguments such as
+                    // @Inject(MutableStateContainer()) to avoid parse-error
+                    // misclassification and, more importantly, silent admission.
+                    "Inject", "StateBacked", "MutableStateContainer",
+                    "StateContainer").contains(name)) {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
@@ -2462,6 +2757,10 @@ public final class Parser {
             return marked;
         }
 
+        if (match(AMP)) {
+            throw error(previous(),
+                    "Oreslang does not use '&' for borrowed/reference types (no pointer syntax); use 'borrow T' or 'borrow mut T'");
+        }
         if (matchContextualKeyword("borrow")) {
             boolean mutable = match(MUT);
             return Ast.TypeRef.borrowed(parseTypeAtom(), mutable);
@@ -2542,6 +2841,10 @@ public final class Parser {
 
         List<Ast.TypeRef> args = new ArrayList<>();
         boolean infer = false;
+        if ((name.equals("Pointer") || name.equals("RawPointer")) && check(LT)) {
+            throw error(peek(),
+                    name + "<T> is not Oreslang source syntax; use explicit rt copy/share/take/borrow operations");
+        }
         if (match(LT)) {
             if (match(GT)) {
                 infer = true;
@@ -2850,6 +3153,12 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        if (attoCallableVersion != null && match(CARET)) {
+            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary()
+                    ? null : parseExpression();
+            consumeExpressionStatementTerminator(value, "caret return requires ';'");
+            return new Ast.ReturnStmt(value);
+        }
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
         // parsed distinctly so compiler admission cannot silently desugar it.
@@ -3455,6 +3764,7 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
+            rejectConstTypeDeclaration(kind);
             boolean mutableReferent = parseReferentMutability(kind);
             if (looksLikeTypedForOfBinding()) {
                 requireForOfBindingKind(kind);
@@ -3615,6 +3925,7 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
+            rejectConstTypeDeclaration(kind);
             boolean mutableReferent = parseReferentMutability(kind);
             Ast.TypeRef type = null;
             String name;
@@ -3731,6 +4042,20 @@ public final class Parser {
         return check(DONE) && !reservedCallableNameFollowedByInvocation(current);
     }
 
+    /**
+     * 'type' in a binding's type position is a legal named-alias marker, e.g.
+     * 'const type T value = ...'. Only 'const type T = ...' attempts to
+     * re-declare a compile-time type as a value binding.
+     */
+    private void rejectConstTypeDeclaration(Ast.BindingKind kind) {
+        if (kind == Ast.BindingKind.CONST && check(TYPE)
+                && current + 2 < tokens.size()
+                && isIdentifierLikeToken(tokens.get(current + 1).type())
+                && tokens.get(current + 2).type() == EQUAL) {
+            throw error(peek(), "'const type' is not a declaration: types are immutable; use 'type T = ...;'");
+        }
+    }
+
     private boolean looksLikePrimitiveTypeFirstImmutableBinding() {
         if (!check(IDENT) || current + 2 >= tokens.size()) return false;
         String type = peek().lexeme();
@@ -3782,6 +4107,7 @@ public final class Parser {
 
     private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {
         Ast.BindingKind kind = parseBindingKind();
+        rejectConstTypeDeclaration(kind);
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
@@ -5040,12 +5366,35 @@ public final class Parser {
     }
 
     private Ast.Expr parseMultiplicative() {
-        Ast.Expr expr = parseUnary();
+        Ast.Expr expr = parseWithUpdate();
         while (match(STAR, SLASH, PERCENT)) {
             if (previous().type() == PERCENT) throw error(previous(),
                     "'%' is reserved and is not AttoLang source syntax; use Integer.rem(a, b) or Integer.mod(a, b)");
             String op = previous().lexeme();
-            expr = new Ast.BinaryExpr(op, expr, parseUnary());
+            expr = new Ast.BinaryExpr(op, expr, parseWithUpdate());
+        }
+        return expr;
+    }
+
+    /**
+     * Immutable updates bind after unary rt copy/take, not inside the rt
+     * operation. Thus 'rt copy p with {...}' parses as (rt copy p) with {...}.
+     * Keep 'with' contextual so existing names remain valid without an update.
+     */
+    private Ast.Expr parseWithUpdate() {
+        Ast.Expr expr = parseUnary();
+        while (isContextualIdentifier("with") && checkNext(LBRACE)) {
+            advance();
+            consume(LBRACE, "expected '{' after with");
+            List<Ast.WithField> changes = new ArrayList<>();
+            if (check(RBRACE)) throw error(peek(), "with update requires at least one field");
+            do {
+                Token field = consume(IDENT, "expected field name in with update");
+                consume(FAT_ARROW, "expected '=>' after with field name");
+                changes.add(new Ast.WithField(field.lexeme(), parseExpression()));
+            } while (match(COMMA) && !check(RBRACE));
+            consume(RBRACE, "expected '}' after with fields");
+            expr = new Ast.WithExpr(expr, changes);
         }
         return expr;
     }
@@ -5200,7 +5549,12 @@ public final class Parser {
             return new Ast.UnaryExpr("~", parseUnary());
         }
         if (match(AMP)) {
-            throw error(previous(), "use rt borrow or rt mut borrow; unary pointer syntax is not supported");
+            if (match(MUT)) {
+                throw error(previous(),
+                        "Oreslang does not use '&mut' for mutable borrowing (unary pointer syntax is not supported); use 'rt mut borrow value'");
+            }
+            throw error(previous(),
+                    "Oreslang does not use '&' for borrowing (unary pointer syntax is not supported); use 'rt borrow value'");
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
 
@@ -5282,9 +5636,17 @@ public final class Parser {
     }
 
     private Ast.Expr parseRuntimeExpression() {
-        boolean mutableBorrow = match(MUT);
+        boolean mutableBorrow = false;
         Token operation;
-        if (match(YIELD)) {
+        if (match(MUT)) {
+            Token mut = previous();
+            operation = consume(IDENT, "expected 'borrow' after 'rt mut'");
+            if (!operation.lexeme().equals("borrow")) {
+                throw error(operation,
+                        "'rt mut' only supports borrowing; use 'rt mut borrow value'");
+            }
+            mutableBorrow = true;
+        } else if (match(YIELD)) {
             operation = previous(); // compatibility spelling: rt yield
         } else {
             operation = consume(IDENT, "expected runtime operation after 'rt'");
@@ -5303,6 +5665,12 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after rt cooperate");
             }
             return new Ast.RuntimeCallExpr("cooperate", List.of());
+        }
+
+        if (name.equals("ref") || name.equals("deref") || name.equals("unref") || name.equals("raw")) {
+            throw error(operation,
+                    "pointer-style rt operation '" + name
+                            + "' is not valid Oreslang source; use rt copy/share/take/borrow or rt mut borrow");
         }
 
         if (name.equals("workflow_request")) {
@@ -5327,9 +5695,9 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
-        if (name.equals("borrow") && check(MUT)) {
-            throw error(peek(),
-                    "legacy 'rt borrow mut value' is not accepted; use 'rt mut borrow value'");
+        if (name.equals("borrow") && match(MUT)) {
+            throw error(previous(),
+                    "legacy 'rt borrow mut value' is not valid Oreslang; use 'rt mut borrow value'");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
@@ -5342,8 +5710,11 @@ public final class Parser {
             // Command form has unary precedence: rt borrow value.member
             argument = parseUnary();
         }
-        return mutableBorrow ? new Ast.UnaryExpr("&mut", argument)
-                : new Ast.RuntimeCallExpr(name, List.of(argument));
+        if (mutableBorrow) {
+            // Internal AST marker only; '&mut' is never admitted as Oreslang source syntax.
+            return new Ast.UnaryExpr("&mut", argument);
+        }
+        return new Ast.RuntimeCallExpr(name, List.of(argument));
     }
 
     private Ast.Expr parseChannelOperation(
@@ -6107,6 +6478,23 @@ public final class Parser {
             throw error(previous(), "duplicate structural callable modifier; use either 'structural' or '@structural', not both");
         }
         return new CallableStructural(modifierStructural || annotationStructural, List.copyOf(remaining));
+    }
+
+    /** Only recognized, zero-argument copy policies can annotate a class. */
+    private void validateCopyPolicyClassAnnotations(List<Ast.Annotation> annotations) {
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Ast.Annotation annotation : annotations) {
+            String name = annotation.name();
+            if (!List.of("NoCopy", "WarnOnCopy", "Copyable").contains(name)) {
+                throw error(previous(), "@" + name + " on class declarations would be silently discarded; unsupported annotation");
+            }
+            if (!annotation.arguments().isEmpty() || !seen.add(name)) {
+                throw error(previous(), "E_COPY_ANNOTATION: invalid or duplicate @" + name + " on class declaration");
+            }
+        }
+        if (seen.contains("NoCopy") && (seen.contains("Copyable") || seen.contains("WarnOnCopy"))) {
+            throw error(previous(), "E_COPY_ANNOTATION: conflicting copy policies on class");
+        }
     }
 
     /**

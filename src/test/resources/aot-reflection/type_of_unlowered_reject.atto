@@ -1,0 +1,9 @@
+pub define class Person as
+  pub int visible: 7
+  int hidden_secret_marker: 9
+end
+
+pub fnc main(): int {
+  val descriptor = type_of<Person>();
+  return 0;
+}

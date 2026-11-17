@@ -72,6 +72,120 @@ class NativeHttpTest {
         }
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(30)
+    void scopedDispatchReceiptBindsHandlerPurposeAndActorIncarnationAcrossPoolReuse() throws Exception {
+        String output = run("""
+            define isoactor Worker as
+              let String previous = "";
+              receive(ActorMail<String> mail): void {
+                if self.previous != ""; then
+                  try {
+                    http.claim(self.previous);
+                    stdio.println("RECEIPT REPLAY ACCEPTED");
+                  } catch (err) {
+                    stdio.println("receipt-replay-rejected");
+                  }
+                fi
+                self.previous = mail.value;
+                val request = http.claim(mail.value);
+                if !request.dispatch_receipt_valid(
+                    "Worker", "proxy:greeting", "local-no-net", 7); then
+                  stdio.println("RECEIPT INVALID");
+                  await request.respond(500, "text/plain", "invalid");
+                  return;
+                fi
+                if request.dispatch_receipt_valid(
+                    "Worker", "proxy:other", "local-no-net", 7) ||
+                  request.dispatch_receipt_valid(
+                    "Other", "proxy:greeting", "local-no-net", 7) ||
+                  request.dispatch_receipt_valid(
+                    "Worker", "proxy:greeting", "net", 7) ||
+                  request.dispatch_receipt_valid(
+                    "Worker", "proxy:greeting", "local-no-net", 8); then
+                  stdio.println("WRONG RECEIPT ACCEPTED");
+                  await request.respond(500, "text/plain", "wrong");
+                  return;
+                fi
+                stdio.println(request.dispatch_handler);
+                stdio.println(request.dispatch_binding);
+                stdio.println(request.dispatch_authority_class);
+                stdio.println(request.dispatch_scope_generation);
+                stdio.println(request.dispatch_actor_generation > 0);
+                stdio.println(request.dispatch_exchange_generation > 0);
+                stdio.println(request.dispatch_sequence);
+                await request.respond(200, "text/plain", "ok");
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              val base_handler = http.handler("Worker");
+              val scoped_handler = base_handler.scoped(
+                "proxy:greeting", "local-no-net", 7);
+              val handler = scoped_handler.pooled(1);
+              stdio.println(server.port);
+              for (let int i = 0; i < 2; i = i + 1) {
+                val request = await server.accept();
+                val completion = request.completion;
+                handler.dispatch(rt mut borrow request);
+                await completion;
+              }
+              await server.shutdown(0);
+              stdio.println(handler.created);
+              stdio.println(handler.reused);
+              return;
+            }
+            """, port -> {
+                assertEquals(200, request(port, "GET", "/one", "").statusCode());
+                assertEquals(200, request(port, "GET", "/two", "").statusCode());
+            });
+        assertFalse(output.contains("INVALID"), output);
+        assertFalse(output.contains("ACCEPTED"), output);
+        assertEquals(1, output.split("receipt-replay-rejected", -1).length - 1, output);
+        assertEquals(2, output.split("Worker", -1).length - 1, output);
+        assertEquals(2, output.split("proxy:greeting", -1).length - 1, output);
+        assertEquals(2, output.split("local-no-net", -1).length - 1, output);
+        assertEquals(2, output.split("\n7\n", -1).length - 1, output);
+        assertTrue(output.contains("7\ntrue\ntrue\n1"), output);
+        assertTrue(output.contains("7\ntrue\ntrue\n2"), output);
+        assertTrue(output.endsWith("1\n1\n"), output);
+    }
+
+    @Test
+    void manualExchangeMoveDoesNotFabricateAnAttestedHandlerReceipt() throws Exception {
+        String output = run("""
+            define isoactor Owner as
+              receive(ActorMail<String> mail): void {
+                val request = http.claim(mail.value);
+                try {
+                  request.dispatch_receipt_valid(
+                    "manual", "manual", "unscoped", 0);
+                  stdio.println("MANUAL RECEIPT ACCEPTED");
+                } catch (err) {
+                  stdio.println("manual-unattested");
+                }
+                await request.respond(200, "text/plain", "ok");
+                self.end();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              val owner = spawn Owner();
+              await owner.get_ready();
+              owner.send(request.move_to(owner));
+              await owner.get_done();
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> assertEquals(200, request(port, "GET", "/", "").statusCode()));
+        assertTrue(output.contains("manual-unattested"), output);
+        assertFalse(output.contains("MANUAL RECEIPT ACCEPTED"), output);
+    }
+
     @Test void pooledWorkerDeathReleasesRequestAndReplacementServesFollowingRequests() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
