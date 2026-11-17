@@ -21,6 +21,17 @@ import java.util.Optional;
 public final class GenerationalGraphArena<T> implements AutoCloseable {
 
     /**
+     * Borrowed view of a live adjacent value. Slot/generation are diagnostic
+     * indices, not a transferable NodeId or cross-actor memory authority.
+     * A single visitor instance can be reused for any number of visits.
+     */
+    @FunctionalInterface
+    public interface NeighborValueVisitor<T> {
+        void accept(int slot, long generation, T value);
+    }
+
+
+    /**
      * Opaque node identity. Keep the identity token separate from the graph,
      * avoiding a strong Java handle reference back to the entire arena.
      */
@@ -74,6 +85,7 @@ public final class GenerationalGraphArena<T> implements AutoCloseable {
     private int nextSlot;
     private int freeCount;
     private int liveCount;
+    private int activeVisits;
     private boolean closed;
 
     public GenerationalGraphArena(int capacity, int maxEdgesPerNode) {
@@ -99,6 +111,7 @@ public final class GenerationalGraphArena<T> implements AutoCloseable {
 
     public synchronized NodeId add(T value) {
         ensureOpen();
+        requireNoActiveVisit();
         Objects.requireNonNull(value, "node value");
         int slot;
         if (freeCount > 0) {
@@ -117,6 +130,7 @@ public final class GenerationalGraphArena<T> implements AutoCloseable {
 
     /** All edges are non-owning; the graph arena owns node values. */
     public synchronized void connect(NodeId from, NodeId to) {
+        requireNoActiveVisit();
         int src = requireLive(from);
         requireLive(to);
         int base = src * maxEdgesPerNode;
@@ -137,6 +151,7 @@ public final class GenerationalGraphArena<T> implements AutoCloseable {
     }
 
     public synchronized boolean disconnect(NodeId from, NodeId to) {
+        requireNoActiveVisit();
         int src = requireLive(from);
         if (to == null || to.arenaIdentity != identity) return false;
         int base = src * maxEdgesPerNode;
@@ -196,8 +211,45 @@ public final class GenerationalGraphArena<T> implements AutoCloseable {
         return List.copyOf(out);
     }
 
+    /**
+     * Visit live neighbors without allocating a List or one NodeId per edge.
+     * Reuse a preconstructed visitor to avoid all per-visit heap allocation.
+     * The visitor must not mutate the graph: such calls fail closed before
+     * modifying storage. Values are borrowed for the callback duration only;
+     * they must not be retained across the actor's lifetime boundary.
+     *
+     * This is a managed arena optimization, NOT evidence of off-heap source
+     * object lowering or zero JVM GC.
+     */
+    @SuppressWarnings("unchecked")
+    public synchronized int visitLiveNeighbors(
+            NodeId from, NeighborValueVisitor<? super T> visitor) {
+        int src = requireLive(from);
+        Objects.requireNonNull(visitor, "neighbor visitor");
+        activeVisits = Math.incrementExact(activeVisits);
+        int count = 0;
+        try {
+            int base = src * maxEdgesPerNode;
+            int end = edgeCounts[src];
+            for (int i = 0; i < end; ++i) {
+                int index = base + i;
+                int target = edgeSlots[index];
+                long version = edgeGenerations[index];
+                if (target >= 0 && target < nextSlot
+                        && live[target] && generations[target] == version) {
+                    visitor.accept(target, version, (T) values[target]);
+                    ++count;
+                }
+            }
+            return count;
+        } finally {
+            --activeVisits;
+        }
+    }
+
     /** Release one node; inbound links become stale and are lazily compacted. */
     public synchronized void remove(NodeId id) {
+        requireNoActiveVisit();
         int slot = requireLive(id);
         if (generations[slot] == Long.MAX_VALUE) {
             throw new IllegalStateException("graph generation exhausted; retire entire arena");
@@ -210,11 +262,15 @@ public final class GenerationalGraphArena<T> implements AutoCloseable {
         liveCount--;
     }
 
+    /** Physical width of the hot adjacency slot column. */
+    public static int edgeSlotStorageBytes() { return Integer.BYTES; }
+
     public synchronized int size() { return liveCount; }
 
     /** Retire all cyclic nodes together; stale IDs never become valid again. */
     public synchronized void clear() {
         ensureOpen();
+        requireNoActiveVisit();
         // Verify all generation increments before modifying any state.
         for (int i = 0; i < nextSlot; i++) {
             if (generations[i] == Long.MAX_VALUE) {
@@ -235,6 +291,7 @@ public final class GenerationalGraphArena<T> implements AutoCloseable {
     @Override
     public synchronized void close() {
         if (closed) return;
+        requireNoActiveVisit();
         closed = true;
         java.util.Arrays.fill(live, false);
         java.util.Arrays.fill(values, null);
@@ -257,6 +314,13 @@ public final class GenerationalGraphArena<T> implements AutoCloseable {
         return !closed && id != null && id.arenaIdentity == identity
                 && id.slot >= 0 && id.slot < nextSlot
                 && live[id.slot] && generations[id.slot] == id.generation;
+    }
+
+    private void requireNoActiveVisit() {
+        if (activeVisits != 0) {
+            throw new IllegalStateException(
+                    "graph mutation during borrowed neighbor visitation");
+        }
     }
 
     private void ensureOpen() {

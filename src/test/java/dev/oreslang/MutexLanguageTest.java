@@ -34,8 +34,8 @@ final class MutexLanguageTest {
     void sharedActorFunctionsRejectBlockingSharedMutexLock() {
         var program = Parser.parse("""
                 pub shared actor fnc worker(SharedMutex<int> mutex): void {
-                  val guard = mutex.lock();
-                  guard.release();
+                  val lock_guard = mutex.lock();
+                  lock_guard.release();
                   return;
                 }
                 """);
@@ -88,11 +88,11 @@ final class MutexLanguageTest {
                     define module app
                       fnc mutate(): int {
                         val mutex = SharedMutex.new([10]);
-                        val guard = mutex.lock();
-                        val before = guard.get(0);
-                        guard.set(0, before + 1);
-                        val after = guard.get(0);
-                        guard.release();
+                        val lock_guard = mutex.lock();
+                        val before = lock_guard.get(0);
+                        lock_guard.set(0, before + 1);
+                        val after = lock_guard.get(0);
+                        lock_guard.release();
                         return after;
                       }
                     end
@@ -396,10 +396,10 @@ final class MutexLanguageTest {
                 define module app
                   pub fnc main(): void {
                     val mutex = Mutex.new(new Counter());
-                    val guard = mutex.lock();
-                    guard.value = guard.value + 2;
-                    stdio.println(guard.value);
-                    guard.release();
+                    val lock_guard = mutex.lock();
+                    lock_guard.value = lock_guard.value + 2;
+                    stdio.println(lock_guard.value);
+                    lock_guard.release();
 
                     val again = mutex.lock();
                     stdio.println(again.value);
@@ -437,9 +437,9 @@ final class MutexLanguageTest {
                 define module app
                   async fnc bad(): void {
                     val mutex = Mutex.new(new Counter());
-                    val guard = mutex.lock();
+                    val lock_guard = mutex.lock();
                     await mutex.lock_async();
-                    guard.value = 1;
+                    lock_guard.value = 1;
                     return;
                   }
                 end
@@ -574,8 +574,8 @@ final class MutexLanguageTest {
                 define module app
                   fnc bad(): void {
                     val mutex = Mutex.new(new Counter());
-                    let guard = mutex.lock();
-                    guard.release();
+                    let lock_guard = mutex.lock();
+                    lock_guard.release();
                     return;
                   }
                 end
@@ -598,8 +598,8 @@ final class MutexLanguageTest {
                   fnc consume<T>(T value): void { return; }
                   fnc bad(): void {
                     val mutex = Mutex.new(new Counter());
-                    val guard = mutex.lock();
-                    consume(guard);
+                    val lock_guard = mutex.lock();
+                    consume(lock_guard);
                     return;
                   }
                 end
@@ -616,8 +616,8 @@ final class MutexLanguageTest {
                 define module app
                   fnc bad(): void {
                     val mutex = Mutex.new(new Counter());
-                    val guard = mutex.lock();
-                    val nested = Mutex.new(guard);
+                    val lock_guard = mutex.lock();
+                    val nested = Mutex.new(lock_guard);
                     stdio.println(nested.is_poisoned());
                     return;
                   }
@@ -641,8 +641,8 @@ final class MutexLanguageTest {
                 define module app
                   fnc bad(): void {
                     val mutex = Mutex.new(new Holder());
-                    val guard = mutex.lock();
-                    val escaped = guard.child;
+                    val lock_guard = mutex.lock();
+                    val escaped = lock_guard.child;
                     stdio.println(escaped);
                     return;
                   }
@@ -662,8 +662,8 @@ final class MutexLanguageTest {
                 define module app
                   fnc bad(): void {
                     val mutex = Mutex.new(new Counter());
-                    val guard = mutex.lock();
-                    val callback = guard.read;
+                    val lock_guard = mutex.lock();
+                    val callback = lock_guard.read;
                     stdio.println(callback);
                     return;
                   }
@@ -686,10 +686,10 @@ final class MutexLanguageTest {
                 define module app
                   pub fnc main(): void {
                     val mutex = Mutex.new(new Counter());
-                    val guard = mutex.lock();
-                    val value = guard.read();
+                    val lock_guard = mutex.lock();
+                    val value = lock_guard.read();
                     stdio.println(value);
-                    guard.release();
+                    lock_guard.release();
                     return;
                   }
                 end
@@ -795,8 +795,8 @@ final class MutexLanguageTest {
                 define module app
                   fnc bad(): void {
                     val mutex = Mutex.new(new Counter());
-                    val guard = mutex.lock();
-                    val escaped = arr[guard];
+                    val lock_guard = mutex.lock();
+                    val escaped = arr[lock_guard];
                     stdio.println(escaped);
                     return;
                   }
@@ -820,9 +820,9 @@ final class MutexLanguageTest {
                 define module app
                   fnc bad(): void {
                     val mutex = Mutex.new(new Counter());
-                    val guard = mutex.lock();
+                    val lock_guard = mutex.lock();
                     val callback = || -> {
-                      stdio.println(guard.value);
+                      stdio.println(lock_guard.value);
                       return;
                     };
                     callback();
@@ -899,8 +899,8 @@ final class MutexLanguageTest {
                 define module app
                   fnc bad(): void {
                     val mutex = Mutex.new(new Counter());
-                    val guard = mutex.lock();
-                    val hidden = new Box<>(guard);
+                    val lock_guard = mutex.lock();
+                    val hidden = new Box<>(lock_guard);
                     stdio.println(hidden);
                     return;
                   }
@@ -957,8 +957,8 @@ final class MutexLanguageTest {
                 define module app
                   fnc bad(): void {
                     val mutex = Mutex.new(new Counter());
-                    val guard = mutex.lock();
-                    val hidden = new Box<>(&guard);
+                    val lock_guard = mutex.lock();
+                    val hidden = new Box<>(rt borrow lock_guard);
                     stdio.println(hidden);
                     return;
                   }
@@ -1004,7 +1004,7 @@ final class MutexLanguageTest {
                         define module app
                           fnc bad(): void {
                             val data = arr[1, 2, 3];
-                            val mutex = Mutex.new(&data);
+                            val mutex = Mutex.new(rt borrow data);
                             stdio.println(mutex);
                             return;
                           }
@@ -1023,7 +1023,7 @@ final class MutexLanguageTest {
                         end
 
                         define module app
-                          fnc bad(Mutex<&Counter> value): void {
+                          fnc bad(Mutex<borrow Counter> value): void {
                             return;
                           }
                         end

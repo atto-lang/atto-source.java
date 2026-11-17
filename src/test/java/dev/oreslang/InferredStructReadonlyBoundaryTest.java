@@ -9,19 +9,21 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class InferredStructReadonlyBoundaryTest {
-    @Test void mutableDestructureAliasIsRejectedAtBinding() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+    @Test void mutableDestructureCanOwnConcreteStructElement() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): string {
                   val [item] = [infer struct{foo: "a"}];
-                  return;
+                  item.foo = "b";
+                  return item.foo;
                 }
                 """)));
     }
 
-    @Test void mutableForOfAliasIsRejectedAtBinding() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+    @Test void mutableForOfAliasCanUseConcreteStructElement() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): void {
                   for val item of arr[infer struct{foo: "a"}] do
+                    item.foo = "b";
                     stdio.println(item.foo);
                   done
                   return;
@@ -35,7 +37,7 @@ final class InferredStructReadonlyBoundaryTest {
                   return;
                 }
                 fnc bad(): void {
-                  touch(infer struct{foo: "a"});
+                  touch(record{foo: "a"});
                   return;
                 }
                 """)));
@@ -43,7 +45,7 @@ final class InferredStructReadonlyBoundaryTest {
     @Test void structuralCastCannotUpgradeReadonlyRecord() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
-                  const source = infer struct{foo: "a"};
+                  const source = record{foo: "a"};
                   let mut alias = source as {foo: string};
                   alias.foo = "b";
                   return;
@@ -51,31 +53,32 @@ final class InferredStructReadonlyBoundaryTest {
                 """)));
     }
 
-    @Test void returnCannotEraseReadonlyCapability() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc leak(): {foo: string} {
-                  return infer struct{foo: "a"};
+    @Test void recordReturnPreservesReadonlyCapability() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc keep(): {foo: string} {
+                  return record{foo: "a"};
                 }
                 """)));
     }
 
-    @Test void fixedStructuralParameterCannotRoundTripReadonlyAsMutableShape() {
+    @Test void recordRoundTripCannotGainMutableBinding() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc identity({foo: string} value): {foo: string} {
                   return value;
                 }
                 fnc bad(): void {
-                  const result = identity(infer struct{foo: "a"});
+                  val result = identity(record{foo: "a"});
+                  result.foo = "b";
                   return;
                 }
                 """)));
     }
 
-    @Test void collectionInsertionCannotEraseNestedReadonlyCapability() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(): void {
+    @Test void collectionInsertionAcceptsOwnedConcreteStructOfSameShape() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok(): void {
                   val items = arr[struct{foo: string}{foo: "mutable"}];
-                  items.add(infer struct{foo: "readonly"});
+                  items.add(infer struct{foo: "owned"});
                   return;
                 }
                 """)));
@@ -87,14 +90,14 @@ final class InferredStructReadonlyBoundaryTest {
                   return value;
                 }
                 fnc bad(): void {
-                  let mut upgraded = identity(infer struct{foo: "a"});
+                  let mut upgraded = identity(record{foo: "a"});
                   upgraded.foo = "b";
                   return;
                 }
                 """)));
     }
 
-    @Test void structuralBorrowViewMayReadReadonlyInferredRecord() {
+    @Test void structuralBorrowViewMayReadConcreteStruct() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc read(structural {foo: string} value): string {
                   return value.foo;
@@ -108,7 +111,7 @@ final class InferredStructReadonlyBoundaryTest {
     @Test void typeTestBindingPreservesReadonlyCapability() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
-                  const source = infer struct{foo: "a"};
+                  const source = record{foo: "a"};
                   if source is type {foo: string} narrowed then
                     let mut alias = narrowed;
                     alias.foo = "b";
@@ -121,7 +124,7 @@ final class InferredStructReadonlyBoundaryTest {
     @Test void typedMatchBindingPreservesReadonlyCapability() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(): void {
-                  const source = infer struct{foo: "a"};
+                  const source = record{foo: "a"};
                   match source
                     is {foo: string} narrowed -> {
                       let mut alias = narrowed;
@@ -137,7 +140,7 @@ final class InferredStructReadonlyBoundaryTest {
     @Test void ownershipTypeTestBindingPreservesReadonlyCapability() {
         var program = Parser.parse("""
                 fnc bad(): void {
-                  const source = infer struct{foo: "a"};
+                  const source = record{foo: "a"};
                   if source is type {foo: string} narrowed then
                     let mut alias = narrowed;
                     return;
@@ -152,7 +155,7 @@ final class InferredStructReadonlyBoundaryTest {
     @Test void ownershipTypedMatchBindingPreservesReadonlyCapability() {
         var program = Parser.parse("""
                 fnc bad(): void {
-                  const source = infer struct{foo: "a"};
+                  const source = record{foo: "a"};
                   match source
                     is {foo: string} narrowed -> {
                       let mut alias = narrowed;

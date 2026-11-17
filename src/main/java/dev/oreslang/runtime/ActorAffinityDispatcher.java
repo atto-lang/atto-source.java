@@ -10,6 +10,8 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntFunction;
 
 /** Stable actor lanes. CPU binding, when requested, is mandatory rather than a hint. */
@@ -17,7 +19,11 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final List<ExecutorService> lanes;
     private final int[] cpus;
     private final Semaphore queueSlots;
+    private final AtomicIntegerArray queuedByLane;
+    private final int softSpillThreshold;
+    private final AtomicLong spills = new AtomicLong();
     private final AtomicInteger nextLane = new AtomicInteger();
+    private final AtomicInteger spillProbeSeed = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ActorAffinityDispatcher(int parallelism, int capacity, int[] cpus,
@@ -26,6 +32,8 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         this.cpus = cpus.clone();
         for (int cpu : cpus) NativeCarrierExecutor.requireAllowedCpu(cpu);
         this.queueSlots = new Semaphore(capacity);
+        this.queuedByLane = new AtomicIntegerArray(parallelism);
+        this.softSpillThreshold = Math.max(1, capacity / parallelism);
         var created = new ArrayList<ExecutorService>();
         try {
             for (int i = 0; i < parallelism; i++) created.add(Objects.requireNonNull(factory.apply(i)));
@@ -39,26 +47,74 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     int reserveLane() { return Math.floorMod(nextLane.getAndIncrement(), lanes.size()); }
     int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
+    long softSpills() { return spills.get(); }
+
+    private int selectLane(int preferred) {
+        if (preferred < 0 || preferred >= lanes.size()) {
+            throw new IllegalArgumentException("invalid actor dispatch lane");
+        }
+        // Explicit CPU binding is strict, not a best-effort migration hint.
+        if (cpus.length != 0) return preferred;
+        int queued = queuedByLane.get(preferred);
+        if (queued < softSpillThreshold) return preferred;
+        // Only a congested soft lane probes other queues. Bound cache-line
+        // reads to 64 total; rotated sampling avoids a permanent hot prefix.
+        return SoftLaneSelector.select(preferred, queued, queuedByLane,
+                spillProbeSeed.getAndIncrement());
+    }
 
     void executeOnLane(int lane, Runnable command) {
         Objects.requireNonNull(command);
         if (closed.get() || !queueSlots.tryAcquire()) throw new RejectedExecutionException("actor lane queue unavailable");
-        QueuedTurn task = new QueuedTurn(command);
+        // This is a dispatch-placement choice, not an ownership transfer:
+        // ActorCell's physical execution lease still guards serial entry.
+        int target;
+        try {
+            target = selectLane(lane);
+        } catch (RuntimeException | Error failure) {
+            queueSlots.release();
+            throw failure;
+        }
+        QueuedTurn task = new QueuedTurn(command, target);
+        queuedByLane.incrementAndGet(target);
         try {
             if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
-            lanes.get(lane).execute(task);
+            lanes.get(target).execute(task);
+            if (target != lane) spills.incrementAndGet();
         } catch (RuntimeException | Error failure) {
-            task.releaseSlot();
+            task.rejectAdmission();
             throw failure;
         }
     }
 
     private final class QueuedTurn implements Runnable {
         private final Runnable command;
+        private final int assignedLane;
         private final AtomicBoolean released = new AtomicBoolean();
-        private QueuedTurn(Runnable command) { this.command = command; }
-        private void releaseSlot() { if (released.compareAndSet(false, true)) queueSlots.release(); }
+        // 0=pending, 1=entered, 2=rejected. The task itself is the lock:
+        // no additional per-dispatch claim allocation in the actor hot path.
+        private int claim;
+        private QueuedTurn(Runnable command, int assignedLane) {
+            this.command = command;
+            this.assignedLane = assignedLane;
+        }
+        private void releaseSlot() {
+            if (released.compareAndSet(false, true)) {
+                queuedByLane.decrementAndGet(assignedLane);
+                queueSlots.release();
+            }
+        }
+        private void rejectAdmission() {
+            synchronized (this) {
+                if (claim == 0) claim = 2;
+            }
+            releaseSlot();
+        }
         @Override public void run() {
+            synchronized (this) {
+                if (claim != 0) return;
+                claim = 1;
+            }
             releaseSlot();
             command.run();
         }
@@ -71,7 +127,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         var abandoned = new ArrayList<Runnable>();
         for (var lane : lanes) for (var pending : lane.shutdownNow()) {
             QueuedTurn task = (QueuedTurn) pending;
-            task.releaseSlot();
+            task.rejectAdmission();
             abandoned.add(task.command);
         }
         return List.copyOf(abandoned);

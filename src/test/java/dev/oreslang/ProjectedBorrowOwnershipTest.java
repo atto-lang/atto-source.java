@@ -117,7 +117,7 @@ final class ProjectedBorrowOwnershipTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(TYPES + """
                         fnc bad(Holder mut holder): void {
-                          val view = &mut holder.items[0];
+                          val view = rt mut borrow holder.items[0];
                           return;
                         }
                         """)));
