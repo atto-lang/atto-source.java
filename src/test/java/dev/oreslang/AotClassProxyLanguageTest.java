@@ -1017,6 +1017,31 @@ final class AotClassProxyLanguageTest {
                 paramError.getMessage());
     }
 
+    @Test
+    void boundsDeepGenericSignatureScansWithoutCompilerStackOverflow() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.TypeRef nested = integer;
+        for (int depth = 0; depth < 96; depth++) {
+            nested = new Ast.TypeRef("Option", List.of(nested), false);
+        }
+        for (Ast.MethodDecl method : List.of(
+                proxySurfaceMethod(nested, List.of(), List.of()),
+                proxySurfaceMethod(integer, List.of(new Ast.Param(nested, "value")),
+                        List.of()))) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            proxySurfaceProgram(List.of(method)), Set.of("Foo")));
+            assertTrue(error.getMessage().contains("signature type exceeds nesting/node budget"),
+                    error.getMessage());
+        }
+        Ast.TypeRef shallow = new Ast.TypeRef("Option", List.of(integer), false);
+        assertDoesNotThrow(() -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                proxySurfaceProgram(List.of(
+                        proxySurfaceMethod(shallow, List.of(), List.of()))),
+                Set.of("Foo")));
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
