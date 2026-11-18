@@ -1,14 +1,24 @@
 # AttoLang Java/GraalVM reference backend
 
-In general, strive to implement language features in .atto files not .java files (more attolang less java). In other words, for atto core and atto std lib more .atto files and fewer .java files. We also need to keep/maintain parity with oreslang-source.llvm and oreslang-source.net and oreslang-source.wasm, etc. The oreslang-source.java is typically the leader.
+## AttoLang migration and authoritative language contracts (2026-11-18)
+
+**AttoLang** is the current language name (**formerly Oreslang**). This `ores-truffle-oreslang/oreslang-source.java` repository retains the historical name and implementation context; the AttoLang-named counterpart is **[atto-lang/atto-source.java](https://github.com/atto-lang/atto-source.java)**, the destination for new AttoLang development. This legacy Java/Truffle tree and the AttoLang Java repository may differ in code and tests. Verify exact commit trees and guest execution before considering a feature migrated.
+
+The **[atto-spec](https://github.com/atto-lang/atto-spec)** repository now owns normative language syntax and semantics, rather than this backend README, the old Oreslang repository names, or Java/Truffle behavior alone. Portable, positive **and negative** language tests belong in [atto-platform-conformance](https://github.com/atto-lang/atto-platform-conformance); compare implementations via [atto-compilers-parity-testing](https://github.com/atto-lang/atto-compilers-parity-testing). [atto-common-source](https://github.com/atto-lang/atto-common-source) owns portable `.atto` libraries. Backend-specific compiler code stays in its corresponding `atto-source.*` repository.
+
+**Current source-design directions (targets, not claims this backend implements them):** canonical `.atto` for new portable source, `snake_case` function/method names, ownership operations `borrow!`, `take!`, `share!`, `copy!`, and `copy!!`; [implicit borrowing for nonprimitive arguments](https://github.com/atto-lang/atto-spec/blob/main/language/implicit-argument-borrow-v1.md) is still a design target subject to compiler verification. [File/module `define const`](https://github.com/atto-lang/atto-spec/blob/main/language/file-module-const-v1.md) supports proposed constexpr values **and** non-throwing, one-time runtime `os.read_env` initialization. [The proposed operator contract](https://github.com/atto-lang/atto-spec/blob/main/language/bitwise-and-stream-operators-v1.md) uses `<<<`, `>>>`, and `ashr` for shifts and reserves `<<`/`>>` for directional stream I/O; it is **not** automatically supported by legacy backends. [Shared ownership](https://github.com/atto-lang/atto-spec/blob/main/language/shared-ownership-and-guards-v1.md) does not grant unsynchronized mutable aliasing. Check spec documents for proposal/admission status before changing a parser or example.
+
+**Compatibility and verification:** Keep existing `.ores` fixtures, `oreslang-*` commands, package IDs, fixed ABIs, and wire identifiers wherever still used; an AttoLang name change alone does not prove that a renamed CLI, syntax form, AOT target, actor isolation, zero-GC runtime or guest feature works. Retain exact legacy commands below when they describe this checkout. Do not use Python for project scripts, tests, CI helpers or tooling; use Rust for supporting tooling/tests where practical, without misrepresenting the backend implementation language. Record source commit/tree, target/toolchain, real positive/negative **compiled guest execution**, and `passed`/`failed`/`unsupported`/`not executed` for every claimed parity result. Host-only tests or workflows with zero executed steps are **not** compiler parity evidence.
+
+In general, strive to implement language features in .atto files not .java files (more attolang less java). In other words, for atto core and atto std lib more .atto files and fewer .java files. We also need to keep/maintain parity with oreslang-source.llvm and oreslang-source.net and oreslang-source.wasm, etc. The language specification, not any one backend, defines portable semantics; Java is a reference implementation only where verified.
 
 AttoLang is the current public language name (formerly Oreslang). This repository remains the Java/Truffle reference compiler and runtime. Existing Java packages, `oreslang` compiler paths, `.ores` fixtures and external interfaces remain compatible during the rename. New `.atto` acceptance must be demonstrated by real parser/compiler and execution tests, not this README update.
 
 Use [AttoLang Brand Compatibility v1](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/main/contracts/v1/attolang-brand-compat-v1.json) as the migration policy. Do not rename repository paths, package coordinates, command names, ABI or wire-format identifiers as part of a branding-only change.
 
-Oreslang is a statically typed GraalVM/Truffle language with nominal typing by default, explicit structural-call opt-ins, actor-oriented concurrency, hot-loadable code generations, and deny-by-default isolate capabilities.
+AttoLang (formerly Oreslang) is a statically typed language with a GraalVM/Truffle implementation with nominal typing by default, explicit structural-call opt-ins, actor-oriented concurrency, hot-loadable code generations, and deny-by-default isolate capabilities.
 
-This repository contains the Java/Truffle reference implementation. The LLVM version is in oreslang-source.llvm and WASM version is in oreslang-source.wasm etc etc.
+This repository contains the Java/Truffle reference implementation. The AttoLang counterpart projects are [atto-source.llvm](https://github.com/atto-lang/atto-source.llvm), [atto-source.wasm](https://github.com/atto-lang/atto-source.wasm), and other `atto-source.*` backends. The old `oreslang-source.*` names remain historical checkout references.
 
 Do not use python for anything, use Rust instead of python to support the language.
 
@@ -42,7 +52,7 @@ The language is intentionally opinionated:
 - file-granular incremental compilation with stable code-unit/package identities and reverse-dependency invalidation;
 - flat optional file namespaces and flat modules (neither may nest);
 - class-level `static fnc` functions separated from receiver methods;
-- first-class function aliases/types and block-only `|args| -> { ... }` lambdas;
+- first-class function aliases/types and canonical `|args| -> expression` lambdas (block-form acceptance is backend-specific);
 - lexical closures with persistent captured environments;
 - affine ownership, move checking, borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax; source ownership uses `rt copy`, `rt share`, `rt take`, `rt borrow`, and `rt mut borrow` (no `&`/`*` pointer/reference/dereference syntax)
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
@@ -50,7 +60,6 @@ The language is intentionally opinionated:
 - multiple named modules may appear in one source file;
 - explicit `return` statements unless same-line lambda or void return type;
 
-The first implementation is developed on a feature branch and will land with an executable Truffle skeleton, grammar/specification, examples, tests, and CI.
 
 Native inbound HTTP capabilities and actor-owned request transfer are documented in [docs/HTTP_SERVER.md](docs/HTTP_SERVER.md).
 
@@ -107,13 +116,11 @@ exact head. Run `mvn test -Dtest=CompilerEffectAnalysisV0Test`, the
 real cross-backend conformance fixtures, and pinned-binary
 no-guest-execution/no-artifact checks before promoting this mode.
 
-## Repository ownership and migration (2026-11-08)
+## Legacy repository scope and contribution routing (2026-11-18)
 
-**Current home:** `ores-truffle-oreslang/oreslang-source.java` (legacy Oreslang organization). **Language name:** AttoLang; historical `oreslang-*` CLI/package identities and existing `.ores` files remain compatibility interfaces until independently migrated and tested.
+**Historical checkout:** `ores-truffle-oreslang/oreslang-source.java`. **AttoLang destination:** [`atto-lang/atto-source.java`](https://github.com/atto-lang/atto-source.java).
 
-- **What belongs in this repository:** Java/Truffle/GraalVM reference compiler, interpreter, source admission, actor/runtime host primitives and their executable tests.
-- **What belongs elsewhere:** LLVM/.NET/Wasm implementation details, managed cloud control plane, or portable core/std semantics unnecessarily duplicated in Java. Shared portable AttoLang language semantics and core/std should be authored in canonical `.atto` modules and reconciled with `oreslang-common-source`; indispensable host compiler, scheduler and ABI primitives remain backend-specific here.
-- **Organization boundary:** language/compiler/tooling/conformance work belongs to [`atto-lang`](https://github.com/atto-lang); commercial deployment, identity, billing, hosted runtime and multi-tenant cloud operations belong to separately governed [`atto-co`](https://github.com/atto-co). The existence of similarly named `atto-*` repositories is **not** proof of a Git repository transfer or tested feature parity.
-- **Proposed first migration:** transfer this *existing repository identity* to `atto-lang/oreslang-source.java` retaining its name and history, **only after** individual source/target owner and independent security approvals. No direct transfer to `atto-co` is authorized in the current migration wave. A future product carve-out requires separate approval.
+**Scope:** Java/Truffle frontend and runtime, GraalVM/Native Image experiments, JVM-specific compiler integration. The historical repository and new counterpart may not contain identical commits, pull requests, issues, or artifacts; a same-suffix repo is not proof of an in-place GitHub ownership transfer or identical Git history. Compare exact SHAs and migrate outstanding work deliberately; open new AttoLang design changes against [atto-spec](https://github.com/atto-lang/atto-spec) and new backend work in the appropriate AttoLang repository. The former plan to transfer `oreslang-source.java` under its unchanged legacy name is superseded as a naming destination by `atto-source.java` (without implying the old GitHub repository itself has moved).
 
-**Maintainer cutover instructions:** coordinate under [migration issue #26](https://github.com/ores-truffle-oreslang/.github/issues/26) and the private [migration runbook draft #25](https://github.com/ores-truffle-oreslang/.github/pull/25); check stable repository numeric ID, exact head SHA/tree, branch protection/rulesets, reviewers, GitHub Apps, secrets, deploys, dependencies, releases, packages, Pages and remote URLs. Transfer using an approved GitHub ownership operation rather than mirroring private source; validate the unchanged ID/tree and rerun exact-head CI at destination. **`steps=[]` or `steps=null` means `NOT_EXECUTED`; host-only tests do not establish native AttoLang guest parity.** Do not combine transfer with forced `.ores`→`.atto` syntax changes, repo renames, CI policy relaxation or AOT/zero-GC claims.
+Keep the [historical organization migration tracker](https://github.com/ores-truffle-oreslang/.github/issues/26) and [review runbook](https://github.com/ores-truffle-oreslang/.github/pull/25) for migration/security context, not as proof of a completed transfer. Preserve access controls, private source provenance, branch protections, PR/issue history and CI evidence; do not assume an existing `atto-*` repository is a verified byte-for-byte transfer. Host-only or source-free canaries do not prove guest code execution or parity.
+
