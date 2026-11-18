@@ -22,6 +22,9 @@ public final class Parser {
     private final List<Token> tokens;
     /** Closed-world proxy requests; no dynamic proxy descriptors survive compilation. */
     private final java.util.Set<String> staticProxyTargets = new java.util.LinkedHashSet<>();
+    /** AOT-only, syntactically closed target/interceptor pairs. */
+    private final List<StaticProxySynthesis.InterceptorRequest> staticProxyInterceptors =
+            new ArrayList<>();
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
@@ -256,7 +259,8 @@ public final class Parser {
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         return StaticProxySynthesis.expand(
-                new Ast.Program(namespace, imports, modules), staticProxyTargets);
+                new Ast.Program(namespace, imports, modules),
+                staticProxyTargets, staticProxyInterceptors);
     }
 
     private Ast.ImportDecl parseImport() {
@@ -5013,18 +5017,38 @@ public final class Parser {
                 // no runtime reflection, arbitrary expression inference, actor
                 // reference transport or unqualified fallback is permitted.
                 if (!type.arguments().isEmpty() || type.inferArguments()
-                        || args.size() != 1
+                        || (args.size() != 1 && args.size() != 2)
                         || !(args.getFirst() instanceof Ast.NewExpr wrapped)
                         || !wrapped.type().arguments().isEmpty()
                         || wrapped.type().inferArguments()
                         || !wrapped.type().name().matches("[A-Za-z_][A-Za-z_0-9]*")) {
-                    throw error(previous(), "AOT_PROXY_UNSUPPORTED: expected new Proxy(new LocalClass(...)); "
+                    throw error(previous(), "AOT_PROXY_UNSUPPORTED: expected "
+                            + "new Proxy(new LocalClass(...)) or "
+                            + "new Proxy(new LocalClass(...), new LocalHooks(...)); "
                             + "runtime target inference is forbidden");
                 }
-                staticProxyTargets.add(wrapped.type().name());
+                if (args.size() == 1) {
+                    staticProxyTargets.add(wrapped.type().name());
+                    return new Ast.NewExpr(
+                            Ast.TypeRef.simple(wrapped.type().name() + "Proxy"),
+                            List.of(wrapped));
+                }
+                if (!(args.get(1) instanceof Ast.NewExpr interceptor)
+                        || !interceptor.type().arguments().isEmpty()
+                        || interceptor.type().inferArguments()
+                        || !interceptor.type().name().matches("[A-Za-z_][A-Za-z_0-9]*")) {
+                    throw error(previous(), "AOT_PROXY_UNSUPPORTED: interceptors require "
+                            + "a statically known new LocalHooks(...) constructor");
+                }
+                StaticProxySynthesis.InterceptorRequest request =
+                        new StaticProxySynthesis.InterceptorRequest(
+                                wrapped.type().name(), interceptor.type().name());
+                if (!staticProxyInterceptors.contains(request)) {
+                    staticProxyInterceptors.add(request);
+                }
                 return new Ast.NewExpr(
-                        Ast.TypeRef.simple(wrapped.type().name() + "Proxy"),
-                        List.of(wrapped));
+                        Ast.TypeRef.simple(request.generatedName()),
+                        List.of(wrapped, interceptor));
             }
             return new Ast.NewExpr(type, args);
         }
