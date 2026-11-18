@@ -16,7 +16,7 @@ public final class ActorRef32ArenaTest {
         value.close();
         value.close();
     }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InterruptedException {
         var a = new ActorRef32Arena.Owner(7, 9, 1);
         var b = new ActorRef32Arena.Owner(7, 10, 1);
         var restart = new ActorRef32Arena.Owner(7, 9, 2);
@@ -53,6 +53,54 @@ public final class ActorRef32ArenaTest {
             check(first.read_i64(next, a, 101, 0) == 0, "released bytes not scrubbed");
             reject(() -> first.allocate(a, 0), "type zero accepted");
             reject(() -> first.allocate(b, 101), "foreign allocation accepted");
+            // Concurrent actor turns may arrive on multiple Java carriers.
+            // Fields and slot sidecars must serialize against one another.
+            final long left = 0x1122334455667788L;
+            final long right = 0x0102030405060708L;
+            final var linear = new java.util.concurrent.atomic.AtomicBoolean(true);
+            first.write_i64(next, a, 101, 0, left);
+            Thread[] workers = new Thread[6];
+            for (int i = 0; i < workers.length; i++) {
+                final int worker = i;
+                workers[i] = new Thread(() -> {
+                    try {
+                        for (int j = 0; j < 500; j++) {
+                            if (worker < 3) {
+                                first.write_i64(next, a, 101, 0,
+                                                (j & 1) == 0 ? left : right);
+                            } else {
+                                long observed = first.read_i64(next, a, 101, 0);
+                                if (observed != left && observed != right)
+                                    linear.set(false);
+                            }
+                        }
+                    } catch (RuntimeException error) { linear.set(false); }
+                });
+                workers[i].start();
+            }
+            for (Thread worker : workers) worker.join();
+            check(linear.get(), "torn or racy concurrent field access");
+            final var admitted = new java.util.concurrent.atomic.AtomicInteger();
+            for (int i = 0; i < 4; i++) {
+                workers[i] = new Thread(() -> {
+                    try {
+                        for (int j = 0; j < 300; j++) {
+                            var temp = first.allocate(a, 102);
+                            if (temp == null) continue; // expected slot backpressure
+                            admitted.incrementAndGet();
+                            first.write_i64(temp, a, 102, 0, 42);
+                            first.release(temp, a, 102);
+                        }
+                    } catch (RuntimeException error) { linear.set(false); }
+                });
+                workers[i].start();
+            }
+            for (int i = 0; i < 4; i++) workers[i].join();
+            check(linear.get() && admitted.get() > 0,
+                  "concurrent Ref32 slot allocation and release");
+            long observed = first.read_i64(next, a, 101, 0);
+            check(observed == left || observed == right,
+                  "concurrent field storage preserved");
             stop_twice(first);
             check(first.is_closed(), "actor STOP");
             reject(() -> first.read_i64(next, a, 101, 0), "post-STOP read accepted");
