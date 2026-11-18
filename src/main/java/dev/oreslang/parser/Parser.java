@@ -895,10 +895,14 @@ public final class Parser {
     // Recognize <- only in declaration context. In expressions the same
     // unspaced characters mean '<' followed by unary '-', so the lexer
     // must continue emitting LT and MINUS as separate tokens.
+    private boolean isAdjacentReturnFirstArrow() {
+        return check(LT) && checkNext(MINUS)
+                && adjacent(tokens.get(current), tokens.get(current + 1));
+    }
+
     private boolean matchReturnFirstMarker() {
         if (match(BULLET)) return true;
-        if (check(LT) && checkNext(MINUS)
-                && adjacent(tokens.get(current), tokens.get(current + 1))) {
+        if (isAdjacentReturnFirstArrow()) {
             advance(); // <
             advance(); // -
             return true;
@@ -3029,7 +3033,10 @@ public final class Parser {
             throw error(peek(),
                     name + "<T> is not Oreslang source syntax; use explicit rt copy/share/take/borrow operations");
         }
-        if (match(LT)) {
+        // '<-' is a declaration marker, never the start of generic type
+        // arguments. Keep LT+MINUS as separate lexer tokens to preserve
+        // the old expression meaning of a<-b (a < -b).
+        if (!isAdjacentReturnFirstArrow() && match(LT)) {
             if (match(GT)) {
                 infer = true;
             } else if (name.equals("Fnc") || name.equals("Function")) {
