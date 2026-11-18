@@ -1042,27 +1042,58 @@ public final class OwnershipChecker {
      * Nested projections are rejected using their root's lexical state;
      * no runtime borrow instrumentation or pointer syntax is introduced.
      */
-    private void rejectBorrowedShareProjection(Ast.Expr argument, Scope scope) {
+    // Compiler-local lexical binding authority, not source spelling alone,
+    // identifies this limited place. Stable heap/tenant origin IDs and layout
+    // alias proofs remain separate typed-MIR obligations.
+    private record ResolvedOwnershipPlace(
+            String rootName, VarState root, List<String> projections,
+            boolean includesIndex) {
+        boolean projected() { return !projections.isEmpty(); }
+    }
+
+    private ResolvedOwnershipPlace resolveOwnershipPlace(Ast.Expr argument, Scope scope) {
         Ast.Expr root = argument;
-        boolean projected = false;
+        List<String> reversed = new ArrayList<>();
+        boolean includesIndex = false;
         while (true) {
+            // Bound source projections to eight to preserve conservative
+            // compiler admission until recursive MIR place paths exist.
             if (root instanceof Ast.MemberExpr member) {
+                if (member.member().isEmpty() || member.member().indexOf('.') >= 0
+                        || reversed.size() == 8) return null;
+                reversed.add(member.member());
                 root = member.receiver();
-                projected = true;
             } else if (root instanceof Ast.IndexExpr indexed) {
+                if (reversed.size() == 8) return null;
+                reversed.add("[index]");
+                includesIndex = true;
                 root = indexed.receiver();
-                projected = true;
             } else {
                 break;
             }
         }
-        if (!projected || !(root instanceof Ast.NameExpr name)) return;
-        VarState owner = scope.lookup(name.name());
-        if (owner != null && (isIncomingBorrow(owner)
-                || owner.kind == ValueKind.IMM_BORROW
+        if (!(root instanceof Ast.NameExpr name) || name.name().isEmpty()
+                || name.name().indexOf('.') >= 0) return null;
+        VarState state = scope.lookup(name.name());
+        if (state == null) return null;
+        java.util.Collections.reverse(reversed);
+        return new ResolvedOwnershipPlace(
+                name.name(), state, List.copyOf(reversed), includesIndex);
+    }
+
+    private void rejectBorrowedShareProjection(Ast.Expr argument, Scope scope) {
+        if (!(argument instanceof Ast.MemberExpr)
+                && !(argument instanceof Ast.IndexExpr)) return;
+        ResolvedOwnershipPlace place = resolveOwnershipPlace(argument, scope);
+        if (place == null || !place.projected()) {
+            throw error("E_SHARE_UNTRACKED_PROJECTION: rt share requires "
+                    + "a compiler-resolved field/index root; detach a Copy value first");
+        }
+        VarState owner = place.root();
+        if (isIncomingBorrow(owner) || owner.kind == ValueKind.IMM_BORROW
                 || owner.kind == ValueKind.MUT_BORROW
                 || (owner.type != null && owner.type.isBorrow())
-                || isActorConfinedBorrow(owner))) {
+                || isActorConfinedBorrow(owner)) {
             throw error("E_SHARE_BORROWED_PROJECTION: rt share cannot publish a "
                     + "projected value rooted in a borrowed capability; "
                     + "materialize an independently proven Copy value first");
@@ -1255,7 +1286,7 @@ public final class OwnershipChecker {
                     // expressions that leave the written slot live.
                     rejectUntrackedTakePlace(argument);
                     if (argument instanceof Ast.NameExpr name
-                            && scope.lookup(name.name()) == null) {
+                            && resolveOwnershipPlace(argument, scope) == null) {
                         throw error("rt take requires a statically tracked owned binding '"
                                 + name.name() + "'; untracked globals and functions cannot move");
                     }
