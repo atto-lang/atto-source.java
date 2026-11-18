@@ -34,7 +34,10 @@ final class StaticProxyHookEffectClosure {
 
     private final Ast.ClassDecl owner;
     private final Map<Ast.MethodArity, Ast.MethodDecl> methods = new HashMap<>();
-    private final Set<Ast.MethodArity> visited = new HashSet<>();
+    // Cache the deepest fully validated entry depth for each helper.
+    // A shallow check cannot certify the same subtree reached through a
+    // longer call chain: all nested AST depths are relative to the caller.
+    private final Map<Ast.MethodArity, Integer> validatedAtDepth = new HashMap<>();
     private final Set<Ast.MethodArity> active = new HashSet<>();
     private int nodes;
 
@@ -108,7 +111,15 @@ final class StaticProxyHookEffectClosure {
     private void visitMethod(Ast.MethodDecl method, int depth) {
         budget(depth);
         Ast.MethodArity slot = method.overloadIdentity();
-        if (visited.contains(slot)) return;
+        // Detect cycles before consulting the cache, and repeat a verified
+        // subtree when a caller reaches it at a *greater* depth. Reusing a
+        // shallower check here could bypass the fixed MAX_DEPTH budget.
+        if (active.contains(slot)) {
+            throw fail("recursive interceptor helper dispatch: "
+                    + owner.name() + "." + slot.name() + "/" + slot.arity());
+        }
+        Integer previouslyValidatedDepth = validatedAtDepth.get(slot);
+        if (previouslyValidatedDepth != null && previouslyValidatedDepth >= depth) return;
         if (!active.add(slot)) {
             throw fail("recursive interceptor helper dispatch: "
                     + owner.name() + "." + slot.name() + "/" + slot.arity());
@@ -135,7 +146,7 @@ final class StaticProxyHookEffectClosure {
                 }
             }
             for (Ast.Stmt stmt : method.body()) visitStatement(stmt, depth + 1, params);
-            visited.add(slot);
+            validatedAtDepth.merge(slot, depth, Math::max);
         } finally {
             active.remove(slot);
         }
