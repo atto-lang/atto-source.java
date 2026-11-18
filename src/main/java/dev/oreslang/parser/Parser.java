@@ -892,11 +892,25 @@ public final class Parser {
      * or Type• name(...). Both markers lower to the existing typed callable
      * AST. Lookahead restores the cursor even on malformed generic types.
      */
+    // Recognize <- only in declaration context. In expressions the same
+    // unspaced characters mean '<' followed by unary '-', so the lexer
+    // must continue emitting LT and MINUS as separate tokens.
+    private boolean matchReturnFirstMarker() {
+        if (match(BULLET)) return true;
+        if (check(LT) && checkNext(MINUS)
+                && adjacent(tokens.get(current), tokens.get(current + 1))) {
+            advance(); // <
+            advance(); // -
+            return true;
+        }
+        return false;
+    }
+
     private boolean looksLikeReturnFirstCallableHead() {
         int mark = current;
         try {
             parseTypeRef();
-            if (!match(LEFT_ARROW, BULLET)) return false;
+            if (!matchReturnFirstMarker()) return false;
             consumeCallableName("expected callable name after return-first marker");
             parseGenericParameterSpecs();
             return check(LPAREN);
@@ -922,7 +936,7 @@ public final class Parser {
     private Ast.TypeRef parseReturnFirstTypeIfPresent() {
         if (!looksLikeReturnFirstCallableHead()) return null;
         Ast.TypeRef type = parseTypeRef();
-        if (!match(LEFT_ARROW, BULLET)) {
+        if (!matchReturnFirstMarker()) {
             throw error(peek(), "return-first callable requires '<-' or '•'");
         }
         return type;
