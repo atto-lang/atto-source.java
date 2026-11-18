@@ -161,9 +161,22 @@ define module math conforms MathApi as
 end
 ```
 
-Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants as well as functions. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
+Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants, functions, and a public nominal actor declaration. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
 
-A module contract is not a class/struct interface and cannot be implemented by a class or actor.
+```atto
+define contract ActorApi as
+  actor Worker;
+end
+
+define module workers conforms ActorApi as
+  pub define actor Worker as
+  end
+end
+```
+
+The `actor Worker;` requirement is a **static type-presence requirement**, not an actor instance, runtime capability, synthesized handler, or permission to read actor-owned memory. A private, generic, or different-module actor, or an ordinary class named `Worker`, cannot satisfy it. The actor requirement's name also cannot collide with a required field or function, including inherited names. Contract inheritance retains this requirement, and exported ABI fingerprints include it.
+
+A module contract is not a class/struct interface and cannot be implemented by a class or actor. External receiver-method definitions (`mtd name(Actor a)(...)`), `define actor A as a;`, and required receiver method hooks are separately proposed and are **not enabled by this actor-type requirement**. See [actor/module contracts v1](ACTOR_MODULE_CONTRACTS_V1.md).
 
 ## Functions and returns
 
@@ -579,6 +592,61 @@ end
 ```
 
 Anonymous structs and array literals are values, not classes, and cannot be inherited from.
+
+## Record type positions versus record value positions
+
+`record { ... }` is unambiguous because the *enclosing grammar* selects
+whether the braces contain field types or field values. The compiler must not
+infer the grammar from whether a field payload is a literal or an identifier.
+
+```ores
+type T = record { foo: string };       // type declaration; foo has type string
+
+pub fnc make(string value): T {
+    const T x = record { foo: value }; // value binding; foo evaluates value
+    return x;
+}
+
+pub fnc inline(): record { foo: string } {
+    return record { foo: "hello" };
+}
+```
+
+A plain record literal is a value and never implicitly binds an undeclared type
+name. In the current compiler, `const T x = record {...}` requires `T` to be
+an existing type alias. `const T x = infer<T> record {...}` or the proven
+short named-inference form may instead capture a *lexical*, readonly structural
+type alias, but must not manufacture nominal identity or a runtime type object.
+
+The equivalent name-first declaration syntax is supported for explicit
+inferred-struct capture. It preserves the same lexical type identity and
+closed-shape checking as the type-first spelling:
+
+```ores
+fnc create(): float {
+    const point: Point = infer<Point> struct { x: 3.0, y: 4.0 };
+    const next: Point = infer struct { x: 5.0, y: 6.0 };
+    return next.y;
+}
+```
+
+The checked short capture `const point: Point = infer struct {...}` may
+also introduce `Point` if that name is unbound and safe to introduce. The
+corresponding type-first spelling is `const Point point = infer struct {...}`.
+These are compile-time aliases, not runtime type objects; they do not
+permit record-to-struct coercion, field-set growth, or mutation through a
+readonly `const` value.
+
+Type declarations are immutable by definition. `const type T = ...` is invalid;
+`type T = ...` defines a type, whereas `const type T x = ...` may use
+`type T` as an explicit named-type marker in a value binding.
+
+Function-/routine-local standalone declarations such as
+`fnc make(): T { type T = record { foo: string }; ... }` remain **proposed**,
+not executable in this compiler revision. Supporting them requires
+compile-time lexical type registration, return-signature dependency resolution,
+public ABI serialization, and ownership/backend conformance. Do not treat a
+local `type` statement as a runtime value or silently export its name.
 
 ## Inline values
 
@@ -996,20 +1064,29 @@ fi
 
 Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
 
-Inline value binding is supported with an explicit boolean predicate:
+Inline captures preserve their initializer value and use ordinary `let` ownership:
 
 ```ores
-if some_call() as let value when value > 0 {
+if is_ready(some_call() as let value) {
   consume(value);
-} fi
-while some_call() as let value when value > 0 {
+fi
+if (some_call() as let value) > 0 then
+  consume(value);
+fi
+while is_ready(some_call() as let value) {
   consume(value);
 }
+if let Some(value) = maybe_call() then
+  consume(value);
+fi
 ```
 
-Each reached initializer is evaluated once. The `if` binding is scoped to its
-predicate and remaining branch chain; a `while` binding is recreated on every
-test, including after `continue`. See [the full contract](VALUE_BOUNDARIES.md).
+Each reached initializer evaluates once. Captures are scoped to that condition
+and matching body, and loops recreate them for every test. The condition is
+bool; capturing does not add truthiness or duplicate ownership. A consuming
+predicate moves its argument; explicitly borrow when the body needs the owner.
+The older `expr as let value when predicate` head remains supported with its
+original remaining-branch-chain scope. See [the full contract](VALUE_BOUNDARIES.md).
 
 ## Exceptions and defer
 
@@ -1970,7 +2047,7 @@ fnc inspect(borrow Bar value): void {
 }
 ```
 
-Exclusive mutable borrowing uses `rt borrow mut value` and `borrow mut T`:
+Exclusive mutable borrowing uses `rt mut borrow value` and `borrow mut T`:
 
 ```ores
 fnc change(borrow mut Bar value): void {
@@ -1980,7 +2057,7 @@ fnc change(borrow mut Bar value): void {
 
 fnc example(): void {
   val Bar b = new Bar();
-  change(rt borrow mut b);
+  change(rt mut borrow b);
   stdio.println(b.foo);
   return;
 }
@@ -2033,7 +2110,10 @@ Oreslang keeps four related operations separate:
 - `match` performs proof-checked pattern partitioning, while `switch` is
   constant/equality case dispatch.
 
-Every `if` closes with `fi`, even when its branch bodies use braces.
+Every `if` closes with `fi`. In braced conditionals, `{` replaces `then`,
+`} elif` / `} else` separate branches, and `fi` closes the final branch; there
+is no final `}` before `fi`. The historical `} fi` is accepted with a migration
+diagnostic.
 Executable match/switch arms use `->`; `=>` remains type-level syntax.
 
 Plain `match` is exclusive-by-default. The checker proves every pair of

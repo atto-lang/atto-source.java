@@ -14,6 +14,39 @@ const MAX_KEY = 1024;
 const MAX_TOKEN = 128;
 const MAX_CHUNKS = 4096;
 
+/**
+ * JSON numeric IDs must not acquire authority through IEEE-754 rounding.
+ * E.g. 1400792274.000000001 rounds to the trusted repository ID in JS.
+ * Preserve exact, safely representable integral exponent/decimal encodings
+ * (1.5e2, 42.0) while rejecting fractional or underflowed impostors.
+ * This is a lexical check, before JSON.parse loses the original precision.
+ */
+function integral_token_is_exact(token, number) {
+  if (!Number.isInteger(number)) return true;
+  if (!Number.isSafeInteger(number)) return false;
+  if (!/[.eE]/.test(token)) return true;
+  const match = /^(-?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/.exec(token);
+  if (!match) return false;
+  const fraction = match[3] ?? '';
+  const exponent = Number(match[4] ?? '0');
+  // Bound any string expansion and reject the underflow/overlong exponent case.
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 512) return false;
+  const digits = (match[2] + fraction).replace(/^0+/, '');
+  if (!digits) return number === 0;
+  const shift = exponent - fraction.length;
+  let integral;
+  if (shift >= 0) {
+    if (digits.length + shift > 16) return false;
+    integral = digits + '0'.repeat(shift);
+  } else {
+    const dropped = -shift;
+    if (dropped > digits.length || !digits.endsWith('0'.repeat(dropped))) return false;
+    integral = digits.slice(0, digits.length - dropped);
+  }
+  if (!integral || integral.length > 16) return false;
+  return BigInt(match[1] + integral) === BigInt(number);
+}
+
 export class EvidenceRejected extends Error {
   constructor(reason) {
     super('GITHUB_EVIDENCE_DENIED: ' + reason);
@@ -120,6 +153,7 @@ export function parse_strict_github_json(input, {allowArray = false} = {}) {
       if (/[0-9.eE+\-]/.test(s[i + m[0].length] || '')) denied('oversized or invalid numeric token');
       const n = Number(m[0]);
       if (!Number.isFinite(n)) denied('nonfinite number');
+      if (!integral_token_is_exact(m[0], n)) denied('inexact integral JSON number');
       if (!m[0].includes('.') && !/[eE]/.test(m[0]) && !Number.isSafeInteger(n)) denied('unsafe integer');
       i += m[0].length;
       return;

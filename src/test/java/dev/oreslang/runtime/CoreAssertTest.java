@@ -46,9 +46,9 @@ final class CoreAssertTest {
                     const wrapped = trap Assert%sequal_throws(10, 10);
                     const failure = trap Assert%sequal_throws(10, 20);
                     stdio.stdout.write(success);
-                    stdio.stdout.write(wrapped.is_some());
+                    stdio.stdout.write(wrapped.is_ok());
                     stdio.stdout.write(wrapped.unwrap());
-                    stdio.stdout.write(failure.is_none());
+                    stdio.stdout.write(failure.is_err());
                     stdio.stdout.write(Assert%sequal(3, 3));
                     stdio.stdout.write(Assert%snot_equal(3, 4));
                     return;
@@ -68,7 +68,7 @@ final class CoreAssertTest {
                     return;
                 }
                 """.formatted(qualifier)));
-            assertTrue(failure.getMessage().contains("Option::unwrap"), failure::toString);
+            assertTrue(failure.getMessage().contains("Result::unwrap"), failure::toString);
         }
     }
 
@@ -78,8 +78,8 @@ final class CoreAssertTest {
                 rt cooperate;
                 const success = trap Assert::equal_throws(10, 10);
                 const failure = trap Assert.equal_throws(10, 20);
-                stdio.stdout.write(success.is_some());
-                stdio.stdout.write(failure.is_none());
+                stdio.stdout.write(success.is_ok());
+                stdio.stdout.write(failure.is_err());
                 return;
             }
             """));
@@ -95,19 +95,19 @@ final class CoreAssertTest {
                 return;
             }
             """));
-        assertTrue(failure.getMessage().contains("Option::unwrap"), failure::toString);
+        assertTrue(failure.getMessage().contains("Result::unwrap"), failure::toString);
     }
 
-    @Test void trapExpressionPreservesLinkedCallReachabilityAndExplicitOptionType() throws Exception {
+    @Test void trapExpressionPreservesLinkedCallReachabilityAndExplicitResultType() throws Exception {
         assertEquals("truetrue", run("""
             fnc failure_by_name(): bool {
                 return Assert::equal_throws(2, 3);
             }
             pub routine main(): void {
-                const missing: Option<bool> = trap failure_by_name();
-                const present: Option<bool> = trap Assert.equal_throws(3, 3);
-                stdio.stdout.write(missing.is_none());
-                stdio.stdout.write(present.is_some());
+                const missing: Result<bool, Error> = trap failure_by_name();
+                const present: Result<bool, Error> = trap Assert.equal_throws(3, 3);
+                stdio.stdout.write(missing.is_err());
+                stdio.stdout.write(present.is_ok());
                 return;
             }
             """));
@@ -118,7 +118,7 @@ final class CoreAssertTest {
             pub fnc illegal(): bool { return trap 1; }
             """));
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
-            pub fnc illegal(int x): Option<int> { return trap &x; }
+            pub fnc illegal(int x): Result<int, Error> { return trap &x; }
             """));
     }
 
@@ -148,15 +148,15 @@ final class CoreAssertTest {
             trap fnc unfalse(): bool { return Assert.false_throws(true); }
             trap fnc failed(): void { Assert.fail("custom assertion failure"); return; }
             pub routine main(): void {
-                val Option<bool> ok = success();
-                stdio.stdout.write(ok.is_some());
+                val Result<bool, Error> ok = success();
+                stdio.stdout.write(ok.is_ok());
                 stdio.stdout.write(ok.unwrap());
-                stdio.stdout.write(unequal().is_none());
-                stdio.stdout.write(equal().is_none());
-                stdio.stdout.write(different().is_none());
-                stdio.stdout.write(untrue().is_none());
-                stdio.stdout.write(unfalse().is_none());
-                stdio.stdout.write(failed().is_none());
+                stdio.stdout.write(unequal().is_err());
+                stdio.stdout.write(equal().is_err());
+                stdio.stdout.write(different().is_err());
+                stdio.stdout.write(untrue().is_err());
+                stdio.stdout.write(unfalse().is_err());
+                stdio.stdout.write(failed().is_err());
                 stdio.stdout.write(Assert.equal(1, 2) == false);
                 stdio.stdout.write(Assert.true(false) == false);
                 stdio.stdout.write(Assert.false(true) == false);
@@ -223,13 +223,13 @@ final class CoreAssertTest {
                 return true;
             }
             pub async fnc main(): void {
-                val Option<bool> ok = passes_after_yield();
-                val Option<bool> bad = fails_after_yield();
-                stdio.stdout.write(ok.is_some());
+                val Result<bool, Error> ok = passes_after_yield();
+                val Result<bool, Error> bad = fails_after_yield();
+                stdio.stdout.write(ok.is_ok());
                 stdio.stdout.write(ok.unwrap());
-                stdio.stdout.write(bad.is_none());
-                val Option<bool> cleaned = fails_with_cleanup();
-                stdio.stdout.write(cleaned.is_none());
+                stdio.stdout.write(bad.is_err());
+                val Result<bool, Error> cleaned = fails_with_cleanup();
+                stdio.stdout.write(cleaned.is_err());
                 return;
             }
             """));
@@ -385,8 +385,8 @@ final class CoreAssertTest {
                         return true;
                     }
                     pub %s main(): void {
-                        val Option<bool> handled = guarded();
-                        stdio.stdout.write(handled.is_some());
+                        val Result<bool, Error> handled = guarded();
+                        stdio.stdout.write(handled.is_ok());
                         return;
                     }
                     """.formatted(
