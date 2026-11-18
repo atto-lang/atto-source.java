@@ -22,7 +22,7 @@ public record Token(Type type, String lexeme, int line, int column) {
         PLUS, MINUS, STAR, SLASH, PERCENT, PIPE, PIPE_FORWARD, PIPE_REVERSE, AMP, CARET, TILDE, BANG,
         EQUAL, EQUAL_EQUAL, BANG_EQUAL,
         LT, LTE, GT, GTE,
-        ARROW, FAT_ARROW,
+        ARROW, FAT_ARROW, LEFT_ARROW, BULLET,
         EOF
     }
 }
