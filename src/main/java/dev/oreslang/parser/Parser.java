@@ -4989,6 +4989,59 @@ public final class Parser {
         return new Ast.RecordPattern(structural, fields);
     }
 
+    /**
+     * Positional byte/bit prefixes in match position only. A sequence element
+     * is a decimal literal, a fresh capture, or '_'; tail is always final.
+     * This is deliberately separate from binary { field: bytes[length] }.
+     */
+    private Ast.SequencePattern parseByteBitSequencePattern() {
+        Token head = advance();
+        boolean bytes = head.lexeme().equals("bytes");
+        consume(LBRACKET, "expected '[' after byte/bit pattern name");
+        List<Ast.SequenceElement> elements = new ArrayList<>();
+        String tail = null;
+        while (!check(RBRACKET) && !check(EOF)) {
+            if (match(PIPE)) {
+                if (elements.isEmpty()) {
+                    throw error(previous(), "sequence tail requires a nonempty prefix");
+                }
+                tail = consume(IDENT, "expected final sequence tail name").lexeme();
+                if (!check(RBRACKET)) {
+                    throw error(peek(), "sequence pattern tail must be final");
+                }
+                break;
+            }
+            if (elements.size() == 256) {
+                throw error(peek(), "sequence pattern exceeds 256 elements");
+            }
+            if (match(INT)) {
+                long value = parseSignedI64(previous());
+                if (value < 0 || value > (bytes ? 255 : 1)) {
+                    throw error(previous(), bytes
+                            ? "byte pattern literal must be 0..255"
+                            : "bit pattern literal must be 0 or 1");
+                }
+                elements.add(new Ast.SequenceElement((int) value, null));
+            } else if (match(MINUS)) {
+                throw error(previous(), "negative byte/bit pattern literal is invalid");
+            } else if (check(IDENT)) {
+                elements.add(new Ast.SequenceElement(null, advance().lexeme()));
+            } else {
+                throw error(peek(), "expected byte/bit literal, binding, or final tail");
+            }
+            if (check(RBRACKET)) break;
+            if (match(COMMA)) {
+                if (check(RBRACKET)) throw error(peek(), "trailing comma in sequence pattern");
+                continue;
+            }
+            if (check(PIPE)) continue;
+            throw error(peek(), "expected ',' or '|' in sequence pattern");
+        }
+        consume(RBRACKET, "expected ']' after byte/bit sequence pattern");
+        return new Ast.SequencePattern(
+                bytes ? Ast.SequenceUnit.BYTE : Ast.SequenceUnit.BIT, elements, tail);
+    }
+
     private Ast.Pattern parsePattern() {
         if (match(BANG)) {
             // A negative type pattern is a complement of the runtime-reifiable
@@ -5035,6 +5088,10 @@ public final class Parser {
             return new Ast.TuplePattern(elements);
         }
 
+        if (check(IDENT) && checkNext(LBRACKET)
+                && (peek().lexeme().equals("bytes") || peek().lexeme().equals("bits"))) {
+            return parseByteBitSequencePattern();
+        }
         if (match(INT)) return new Ast.LiteralPattern(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());

@@ -8221,6 +8221,32 @@ public final class TypeChecker {
             bindings.define(binding.name(), subject, Ast.BindingKind.VAL);
             return;
         }
+        if (pattern instanceof Ast.SequencePattern sequence) {
+            if (!isBuiltinBytes(subject)) {
+                throw new IllegalArgumentException(
+                        "bytes[]/bits[] patterns require a built-in immutable Bytes subject, got " + subject);
+            }
+            // The AST revalidates ranges, duplicate bindings and arity even if
+            // a generated producer bypasses the source lexer.
+            for (Ast.SequenceElement element : sequence.elements()) {
+                if (element.binding() != null && !element.binding().equals("_")) {
+                    bindings.define(element.binding(),
+                            sequence.unit() == Ast.SequenceUnit.BYTE
+                                    ? Primitive.INT : Primitive.BOOL, Ast.BindingKind.VAL);
+                }
+            }
+            if (sequence.tail() != null && !sequence.tail().equals("_")) {
+                // The current evaluator cannot yet guarantee destruction of
+                // a copied suffix on guard failure, and a borrowed suffix
+                // requires a fully checked lifetime across matches/await.
+                // Reject both byte and bit names rather than leaking a
+                // partially constructed Bytes or creating unsafe BitView.
+                throw new IllegalArgumentException(
+                        "named byte/bit tail requires checked ByteView/BitView "
+                                + "lifetime and guard-failure cleanup lowering");
+            }
+            return;
+        }
         if (pattern instanceof Ast.LiteralPattern literal) {
             Type literalType = typeOf(new Ast.LiteralExpr(literal.value()), bindings, generics, self);
             if (!assignable(literalType, subject) && !assignable(subject, literalType)) {

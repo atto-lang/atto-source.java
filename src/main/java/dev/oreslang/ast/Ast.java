@@ -1074,7 +1074,7 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, StructuralPattern, RecordPattern, TuplePattern, ConstructorPattern { }
+            TypePattern, StructuralPattern, RecordPattern, TuplePattern, ConstructorPattern, SequencePattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
@@ -1127,6 +1127,52 @@ public final class Ast {
             elements = List.copyOf(elements);
             if (elements.size() < 2) {
                 throw new IllegalArgumentException("tuple patterns require at least two elements");
+            }
+        }
+    }
+
+    /**
+     * A statically checked positional Bytes pattern, not an array/index
+     * expression and not the typed-width segment in binary { payload: bytes[n] }.
+     * The bounded AST is suitable for a fixed-size AOT comparison plan.
+     */
+    public enum SequenceUnit { BYTE, BIT }
+
+    public record SequenceElement(Integer literal, String binding) {
+        public SequenceElement {
+            if ((literal == null) == (binding == null)) {
+                throw new IllegalArgumentException("sequence element needs one literal or binding");
+            }
+            if (binding != null && (binding.isBlank() || !binding.matches("[A-Za-z_][A-Za-z0-9_]*"))) {
+                throw new IllegalArgumentException("invalid sequence binding");
+            }
+        }
+    }
+
+    public record SequencePattern(
+            SequenceUnit unit, List<SequenceElement> elements, String tail) implements Pattern {
+        public SequencePattern {
+            java.util.Objects.requireNonNull(unit, "sequence unit");
+            elements = List.copyOf(elements);
+            if (elements.size() > 256) {
+                throw new IllegalArgumentException("sequence pattern exceeds 256 elements");
+            }
+            if (tail != null && (elements.isEmpty() || !tail.matches("[A-Za-z_][A-Za-z0-9_]*"))) {
+                throw new IllegalArgumentException("sequence pattern needs a nonempty prefix and final tail");
+            }
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (SequenceElement element : elements) {
+                if (element.literal() != null &&
+                        (element.literal() < 0 || element.literal() > (unit == SequenceUnit.BYTE ? 255 : 1))) {
+                    throw new IllegalArgumentException("sequence pattern literal outside byte/bit range");
+                }
+                if (element.binding() != null && !element.binding().equals("_")
+                        && !seen.add(element.binding())) {
+                    throw new IllegalArgumentException("duplicate sequence pattern binding");
+                }
+            }
+            if (tail != null && !tail.equals("_") && !seen.add(tail)) {
+                throw new IllegalArgumentException("duplicate sequence pattern tail binding");
             }
         }
     }

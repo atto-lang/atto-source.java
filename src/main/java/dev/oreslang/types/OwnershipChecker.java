@@ -4279,6 +4279,23 @@ public final class OwnershipChecker {
     }
 
     private void definePatternAliases(Ast.Pattern pattern, Ast.TypeRef subjectType, VarState source, Scope destination) {
+        if (pattern instanceof Ast.SequencePattern sequence) {
+            if (subjectType == null || !subjectType.name().equals("Bytes")
+                    || !subjectType.arguments().isEmpty() || subjectType.inferArguments()) {
+                throw error("byte/bit match patterns require checked Bytes ownership");
+            }
+            for (Ast.SequenceElement element : sequence.elements()) {
+                if (element.binding() != null && !element.binding().equals("_")) {
+                    defineRefinementAlias(element.binding(),
+                            Ast.TypeRef.simple(sequence.unit() == Ast.SequenceUnit.BYTE ? "int" : "bool"),
+                            null, destination);
+                }
+            }
+            if (sequence.tail() != null && !sequence.tail().equals("_")) {
+                throw error("named byte/bit tail requires checked loan and guard-failure cleanup");
+            }
+            return;
+        }
         if (pattern instanceof Ast.BindingPattern binding) {
             defineRefinementAlias(binding.name(), subjectType, source, destination);
             return;
@@ -4486,6 +4503,14 @@ public final class OwnershipChecker {
 
     private void collectPatternBindingNames(Ast.Pattern pattern, Set<String> names) {
         if (pattern instanceof Ast.BindingPattern binding) names.add(binding.name());
+        else if (pattern instanceof Ast.SequencePattern sequence) {
+            for (Ast.SequenceElement element : sequence.elements()) {
+                if (element.binding() != null && !element.binding().equals("_"))
+                    names.add(element.binding());
+            }
+            if (sequence.tail() != null && !sequence.tail().equals("_"))
+                names.add(sequence.tail());
+        }
         else if (pattern instanceof Ast.TypePattern typed && typed.binding() != null) names.add(typed.binding());
         else if (pattern instanceof Ast.StructuralPattern structural && structural.binding() != null) {
             names.add(structural.binding());

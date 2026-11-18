@@ -11301,6 +11301,18 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
+            if (pattern instanceof Ast.SequencePattern sequence) {
+                Map<String, Object> captures =
+                        dev.oreslang.runtime.OresByteBitPatternMatcher.captures(sequence, value);
+                if (captures == null) return false;
+                // Never publish a partial set of pattern captures.
+                for (String name : captures.keySet())
+                    if (bindings.containsKey(name))
+                        throw new IllegalStateException(
+                                "duplicate sequence pattern capture: " + name);
+                bindings.putAll(captures);
+                return true;
+            }
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
                 if (bindings.containsKey(binding.name())) {
