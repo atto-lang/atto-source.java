@@ -602,6 +602,39 @@ final class AotClassProxyLanguageTest {
                 error.getMessage());
     }
 
+    @Test
+    void rejectsUnprovenHookSuspensionInDirectAndNestedSourceForms() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        Ast.Stmt directAwait = new Ast.ExprStmt(
+                new Ast.AwaitExpr(new Ast.NameExpr("pending")));
+        Ast.Stmt nestedAwait = new Ast.IfStmt(
+                List.of(new Ast.IfBranch(new Ast.LiteralExpr(true),
+                        List.of(directAwait))), List.of());
+        Ast.Stmt taskScope = new Ast.TaskScopeStmt(List.of());
+        for (Ast.Stmt forbidden : List.of(directAwait, nestedAwait, taskScope)) {
+            Ast.MethodDecl hook = new Ast.MethodDecl("before_read",
+                    Ast.Visibility.PUBLIC, false, false, false, false, false,
+                    null, List.of(), List.of(new Ast.Param(integer, "value")),
+                    Ast.TypeRef.simple("void"), List.of(),
+                    List.of(forbidden, new Ast.ReturnStmt(null)));
+            Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(),
+                    List.of(), List.of(hook));
+            Ast.Program program = new Ast.Program(List.of(
+                    new Ast.ModuleDecl("first", List.of(target, hooks))));
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            program, Set.of(), List.of(
+                                    new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                                            "Foo", "Hooks"))));
+            assertTrue(error.getMessage().contains("unproven suspension"),
+                    error.getMessage());
+        }
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
