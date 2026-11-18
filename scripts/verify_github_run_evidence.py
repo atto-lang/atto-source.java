@@ -31,7 +31,8 @@ def require(condition, message):
         raise EvidenceError(message)
 
 
-def check(evidence, *, expected_repo, expected_repo_id, expected_sha, required):
+def check(evidence, *, expected_repo, expected_repo_id, expected_sha,
+          expected_pr_number, expected_workflow_id, required):
     """Validate a complete success proof for each explicitly named job/step.
 
     'required' maps unique job names to nonempty sets of exact step names.
@@ -42,6 +43,8 @@ def check(evidence, *, expected_repo, expected_repo_id, expected_sha, required):
     require(positive_int(expected_repo_id), "invalid expected repository ID")
     require(isinstance(expected_sha, str) and SHA.fullmatch(expected_sha),
             "invalid expected SHA")
+    require(positive_int(expected_pr_number), "invalid expected PR number")
+    require(positive_int(expected_workflow_id), "invalid expected workflow ID")
     require(isinstance(required, dict) and required, "required jobs are missing")
     for job_name, steps in required.items():
         require(isinstance(job_name, str) and job_name.strip() == job_name and job_name,
@@ -67,7 +70,34 @@ def check(evidence, *, expected_repo, expected_repo_id, expected_sha, required):
             "workflow run did not succeed")
     require(positive_int(run.get("id")) and positive_int(run.get("run_attempt")),
             "run identity/attempt missing")
-    require(positive_int(run.get("workflow_id")), "workflow identity missing")
+    require(type(run.get("workflow_id")) is int
+            and run["workflow_id"] == expected_workflow_id,
+            "workflow identity does not match the trusted test plan")
+    head_repo = run.get("head_repository")
+    require(isinstance(head_repo, dict)
+            and type(head_repo.get("id")) is int
+            and head_repo["id"] == expected_repo_id,
+            "workflow head repository is not the approved source repository")
+    linked_prs = run.get("pull_requests")
+    require(isinstance(linked_prs, list) and bool(linked_prs),
+            "run has no pull request association")
+    def matches_expected_pr(pr):
+        if not isinstance(pr, dict) or type(pr.get("number")) is not int:
+            return False
+        head = pr.get("head")
+        base = pr.get("base")
+        return (pr["number"] == expected_pr_number
+                and isinstance(head, dict)
+                and head.get("sha") == expected_sha
+                and isinstance(head.get("repo"), dict)
+                and type(head["repo"].get("id")) is int
+                and head["repo"]["id"] == expected_repo_id
+                and isinstance(base, dict)
+                and isinstance(base.get("repo"), dict)
+                and type(base["repo"].get("id")) is int
+                and base["repo"]["id"] == expected_repo_id)
+    require(any(matches_expected_pr(pr) for pr in linked_prs),
+            "workflow run does not identify the expected PR and exact head")
 
     seen_jobs = set()
     for job in jobs:
@@ -134,6 +164,8 @@ def main(argv=None):
     parser.add_argument("--repo", required=True)
     parser.add_argument("--repo-id", type=int, required=True)
     parser.add_argument("--sha", required=True)
+    parser.add_argument("--pr", type=int, required=True)
+    parser.add_argument("--workflow-id", type=int, required=True)
     parser.add_argument("--require", action="append", default=[], metavar="JOB=STEP")
     args = parser.parse_args(argv)
     try:
@@ -151,7 +183,9 @@ def main(argv=None):
             evidence = json.load(stream, object_pairs_hook=unique_fields,
                                  parse_constant=bad_constant)
         check(evidence, expected_repo=args.repo, expected_repo_id=args.repo_id,
-              expected_sha=args.sha, required=parse_requirements(args.require))
+              expected_sha=args.sha, expected_pr_number=args.pr,
+              expected_workflow_id=args.workflow_id,
+              required=parse_requirements(args.require))
     except (OSError, ValueError, RecursionError, UnicodeError) as exc:
         print("CI_EVIDENCE_DENIED: " + str(exc), file=sys.stderr)
         return 1
