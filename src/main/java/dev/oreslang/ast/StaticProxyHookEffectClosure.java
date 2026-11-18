@@ -19,6 +19,14 @@ final class StaticProxyHookEffectClosure {
     private static final int MAX_DEPTH = 32;
     private static final Set<String> SCALAR_TYPES =
             Set.of("int", "float", "bool", "String", "string", "void");
+    // Syntax may represent other operators in the same BinaryExpr/UnaryExpr
+    // families. Only scalar primitive operations are admitted in a hook.
+    private static final Set<String> SAFE_BINARY_OPERATORS = Set.of(
+            "+", "-", "*", "/", "%", "eq", "neq", "==", "!=",
+            "<", ">", "<=", ">=", "and", "or", "&&", "||",
+            "&", "|", "^", "<<", ">>");
+    private static final Set<String> SAFE_UNARY_OPERATORS =
+            Set.of("+", "-", "!", "not", "~");
 
     private final Ast.ClassDecl owner;
     private final Map<Ast.MethodArity, Ast.MethodDecl> methods = new HashMap<>();
@@ -136,7 +144,16 @@ final class StaticProxyHookEffectClosure {
 
     private void visitExpression(Ast.Expr expr, int depth, Set<String> params) {
         budget(depth);
-        if (expr instanceof Ast.LiteralExpr) return;
+        if (expr instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            if (value == null || value instanceof String || value instanceof Boolean
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Short || value instanceof Byte
+                    || value instanceof Float || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal) return;
+            throw fail("interceptor literal is not a recognized scalar");
+        }
         if (expr instanceof Ast.NameExpr name) {
             if (!params.contains(name.name())) {
                 throw fail("interceptor uses unverified name: " + name.name());
@@ -144,11 +161,17 @@ final class StaticProxyHookEffectClosure {
             return;
         }
         if (expr instanceof Ast.BinaryExpr b) {
+            if (!SAFE_BINARY_OPERATORS.contains(b.operator()))
+                throw fail("interceptor binary operator has unverified effects: "
+                        + b.operator());
             visitExpression(b.left(), depth + 1, params);
             visitExpression(b.right(), depth + 1, params);
             return;
         }
         if (expr instanceof Ast.UnaryExpr u) {
+            if (!SAFE_UNARY_OPERATORS.contains(u.operator()))
+                throw fail("interceptor unary operator has unverified effects: "
+                        + u.operator());
             visitExpression(u.operand(), depth + 1, params);
             return;
         }
