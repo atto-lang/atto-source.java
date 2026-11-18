@@ -102,7 +102,8 @@ final class ActorRegistryTest {
 
     @Test
     void prematureRestartRejectedUntilOldTurnPhysicallyCompletes() throws Exception {
-        try (var runtime = new ActorRuntime()) {
+        try (var runtime = new ActorRuntime();
+             var stopper = Executors.newSingleThreadExecutor()) {
             var registry = registry(runtime, 4);
             var started = new CountDownLatch(1);
             var release = new CountDownLatch(1);
@@ -114,14 +115,18 @@ final class ActorRegistryTest {
                     }));
             first.send(1);
             assertTrue(started.await(5, TimeUnit.SECONDS));
+            var stop = stopper.submit(first::stop);
             try {
-                first.stop();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (first.isAlive() && System.nanoTime() < deadline) Thread.sleep(1);
+                assertFalse(first.isAlive(), "stop admission should fence old actor first");
                 assertFalse(first.done().isDone(), "stop flag alone is not physical retirement");
                 assertThrows(IllegalStateException.class,
                         () -> registry.get_or_create("orders", key -> worker(runtime)));
             } finally {
                 release.countDown();
             }
+            stop.get(5, TimeUnit.SECONDS);
             assertTrue(first.awaitTermination(5, TimeUnit.SECONDS));
             assertNotSame(first, registry.get_or_create("orders", key -> worker(runtime)));
         }
@@ -308,7 +313,8 @@ final class ActorRegistryTest {
 
     @Test
     void lookupStateSeparatesRetiringFromAbsent() throws Exception {
-        try (var runtime = new ActorRuntime()) {
+        try (var runtime = new ActorRuntime();
+             var stopper = Executors.newSingleThreadExecutor()) {
             var registry = registry(runtime, 2);
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
@@ -320,14 +326,18 @@ final class ActorRegistryTest {
                     }));
             actor.send(1);
             assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var stop = stopper.submit(actor::stop);
             try {
-                actor.stop();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (actor.isAlive() && System.nanoTime() < deadline) Thread.sleep(1);
+                assertFalse(actor.isAlive(), "stop admission should fence old actor first");
                 assertEquals(ActorRegistry.LookupPhase.RETIRING,
                         registry.lookup_state("orders").phase());
                 assertTrue(registry.lookup("orders").isEmpty());
                 assertThrows(IllegalStateException.class,
                         () -> registry.get_or_create("orders", key -> worker(runtime)));
             } finally { release.countDown(); }
+            stop.get(5, TimeUnit.SECONDS);
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             assertEquals(ActorRegistry.LookupPhase.ABSENT,
                     registry.lookup_state("orders").phase());
