@@ -42,6 +42,23 @@ final class ReturnFirstBeginCallableTest {
     }
 
     @Test
+    void everyReturnFirstMarkerAndCloserPassesTheSameTypeChecker() {
+        for (String header : new String[] {
+                "int <- foo()", "int• foo()", "fnc int <- foo()", "fnc int• foo()"
+        }) {
+            for (String closer : new String[] {"end", "end.", "end;"}) {
+                String source = header + "\nbegin\n  return 42;\n" + closer + "\n";
+                Ast.Program program = Parser.parse(source);
+                Ast.FunctionDecl function = assertInstanceOf(Ast.FunctionDecl.class,
+                        program.modules().getFirst().declarations().getFirst());
+                assertEquals("int", function.returnType().name(), source);
+                assertEquals(1, function.body().size(), source);
+                assertDoesNotThrow(() -> TypeChecker.check(program), source);
+            }
+        }
+    }
+
+    @Test
     void classAndActorMethodSpellingsUseTheSameCheckedReceiverSemantics() {
         Ast.Program program = Parser.parse("""
                 define class Counter as
