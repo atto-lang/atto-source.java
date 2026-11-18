@@ -151,6 +151,51 @@ final class TemplateLiteralContractTest {
         assertTrue(depth.getMessage().contains("brace nesting limit"), depth::getMessage);
     }
 
+    @Test
+    void interpolationBlockCommentsEnforceExactPortable128Boundary() {
+        String accepted = "`value ${" + "/*".repeat(128) + " ignored " +
+                "*/".repeat(128) + "\"x\"}`";
+        assertDoesNotThrow(() -> new Lexer(accepted).scan(),
+                "128 nested comments must remain valid source");
+        String rejected = "`value ${" + "/*".repeat(129) + " ignored " +
+                "*/".repeat(129) + "\"x\"}`";
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> new Lexer(rejected).scan());
+        assertTrue(error.getMessage().contains("block comment nesting limit exceeded"),
+                error::getMessage);
+        // The limit is restricted to comments actually traversed in template
+        // interpolations; quoted text or normal comments cannot grant tokens.
+        String opaque = "`/*".repeat(1) + " /*".repeat(129) + "*/`";
+        assertDoesNotThrow(() -> new Lexer(opaque).scan());
+    }
+
+    @Test
+    void nestedTemplateSubstitutionsShareOneScannerBudget() {
+        String first = "`" + "${\"x\"}".repeat(600) + "`";
+        String accepted = "`outer ${" + first + "} and ${" +
+                ("`" + "${\"y\"}".repeat(422) + "`") + "}`";
+        assertDoesNotThrow(() -> new Lexer(accepted).scan(),
+                "1024 nested substitutions including outer frames must be accepted");
+
+        String over = "`outer ${" + first + "} and ${" +
+                ("`" + "${\"y\"}".repeat(423) + "`") + "}`";
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> new Lexer(over).scan());
+        assertTrue(failure.getMessage().contains("interpolation count limit exceeded"),
+                failure::getMessage);
+    }
+
+    @Test
+    void interpolationLineCommentEndsAtCrLfAndStandaloneCr() throws Exception {
+        for (String newline : new String[] { "\n", "\r", "\r\n" }) {
+            String template = "`prefix ${// ignored }" + newline + "\"value\"} suffix`";
+            assertDoesNotThrow(() -> new Lexer(template).scan(),
+                    "interpolation must survive comment terminated by " + newline.length() + " code unit(s)");
+            String source = "pub fnc main(): void { stdio.stdout.write(" + template + "); return; }";
+            assertEquals("prefix value suffix", run(source));
+        }
+    }
+
     private static String run(String program) throws Exception {
         TypeChecker.check(Parser.parse(program));
         ByteArrayOutputStream output = new ByteArrayOutputStream();

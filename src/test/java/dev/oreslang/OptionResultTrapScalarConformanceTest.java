@@ -122,8 +122,8 @@ final class OptionResultTrapScalarConformanceTest {
                 // A real compiler-generated guest must return signed int 0 (not a host mock).
                 trap fnc checked(): int { return 41; }
                 pub fnc main(): int {
-                  val Option<int> result = checked();
-                  if result.is_some(); then
+                  val Result<int, Error> result = checked();
+                  if result.is_ok(); then
                     return result.unwrap() - 41;
                   else
                     return 1;
@@ -142,8 +142,8 @@ final class OptionResultTrapScalarConformanceTest {
                 // A real compiler-generated guest must return signed int 0 (not a host mock).
                 trap fnc checked(): Option<int> { return None; }
                 pub fnc main(): int {
-                  val Option<Option<int>> result = checked();
-                  if result.is_some(); then
+                  val Result<Option<int>, Error> result = checked();
+                  if result.is_ok(); then
                     val Option<int> inside = result.unwrap();
                     if inside.is_none(); then
                       return 0;
@@ -167,14 +167,10 @@ final class OptionResultTrapScalarConformanceTest {
                 // A real compiler-generated guest must return signed int 0 (not a host mock).
                 trap fnc checked(): Result<int, String> { return Err("not-throw"); }
                 pub fnc main(): int {
-                  val Option<Result<int, String>> result = checked();
-                  if result.is_some(); then
-                    val Result<int, String> inside = result.unwrap();
-                    if inside.is_err(); then
-                      return 0;
-                    else
-                      return 2;
-                    fi
+                  // A trap callable returning a Result is not wrapped again.
+                  val Result<int, String | Error> result = checked();
+                  if result.is_err(); then
+                    return 0;
                   else
                     return 1;
                   fi
@@ -198,8 +194,8 @@ final class OptionResultTrapScalarConformanceTest {
                 end
                 trap fnc as_dog(Animal animal): Dog { return animal as Dog; }
                 pub fnc main(): int {
-                  val Option<Dog> result = as_dog(new Cat());
-                  if result.is_none(); then
+                  val Result<Dog, Error> result = as_dog(new Cat());
+                  if result.is_err(); then
                     return 0;
                   else
                     return 1;
