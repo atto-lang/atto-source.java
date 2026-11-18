@@ -519,6 +519,24 @@ final class AotClassProxyLanguageTest {
     }
 
     @Test
+    void repeatedTypedProxyInstancesShareClassButNotInvocations() throws Exception {
+        String source = BEFORE_HOOK_SOURCE.replace(
+                "stdio.stdout.write(p.do_work(41));",
+                "stdio.stdout.write(p.do_work(41));\n"
+                        + "  val q = new Proxy(new Foo(), new Hook());\n"
+                        + "  stdio.stdout.write(q.do_work(42));");
+        assertNotEquals(BEFORE_HOOK_SOURCE, source);
+        Ast.Program program = Parser.parse(source);
+        long generated = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof Ast.ClassDecl klass
+                        && klass.name().equals("FooWithHookProxy")).count();
+        assertEquals(1, generated, "multiple instances share one emitted type");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("742743", run(source), "each invocation runs its own before hook");
+    }
+
+    @Test
     void rejectsMissingOrWrongArityBeforeHook() {
         String src = BEFORE_HOOK_SOURCE.replace(
                 "before_do_work(int value)", "before_do_work()");
