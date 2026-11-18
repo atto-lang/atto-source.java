@@ -56,10 +56,10 @@ jobs:
           assert root.tag == "testsuite", "wrong XML root"
           assert root.attrib.get("name") == "dev.oreslang.AotClassProxyLanguageTest", "wrong test class"
           count = int(root.attrib.get("tests", "0"))
-          assert count >= 26, f"only {count} proxy tests executed"
+          assert count >= 27, f"only {count} proxy tests executed"
           for failure in ("failures", "errors", "skipped"):
               assert int(root.attrib.get(failure, "0")) == 0, f"nonzero {failure}"
-          assert len(root.findall("testcase")) >= 26, "missing testcase evidence"
+          assert len(root.findall("testcase")) >= 27, "missing testcase evidence"
           for element in ("failure", "error", "skipped"):
               assert not root.findall(".//" + element), f"unexpected {element} node"
           print(f"ATTO_PROXY_TEST_COUNT={count}")
