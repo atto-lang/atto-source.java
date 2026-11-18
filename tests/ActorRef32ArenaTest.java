@@ -12,6 +12,10 @@ public final class ActorRef32ArenaTest {
                IndexOutOfBoundsException expected) { return; }
         throw new AssertionError(what);
     }
+    private static void stop_twice(ActorRef32Arena value) {
+        value.close();
+        value.close();
+    }
     public static void main(String[] args) {
         var a = new ActorRef32Arena.Owner(7, 9, 1);
         var b = new ActorRef32Arena.Owner(7, 10, 1);
@@ -45,8 +49,7 @@ public final class ActorRef32ArenaTest {
             check(first.read_i64(next, a, a, 101, 0) == 0, "released bytes not scrubbed");
             reject(() -> first.allocate(a, 0), "type zero accepted");
             reject(() -> first.allocate(b, 101), "foreign allocation accepted");
-            first.close();
-            first.close();
+            stop_twice(first);
             check(first.is_closed(), "actor STOP");
             reject(() -> first.read_i64(next, a, a, 101, 0), "post-STOP read accepted");
             reject(() -> first.allocate(a, 101), "post-STOP allocate");
