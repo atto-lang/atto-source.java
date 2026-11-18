@@ -2821,6 +2821,30 @@ public final class ActorRuntime implements AutoCloseable {
      * threads may only enqueue a runtime continuation; they never execute guest
      * code directly.</p>
      */
+    /** One requested hot upgrade: its plan, its outcome Future and its deadline. */
+    private static final class PendingUpgrade<M> {
+        final ActorUpgrade<M> plan;
+        final OresFuture<ActorUpgrade.Result> result = new OresFuture<>();
+        volatile java.util.concurrent.ScheduledFuture<?> deadline;
+        // Written on the actor's own turn only.
+        long rejected;
+        boolean heapMigrated;
+        long generation;
+
+        PendingUpgrade(ActorUpgrade<M> plan) {
+            this.plan = plan;
+        }
+
+        void settle(ActorUpgrade.Outcome outcome, long installedGeneration, boolean migrated, String failureType) {
+            result.completeFromRuntime(new ActorUpgrade.Result(
+                    outcome, installedGeneration, rejected, migrated, failureType));
+        }
+
+        void settleCommitted() {
+            settle(ActorUpgrade.Outcome.COMMITTED, generation, heapMigrated, "");
+        }
+    }
+
     public static final class ContinuationTarget {
         private final ActorId actorId;
         // A non-static inner target implicitly retains its ActorRuntime even
@@ -2829,12 +2853,16 @@ public final class ActorRuntime implements AutoCloseable {
         private final java.lang.ref.WeakReference<ActorRuntime> originatingRuntime;
         // Identity, not merely ActorId, fences a reused hot-reload incarnation.
         private final java.lang.ref.WeakReference<ActorCell<?>> capturedCell;
+        // A continuation resumes only on the code generation that captured it
+        // (spec ch. 27 rule 11): after a hot upgrade it is refused, fail closed.
+        private final long codeGeneration;
 
         private ContinuationTarget(ActorRuntime runtime, ActorCell<?> cell) {
             this.originatingRuntime = new java.lang.ref.WeakReference<>(
                     Objects.requireNonNull(runtime, "runtime"));
             this.actorId = cell.ref.id();
             this.capturedCell = new java.lang.ref.WeakReference<>(cell);
+            this.codeGeneration = cell.codeGeneration;
         }
 
         public ActorId actorId() {
@@ -2854,7 +2882,8 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean enqueue(Runnable continuation) {
             ActorRuntime runtime = originatingRuntime.get();
             ActorCell<?> cell = runtime == null ? null : currentCell(runtime);
-            return cell != null && runtime.enqueueContinuation(cell, continuation);
+            return cell != null && cell.codeGeneration == codeGeneration
+                    && runtime.enqueueContinuation(cell, continuation);
         }
     }
 
@@ -3285,6 +3314,7 @@ public final class ActorRuntime implements AutoCloseable {
         // internal revoker and ALL terminal waiters of the winning settlement.
         future.whenNotificationsDrainedRuntime(() -> {
             boolean notify = false;
+            boolean wakeForUpgrade = false;
             synchronized (cell.lifecycleLock) {
                 Throwable physicalFailure = future.cancellationHookFailureFromRuntime();
                 if (physicalFailure != null) {
@@ -3299,6 +3329,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 if (cell.pendingOperations.remove(future)) {
+                    if (cell.pendingUpgrade != null) wakeForUpgrade = true;
                     if (cleanupReceipt) {
                         if (cell.pendingCleanupFutures <= 0) {
                             cell.sourceStopCleanupAborted = true;
@@ -3312,6 +3343,7 @@ public final class ActorRuntime implements AutoCloseable {
                     notify = cell.stopped.get();
                 }
             }
+            if (wakeForUpgrade) cell.schedule();
             if (notify) cell.sourceTaskCleanupQuiesced();
         });
         return true;
@@ -3660,6 +3692,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         public void send(M message) {
             ActorRuntime.this.send(this, message);
+        }
+
+        /** Hot-upgrade this incarnation; see {@link ActorRuntime#upgrade}. */
+        public OresFuture<ActorUpgrade.Result> upgrade(ActorUpgrade<M> plan) {
+            return ActorRuntime.this.upgrade(this, plan);
         }
 
         /**
@@ -7420,6 +7457,29 @@ public final class ActorRuntime implements AutoCloseable {
         return ref.done();
     }
 
+    /**
+     * Hot-upgrade one actor incarnation (spec chapter 27, section 3): keep its
+     * identity and refs, drain generation N, then switch code, and optionally
+     * migrate the heap, on the actor's own turn. Host/supervisor only. The
+     * returned Future settles with the outcome; it never fails for a rollback.
+     */
+    public <M> OresFuture<ActorUpgrade.Result> upgrade(ActorRef<M> ref, ActorUpgrade<M> plan) {
+        requireSupervisorContext("hot-upgrade an actor");
+        requireCallerRuntimeAffinity("hot-upgrade an actor");
+        Objects.requireNonNull(ref, "ref");
+        Objects.requireNonNull(plan, "plan");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        if (!ref.ownedBy(this)) {
+            throw new ActorInvalidReferenceException("ActorRef belongs to a different ActorRuntime");
+        }
+        @SuppressWarnings("unchecked")
+        ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
+        if (cell == null || cell.ref != ref && cell.ref.generation() != ref.generation()) {
+            throw terminated(ref);
+        }
+        return cell.requestUpgrade(plan);
+    }
+
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
         requireCallerRuntimeAffinity("send messages");
@@ -9682,7 +9742,15 @@ public final class ActorRuntime implements AutoCloseable {
          * physical quiescence. A restart creates a new incarnation and a new
          * heap; code upgrade keeps it (spec chapter 27).
          */
-        private final ActorNativeArena heap;
+        // Replaced only by a committed hot upgrade, on this actor's own turn.
+        private volatile ActorNativeArena heap;
+        /** Code generation of this incarnation (spec ch. 27); bumped by a committed upgrade. */
+        private volatile long codeGeneration = 1;
+        /** Guarded by lifecycleLock: a requested upgrade waiting for generation N to drain. */
+        private PendingUpgrade<M> pendingUpgrade;
+        /** Guarded by lifecycleLock: a committed upgrade still filtering mail queued under N. */
+        private PendingUpgrade<M> filteringUpgrade;
+        private long upgradeFilterRemaining;
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
         private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
         /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
@@ -9828,13 +9896,160 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = isPrivateKind(kind)
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
-            this.heap = new ActorNativeArena(
+            this.heap = newHeap();
+        }
+
+        /** A fresh heap for this incarnation, charged to its policy and the runtime budget. */
+        private ActorNativeArena newHeap() {
+            return new ActorNativeArena(
                     policy.maxHeapBytes(),
                     this::requireHeapOwner,
                     bytes -> {
                         reserveSharedRuntimeBytes(bytes, "actor heap");
                         return () -> releaseSharedRuntimeBytes(bytes);
                     });
+        }
+
+        /** Guarded by lifecycleLock: nothing of the current generation is in flight. */
+        private boolean generationDrainedLocked() {
+            return continuationMailbox.isEmpty()
+                    && sourceTaskMailbox.isEmpty()
+                    && pendingOperations.isEmpty()
+                    && !sourceReceiveSuspended;
+        }
+
+        /** Host request: freeze, drain, then switch on this actor's own turn. */
+        private OresFuture<ActorUpgrade.Result> requestUpgrade(ActorUpgrade<M> plan) {
+            if (codeExecutor != null) {
+                throw new UnsupportedOperationException(
+                        "hot upgrade of compiled source actors needs compiler-declared state schemas");
+            }
+            if (policy.adversarial()) {
+                throw new SecurityException("adversarial actors cannot be hot-upgraded");
+            }
+            PendingUpgrade<M> pending = new PendingUpgrade<>(plan);
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) throw terminated(ref);
+                if (pendingUpgrade != null || filteringUpgrade != null) {
+                    throw new IllegalStateException("actor " + ref.id() + " already has an upgrade in progress");
+                }
+                pendingUpgrade = pending;
+            }
+            pending.deadline = ActorUpgrade.TIMERS.schedule(() -> expireUpgrade(pending),
+                    plan.drainDeadline.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
+            schedule();
+            return pending.result;
+        }
+
+        /** Deadline: generation N did not drain in time, so it stays installed. */
+        private void expireUpgrade(PendingUpgrade<M> pending) {
+            synchronized (lifecycleLock) {
+                if (pendingUpgrade != pending) return; // already switched or aborted
+                pendingUpgrade = null;
+            }
+            pending.settle(ActorUpgrade.Outcome.ROLLED_BACK_DRAIN_TIMEOUT, codeGeneration, false, "");
+            schedule(); // admission resumes
+        }
+
+        /** Runs on this actor's turn, with nothing of generation N in flight. */
+        private void runUpgrade(PendingUpgrade<M> pending, ActorContext<M> context) {
+            if (pending.deadline != null) pending.deadline.cancel(false);
+            ActorUpgrade<M> plan = pending.plan;
+            ActorNativeArena fresh = null;
+            Behavior<M> next;
+            try {
+                if (plan.migrate != null) {
+                    fresh = newHeap();
+                    next = plan.migrate.migrate(behavior, heap, fresh, context);
+                } else {
+                    next = plan.rebind.rebind(behavior, context);
+                }
+                Objects.requireNonNull(next, "upgrade returned a null behavior");
+                if (isPrivateKind(kind) && !trustedFactory) {
+                    validatePrivateBehaviorState(ref.id(), next);
+                }
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                retireQuietly(fresh);
+                throw fatal;
+            } catch (Throwable failure) {
+                // Copy-then-switch: generation N and its heap were never touched.
+                retireQuietly(fresh);
+                pending.settle(ActorUpgrade.Outcome.ROLLED_BACK_MIGRATION_FAILED, codeGeneration, false,
+                        failure.getClass().getName());
+                schedule();
+                return;
+            }
+            ActorNativeArena retired = null;
+            boolean settleNow;
+            synchronized (lifecycleLock) {
+                // Behavior, heap and generation are published together.
+                behavior = next;
+                if (fresh != null) {
+                    retired = heap;
+                    heap = fresh;
+                }
+                codeGeneration++;
+                long queued;
+                synchronized (mailboxAccountingLock) {
+                    queued = queuedUserMessages;
+                }
+                pending.heapMigrated = fresh != null;
+                pending.generation = codeGeneration;
+                upgradeFilterRemaining = queued;
+                settleNow = queued == 0;
+                filteringUpgrade = settleNow ? null : pending;
+            }
+            // Generation N is drained, so nothing can still hold the old heap.
+            retireQuietly(retired);
+            if (settleNow) pending.settleCommitted();
+            schedule();
+        }
+
+        /** Mail queued under generation N reaches N+1 only if the plan admits it. */
+        private boolean rejectedByUpgrade(ActorInboxMail<M> mail) {
+            PendingUpgrade<M> filtering;
+            boolean last;
+            synchronized (lifecycleLock) {
+                filtering = filteringUpgrade;
+                if (filtering == null) return false;
+                last = --upgradeFilterRemaining == 0;
+                if (last) filteringUpgrade = null;
+            }
+            boolean rejected = !filtering.plan.admitsQueued.test(mail.value());
+            if (rejected) {
+                filtering.rejected++;
+                filtering.plan.onRejected.accept(mail);
+            }
+            if (last) filtering.settleCommitted();
+            return rejected;
+        }
+
+        /** The incarnation is ending: settle any unfinished upgrade off the lock. */
+        private void abortUpgradesLocked() {
+            PendingUpgrade<M> waiting = pendingUpgrade;
+            PendingUpgrade<M> filtering = filteringUpgrade;
+            pendingUpgrade = null;
+            filteringUpgrade = null;
+            long generation = codeGeneration;
+            if (waiting != null) {
+                if (waiting.deadline != null) waiting.deadline.cancel(false);
+                ActorUpgrade.TIMERS.execute(() -> waiting.settle(
+                        ActorUpgrade.Outcome.ABORTED_ACTOR_TERMINATED, generation, false, ""));
+            }
+            if (filtering != null) {
+                ActorUpgrade.TIMERS.execute(filtering::settleCommitted);
+            }
+        }
+
+        private void retireQuietly(ActorNativeArena arena) {
+            if (arena == null) return;
+            try {
+                arena.close();
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                throw fatal;
+            } catch (Throwable failure) {
+                recordFinalizationFailure(failure);
+            }
         }
 
         private long nextStaticSelectTicket(Object selectSite) {
@@ -10417,6 +10632,7 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
+            abortUpgradesLocked();
             finalized = true;
             // Only release virtual activation ownership after *all* physical
             // reclamation, group deregistration and parent-child finalization.
@@ -11027,6 +11243,7 @@ public final class ActorRuntime implements AutoCloseable {
                     MessageEnvelope envelope = null;
                     boolean sourceTaskCommand;
                     ActorFailureNotice controlNotice = null;
+                    PendingUpgrade<M> upgradeToRun = null;
                     synchronized (lifecycleLock) {
                         // Stop closes user mail and freezes CONTROL admission
                         // under this same actor lifecycle lock.
@@ -11054,14 +11271,28 @@ public final class ActorRuntime implements AutoCloseable {
                             }
                             if (controlNotice == null) {
                                 envelope = continuationMailbox.tryRead().orElse(null);
-                                if (envelope == null && !sourceReceiveSuspended) {
+                                // A pending hot upgrade freezes admission of new user mail
+                                // (spec ch. 27 rule 10); generation N keeps draining.
+                                if (envelope == null && !sourceReceiveSuspended
+                                        && pendingUpgrade == null) {
                                     envelope = mailbox.tryRead().orElse(null);
+                                }
+                                if (envelope == null && pendingUpgrade != null
+                                        && generationDrainedLocked()) {
+                                    upgradeToRun = pendingUpgrade;
+                                    pendingUpgrade = null;
                                 }
                                 if (fairnessYield && envelope != null) {
                                     supervisorFairnessYields.incrementAndGet();
                                 }
                             }
                         }
+                    }
+
+                    if (upgradeToRun != null) {
+                        runUpgrade(upgradeToRun, context);
+                        processed++;
+                        continue;
                     }
 
                     if (controlNotice != null) {
@@ -11155,7 +11386,7 @@ public final class ActorRuntime implements AutoCloseable {
                                             codeActorState,
                                             sourceMail,
                                             sourceContext);
-                                } else {
+                                } else if (!rejectedByUpgrade(mail)) {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
