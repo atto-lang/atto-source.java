@@ -350,7 +350,7 @@ public final class Parser {
                 }
                 // Compatibility: both `pub define fnc` and `define pub fnc`
                 // denote the same file-root callable, with identical modifiers.
-                if (check(FNC) || check(ROUTINE)) {
+                if (check(FNC) || check(ROUTINE) || looksLikeReturnFirstCallableHead()) {
                     Ast.Decl callable = parseDeclarationAfterModifiers(annotations, modifiers);
                     if (callable != null) {
                         rootDeclarations.add(callable);
@@ -695,7 +695,7 @@ public final class Parser {
             }
             // Legacy nested `define` is accepted, but never creates a new
             // scope or changes the callable's public symbol identity.
-            if (check(FNC) || check(ROUTINE)) {
+            if (check(FNC) || check(ROUTINE) || looksLikeReturnFirstCallableHead()) {
                 return parseDeclarationAfterModifiers(annotations, modifiers);
             }
             rejectUnimplementedInvertedAggregate();
@@ -767,6 +767,14 @@ public final class Parser {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        }
+        // Return-type-first declarations are ordinary free/module fnc values,
+        // not a new callable kind. The marker is checked by the lexer.
+        if (looksLikeReturnFirstCallableHead()) {
+            if (modifiers.shared || modifiers.untrusted || modifiers.isStatic) {
+                throw error(peek(), "return-first free fnc cannot carry actor/static modifiers");
+            }
+            return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         }
         if (modifiers.generator) {
             if (!modifiers.generatorStarred) {
@@ -841,11 +849,15 @@ public final class Parser {
         }
         CallableStructural structural = normalizeCallableStructural(annotations, modifiers.structural);
         annotations = structural.annotations();
+        Ast.TypeRef prefixReturnType = parseReturnFirstTypeIfPresent();
         String name = consumeCallableName("expected callable name");
         List<Ast.GenericParameter> specs = parseGenericParameterSpecs();
         List<String> generics = specs.stream().map(Ast.GenericParameter::name).toList();
 
         if (match(EQUAL)) {
+            if (prefixReturnType != null) {
+                throw error(previous(), "return-first declarations require a parameter list and begin/end body");
+            }
             consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
             List<Ast.Param> params = parseDeclaredPipeParameters();
             consume(PIPE, "expected closing '|' in lambda-style callable declaration");
@@ -864,11 +876,76 @@ public final class Parser {
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         boolean arrowReturn = check(ARROW);
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = prefixReturnType == null
+                ? parseReturnType(annotations)
+                : validateReturnFirstType(prefixReturnType, annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
-        List<Ast.Stmt> body = parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
+        List<Ast.Stmt> body = prefixReturnType != null
+                ? parseBeginEndCallableBody()
+                : parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
+    }
+
+    /**
+     * A type-first callable must have the complete form Type <- name(...)
+     * or Type• name(...). Both markers lower to the existing typed callable
+     * AST. Lookahead restores the cursor even on malformed generic types.
+     */
+    private boolean looksLikeReturnFirstCallableHead() {
+        int mark = current;
+        try {
+            parseTypeRef();
+            if (!match(LEFT_ARROW, BULLET)) return false;
+            consumeCallableName("expected callable name after return-first marker");
+            parseGenericParameterSpecs();
+            return check(LPAREN);
+        } catch (IllegalArgumentException malformed) {
+            return false;
+        } finally {
+            current = mark;
+        }
+    }
+
+    private Ast.TypeRef parseReturnFirstTypeIfPresent() {
+        if (!looksLikeReturnFirstCallableHead()) return null;
+        Ast.TypeRef type = parseTypeRef();
+        if (!match(LEFT_ARROW, BULLET)) {
+            throw error(peek(), "return-first callable requires '<-' or '•'");
+        }
+        return type;
+    }
+
+    private Ast.TypeRef validateReturnFirstType(Ast.TypeRef type, List<Ast.Annotation> annotations) {
+        if (check(COLON) || check(ARROW) || check(FAT_ARROW)) {
+            throw error(peek(), "return-first callable cannot declare a second return type");
+        }
+        boolean annotated = annotations.stream().anyMatch(a -> a.name().equals("Ret"));
+        Ast.TypeRef annotationType = parseReturnType(annotations);
+        if (annotated && !sameType(type, annotationType)) {
+            throw error(previous(), "@Ret type and return-first declared type disagree");
+        }
+        return type;
+    }
+
+    /** The explicit begin owns exactly one end (optionally followed by . or ;). */
+    private List<Ast.Stmt> parseBeginEndCallableBody() {
+        Token headerEnd = previous();
+        if (!matchContextualKeyword("begin")) {
+            throw error(peek(), "return-first callable requires 'begin' after its signature");
+        }
+        if (previous().line() == headerEnd.line()) {
+            throw error(previous(), "'begin' must start on the line after a return-first signature");
+        }
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> body = parseUntil(END);
+            consume(END, "expected 'end' after begin callable body");
+            match(DOT, SEMICOLON);
+            return body;
+        } finally {
+            localTypeScopes.pop();
+        }
     }
 
     /** Contextual mtd only counts as a source receiver declaration in a define head. */
@@ -2030,6 +2107,7 @@ public final class Parser {
                                        boolean enclosingAbstractClass) {
         CallableStructural structural = normalizeCallableStructural(annotations, mods.structural);
         annotations = structural.annotations();
+        Ast.TypeRef prefixReturnType = parseReturnFirstTypeIfPresent();
         String name = parseMethodName();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '(' after method name");
@@ -2109,7 +2187,9 @@ public final class Parser {
         // spelling and a contiguous '::' header/body boundary. Braced
         // methods continue accepting either return-type spelling.
         boolean arrowMethodBody = check(ARROW);
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = prefixReturnType == null
+                ? parseReturnType(annotations)
+                : validateReturnFirstType(prefixReturnType, annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
         // An abstract class may declare required slots as `name(args): Type;`.
         // Such signatures are abstract, but remain private unless explicitly pub.
@@ -2121,7 +2201,12 @@ public final class Parser {
                     + "' requires an abstract class or explicit 'abstract' modifier");
         }
         List<Ast.Stmt> body;
-        if (mods.isAbstract || implicitAbstract) {
+        if (prefixReturnType != null && (mods.isAbstract || implicitAbstract)) {
+            throw error(peek(), "return-first methods require an executable begin/end body");
+        }
+        if (prefixReturnType != null) {
+            body = parseBeginEndCallableBody();
+        } else if (mods.isAbstract || implicitAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else if (match(DOUBLE_COLON)) {
