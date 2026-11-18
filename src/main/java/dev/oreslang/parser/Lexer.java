@@ -143,7 +143,7 @@ public final class Lexer {
                 } else add(BANG);
             }
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
-            case '<' -> add(match('-') ? LEFT_ARROW : match('|') ? PIPE_REVERSE : match('=') ? LTE : LT); case '>' -> add(match('=') ? GTE : GT);
+            case '<' -> add(match('|') ? PIPE_REVERSE : match('=') ? LTE : LT); case '>' -> add(match('=') ? GTE : GT);
             case '/' -> {
                 if (match('/')) while (peek() != '\n' && peek() != '\r' && !isAtEnd()) advance();
                 else if (match('*')) blockComment();
