@@ -930,7 +930,13 @@ public final class Parser {
         int mark = current;
         try {
             parseTypeRef();
-            advance(); // already verified <- / • by the lookahead
+            // '<-' consists of two contextual tokens (LT and MINUS).
+            // Advancing only once leaves the cursor on MINUS, allowing
+            // return-first actor lifecycle names to bypass their CONTROL
+            // admission gate. Consume the complete validated marker.
+            if (!matchReturnFirstMarker()) {
+                throw error(peek(), "malformed return-first callable marker");
+            }
             return peek().lexeme();
         } finally {
             current = mark;
