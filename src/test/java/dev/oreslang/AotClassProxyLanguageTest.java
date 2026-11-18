@@ -1045,7 +1045,11 @@ final class AotClassProxyLanguageTest {
     @Test
     void currentMainProxySynthesisPreservesExplicitExports() {
         Ast.TypeRef integer = Ast.TypeRef.simple("int");
-        Ast.ClassDecl foo = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+        // A publicly exported declaration must actually be public; use the
+        // same visibility contract admitted by current-main export validation.
+        Ast.ClassDecl foo = new Ast.ClassDecl("Foo", Ast.Visibility.PUBLIC,
+                false, Ast.ActorKind.NONE, List.of(), List.of(), List.of(),
+                List.of(), null,
                 List.of(proxySurfaceMethod(integer, List.of(), List.of())));
         List<Ast.ExportDecl> exports = List.of(
                 new Ast.ExportDecl("Foo", Ast.ExportScope.PUBLIC, Ast.ExportKind.CLASS));
