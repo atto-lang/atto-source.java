@@ -316,6 +316,7 @@ public final class StaticProxySynthesis {
         }
 
         List<Ast.MethodDecl> methods = new ArrayList<>();
+        List<Ast.MethodDecl> verifiedHookRoots = new ArrayList<>();
         Set<Ast.MethodArity> consumed = new HashSet<>();
         for (Ast.MethodDecl method : delegate.methods()) {
             Ast.MethodArity slot = new Ast.MethodArity("before_" + method.name(), method.arity());
@@ -344,10 +345,10 @@ public final class StaticProxySynthesis {
                             + interceptor.name() + "." + hook.name());
                 }
             }
-            // Closed-world helper closure: a syntactically synchronous hook
-            // may call an indirectly suspending helper. Resolve each helper
-            // transitively by the existing name+arity slot or fail closed.
-            StaticProxyHookEffectClosure.verify(program, interceptor, hook);
+            // Collect validated entrypoints before checking the shared
+            // call graph once. This avoids a separate full method-table
+            // allocation and repeated helper traversal for every public hook.
+            verifiedHookRoots.add(hook);
             for (int i = 0; i < hook.parameters().size(); i++) {
                 Ast.Param provided = hook.parameters().get(i);
                 Ast.Param expected = method.parameters().get(i);
@@ -383,6 +384,10 @@ public final class StaticProxySynthesis {
                         + interceptor.name() + "." + slot.name() + "/" + slot.arity());
             }
         }
+
+        // Check transitive effects after all hooks have been matched to
+        // target slots. Duplicate helper edges share one bounded proof.
+        StaticProxyHookEffectClosure.verifyAll(program, interceptor, verifiedHookRoots);
 
         List<Ast.FieldDecl> fields = new ArrayList<>(delegate.fields());
         fields.add(new Ast.FieldDecl(HOOK_FIELD, Ast.Visibility.PRIVATE,
