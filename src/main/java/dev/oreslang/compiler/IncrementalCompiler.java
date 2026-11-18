@@ -217,7 +217,12 @@ public final class IncrementalCompiler {
         LinkedHashMap<String, Map<String, Ast.TypeAliasDecl>> aliases = new LinkedHashMap<>();
         LinkedHashMap<String, Ast.ClassDecl> ownershipClasses = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : importer.imports()) {
+            // Both classes and actors have nominal method/protocol metadata.
+            // ImportGraph already proves the requested public declaration kind;
+            // dropping ACTOR here previously let Worker.receive() fall through
+            // to the unknown-member path without checking mailbox ingress.
             if (imported.wildcard() || (imported.kind() != Ast.ImportKind.CLASS
+                    && imported.kind() != Ast.ImportKind.ACTOR
                     && imported.kind() != Ast.ImportKind.MODULE)) continue;
             String sourceId = ImportGraph.resolveImportUnitId(
                     unitId, imported, parsed.keySet(), importResolutions);
