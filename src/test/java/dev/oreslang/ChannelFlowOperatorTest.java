@@ -149,13 +149,17 @@ final class ChannelFlowOperatorTest {
 
     @Test
     void bitShiftsAreTripleArrows() throws Exception {
-        assertEquals("16|4|0", run("""
+        assertEquals("16|4|0|-1|9223372036854775807", run("""
                 pub fnc main(): void {
                   stdio.stdout.write(1 <<< 4);
                   stdio.stdout.write("|");
                   stdio.stdout.write(16 >>> 2);
                   stdio.stdout.write("|");
                   stdio.stdout.write(1 >>> 3);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(ashr(-1, 1));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(-1 >>> 1);
                   return;
                 }
                 """));
