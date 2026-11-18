@@ -66,6 +66,18 @@ class EvidenceGateTests(unittest.TestCase):
         evidence["jobs"][0]["steps"] = []
         self.rejects(evidence)
 
+    def test_null_steps_is_not_success(self):
+        evidence = valid_evidence()
+        evidence["jobs"][0]["steps"] = None
+        self.rejects(evidence)
+
+    def test_optional_failed_step_is_not_masked_by_green_job(self):
+        evidence = valid_evidence()
+        evidence["jobs"][0]["steps"].append(
+            {"name": "Optional insecure smoke", "number": 3,
+             "status": "completed", "conclusion": "failure"})
+        self.rejects(evidence)
+
     def test_zero_runner_is_not_success(self):
         for runner_id in (0, None, True, -1):
             with self.subTest(runner_id=runner_id):
