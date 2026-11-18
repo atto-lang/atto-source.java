@@ -82,10 +82,23 @@ final class NativeHttpFramingAdmissionTest {
         negative.add("Content-Length", "-1");
         assertThrows(IllegalArgumentException.class,
                 () -> NativeHttp.validateHeadersForAdmission(negative, "HTTP/1.1", 1024));
+        Headers boundary = valid();
+        boundary.add("Content-Length", "1024");
+        assertDoesNotThrow(
+                () -> NativeHttp.validateHeadersForAdmission(boundary, "HTTP/1.1", 1024),
+                "a body exactly at the limit must remain admissible");
+
         Headers oversized = valid();
         oversized.add("Content-Length", "1025");
-        assertThrows(IllegalArgumentException.class,
-                () -> NativeHttp.validateHeadersForAdmission(oversized, "HTTP/1.1", 1024));
+        assertThrows(NativeHttp.RequestBodyTooLargeException.class,
+                () -> NativeHttp.validateHeadersForAdmission(oversized, "HTTP/1.1", 1024),
+                "header quota denial must use the typed transport-owned marker");
+
+        Headers overflowed = valid();
+        overflowed.add("Content-Length", "9223372036854775808");
+        assertThrows(NumberFormatException.class,
+                () -> NativeHttp.validateHeadersForAdmission(overflowed, "HTTP/1.1", 1024),
+                "overflowed decimal digits are malformed framing, not a quota marker");
     }
 
     @Test
@@ -165,14 +178,138 @@ final class NativeHttpFramingAdmissionTest {
     }
 
     @Test
+    void rejectsInvalidHostAuthorityAndPortSyntax() {
+        for (String host : new String[] {
+                "example.test:abc", ":8080", "localhost:", "localhost:65536",
+                "localhost:999999999999", "::1", "::::", "[gggg]",
+                "[::1]:bad", "[::1]:65536", "[::1]tail", "[::1",
+                "example.test%20attacker"
+        }) {
+            Headers headers = valid();
+            headers.set("Host", host);
+            assertThrows(IllegalArgumentException.class,
+                    () -> NativeHttp.validateHeadersForAdmission(headers, "HTTP/1.1", 1024),
+                    "malformed Host authority must be rejected: " + host);
+        }
+    }
+
+    @Test
+    void admitsCanonicalHostAuthorityWithNumericPortOrIpv6() {
+        for (String host : new String[] {
+                "localhost", "example.test", "localhost:8080",
+                "localhost:65535", "[::1]", "[::1]:8080",
+                "[2001:db8::1]", "127.0.0.1"
+        }) {
+            Headers headers = valid();
+            headers.set("Host", host);
+            assertDoesNotThrow(
+                    () -> NativeHttp.validateHeadersForAdmission(headers, "HTTP/1.1", 1024),
+                    "valid Host authority should remain admissible: " + host);
+        }
+    }
+
+    @Test
+    void quotaMarkerCannotBeSpoofedByExceptionMessageOrErrorType() {
+        Throwable[] forged = {
+                new IllegalArgumentException("body too large"),
+                new RuntimeException("body too large"),
+                new IllegalStateException("body too large"),
+                new IllegalArgumentException((String) null),
+                new AssertionError("body too large")
+        };
+        for (Throwable failure : forged) {
+            assertEquals(500, NativeHttp.operationFailureStatus(failure, true),
+                    "only the transport-owned marker may become 413: " + failure);
+        }
+        NativeHttp.RequestBodyTooLargeException quota =
+                new NativeHttp.RequestBodyTooLargeException();
+        assertEquals(413, NativeHttp.operationFailureStatus(quota, true));
+        assertEquals(500, NativeHttp.operationFailureStatus(quota, false));
+    }
+
+    @Test
+    void rejectsMalformedHostAuthorityPortsAndLiterals() {
+        for (String host : new String[] {
+                "example.test:abc", ":8080", "localhost:65536", "[gggg]",
+                "localhost:", "::1", "example.test%20attacker", "localhost/other",
+                "[:]", "[2001:::db8]", "[1::2::3]", "[1:2:3:4:5:6:7:8::]",
+                "[::ffff:999.1.1.1]", "[::ffff:01.1.1.1]",
+                "localhost:12:34", "[::1]extra", "localhost:-1",
+                "999.1.1.1", "127.1", "127.0.1", "2130706433",
+                "127.000.0.1", "192.0.2.256", "1.2.3.4.5",
+                "999.1.1.1:8080", "127.1:80", "2130706433:443"
+        }) {
+            Headers headers = valid();
+            headers.set("Host", host);
+            assertThrows(IllegalArgumentException.class,
+                    () -> NativeHttp.validateHeadersForAdmission(headers, "HTTP/1.1", 1024),
+                    "unexpected Host authority admission: " + host);
+        }
+    }
+
+    @Test
+    void acceptsUnambiguousHostAuthoritiesWithoutDns() {
+        for (String host : new String[] {
+                "localhost", "example.test", "localhost:0", "example.test:65535",
+                "[::1]", "[::1]:8080", "[2001:db8::1]",
+                "[1:2:3:4:5:6:7:8]", "[::ffff:192.0.2.1]",
+                "127.0.0.1", "127.0.0.1:8443", "192.0.2.1:443"
+        }) {
+            Headers headers = valid();
+            headers.set("Host", host);
+            assertDoesNotThrow(
+                    () -> NativeHttp.validateHeadersForAdmission(headers, "HTTP/1.1", 1024),
+                    "valid Host authority rejected: " + host);
+        }
+    }
+
+    @Test
     void mapsMalformedRequestBodyStreamToClientErrorOnly() {
         IOException malformedChunk = new IOException("invalid chunk size");
         assertEquals(400, NativeHttp.operationFailureStatus(malformedChunk, true));
         assertEquals(500, NativeHttp.operationFailureStatus(malformedChunk, false),
                 "response-side I/O failures must not be disguised as client framing errors");
         assertEquals(413, NativeHttp.operationFailureStatus(
-                new IllegalArgumentException("body too large"), true));
+                new NativeHttp.RequestBodyTooLargeException(), true));
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException("body too large"), true),
+                "a forged message must not acquire request-body quota provenance");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new NativeHttp.RequestBodyTooLargeException(), false),
+                "even a quota marker must not label response-side failures as 413");
+        IllegalArgumentException invalidUtf8 = new IllegalArgumentException(
+                "invalid UTF-8", new java.nio.charset.MalformedInputException(1));
+        assertEquals(400, NativeHttp.operationFailureStatus(invalidUtf8, true),
+                "strict UTF-8 failure from request-body decoding is a client error");
+        assertEquals(500, NativeHttp.operationFailureStatus(invalidUtf8, false),
+                "response-side failures cannot be reclassified as request errors");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException("invalid UTF-8"), true),
+                "a matching message without a typed decoder cause is not enough");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException("invalid UTF-8",
+                        new IllegalStateException("unrelated")), true));
         assertEquals(500, NativeHttp.operationFailureStatus(
                 new IllegalStateException("handler failure"), true));
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException("body too large"), false),
+                "response-side argument failure must not be presented as HTTP 413");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IOException("body too large"), false),
+                "response-side socket error must not become HTTP 413");
+        assertEquals(400, NativeHttp.operationFailureStatus(
+                new IOException("body too large"), true),
+                "request-body I/O failures are malformed framing, not a quota violation");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalStateException("body too large"), true),
+                "arbitrary state failures must not become HTTP 413");
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new RuntimeException("body too large"), true));
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new Error("body too large"), true));
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException("invalid framing"), true));
+        assertEquals(500, NativeHttp.operationFailureStatus(
+                new IllegalArgumentException((String) null), true));
     }
 }

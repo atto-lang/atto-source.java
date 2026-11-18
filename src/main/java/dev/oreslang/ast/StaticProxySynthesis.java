@@ -165,7 +165,8 @@ public final class StaticProxySynthesis {
             modules.add(new Ast.ModuleDecl(
                     module.name(), module.annotations(), module.contracts(), output));
         }
-        return new Ast.Program(program.namespace(), program.imports(), modules);
+        // Never erase file-level export contracts during synthetic class expansion.
+        return new Ast.Program(program.namespace(), program.imports(), modules, program.exports());
     }
 
     private record Target(String module, Ast.ClassDecl klass) { }
