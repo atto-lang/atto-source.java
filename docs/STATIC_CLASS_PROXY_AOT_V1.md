@@ -256,9 +256,9 @@ proxy an airtight authority boundary. In particular, **no one-shot
 continuation capability is exposed**, so this slice cannot claim the full
 virtual-interceptor contract in `atto-spec#83`.
 
-This branch defines **39** JUnit cases, including nineteen new opt-in hook
+This branch defines **41** JUnit cases, including twenty-one new opt-in hook
 regressions. The source-org workflow demands nonempty exact-head passing
-Surefire receipts for all 39. Until executed, all backend tests and
+Surefire receipts for all 41. Until executed, all backend tests and
 standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
@@ -314,7 +314,7 @@ successfully, including allowed helper chaining, recursive/dynamic/async
 rejection, unsafe operators, value escapes and namespace/protected-declaration
 spoofing. This verifies that helper source's syntax and local admission
 logic, **not** the real compiler, Java guest runtime or JDK 25/GraalVM.
-It is not a substitute for the 39 source JUnit tests.
+It is not a substitute for the 41 source JUnit tests.
 
 The public `expand` API now idempotently deduplicates repeated identical
 target/interceptor type requests, preserving first-source-occurrence order
@@ -325,3 +325,15 @@ already deduplicates these inputs, but alternate AST producers must
 not invalidate the compiler's invariant.
 
 An additional executable source fixture constructs two typed proxy values\nwith the same target/hook pair and requires one generated nominal class,\nwhile checking per-call hook dispatch and distinct forwarded outputs.\nIts expected output is `742743`; execution remains pending JDK 25 CI.\n
+### Shared hook graph and resource budget
+
+One closed-world analysis now indexes each interceptor method table once per
+synthesized target/hook pair. All matched before-hook roots share a visited
+helper graph and a single 4,096-node/32-depth budget. An interceptor declaring
+more than 4,096 method slots fails before unbounded method-index growth.
+A new two-hook fixture calls a shared helper and expects output `40414042`;
+an AST-only negative fixture creates 4,097 methods and requires the slot-budget
+diagnostic. Both are source-defined JUnit cases only until executed by JDK25 CI.
+
+At the latest audit, the GitHub PR had been marked ready despite no runner steps;
+it was returned to draft to preserve the project's exact-head test requirement.
