@@ -48,11 +48,13 @@ public final class StaticProxySynthesis {
                                      List<InterceptorRequest> interceptorRequests) {
         if (requestedNames.isEmpty() && interceptorRequests.isEmpty()) return program;
         Set<String> requested = new HashSet<>(requestedNames);
-        for (InterceptorRequest request : interceptorRequests) requested.add(request.targetName());
-        Set<InterceptorRequest> uniqueRequests = new HashSet<>(interceptorRequests);
-        if (uniqueRequests.size() != interceptorRequests.size()) {
-            throw fail("duplicate compiler-generated proxy interceptor request");
-        }
+        for (InterceptorRequest request : uniqueRequests) requested.add(request.targetName());
+        // A single compilation unit can construct many proxy instances of
+        // the same target/hook type. One synthetic nominal class is shared
+        // across those call sites. Preserve source appearance order to give
+        // deterministic generated declaration order for exact-tree builds.
+        List<InterceptorRequest> uniqueRequests =
+                List.copyOf(new java.util.LinkedHashSet<>(interceptorRequests));
         Map<String, Target> interceptors = new HashMap<>();
         Map<String, Target> found = new LinkedHashMap<>();
         Set<String> unresolvedTypeAliases = new HashSet<>();
@@ -76,7 +78,7 @@ public final class StaticProxySynthesis {
         if (occupiedNames.contains("Proxy")) {
             throw fail("an imported Proxy name conflicts with the compiler intrinsic");
         }
-        for (InterceptorRequest request : interceptorRequests) {
+        for (InterceptorRequest request : uniqueRequests) {
             if (importedNames.contains(request.interceptorName())) {
                 throw fail("proxy interceptor '" + request.interceptorName()
                         + "' collides with an imported name or namespace alias");
@@ -99,7 +101,7 @@ public final class StaticProxySynthesis {
                     unresolvedTypeAliases.add(alias.name());
                 }
                 if (declaration instanceof Ast.ClassDecl klass
-                        && interceptorRequests.stream().anyMatch(r -> r.interceptorName().equals(klass.name()))) {
+                        && uniqueRequests.stream().anyMatch(r -> r.interceptorName().equals(klass.name()))) {
                     if (interceptors.putIfAbsent(klass.name(), new Target(module.name(), klass)) != null) {
                         throw fail("proxy interceptor class '" + klass.name()
                                 + "' is ambiguous across modules");
@@ -122,7 +124,7 @@ public final class StaticProxySynthesis {
                         + "' must be an ordinary class declared in this compilation unit");
             }
         }
-        for (InterceptorRequest request : interceptorRequests) {
+        for (InterceptorRequest request : uniqueRequests) {
             Target target = found.get(request.targetName());
             Target hook = interceptors.get(request.interceptorName());
             if (hook == null) {
@@ -148,7 +150,7 @@ public final class StaticProxySynthesis {
                     }
                     output.add(proxyClass(klass, generatedName, unresolvedTypeAliases));
                 }
-                for (InterceptorRequest request : interceptorRequests) {
+                for (InterceptorRequest request : uniqueRequests) {
                     if (!request.targetName().equals(klass.name())) continue;
                     String generatedName = request.generatedName();
                     if (!occupiedNames.add(generatedName)) {
