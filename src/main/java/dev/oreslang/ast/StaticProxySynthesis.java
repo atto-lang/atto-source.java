@@ -279,6 +279,22 @@ public final class StaticProxySynthesis {
                     + interceptor.name());
         }
         Ast.ClassDecl delegate = proxyClass(target, generatedName, unresolvedTypeAliases);
+        if (delegate.methods().isEmpty()) {
+            throw fail("interceptor target exposes no eligible public instance methods: "
+                    + target.name());
+        }
+        for (Ast.MethodDecl forwarded : delegate.methods()) {
+            if (forwarded.name().equals(HOOK_FIELD)) {
+                throw fail("proxy storage name collides with callable "
+                        + target.name() + "." + HOOK_FIELD);
+            }
+            for (Ast.Param parameter : forwarded.parameters()) {
+                if (HOOK_FIELD.equals(parameter.name())) {
+                    throw fail("proxy parameter shadows generated receiver/storage: "
+                            + target.name() + "." + forwarded.name());
+                }
+            }
+        }
         Map<Ast.MethodArity, Ast.MethodDecl> hooks = new HashMap<>();
         for (Ast.MethodDecl hook : interceptor.methods()) {
             if (!hook.name().startsWith("before_")) continue;
