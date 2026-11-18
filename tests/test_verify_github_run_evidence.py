@@ -26,7 +26,8 @@ def valid_evidence():
             "repository": {"full_name": REPO, "id": REPO_ID},
         },
         "jobs": [{
-            "run_id": 100, "name": "test", "status": "completed",
+            "run_id": 100, "run_attempt": 2, "head_sha": SHA,
+            "name": "test", "status": "completed",
             "conclusion": "success", "runner_id": 42,
             "runner_name": "GitHub Actions 42",
             "steps": [
@@ -60,6 +61,15 @@ class EvidenceGateTests(unittest.TestCase):
         evidence = valid_evidence()
         evidence["jobs"].append(copy.deepcopy(evidence["jobs"][0]))
         self.rejects(evidence)
+
+    def test_mismatched_job_attempt_and_head_are_rejected(self):
+        for key, value in (("run_attempt", 1), ("run_attempt", None),
+                           ("run_attempt", True), ("head_sha", "b" * 40),
+                           ("head_sha", None)):
+            with self.subTest(key=key, value=value):
+                evidence = valid_evidence()
+                evidence["jobs"][0][key] = value
+                self.rejects(evidence)
 
     def test_zero_steps_is_not_success(self):
         evidence = valid_evidence()
