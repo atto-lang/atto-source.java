@@ -293,6 +293,15 @@ public final class StaticProxySynthesis {
                     throw fail("proxy parameter shadows generated receiver/storage: "
                             + target.name() + "." + forwarded.name());
                 }
+                // A before hook sees the argument and then the target sees it.
+                // Without affine continuation/loan lowering this is sound only
+                // for obviously copyable, immutable scalar values.
+                if (!parameter.type().arguments().isEmpty()
+                        || !Set.of("int", "float", "bool", "String", "string")
+                                .contains(parameter.type().name())) {
+                    throw fail("before interception requires copyable scalar arguments: "
+                            + target.name() + "." + forwarded.name());
+                }
             }
         }
         Map<Ast.MethodArity, Ast.MethodDecl> hooks = new HashMap<>();
