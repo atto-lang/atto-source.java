@@ -202,7 +202,7 @@ final class ReturnFirstBeginCallableTest {
         Ast.Program program = Parser.parse("""
                 fnc struct{value: int} <- shape()
                 begin
-                  return {value: 42};
+                  return value;
                 end
                 fnc Result<int, string>• result()
                 begin
