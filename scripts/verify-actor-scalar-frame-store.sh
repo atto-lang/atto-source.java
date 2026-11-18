@@ -34,7 +34,7 @@ from xml.etree import ElementTree as ET
 
 required = {
     "dev.oreslang.runtime.ScalarFrameLayoutTest": 6,
-    "dev.oreslang.runtime.ActorScalarFrameStoreTest": 5,
+    "dev.oreslang.runtime.ActorScalarFrameStoreTest": 6,
     "dev.oreslang.runtime.ActorScalarFrameCodecTest": 3,
 }
 for name, expected in required.items():
@@ -47,5 +47,5 @@ for name, expected in required.items():
     if counts != {"tests": expected, "failures": 0, "errors": 0, "skipped": 0}:
         raise SystemExit(f"FAIL unexpected receipt {path}: {counts}")
     print(f"FRAME_EXECUTED_SUITE {name} tests={expected}")
-print("FRAME_HOST_RUNTIME_TESTS_PASS count=14")
+print("FRAME_HOST_RUNTIME_TESTS_PASS count=15")
 PY
