@@ -335,16 +335,10 @@ public final class StaticProxySynthesis {
                 throw fail("interceptor method must be public, synchronous, void and have no declared checked exceptional effects: "
                         + interceptor.name() + "." + hook.name());
             }
-            for (Ast.Stmt statement : hook.body()) {
-                if (hookBodyHasUnprovenSuspension(statement)) {
-                    // A synchronous void source spelling does not certify that
-                    // an embedded await, source task or channel operation will
-                    // complete before the generated delegate call. The runtime
-                    // can promote such bodies to continuations implicitly.
-                    throw fail("interceptor hook has unproven suspension/async control flow: "
-                            + interceptor.name() + "." + hook.name());
-                }
-            }
+            // The shared closed-world verifier below has an explicit AST
+            // node/depth budget. Do not recursively scan hook syntax here:
+            // that old prepass was unbounded and could overflow the Java stack
+            // before the bounded admission gate ran.
             // Collect validated entrypoints before checking the shared
             // call graph once. This avoids a separate full method-table
             // allocation and repeated helper traversal for every public hook.
@@ -413,96 +407,6 @@ public final class StaticProxySynthesis {
      * Unknown AST forms fail closed instead of accidentally discarding a
      * suspension signal when the target method is invoked next.
      */
-    private static boolean hookBodyHasUnprovenSuspension(Ast.Stmt stmt) {
-        if (stmt instanceof Ast.ExprStmt expression)
-            return hookExprHasUnprovenSuspension(expression.expression());
-        if (stmt instanceof Ast.ReturnStmt ret)
-            return ret.value() != null && hookExprHasUnprovenSuspension(ret.value());
-        if (stmt instanceof Ast.BindingStmt binding)
-            return hookExprHasUnprovenSuspension(binding.initializer());
-        if (stmt instanceof Ast.DestructureStmt destructure)
-            return hookExprHasUnprovenSuspension(destructure.initializer());
-        if (stmt instanceof Ast.BlockStmt block)
-            return block.body().stream().anyMatch(StaticProxySynthesis::hookBodyHasUnprovenSuspension);
-        if (stmt instanceof Ast.IfStmt conditional)
-            return conditional.branches().stream().anyMatch(branch ->
-                            hookExprHasUnprovenSuspension(branch.condition())
-                            || branch.body().stream().anyMatch(StaticProxySynthesis::hookBodyHasUnprovenSuspension))
-                    || conditional.elseBody().stream().anyMatch(StaticProxySynthesis::hookBodyHasUnprovenSuspension);
-        if (stmt instanceof Ast.MatchStmt matched)
-            return hookExprHasUnprovenSuspension(matched.subject())
-                    || matched.arms().stream().anyMatch(arm ->
-                            hookExprHasUnprovenSuspension(arm.guard())
-                            || arm.body().stream().anyMatch(StaticProxySynthesis::hookBodyHasUnprovenSuspension));
-        if (stmt instanceof Ast.SwitchStmt switched)
-            return hookExprHasUnprovenSuspension(switched.subject())
-                    || switched.cases().stream().anyMatch(arm ->
-                            arm.body().stream().anyMatch(StaticProxySynthesis::hookBodyHasUnprovenSuspension))
-                    || switched.defaultBody().stream().anyMatch(StaticProxySynthesis::hookBodyHasUnprovenSuspension);
-        if (stmt instanceof Ast.TryStmt tried)
-            return tried.body().stream().anyMatch(StaticProxySynthesis::hookBodyHasUnprovenSuspension)
-                    || tried.catchBody().stream().anyMatch(StaticProxySynthesis::hookBodyHasUnprovenSuspension)
-                    || tried.finallyBody().stream().anyMatch(StaticProxySynthesis::hookBodyHasUnprovenSuspension);
-        if (stmt instanceof Ast.LocalTypeDeclStmt) return false;
-        // Defers, task scopes, loops (which may cooperate), channel selects,
-        // yields, borrowed scopes and unknown statements require a richer
-        // continuation/effect analysis. No implicit synchronous fallback.
-        return true;
-    }
-
-    private static boolean hookExprHasUnprovenSuspension(Ast.Expr expr) {
-        if (expr == null || expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr)
-            return false;
-        if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.TaskExpr
-                || expr instanceof Ast.LambdaExpr || expr instanceof Ast.ChannelOpExpr
-                || expr instanceof Ast.DynamicSelectExpr || expr instanceof Ast.RuntimeCallExpr
-                || expr instanceof Ast.LocalAggregateConstructExpr || expr instanceof Ast.NewExpr)
-            return true;
-        if (expr instanceof Ast.CallExpr call)
-            return hookExprHasUnprovenSuspension(call.callee())
-                    || call.arguments().stream().anyMatch(StaticProxySynthesis::hookExprHasUnprovenSuspension);
-        if (expr instanceof Ast.MemberExpr member)
-            return hookExprHasUnprovenSuspension(member.receiver());
-        if (expr instanceof Ast.BinaryExpr binary)
-            return hookExprHasUnprovenSuspension(binary.left())
-                    || hookExprHasUnprovenSuspension(binary.right());
-        if (expr instanceof Ast.UnaryExpr unary)
-            return hookExprHasUnprovenSuspension(unary.operand());
-        if (expr instanceof Ast.AssignExpr assign)
-            return hookExprHasUnprovenSuspension(assign.target())
-                    || hookExprHasUnprovenSuspension(assign.value());
-        if (expr instanceof Ast.ConditionalExpr conditional)
-            return hookExprHasUnprovenSuspension(conditional.condition())
-                    || hookExprHasUnprovenSuspension(conditional.whenTrue())
-                    || hookExprHasUnprovenSuspension(conditional.whenFalse());
-        if (expr instanceof Ast.TypeTestExpr test)
-            return hookExprHasUnprovenSuspension(test.value());
-        if (expr instanceof Ast.PatternTestExpr test)
-            return hookExprHasUnprovenSuspension(test.value());
-        if (expr instanceof Ast.CastExpr cast)
-            return hookExprHasUnprovenSuspension(cast.value());
-        if (expr instanceof Ast.SpreadExpr spread)
-            return hookExprHasUnprovenSuspension(spread.expression());
-        if (expr instanceof Ast.TrapExpr trap)
-            return hookExprHasUnprovenSuspension(trap.expression());
-        if (expr instanceof Ast.IndexExpr index)
-            return hookExprHasUnprovenSuspension(index.receiver())
-                    || hookExprHasUnprovenSuspension(index.index());
-        if (expr instanceof Ast.ListExpr list)
-            return list.elements().stream().anyMatch(StaticProxySynthesis::hookExprHasUnprovenSuspension);
-        if (expr instanceof Ast.TupleExpr tuple)
-            return tuple.elements().stream().anyMatch(StaticProxySynthesis::hookExprHasUnprovenSuspension);
-        if (expr instanceof Ast.ObjectExpr object)
-            return object.fields().stream().anyMatch(field -> hookExprHasUnprovenSuspension(field.value()));
-        if (expr instanceof Ast.MatchExpr matched)
-            return hookExprHasUnprovenSuspension(matched.subject())
-                    || matched.arms().stream().anyMatch(arm ->
-                            hookExprHasUnprovenSuspension(arm.guard())
-                            || arm.prefixStatements().stream().anyMatch(StaticProxySynthesis::hookBodyHasUnprovenSuspension)
-                            || hookExprHasUnprovenSuspension(arm.value()));
-        return true;
-    }
-
     /**
      * Avoid forwarding borrowed/callable/inferred values until the compiler
      * proves the target lifetime, alias rights and closure transport. Recurse
