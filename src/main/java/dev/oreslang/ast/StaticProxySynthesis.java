@@ -156,7 +156,7 @@ public final class StaticProxySynthesis {
                                 + "' collides with an existing or generated declaration");
                     }
                     output.add(interceptorProxyClass(
-                            klass, interceptors.get(request.interceptorName()).klass(),
+                            program, klass, interceptors.get(request.interceptorName()).klass(),
                             generatedName, unresolvedTypeAliases));
                 }
             }
@@ -270,7 +270,7 @@ public final class StaticProxySynthesis {
      * continuation is deliberately NOT implemented here.
      */
     private static Ast.ClassDecl interceptorProxyClass(
-            Ast.ClassDecl target, Ast.ClassDecl interceptor, String generatedName,
+            Ast.Program program, Ast.ClassDecl target, Ast.ClassDecl interceptor, String generatedName,
             Set<String> unresolvedTypeAliases) {
         if (interceptor.actorKind() != Ast.ActorKind.NONE || interceptor.isAbstract()
                 || !interceptor.parents().isEmpty() || !interceptor.interfaces().isEmpty()
@@ -342,6 +342,10 @@ public final class StaticProxySynthesis {
                             + interceptor.name() + "." + hook.name());
                 }
             }
+            // Closed-world helper closure: a syntactically synchronous hook
+            // may call an indirectly suspending helper. Resolve each helper
+            // transitively by the existing name+arity slot or fail closed.
+            StaticProxyHookEffectClosure.verify(program, interceptor, hook);
             for (int i = 0; i < hook.parameters().size(); i++) {
                 Ast.Param provided = hook.parameters().get(i);
                 Ast.Param expected = method.parameters().get(i);
