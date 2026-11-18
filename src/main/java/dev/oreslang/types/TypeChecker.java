@@ -3473,6 +3473,14 @@ public final class TypeChecker {
                         "typed pipe ports are compatible, but ActorStream runtime "
                         + "with bounded delivery/startup/cancellation is not implemented yet");
             }
+            if (Ast.ChannelFlow.isFlowOperator(binary.operator())) {
+                // `<<` / `>>` are channel data-flow, not shifts: type the one
+                // equivalent writech/readch node (its suspension and ownership rules).
+                Ast.Expr lowered = Ast.ChannelFlow.lowerOnce(
+                        binary, () -> lowerChannelFlow(binary, env, generics, self));
+                typeOf(lowered, env, generics, self);
+                return Primitive.VOID;
+            }
             Type left = typeOf(binary.left(), env, generics, self);
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -3491,7 +3499,7 @@ public final class TypeChecker {
                     requireAssignable(right, Primitive.BOOL, "logical operand");
                     yield Primitive.BOOL;
                 }
-                case "&", "|", "^", "<<", ">>", ">>>" -> {
+                case "&", "|", "^", "<<<", ">>>" -> {
                     requireInteger(left, "bitwise left operand");
                     requireInteger(right, "bitwise right operand");
                     yield Primitive.INT;
@@ -6070,6 +6078,49 @@ public final class TypeChecker {
             return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
+    }
+
+    /**
+     * Resolve a channel flow: the arrow points where the data goes. The
+     * destination being a channel makes it a write; otherwise the source must
+     * be a channel and the destination an assignable target, making it a read.
+     */
+    private Ast.Expr lowerChannelFlow(Ast.BinaryExpr flow, Env env, Set<String> generics, Type self) {
+        boolean intoLeft = flow.operator().equals("<<");
+        Ast.Expr destination = intoLeft ? flow.left() : flow.right();
+        Ast.Expr source = intoLeft ? flow.right() : flow.left();
+        if (isChannelOperand(destination, env, generics, self)) {
+            return new Ast.ChannelOpExpr(Ast.ChannelOperation.WRITE, Ast.WaitMode.BLOCKING, destination, source);
+        }
+        if (isChannelOperand(source, env, generics, self)) {
+            if (!(destination instanceof Ast.NameExpr) && !(destination instanceof Ast.MemberExpr)
+                    && !(destination instanceof Ast.IndexExpr)) {
+                throw new IllegalArgumentException("'" + flow.operator()
+                        + "' reads from a channel into a local, field or index; got "
+                        + destination.getClass().getSimpleName());
+            }
+            return new Ast.AssignExpr(destination,
+                    new Ast.ChannelOpExpr(Ast.ChannelOperation.READ, Ast.WaitMode.BLOCKING, source, null));
+        }
+        throw new IllegalArgumentException("'" + flow.operator()
+                + "' is the channel data-flow operator and needs a Channel<T> named local or field"
+                + " operand; use '<<<' or '>>>' for bit shifts");
+    }
+
+    /** Side-effect free for locals; a field read is typed once more, which is pure. */
+    private boolean isChannelOperand(Ast.Expr operand, Env env, Set<String> generics, Type self) {
+        Type type;
+        if (operand instanceof Ast.NameExpr name) {
+            Env.Binding binding = env.lookup(name.name());
+            if (binding == null) return false;
+            type = binding.type();
+        } else if (operand instanceof Ast.MemberExpr) {
+            type = typeOf(operand, env, generics, self);
+        } else {
+            return false;
+        }
+        return deref(type) instanceof Named named && named.name().equals("Channel")
+                && named.arguments().size() == 1;
     }
 
     private Type channelElementType(Type channel, String where) {

@@ -5463,6 +5463,8 @@ public final class Parser {
         while (true) {
             String op;
             if (matchAdjacentTriple(GT)) op = ">>>";
+            else if (matchAdjacentTriple(LT)) op = "<<<";
+            // `<<` and `>>` are channel data-flow operators (see Ast.ChannelFlow).
             else if (matchAdjacentPair(LT)) op = "<<";
             else if (matchAdjacentPair(GT)) op = ">>";
             else break;

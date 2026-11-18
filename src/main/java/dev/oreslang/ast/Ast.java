@@ -1717,6 +1717,77 @@ public final class Ast {
      * cached type metadata from retaining abandoned compilation units.
      * Runtime reads fail closed for ASTs that never passed type checking.
      */
+    /**
+     * Type-checked lowering of the channel data-flow operators {@code <<} and
+     * {@code >>}. The arrow is the direction the data flows:
+     * {@code ch << v} and {@code v >> ch} write {@code v} into {@code ch};
+     * {@code x << ch} and {@code ch >> x} read one value from {@code ch} into
+     * {@code x}. The checker resolves the direction from which operand is the
+     * channel and records the equivalent {@code writech}/{@code readch} node,
+     * so the operators inherit exactly those suspension, backpressure,
+     * cancellation and ownership rules. Bit shifts are {@code <<<} and {@code >>>}.
+     */
+    public static final class ChannelFlow {
+        private ChannelFlow() { }
+
+        private static final java.lang.ref.ReferenceQueue<BinaryExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<Key, Expr> LOWERED = new java.util.HashMap<>();
+
+        private static final class Key extends java.lang.ref.WeakReference<BinaryExpr> {
+            private final int hash;
+            private Key(BinaryExpr flow, java.lang.ref.ReferenceQueue<BinaryExpr> queue) {
+                super(flow, queue);
+                hash = System.identityHashCode(flow);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof Key key)) return false;
+                BinaryExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        public static boolean isFlowOperator(String operator) {
+            return "<<".equals(operator) || ">>".equals(operator);
+        }
+
+        /**
+         * The one lowering of this node. Re-checking the same program reuses it,
+         * so every later pass and the evaluator see the same lowered node.
+         */
+        public static synchronized Expr lowerOnce(BinaryExpr flow, java.util.function.Supplier<Expr> build) {
+            if (!isFlowOperator(flow.operator())) {
+                throw new IllegalArgumentException("not a channel flow operator: " + flow.operator());
+            }
+            expunge();
+            Key key = new Key(flow, CLEARED);
+            Expr existing = LOWERED.get(key);
+            if (existing != null) return existing;
+            Expr lowered = java.util.Objects.requireNonNull(build.get(), "lowered");
+            LOWERED.put(key, lowered);
+            return lowered;
+        }
+
+        /** The checked lowering, or a failure if this node was never type-checked. */
+        public static synchronized Expr require(BinaryExpr flow) {
+            expunge();
+            Expr lowered = LOWERED.get(new Key(flow, null));
+            if (lowered == null) {
+                throw new IllegalStateException(
+                        "channel flow '" + flow.operator() + "' reached execution without type checking");
+            }
+            return lowered;
+        }
+
+        private static void expunge() {
+            for (java.lang.ref.Reference<? extends BinaryExpr> cleared; (cleared = CLEARED.poll()) != null; ) {
+                LOWERED.remove(cleared);
+            }
+        }
+    }
+
     public static final class CheckedOptionDepth {
         private CheckedOptionDepth() { }
 

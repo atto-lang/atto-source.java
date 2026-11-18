@@ -2341,6 +2341,7 @@ public final class OresEvalRootNode extends RootNode {
                         unary.operand(), seen);
             }
             if (expr instanceof Ast.BinaryExpr binary) {
+                if (Ast.ChannelFlow.isFlowOperator(binary.operator())) return true;
                 return expressionContainsPotentialSuspension(
                                 binary.left(), seen)
                         || expressionContainsPotentialSuspension(
@@ -4423,6 +4424,12 @@ public final class OresEvalRootNode extends RootNode {
                         // if an untyped graph operator reaches guest evaluation.
                         continuation.accept(task, null, new IllegalStateException(
                                 "actor pipe graph is not implemented; no stages were spawned"));
+                        return;
+                    }
+                    if (Ast.ChannelFlow.isFlowOperator(binary.operator())) {
+                        // Channel data-flow suspends exactly like its writech/readch lowering.
+                        evalSuspendableExpr(task, Ast.ChannelFlow.require(binary), env,
+                                (resumed, ignored, failure) -> continuation.accept(resumed, null, failure));
                         return;
                     }
                     if (binary.operator().equals("&&")) {
@@ -8372,6 +8379,11 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "actor pipe graph is not implemented; no stages were spawned");
                 }
+                if (Ast.ChannelFlow.isFlowOperator(binary.operator())) {
+                    // Channel data-flow: run the checked writech/readch lowering.
+                    eval(Ast.ChannelFlow.require(binary), env);
+                    return null;
+                }
                 if (binary.operator().equals("&&")) {
                     Object left = eval(binary.left(), env);
                     return truth(left) && truth(eval(binary.right(), env));
@@ -11693,8 +11705,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
                 case "^" -> integralLong(left) ^ integralLong(right);
-                case "<<" -> integralLong(left) << shiftDistance(right);
-                case ">>" -> integralLong(left) >> shiftDistance(right);
+                case "<<<" -> integralLong(left) << shiftDistance(right);
                 case ">>>" -> integralLong(left) >>> shiftDistance(right);
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
             };
