@@ -28,8 +28,8 @@ final class ActorRegistryTest {
     @Test
     void sameKey32WayContentionReusesOneRealActorReference() throws Exception {
         try (var runtime = new ActorRuntime();
-             var registry = registry(runtime, 4);
              var pool = Executors.newFixedThreadPool(32)) {
+            var registry = registry(runtime, 4);
             var start = new CountDownLatch(1);
             var creations = new AtomicInteger();
             var futures = new ArrayList<java.util.concurrent.Future<ActorRuntime.ActorRef<Integer>>>();
@@ -56,7 +56,8 @@ final class ActorRegistryTest {
 
     @Test
     void differentKeysSendThroughDistinctPhysicalMailboxes() throws Exception {
-        try (var runtime = new ActorRuntime(); var registry = registry(runtime, 4)) {
+        try (var runtime = new ActorRuntime()) {
+            var registry = registry(runtime, 4);
             var a = new AtomicInteger();
             var b = new AtomicInteger();
             var received = new CountDownLatch(2);
@@ -75,7 +76,8 @@ final class ActorRegistryTest {
 
     @Test
     void cannotRemoveAStillLiveActor() {
-        try (var runtime = new ActorRuntime(); var registry = registry(runtime, 4)) {
+        try (var runtime = new ActorRuntime()) {
+            var registry = registry(runtime, 4);
             var first = registry.get_or_create("orders", key -> worker(runtime));
             assertThrows(IllegalStateException.class, () -> registry.unregister("orders", first));
             assertSame(first, registry.get_or_create("orders", key -> fail("duplicate")));
@@ -84,7 +86,8 @@ final class ActorRegistryTest {
 
     @Test
     void retiredActorIsReplacedAndStaleUnregisterDoesNotEraseReplacement() throws Exception {
-        try (var runtime = new ActorRuntime(); var registry = registry(runtime, 4)) {
+        try (var runtime = new ActorRuntime()) {
+            var registry = registry(runtime, 4);
             var first = registry.get_or_create("orders", key -> worker(runtime));
             first.stop();
             assertTrue(first.awaitTermination(5, TimeUnit.SECONDS));
@@ -99,7 +102,8 @@ final class ActorRegistryTest {
 
     @Test
     void prematureRestartRejectedUntilOldTurnPhysicallyCompletes() throws Exception {
-        try (var runtime = new ActorRuntime(); var registry = registry(runtime, 4)) {
+        try (var runtime = new ActorRuntime()) {
+            var registry = registry(runtime, 4);
             var started = new CountDownLatch(1);
             var release = new CountDownLatch(1);
             var first = registry.get_or_create("orders", key -> runtime.<Integer>spawnShared(
@@ -126,8 +130,8 @@ final class ActorRegistryTest {
     @Test
     void failedFactoryWakesWaitersAndAllowsRetry() throws Exception {
         try (var runtime = new ActorRuntime();
-             var registry = registry(runtime, 4);
              var pool = Executors.newFixedThreadPool(2)) {
+            var registry = registry(runtime, 4);
             var entered = new CountDownLatch(1);
             var release = new CountDownLatch(1);
             var first = pool.submit(() -> assertThrows(IllegalArgumentException.class,
@@ -152,7 +156,8 @@ final class ActorRegistryTest {
 
     @Test
     void recursiveCreationFailsClosedWithoutDeadlock() {
-        try (var runtime = new ActorRuntime(); var registry = registry(runtime, 4)) {
+        try (var runtime = new ActorRuntime()) {
+            var registry = registry(runtime, 4);
             var actor = registry.get_or_create("orders", key -> {
                 assertThrows(IllegalStateException.class,
                         () -> registry.get_or_create("orders", k -> worker(runtime)));
@@ -165,8 +170,8 @@ final class ActorRegistryTest {
     @Test
     void refusesForeignStoppedAndAliasedActorReferences() {
         try (var runtime = new ActorRuntime();
-             var foreign = new ActorRuntime();
-             var registry = registry(runtime, 4)) {
+             var foreign = new ActorRuntime()) {
+            var registry = registry(runtime, 4);
             assertThrows(IllegalArgumentException.class,
                     () -> registry.get_or_create("foreign", key -> worker(foreign)));
             assertTrue(registry.lookup("foreign").isEmpty());
@@ -179,7 +184,8 @@ final class ActorRegistryTest {
 
     @Test
     void enforcesCapacityCanonicalKeysAndNonActivatingLogicalRefs() {
-        try (var runtime = new ActorRuntime(); var registry = registry(runtime, 1)) {
+        try (var runtime = new ActorRuntime()) {
+            var registry = registry(runtime, 1);
             var logical = registry.ref_for("orders");
             assertEquals("orders", logical.identity().key());
             assertTrue(logical.resolve_existing().isEmpty());
@@ -197,7 +203,8 @@ final class ActorRegistryTest {
     @Test
     void supervisorCompletionCleansRegistrationWithoutGrantingGuestAuthority()
             throws Exception {
-        try (var runtime = new ActorRuntime(); var registry = registry(runtime, 4)) {
+        try (var runtime = new ActorRuntime()) {
+            var registry = registry(runtime, 4);
             var blocked = new CountDownLatch(1);
             var ref = registry.get_or_create("orders", key -> runtime.<Integer>spawnShared(
                     () -> (message, context) -> {

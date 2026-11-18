@@ -12,7 +12,9 @@ import java.util.function.Function;
 /**
  * Trusted-host keyed lookup for real ActorRuntime mailboxes. This is a local
  * physical-actor directory, not a distributed virtual actor or a persistence
- * service. In particular, resolving a key does not create a broker queue.
+ * service. Uniqueness is scoped to ONE registry instance; a broker must use
+ * one directory for its namespace and enforce durable ownership separately.
+ * In particular, resolving a key does not create a broker queue.
  *
  * <p>The encoder must produce a deterministic, collision-free representation
  * of a stable immutable K. It runs outside every directory monitor. Guest code
@@ -69,7 +71,8 @@ public final class ActorRegistry<K, M> implements AutoCloseable {
     }
 
     private static void requireHost() {
-        if (ActorRuntime.inActorExecution() || ActorRuntime.inActorGroupMailmanExecution())
+        if (ActorRuntime.currentExecutionContext() != null ||
+                ActorRuntime.inActorGroupMailmanExecution())
             throw new SecurityException("host ActorRegistry is not a guest actor capability");
     }
 
