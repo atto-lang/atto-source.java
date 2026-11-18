@@ -9,6 +9,19 @@ import java.util.Objects;
 
 public final class ActorRef32Arena implements AutoCloseable {
     public record Owner(long tenant, long actor, long incarnation) {}
+    // Trusted HOST witness: never the four-byte guest ABI. Constructor is
+    // private, so ordinary callers cannot relabel another actor's numeric token.
+    // Future guest lowering must prove the same origin in typed HIR/MIR without
+    // allocating one Java wrapper per guest object.
+    public static final class TrustedRef {
+        private final int token;
+        private final Owner origin;
+        private TrustedRef(int token, Owner origin) {
+            this.token = token;
+            this.origin = origin;
+        }
+        public int guest_token() { return token; }
+    }
     public static final int SLOT_BITS = 20;
     public static final int SLOT_MASK = (1 << SLOT_BITS) - 1;
     public static final int MAX_GENERATION = (1 << (32 - SLOT_BITS)) - 1;
@@ -39,30 +52,32 @@ public final class ActorRef32Arena implements AutoCloseable {
     }
 
     // A bare four-byte guest token is NOT a cross-actor object capability:
-    // caller and ref_origin come from checked typed compiler/host provenance.
-    // DO NOT expose either provenance argument to untrusted guest code as an
-    // arbitrary value or accept a guest-selected actor domain.
+    // current owner and immutable ref origin must be proven by typed lowering.
+    // Host caller may only supply a trusted actor execution context, not a
+    // guest-controlled origin witness.
     private void check_origin(Owner ref_origin, Owner caller) {
         if (closed || !owner.equals(ref_origin) || !owner.equals(caller))
             throw new IllegalStateException("foreign or retired actor reference");
     }
 
-    public synchronized int allocate(Owner caller, int type) {
+    public synchronized TrustedRef allocate(Owner caller, int type) {
         check_origin(owner, caller);
         if (type <= 0) throw new IllegalArgumentException("invalid static type id");
         for (int i = 0; i < live.length; i++) {
             if (!live[i] && !retired[i]) {
                 live[i] = true;
                 type_id[i] = type;
-                return (generation[i] << SLOT_BITS) | (i + 1);
+                return new TrustedRef((generation[i] << SLOT_BITS) | (i + 1), owner);
             }
         }
-        return 0; // quota refusal, without mutating any live allocation.
+        return null; // quota refusal, without mutating any live allocation.
     }
 
-    private int checked(int token, Owner ref_origin, Owner caller,
+    private int checked(TrustedRef ref, Owner caller,
                         int type, int byte_offset) {
-        check_origin(ref_origin, caller);
+        if (ref == null) throw new IllegalStateException("null actor reference");
+        check_origin(ref.origin, caller);
+        int token = ref.token;
         int i = (token & SLOT_MASK) - 1;
         int g = token >>> SLOT_BITS;
         if (i < 0 || i >= live.length || g == 0 ||
@@ -75,19 +90,19 @@ public final class ActorRef32Arena implements AutoCloseable {
         return i;
     }
 
-    public synchronized void write_i64(int token, Owner ref_origin, Owner caller,
+    public synchronized void write_i64(TrustedRef ref, Owner caller,
                                        int type, int byte_offset, long value) {
-        int i = checked(token, ref_origin, caller, type, byte_offset);
+        int i = checked(ref, caller, type, byte_offset);
         storage.set(ValueLayout.JAVA_LONG, (long) i * OBJECT_BYTES + byte_offset, value);
     }
-    public synchronized long read_i64(int token, Owner ref_origin, Owner caller,
+    public synchronized long read_i64(TrustedRef ref, Owner caller,
                                       int type, int byte_offset) {
-        int i = checked(token, ref_origin, caller, type, byte_offset);
+        int i = checked(ref, caller, type, byte_offset);
         return storage.get(ValueLayout.JAVA_LONG, (long) i * OBJECT_BYTES + byte_offset);
     }
 
-    public synchronized void release(int token, Owner ref_origin, Owner caller, int type) {
-        int i = checked(token, ref_origin, caller, type, 0);
+    public synchronized void release(TrustedRef ref, Owner caller, int type) {
+        int i = checked(ref, caller, type, 0);
         storage.asSlice((long) i * OBJECT_BYTES, OBJECT_BYTES).fill((byte) 0);
         live[i] = false;
         type_id[i] = 0;
