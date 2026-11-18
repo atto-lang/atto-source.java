@@ -38,6 +38,9 @@ final class StaticProxyHookEffectClosure {
         this.owner = owner;
         // An allowed stdio reference must denote the runtime namespace, not
         // an imported or locally declared value/class of the same spelling.
+        if ("stdio".equals(program.namespace())) {
+            throw fail("stdio namespace is shadowed by compilation-unit namespace");
+        }
         for (Ast.ImportDecl imported : program.imports()) {
             if (imported.names().contains("stdio") || "stdio".equals(imported.namespace())) {
                 throw fail("stdio name is shadowed by an import");
@@ -50,7 +53,9 @@ final class StaticProxyHookEffectClosure {
                         || decl instanceof Ast.FunctionDecl fn && fn.name().equals("stdio")
                         || decl instanceof Ast.FieldDecl field && field.name().equals("stdio")
                         || decl instanceof Ast.TypeAliasDecl alias && alias.name().equals("stdio")
-                        || decl instanceof Ast.InterfaceDecl iface && iface.name().equals("stdio")) {
+                        || decl instanceof Ast.InterfaceDecl iface && iface.name().equals("stdio")
+                        || decl instanceof Ast.StateContainerDecl state && state.name().equals("stdio")
+                        || decl instanceof Ast.VirtualActorDecl actor && actor.name().equals("stdio")) {
                     throw fail("stdio name is shadowed by a declaration");
                 }
             }
