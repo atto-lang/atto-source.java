@@ -36,6 +36,25 @@ final class PrimitiveBorrowCopyTest {
             assertEquals(42, context.eval(OresLanguage.ID, source).asInt());
         }
     }
+    @Test void detachedPrimitiveCopyMayBeSharedWithoutUpgradingItsOriginalLoan() {
+        // Copy creates a separate scalar value; Share applies to that
+        // independent proven int, not the borrowed parameter's lifetime.
+        String source = """
+                fnc read(borrow int incoming): int {
+                  val int detached = rt copy incoming;
+                  return rt share detached;
+                }
+                pub fnc main(): int {
+                  val int original = 42;
+                  return read(rt borrow original);
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        try (Context context = Context.newBuilder(OresLanguage.ID).build()) {
+            assertEquals(42, context.eval(OresLanguage.ID, source).asInt());
+        }
+    }
+
     @Test void copyDoesNotEraseContainerLoanCapabilities() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc unsafe(borrow Array<int> values): Array<int> {

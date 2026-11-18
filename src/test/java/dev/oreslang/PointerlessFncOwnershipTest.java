@@ -833,6 +833,41 @@ final class PointerlessFncOwnershipTest {
         assertDoesNotThrow(() -> TypeChecker.check(parsed));
     }
 
+    @Test
+    void rtTakeComputedArithmeticRequiresTrackedSourcePlace() {
+        // Parsing must succeed before the ownership checker denies this
+        // explicit transfer. An arithmetic temporary must not silently
+        // claim to invalidate either still-live operand.
+        for (String operand : new String[] {"first + 1", "-first"}) {
+            var parsed = assertDoesNotThrow(() -> Parser.parse("""
+                    fnc invalid(): int {
+                      val int first = 41;
+                      val int moved = rt take (%s);
+                      return moved;
+                    }
+                    """.formatted(operand)));
+            var rejected = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.OwnershipChecker.check(parsed));
+            assertTrue(rejected.getMessage().contains("E_TAKE_UNTRACKED_PLACE"),
+                    rejected.getMessage());
+        }
+    }
+
+    @Test
+    void rtTakeStillTransfersFreshConstructorOwnership() {
+        // A constructor result is a fresh owned temporary. It has no
+        // existing named source binding to invalidate.
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 42;
+                end
+                fnc valid(): int {
+                  val Box owner = rt take new Box();
+                  return owner.value;
+                }
+                """)));
+    }
+
     private String run(String code) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder("ores")
