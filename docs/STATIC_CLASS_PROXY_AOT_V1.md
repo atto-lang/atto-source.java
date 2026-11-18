@@ -256,11 +256,26 @@ proxy an airtight authority boundary. In particular, **no one-shot
 continuation capability is exposed**, so this slice cannot claim the full
 virtual-interceptor contract in `atto-spec#83`.
 
-This branch defines **30** JUnit cases, including ten new opt-in hook
+This branch defines **31** JUnit cases, including eleven new opt-in hook
 regressions. The source-org workflow demands nonempty exact-head passing
-Surefire receipts for all 30. Until executed, all backend tests and
+Surefire receipts for all 31. Until executed, all backend tests and
 standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
 
 The compiler currently represents only declared checked exceptional effects\n(throws/raises/panics). A missing declaration is **not** a proof of\nside-effect freedom or transitive exceptional closure: ordinary logging and\nother externally visible calls can still occur in a before hook. This\nprototype does not claim inferred IO purity, async/suspension closure, or\nchecked propagation across arbitrary hook callees. Those checks remain an\nexplicit merge gate.\n
+### Direct suspension rejection
+
+The experimental before-hook synthesizer now refuses explicit source
+`await`, task scopes, tasks, runtime intrinsics, channel/select operations,
+lambdas, defer, and loops (which may cooperate), including those inside
+supported conditional/match/try expression and statement trees. New unit
+fixtures build both direct and nested suspension ASTs and require an
+`AOT_PROXY_UNSUPPORTED` diagnostic rather than permitting the target method
+to run before hook completion.
+
+This is a *syntactic*, **not transitive**, proof. An ordinary helper call
+may still hide suspension, panic, IO, or external capability operations.
+Complete checked call-graph/effect analysis, dynamic-dispatch closure and
+ownership proof are required before this experimental source form becomes
+a normative or merge-ready interceptor feature.
