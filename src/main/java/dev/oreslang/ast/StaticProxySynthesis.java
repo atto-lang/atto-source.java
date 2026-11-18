@@ -48,13 +48,13 @@ public final class StaticProxySynthesis {
                                      List<InterceptorRequest> interceptorRequests) {
         if (requestedNames.isEmpty() && interceptorRequests.isEmpty()) return program;
         Set<String> requested = new HashSet<>(requestedNames);
-        for (InterceptorRequest request : uniqueRequests) requested.add(request.targetName());
         // A single compilation unit can construct many proxy instances of
         // the same target/hook type. One synthetic nominal class is shared
         // across those call sites. Preserve source appearance order to give
         // deterministic generated declaration order for exact-tree builds.
         List<InterceptorRequest> uniqueRequests =
                 List.copyOf(new java.util.LinkedHashSet<>(interceptorRequests));
+        for (InterceptorRequest request : uniqueRequests) requested.add(request.targetName());
         Map<String, Target> interceptors = new HashMap<>();
         Map<String, Target> found = new LinkedHashMap<>();
         Set<String> unresolvedTypeAliases = new HashSet<>();
