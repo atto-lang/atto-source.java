@@ -412,46 +412,70 @@ public final class StaticProxySynthesis {
      * proves the target lifetime, alias rights and closure transport. Recurse
      * through nested generic arguments (e.g. Option<borrow Foo>) as well.
      */
-    private static boolean unsafeSignatureType(Ast.TypeRef type, Set<String> unresolvedTypeAliases) {
-        // An alias can hide the wrapped target, a mutable aggregate or a
-        // borrowed/callable signature. Do not forward until nominal resolution
-        // proves its definition and transitive ownership/effect requirements.
-        if (unresolvedTypeAliases.contains(type.name())
-                || type.isBorrow() || type.isStructType() || type.inferArguments()
-                || type.name().equals("Fnc") || type.name().equals("Function")
-                || type.name().equals("Routine")
-                || type.name().equals("$infer$")) return true;
-        for (Ast.TypeRef arg : type.arguments()) {
-            if (unsafeSignatureType(arg, unresolvedTypeAliases)) return true;
+    // Bound metadata traversal before type/ownership resolution. Direct
+    // AST producers can build nesting far deeper than the normal parser's
+    // accepted surface grammar; the previous three recursive walks risked
+    // StackOverflowError before issuing a compiler diagnostic.
+    private static final int MAX_SIGNATURE_NESTING = 64;
+    private static final int MAX_SIGNATURE_NODES = 4096;
+
+    private record SignatureNode(Ast.TypeRef type, int depth) { }
+
+    private static boolean anyNestedSignatureType(
+            Ast.TypeRef root, java.util.function.Predicate<Ast.TypeRef> unsafe) {
+        if (root == null) throw fail("proxy signature type is missing");
+        java.util.ArrayDeque<SignatureNode> pending = new java.util.ArrayDeque<>();
+        pending.push(new SignatureNode(root, 0));
+        int count = 0;
+        while (!pending.isEmpty()) {
+            SignatureNode node = pending.pop();
+            if (node.depth() > MAX_SIGNATURE_NESTING || ++count > MAX_SIGNATURE_NODES) {
+                throw fail("proxy signature type exceeds nesting/node budget");
+            }
+            Ast.TypeRef type = node.type();
+            if (type == null || type.name() == null) {
+                throw fail("proxy signature contains a missing type name");
+            }
+            if (unsafe.test(type)) return true;
+            List<Ast.TypeRef> args = type.arguments();
+            if (args.size() > MAX_SIGNATURE_NODES - count) {
+                throw fail("proxy signature type exceeds nesting/node budget");
+            }
+            // Reverse-push so the original argument order is deterministic.
+            for (int i = args.size() - 1; i >= 0; i--) {
+                Ast.TypeRef child = args.get(i);
+                if (child == null) throw fail("proxy signature contains a missing nested type");
+                pending.push(new SignatureNode(child, node.depth() + 1));
+            }
         }
         return false;
+    }
+
+    private static boolean unsafeSignatureType(Ast.TypeRef type, Set<String> unresolvedTypeAliases) {
+        // An alias can hide the wrapped target, mutable aggregates, or
+        // borrowed/callable types; reject until qualified resolution proves
+        // the complete transitive ownership/effect contract.
+        return anyNestedSignatureType(type, current ->
+                unresolvedTypeAliases.contains(current.name())
+                || current.isBorrow() || current.isStructType() || current.inferArguments()
+                || current.name().equals("Fnc") || current.name().equals("Function")
+                || current.name().equals("Routine")
+                || current.name().equals("$infer$"));
     }
 
     private static boolean exposesTargetType(Ast.TypeRef type, String targetName) {
-        if (type.name().equals(targetName) || type.name().equals("self")) return true;
-        for (Ast.TypeRef arg : type.arguments()) {
-            if (exposesTargetType(arg, targetName)) return true;
-        }
-        return false;
+        return anyNestedSignatureType(type, current ->
+                current.name().equals(targetName) || current.name().equals("self"));
     }
 
     /**
-     * A statically declared Foo return is already rejected above, but an opaque
-     * supertype or erased nested payload may hide Foo at runtime. Until the
-     * compiler proves an identity-preserving adapter, fail closed. Future
-     * qualified type resolution can replace this conservative name check.
+     * An opaque supertype or erased nested payload can conceal the wrapped
+     * target identity. Without an identity-preserving adapter, reject.
      */
     private static boolean erasesTargetIdentity(Ast.TypeRef type) {
-        String name = type.name();
-        if (name.equals("Any") || name.equals("any")
-                || name.equals("Object") || name.equals("object")
-                || name.equals("Unknown") || name.equals("unknown")
-                || name.equals("Dynamic") || name.equals("dynamic")
-                || name.equals("?")) return true;
-        for (Ast.TypeRef arg : type.arguments()) {
-            if (erasesTargetIdentity(arg)) return true;
-        }
-        return false;
+        return anyNestedSignatureType(type, current ->
+                Set.of("Any", "any", "Object", "object", "Unknown", "unknown",
+                        "Dynamic", "dynamic", "?").contains(current.name()));
     }
 
     private static IllegalArgumentException fail(String message) {
