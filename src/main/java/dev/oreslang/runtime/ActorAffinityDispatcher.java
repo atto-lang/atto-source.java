@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.IntConsumer;
 import java.util.function.IntFunction;
 
 /**
@@ -246,6 +247,18 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
      */
     int executeOnLane(int lane, Runnable command) {
         Objects.requireNonNull(command);
+        return executeOnLane(lane, ignored -> command.run());
+    }
+
+    /**
+     * Dispatch with an observation of the lane that actually ENTERS the turn.
+     * Submission placement and physical execution may differ after an idle
+     * steal; an actor may only update its soft home hint from the latter.
+     * The callback is executed exactly once by the winning QueuedTurn claim,
+     * not by a submitting or completion thread. This is no ownership token.
+     */
+    int executeOnLane(int lane, IntConsumer command) {
+        Objects.requireNonNull(command);
         if (closed.get() || !queueSlots.tryAcquire()) throw new RejectedExecutionException("actor lane queue unavailable");
         // This is a dispatch-placement choice, not an ownership transfer:
         // ActorCell's physical execution lease still guards serial entry.
@@ -347,14 +360,14 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     }
 
     private final class QueuedTurn implements Runnable {
-        private final Runnable command;
+        private final IntConsumer command;
         private final int assignedLane;
         private final long queuedAtNanos = System.nanoTime();
         private final AtomicBoolean released = new AtomicBoolean();
         // 0=pending, 1=entered, 2=rejected. The task itself is the lock:
         // no additional per-dispatch claim allocation in the actor hot path.
         private int claim;
-        private QueuedTurn(Runnable command, int assignedLane) {
+        private QueuedTurn(IntConsumer command, int assignedLane) {
             this.command = command;
             this.assignedLane = assignedLane;
         }
@@ -389,7 +402,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             runningByLane.incrementAndGet(slot);
             try {
                 releaseSlot();
-                command.run();
+                command.accept(lane);
             } finally {
                 runningByLane.decrementAndGet(slot);
             }
