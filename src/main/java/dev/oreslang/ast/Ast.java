@@ -218,6 +218,20 @@ public final class Ast {
             arguments = List.copyOf(arguments);
         }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
+        /** A compile-time, binding-derived type; never a runtime typeof call. */
+        public static TypeRef typeQuery(String binding) {
+            if (binding == null || binding.isBlank()) {
+                throw new IllegalArgumentException("typeof requires a binding name");
+            }
+            return new TypeRef("$typeof$", List.of(simple(binding)), false);
+        }
+        public boolean isTypeQuery() { return name.equals("$typeof$"); }
+        public String queriedBinding() {
+            if (!isTypeQuery() || arguments.size() != 1 || !arguments.getFirst().arguments().isEmpty()) {
+                throw new IllegalStateException("malformed typeof binding query");
+            }
+            return arguments.getFirst().name();
+        }
         /** A complement in type position. The token '!' is not a value operator here. */
         public static TypeRef complement(TypeRef excluded) {
             return excluded.isComplement()
@@ -1074,7 +1088,7 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, StructuralPattern, RecordPattern, TuplePattern, ConstructorPattern { }
+            TypePattern, StructuralPattern, RecordPattern, TuplePattern, ConstructorPattern, SequencePattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
@@ -1127,6 +1141,52 @@ public final class Ast {
             elements = List.copyOf(elements);
             if (elements.size() < 2) {
                 throw new IllegalArgumentException("tuple patterns require at least two elements");
+            }
+        }
+    }
+
+    /**
+     * A statically checked positional Bytes pattern, not an array/index
+     * expression and not the typed-width segment in binary { payload: bytes[n] }.
+     * The bounded AST is suitable for a fixed-size AOT comparison plan.
+     */
+    public enum SequenceUnit { BYTE, BIT }
+
+    public record SequenceElement(Integer literal, String binding) {
+        public SequenceElement {
+            if ((literal == null) == (binding == null)) {
+                throw new IllegalArgumentException("sequence element needs one literal or binding");
+            }
+            if (binding != null && (binding.isBlank() || !binding.matches("[A-Za-z_][A-Za-z0-9_]*"))) {
+                throw new IllegalArgumentException("invalid sequence binding");
+            }
+        }
+    }
+
+    public record SequencePattern(
+            SequenceUnit unit, List<SequenceElement> elements, String tail) implements Pattern {
+        public SequencePattern {
+            java.util.Objects.requireNonNull(unit, "sequence unit");
+            elements = List.copyOf(elements);
+            if (elements.size() > 256) {
+                throw new IllegalArgumentException("sequence pattern exceeds 256 elements");
+            }
+            if (tail != null && (elements.isEmpty() || !tail.matches("[A-Za-z_][A-Za-z0-9_]*"))) {
+                throw new IllegalArgumentException("sequence pattern needs a nonempty prefix and final tail");
+            }
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (SequenceElement element : elements) {
+                if (element.literal() != null &&
+                        (element.literal() < 0 || element.literal() > (unit == SequenceUnit.BYTE ? 255 : 1))) {
+                    throw new IllegalArgumentException("sequence pattern literal outside byte/bit range");
+                }
+                if (element.binding() != null && !element.binding().equals("_")
+                        && !seen.add(element.binding())) {
+                    throw new IllegalArgumentException("duplicate sequence pattern binding");
+                }
+            }
+            if (tail != null && !tail.equals("_") && !seen.add(tail)) {
+                throw new IllegalArgumentException("duplicate sequence pattern tail binding");
             }
         }
     }
@@ -1948,7 +2008,16 @@ public final class Ast {
         public NewExpr { arguments = List.copyOf(arguments); }
     }
 
-    public record AwaitExpr(Expr expression) implements Expr { }
+    /**
+     * The std.await value-pipeline stage reuses ordinary await semantics.
+     * Preserve the compiler-owned spelling for lexical namespace validation.
+     */
+    public record AwaitExpr(Expr expression, boolean coreAdapter) implements Expr {
+        public AwaitExpr {
+            java.util.Objects.requireNonNull(expression, "await expression");
+        }
+        public AwaitExpr(Expr expression) { this(expression, false); }
+    }
 
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }

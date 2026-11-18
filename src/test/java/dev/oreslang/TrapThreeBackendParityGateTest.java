@@ -33,7 +33,7 @@ final class TrapThreeBackendParityGateTest {
             Value result = context.eval(guest);
             assertTrue(result.fitsInLong(), "guest main() must return int");
             assertEquals(7L, result.asLong(),
-                    "trap must add Option and preserve Result.Err without flattening");
+                    "trap over a Result keeps exactly one Result layer and preserves its Err");
         }
     }
 
@@ -72,7 +72,7 @@ final class TrapThreeBackendParityGateTest {
         String source = """
                 pub fnc main(): int {
                   val Option<int> missing = None;
-                  val Option<int> value = trap missing.unwrap();
+                  val Result<int, Error> value = trap missing.unwrap();
                   return 7;
                 }
                 """;
@@ -89,32 +89,32 @@ final class TrapThreeBackendParityGateTest {
     }
 
     @Test
-    void anOptionResultCannotBePassedToABareResultParameter() {
+    void aTrappedResultCarriesTheWiderErrorTypeAndCannotNarrowImplicitly() {
         String source = """
                 fnc checked_id(int id): Result<int, String> { return Ok(id); }
                 fnc consume(Result<int, String> value): void { return; }
                 pub fnc main(): int {
-                  val Option<Result<int, String>> wrapped = trap checked_id(5);
+                  val Result<int, String | Error> wrapped = trap checked_id(5);
                   consume(wrapped);
                   return 0;
                 }
                 """;
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source),
-                "no implicit Option<Result> to Result conversion");
+                "Result<int, String | Error> does not narrow to Result<int, String> implicitly");
     }
 
     @Test
-    void anUnwrappedResultCannotBeAssignedToOptionResultWithoutTrap() {
+    void trapNeverWrapsAResultInASecondResult() {
         String source = """
                 fnc checked_id(int id): Result<int, String> { return Ok(id); }
                 pub fnc main(): int {
-                  val Option<Result<int, String>> wrapped = checked_id(5);
+                  val Result<Result<int, String>, Error> wrapped = trap checked_id(5);
                   return 0;
                 }
                 """;
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source),
-                "only trap adds the outer Option");
+                "trap over a Result yields one Result, never Result<Result<..>, Error>");
     }
 }

@@ -10,6 +10,8 @@ A source file may contain multiple named modules. A module owns declarations and
 
 A source namespace does **not** imply that all backend implementations can link or execute it. In particular, the native LLVM backend currently fails closed on runtime namespace use and on linked namespace/type identities; Java/Graal support must not be advertised as cross-backend parity.
 
+The compiler reserves `__root__` for its synthetic file-root module. User code cannot define `namespace __root__`, `define module __root__`, import `module __root__`, or use `__root__` as an import alias. A synthetic root module is **not** a public namespace export. The compiler keeps `CompiledUnit.namespace` separate from `CompiledUnit.packageId`; absent verified manifest grouping, each normalized source file receives a singleton package identity.
+
 ```ores
 define module math
   pub fnc add(int a, int b): int {
@@ -406,27 +408,44 @@ finite sequence shapes.
 Every local binding is declared with a fixed/rebindable permission:
 
 - `const`: fixed readonly local binding; its checked initializer is evaluated
-  eagerly once in lexical order and the binding cannot be reassigned.
+  eagerly once in lexical order and the binding cannot be reassigned. A typed
+  scalar `const` (and every type-first local) must be compile-time evaluable;
+  see below.
 - `val`: runtime single-assignment binding; it cannot be reassigned and keeps
   its existing referent-mutation permission subject to ownership checks.
 - `let`: rebindable binding and the only local binding kind that may be
   reassigned.
 
-A proven compile-time-constant value is optimization/type-check metadata, not
-the meaning of the `const` binding keyword. Contexts such as switch/case
+A **typed scalar const** (`int`, `bool`, `string`/`String`) is a compile-time
+constant: `const int x = e;` and the type-right `const x: int = e;` require an
+initializer the checker can evaluate without running guest code (literals,
+prior typed scalar constants, checked `+ - *`, comparisons, `! && || ^^`,
+string `+` within a size budget, and conditionals over those). Anything else
+is rejected with `E_NON_CONST_INITIALIZER`; overflow is `E_CONST_OVERFLOW`;
+`const mut` on a scalar is `E_CONST_MUT_UNSUPPORTED`. Untyped `const x = e;`
+is unchanged in this stage: a fixed readonly binding whose value is folded
+when it is constant (spec chapter 27, stage one). Contexts such as switch/case
 patterns that require a compile-time constant expression check that property
 explicitly.
 
-Primitive type-first locals are immutable by default:
+Primitive type-first locals are exactly typed scalar constants:
 
 ```ores
-int answer = compute();
-bool ready = check_ready();
+int answer = 6 * 7;      // same as const int answer = 6 * 7;
+bool ready = true;
 ```
 
-For the supported scalar subset this has the same fixed readonly binding
-permission as `const int answer = compute();`. Use explicit `let` when
-rebinding is intended.
+A runtime initializer needs an explicit runtime binding:
+
+```ores
+val int answer = compute();   // or: val answer = compute();
+let int retries = 0;          // rebindable
+```
+
+`int answer = compute();` is rejected with `E_NON_CONST_INITIALIZER`; it is
+never reinterpreted as `val`. A bare `mut int x = e;` is rejected with
+`E_MUT_QUALIFIER`. Reassigning a `const`/`val` binding is
+`E_IMMUTABLE_REBIND`. Use explicit `let` when rebinding is intended.
 
 ```ores
 const max = 10;

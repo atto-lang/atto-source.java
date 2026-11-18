@@ -1530,6 +1530,12 @@ public final class TreeShaker {
                 locals.put(typed.binding(), UNKNOWN);
             } else if (pattern instanceof Ast.StructuralPattern structural && structural.binding() != null) {
                 locals.put(structural.binding(), UNKNOWN);
+            } else if (pattern instanceof Ast.SequencePattern sequence) {
+                for (Ast.SequenceElement element : sequence.elements())
+                    if (element.binding() != null && !element.binding().equals("_"))
+                        locals.put(element.binding(), UNKNOWN);
+                if (sequence.tail() != null && !sequence.tail().equals("_"))
+                    locals.put(sequence.tail(), UNKNOWN);
             } else if (pattern instanceof Ast.TuplePattern tuple) {
                 for (Ast.Pattern nested : tuple.elements()) addPatternLocals(nested, locals);
             } else if (pattern instanceof Ast.ConstructorPattern constructor) {
@@ -1544,6 +1550,12 @@ public final class TreeShaker {
                 locals.add(typed.binding());
             } else if (pattern instanceof Ast.StructuralPattern structural && structural.binding() != null) {
                 locals.add(structural.binding());
+            } else if (pattern instanceof Ast.SequencePattern sequence) {
+                for (Ast.SequenceElement element : sequence.elements())
+                    if (element.binding() != null && !element.binding().equals("_"))
+                        locals.add(element.binding());
+                if (sequence.tail() != null && !sequence.tail().equals("_"))
+                    locals.add(sequence.tail());
             } else if (pattern instanceof Ast.TuplePattern tuple) {
                 for (Ast.Pattern nested : tuple.elements()) addPatternLocalNames(nested, locals);
             } else if (pattern instanceof Ast.ConstructorPattern constructor) {

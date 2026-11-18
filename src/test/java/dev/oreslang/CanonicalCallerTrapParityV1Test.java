@@ -30,15 +30,15 @@ final class CanonicalCallerTrapParityV1Test {
     private record Guest(long value, String stdout) {}
 
     private static final Map<String, String> BLOBS = Map.copyOf(new LinkedHashMap<>() {{
-        put("01-some-int.atto", "d0ec8a9bc9e73e016cf1c31e2cb35cb84ac281c7");
-        put("02-some-result-ok.atto", "8dd86350bdfa4dc90e47b7dd5f44bd82b0266157");
-        put("03-some-result-err.atto", "0f431f23d40d46cacd07d81714780e0061b6413e");
-        put("04-some-none.atto", "038d5bfe66996efff91400a8d699dac3e6f43f54");
-        put("05-ordinary-throw.atto", "57a646240880dfc4b633c2f9eeb5b9278dd0022f");
-        put("06-panic-bypass.atto", "7b674493d50e688666b1fa37f59b990a27f109e4");
-        put("07-exactly-once.atto", "6547de51bc2be9b52eca35359a00b692ed434cfb");
-        put("08-type-mismatch.atto", "057544faa452e4942143503499c4a7b76072ff17");
-        put("09-result-is-not-throw.atto", "c5a427450943ac32824e42c1261401777080724e");
+        put("01-some-int.atto", "a83015bcbc66ed075440fc15972f6933189c2eee");
+        put("02-some-result-ok.atto", "f2c4eb66f37ad239cc06b05f4be9aa8cac4712f5");
+        put("03-some-result-err.atto", "3930a526cc7f1c94005354f1f4d94327d7106069");
+        put("04-some-none.atto", "cb60075bf1ae15e86ff8013878f5da669269e610");
+        put("05-ordinary-throw.atto", "1f3e6b694b3147a63a2528052cf5ed7c0b7a1a59");
+        put("06-panic-bypass.atto", "1e1247eb310efea99a6a28aa8fd7013e76e98e7e");
+        put("07-exactly-once.atto", "af0d97a1df81ad879529983b21ea2fb5da52824e");
+        put("08-type-mismatch.atto", "740eb4a196f450ba834918b9fb1c41338177e46f");
+        put("09-result-is-not-throw.atto", "fcc43cbc495b90b642c4881ae79f5d4a75a58258");
     }});
 
     private static byte[] bytes(String name) throws IOException {
