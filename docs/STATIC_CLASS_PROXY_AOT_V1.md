@@ -260,9 +260,9 @@ proxy an airtight authority boundary. In particular, **no one-shot
 continuation capability is exposed**, so this slice cannot claim the full
 virtual-interceptor contract in `atto-spec#83`.
 
-This branch defines **48** JUnit cases, including twenty-eight new opt-in hook
+This branch defines **49** JUnit cases, including twenty-eight new opt-in hook
 regressions. The source-org workflow demands nonempty exact-head passing
-Surefire receipts for all 48. Until executed, all backend tests and
+Surefire receipts for all 49. Until executed, all backend tests and
 standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
@@ -329,7 +329,7 @@ successfully, including allowed helper chaining, recursive/dynamic/async
 rejection, unsafe operators, value escapes and namespace/protected-declaration
 spoofing. This verifies that helper source's syntax and local admission
 logic, **not** the real compiler, Java guest runtime or JDK 25/GraalVM.
-It is not a substitute for the 48 source JUnit tests.
+It is not a substitute for the 49 source JUnit tests.
 
 The public `expand` API now idempotently deduplicates repeated identical
 target/interceptor type requests, preserving first-source-occurrence order
@@ -371,7 +371,7 @@ and `%` operators fail closed because zero-divisor behavior can introduce an
 implicit exceptional outcome even when no checked effects are declared.
 `void` is rejected as a helper parameter type. The exact-head workflow also
 triggers on changes to `StaticProxyHookEffectClosure.java` so a helper-only
-change cannot escape the 48-case guest CI admission gate. These JUnit tests
+change cannot escape the 49-case guest CI admission gate. These JUnit tests
 are defined, not executed, until source runner admission is restored.
 
 ### Deep generic signature metadata admission
@@ -400,9 +400,22 @@ GPU actors and standalone actors. Proxying a class carrying new main AST class
 annotations is rejected rather than silently stripping its policy metadata.
 Proxying methods flagged `critical` is rejected rather than manufacturing
 an unguarded forwarder, and critical helper hooks are not admitted. Test
-coverage on this branch is **48** JUnit definitions, including four
+coverage on this branch is **49** JUnit definitions, including four
 integration-specific modern AST/authorization guards. An executable JDK25
 GraalVM Surefire receipt is required before asserting compiler compatibility.
 
 The original stacked PRs #2650, #3175 and #3178 remain independently open,
 and no merge is implied by this integration branch.
+
+### Depth-sensitive helper DAG cache (2026-11-18)
+
+A visited set indexed solely by method name/arity was insufficient for a
+shared helper DAG: a helper's valid shallow traversal was incorrectly reused
+on a deeper path, where its same expressions could cross the 32-level AST
+budget. The verifier now caches the **deepest validated entry depth** per
+method and re-traverses shared descendants whenever the newly reached depth
+is greater. Active recursion checks run before cache reuse. An adversarial
+49th JUnit fixture verifies a shared helper is reached first shallowly and
+then by a six-stage chain from a second `before_*` hook; the second path must
+fail closed with the depth-budget diagnostic. An old 20-case isolated JDK21
+mock-AST smoke predates this change and does not certify the current helper.
