@@ -109,4 +109,28 @@ final class ReturnFirstBeginCallableTest {
         assertEquals("string", fn.returnType().name());
         assertEquals(1, fn.body().size());
     }
+    @Test
+    void genericsAndDefaultedParametersKeepTheirExistingCallableSemantics() {
+        Ast.Program program = Parser.parse("""
+                fnc Result<int, string> <- wrap<T>(T value)
+                begin
+                  return Ok(42);
+                end
+                define class Generic as
+                  fnc int <- choose<T>(T value, int fallback = 2)
+                  begin
+                    return fallback;
+                  end.
+                end
+                """);
+        Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
+                program.modules().getFirst().declarations().get(0));
+        assertEquals("Result", fn.returnType().name());
+        assertEquals(1, fn.genericParameters().size());
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().get(1));
+        assertEquals("choose", klass.methods().getFirst().name());
+        assertEquals("int", klass.methods().getFirst().returnType().name());
+    }
+
 }
