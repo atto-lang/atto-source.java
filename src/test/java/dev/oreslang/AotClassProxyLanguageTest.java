@@ -462,6 +462,63 @@ final class AotClassProxyLanguageTest {
     }
 
     @Test
+    void beforeInterceptorsPreserveNameAndArityOverloadDispatch() throws Exception {
+        String source = """
+                define class Foo as
+                  pub add(int value): int {
+                    return value + 1;
+                  }
+                  pub add(int left, int right): int {
+                    return left + right;
+                  }
+                end
+                define class Hook as
+                  pub before_add(int value): void {
+                    stdio.stdout.write(1);
+                    return;
+                  }
+                  pub before_add(int left, int right): void {
+                    stdio.stdout.write(2);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  stdio.stdout.write(p.add(10));
+                  stdio.stdout.write(p.add(20, 21));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("111241", run(source));
+    }
+
+    @Test
+    void beforeInterceptorsHandleVoidTargetWithoutDuplicateForwarding() throws Exception {
+        String source = """
+                define class Foo as
+                  pub ping(): void {
+                    stdio.stdout.write(2);
+                    return;
+                  }
+                end
+                define class Hook as
+                  pub before_ping(): void {
+                    stdio.stdout.write(1);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  p.ping();
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("12", run(source));
+    }
+
+    @Test
     void rejectsMissingOrWrongArityBeforeHook() {
         String src = BEFORE_HOOK_SOURCE.replace(
                 "before_do_work(int value)", "before_do_work()");
