@@ -865,6 +865,77 @@ final class AotClassProxyLanguageTest {
         }
     }
 
+    @Test
+    void twoBeforeHooksCanShareOneStaticallyCheckedHelperDag() throws Exception {
+        String source = """
+                define class Foo as
+                  pub read(int value): int { return value + 1; }
+                  pub write(int value): int { return value + 2; }
+                end
+                define class Hooks as
+                  private trace(int value): void {
+                    stdio.stdout.write(value);
+                    return;
+                  }
+                  pub before_read(int value): void {
+                    self.trace(value);
+                    return;
+                  }
+                  pub before_write(int value): void {
+                    self.trace(value);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val proxy = new Proxy(new Foo(), new Hooks());
+                  stdio.stdout.write(proxy.read(40));
+                  stdio.stdout.write(proxy.write(40));
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(source);
+        Ast.ClassDecl generated = parsed.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof Ast.ClassDecl klass
+                        && klass.name().equals("FooWithHooksProxy"))
+                .map(decl -> (Ast.ClassDecl) decl)
+                .findFirst().orElseThrow();
+        assertEquals(2, generated.methods().size());
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("40414042", run(source));
+    }
+
+    @Test
+    void rejectsOversizedInterceptorHelperMethodTablesBeforeGraphTraversal() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        List<Ast.MethodDecl> methods = new java.util.ArrayList<>();
+        methods.add(new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(integer, "value")), Ast.TypeRef.simple("void"),
+                List.of(), List.of(new Ast.ReturnStmt(null))));
+        for (int i = 0; i < 4096; i++) {
+            methods.add(new Ast.MethodDecl("helper_" + i, Ast.Visibility.PRIVATE,
+                    false, false, false, false, false, null, List.of(),
+                    List.of(), Ast.TypeRef.simple("void"), List.of(),
+                    List.of(new Ast.ReturnStmt(null))));
+        }
+        Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                methods);
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks))));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () ->
+                        dev.oreslang.ast.StaticProxySynthesis.expand(
+                                program, Set.of(), List.of(
+                                        new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                                                "Foo", "Hooks"))));
+        assertTrue(error.getMessage().contains("method table exceeds slot budget"),
+                error.getMessage());
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
