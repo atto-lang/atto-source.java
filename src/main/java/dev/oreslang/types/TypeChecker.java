@@ -6026,6 +6026,18 @@ public final class TypeChecker {
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical, !nonLexical);
             List<Type> parameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
+                if (param.type().isBorrow()
+                        && param.type().borrowedTarget().name().equals("$infer$")) {
+                    throw new IllegalArgumentException(
+                            "inferred borrow parameter '" + param.name()
+                                    + "' requires a proven typed callable contract; "
+                                    + "use '|borrow mut T name|' when standalone");
+                }
+                if (param.mutable() && param.type().name().equals("$infer$")) {
+                    throw new IllegalArgumentException(
+                            "inferred mutable binding '" + param.name()
+                                    + "' requires a typed callable contract");
+                }
                 Type type = resolveParam(param, generics, self);
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -6033,6 +6045,9 @@ public final class TypeChecker {
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            // A synchronous lambda does not inherit suspension authority
+            // from its enclosing async/suspends function.
+            boolean previousMaySuspend = currentMaySuspend;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
             // A lambda checked within a constructor runs on invocation, not
@@ -6043,6 +6058,7 @@ public final class TypeChecker {
             Type declaredLambdaResult = lambda.declaredReturnType() == null
                     ? null : resolve(lambda.declaredReturnType(), generics, self);
             try {
+                currentMaySuspend = false;
                 if (lambda.expressionBody() != null) {
                     result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
                 } else if (declaredLambdaResult != null) {
@@ -6075,6 +6091,7 @@ public final class TypeChecker {
                 // assignments inside a closure establish definite-init facts
                 // for the enclosing flow merely because the closure exists.
                 env.restoreInitialization(outerInitialization);
+                currentMaySuspend = previousMaySuspend;
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
             }
@@ -6900,6 +6917,10 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        // Callback signatures are synchronous even inside suspends callers.
+        // A borrowed state view cannot authorize an indirect suspending call.
+        boolean previousMaySuspend = currentMaySuspend;
+        currentMaySuspend = false;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
@@ -6911,6 +6932,7 @@ public final class TypeChecker {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
             }
         } finally {
+            currentMaySuspend = previousMaySuspend;
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
         }
@@ -7025,6 +7047,24 @@ public final class TypeChecker {
         }
     }
 
+    private Type resolveExpectedLambdaParameter(
+            Ast.Param param, Type expected, Set<String> generics, Type self) {
+        if (param.type().name().equals("$infer$")) return expected;
+        if (param.type().isBorrow()
+                && param.type().borrowedTarget().name().equals("$infer$")) {
+            if (!(expected instanceof Borrow borrow)
+                    || borrow.mutable() != param.type().mutableBorrow()
+                    || borrow.target() == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "lambda parameter '" + param.name()
+                                + "' requires an explicit matching borrowed callable parameter type");
+            }
+            // Context determines the referent type, not a forged Unknown loan.
+            return expected;
+        }
+        return resolveParam(param, generics, self);
+    }
+
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
@@ -7040,7 +7080,7 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "lambda parameter '" + param.name() + "' mutability does not match expected callable contract");
             }
-            Type declared = param.type().name().equals("$infer$") ? expectedParam : resolveParam(param, generics, self);
+            Type declared = resolveExpectedLambdaParameter(param, expectedParam, generics, self);
             lambdaArgumentTypes.add(declared);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
@@ -7061,6 +7101,10 @@ public final class TypeChecker {
         Type bodyReturn = declaredLambdaResult == null ? expected.result() : declaredLambdaResult;
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        // Callback signatures are synchronous even inside suspends callers.
+        // A borrowed state view cannot authorize an indirect suspending call.
+        boolean previousMaySuspend = currentMaySuspend;
+        currentMaySuspend = false;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
@@ -7076,6 +7120,7 @@ public final class TypeChecker {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, bodyReturn, self);
             }
         } finally {
+            currentMaySuspend = previousMaySuspend;
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
         }
@@ -10910,6 +10955,11 @@ public final class TypeChecker {
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
+        if (param.type().isBorrow() && param.mutable()) {
+            throw new IllegalArgumentException(
+                    "borrowed parameter '" + param.name() + "' has a fixed binding; "
+                            + "'borrow mut T name' grants exclusive mutation, not rebinding");
+        }
         if (!param.structural()) return resolve(param.type(), generics, self);
         if (param.mutable()) {
             throw new IllegalArgumentException(
