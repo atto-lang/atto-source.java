@@ -907,6 +907,18 @@ public final class Parser {
         }
     }
 
+    private String peekReturnFirstCallableName() {
+        if (!looksLikeReturnFirstCallableHead()) return null;
+        int mark = current;
+        try {
+            parseTypeRef();
+            advance(); // already verified <- / • by the lookahead
+            return peek().lexeme();
+        } finally {
+            current = mark;
+        }
+    }
+
     private Ast.TypeRef parseReturnFirstTypeIfPresent() {
         if (!looksLikeReturnFirstCallableHead()) return null;
         Ast.TypeRef type = parseTypeRef();
@@ -1684,6 +1696,16 @@ public final class Parser {
             }
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
+            }
+            // A return-type-first head leaves the return type at peek(), not
+            // the method name. Do not let this spelling bypass the dedicated
+            // lifecycle/CONTROL admission rules below.
+            String returnFirstActorName = peekReturnFirstCallableName();
+            if (returnFirstActorName != null && java.util.Set.of(
+                    "tear_down", "handle_state", "on_panic", "on_throw",
+                    "on_throws", "on_raise", "on_recover").contains(returnFirstActorName)) {
+                throw error(peek(), "return-first actor lifecycle/CONTROL method '"
+                        + returnFirstActorName + "' is reserved; use the checked legacy hook declaration");
             }
             // Reserved lifecycle and unhandled-failure methods must not be
             // silently treated as ordinary actor methods before runtime
