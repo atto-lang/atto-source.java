@@ -236,7 +236,7 @@ that invokes `self.__proxy_hooks.before_<method>(args)` and then delegates
 to `self.__proxy_target.<method>(args)`. Both calls use the established
 name-and-arity dispatch table and ordinary type/ownership checking. Hooks
 must be public synchronous void methods with the exact target parameter
-types and no declared effects or annotations. Missing, ambiguous, extra,
+types and no declared effects or annotations. A before hook may receive only\nclearly copyable immutable scalar arguments (int/float/bool/String), because\nthe generated method must subsequently pass those same arguments to its target.\nThis draft does not yet prove inferred effects or hook-body purity; that proof\nis required before calling it an effect-safe interception boundary. Missing, ambiguous, extra,
 private, asynchronous, effectful, structurally typed, or mismatched hooks
 fail closed. Target and hook must be ordinary, concrete, nongeneric classes
 declared in the same module. Synthetic names, receiver names and storage
@@ -256,9 +256,9 @@ proxy an airtight authority boundary. In particular, **no one-shot
 continuation capability is exposed**, so this slice cannot claim the full
 virtual-interceptor contract in `atto-spec#83`.
 
-This branch defines **26** JUnit cases, including six new opt-in hook
+This branch defines **27** JUnit cases, including seven new opt-in hook
 regressions. The source-org workflow demands nonempty exact-head passing
-Surefire receipts for all 26. Until executed, all backend tests and
+Surefire receipts for all 27. Until executed, all backend tests and
 standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
