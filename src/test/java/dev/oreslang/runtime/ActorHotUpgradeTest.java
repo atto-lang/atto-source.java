@@ -431,4 +431,35 @@ final class ActorHotUpgradeTest {
             assertTrue(ref.isAlive());
         }
     }
+    @Test
+    void theCancelDeadlinePolicyCancelsGenerationNWorkThenSwitches() throws Exception {
+        List<Seen> seen = new CopyOnWriteArrayList<>();
+        AtomicReference<OresFuture<String>> held = new AtomicReference<>();
+        List<Throwable> continuationSaw = new CopyOnWriteArrayList<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnSharedTrusted(context -> (message, turn) -> {
+                OresFuture<String> pending = new OresFuture<>();
+                held.set(pending);
+                ActorRuntime actors = turn.runtime();
+                actors.enqueueOnCompletion(pending, actors.captureCurrentContinuationTarget(),
+                        (value, failure) -> {
+                            continuationSaw.add(failure);
+                            seen.add(new Seen("v1-cleanup", String.valueOf(failure != null), null, 0));
+                        });
+                seen.add(new Seen("v1", message, null, 0));
+            });
+            ref.send("hold");
+            await(() -> held.get() != null, "parked");
+            ActorUpgrade.Result result = ref.upgrade(ActorUpgrade.<String>sameSchema(
+                            (previous, context) -> (message, turn) -> seen.add(new Seen("v2", message, null, 0)))
+                    .drainDeadline(Duration.ofMillis(100))
+                    .onDrainDeadline(ActorUpgrade.DeadlinePolicy.CANCEL)).get(5, TimeUnit.SECONDS);
+            assertEquals(Outcome.COMMITTED, result.outcome(), "cancelling N's work lets the switch proceed");
+            assertTrue(held.get().isCancelled(), "generation N's owned Future was cancelled");
+            ref.send("next");
+            await(() -> seen.size() == 3, "cleanup on N, then N+1");
+            assertEquals(List.of("v1:hold", "v1-cleanup:true", "v2:next"), versionsOf(seen),
+                    "the cancelled continuation ran its cleanup on generation N before the switch");
+        }
+    }
 }

@@ -2826,6 +2826,8 @@ public final class ActorRuntime implements AutoCloseable {
         final ActorUpgrade<M> plan;
         final OresFuture<ActorUpgrade.Result> result = new OresFuture<>();
         volatile java.util.concurrent.ScheduledFuture<?> deadline;
+        // Guarded by the cell's lifecycleLock.
+        boolean cancelIssued;
         // Written on the actor's own turn only.
         long rejected;
         boolean heapMigrated;
@@ -9941,11 +9943,29 @@ public final class ActorRuntime implements AutoCloseable {
             return pending.result;
         }
 
-        /** Deadline: generation N did not drain in time, so it stays installed. */
+        /**
+         * Deadline: generation N did not drain in time. ROLL_BACK keeps N
+         * installed. CANCEL first cancels N's owned Futures and allows one more
+         * deadline for their continuations to finish on N, then rolls back.
+         */
         private void expireUpgrade(PendingUpgrade<M> pending) {
+            List<OresFuture<?>> toCancel = null;
             synchronized (lifecycleLock) {
                 if (pendingUpgrade != pending) return; // already switched or aborted
-                pendingUpgrade = null;
+                if (pending.plan.deadlinePolicy == ActorUpgrade.DeadlinePolicy.CANCEL
+                        && !pending.cancelIssued) {
+                    pending.cancelIssued = true;
+                    toCancel = new ArrayList<>(pendingOperations);
+                } else {
+                    pendingUpgrade = null;
+                }
+            }
+            if (toCancel != null) {
+                pending.deadline = ActorUpgrade.TIMERS.schedule(() -> expireUpgrade(pending),
+                        pending.plan.drainDeadline.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
+                for (OresFuture<?> future : toCancel) future.cancel(false);
+                schedule();
+                return;
             }
             pending.settle(ActorUpgrade.Outcome.ROLLED_BACK_DRAIN_TIMEOUT, codeGeneration, false, "");
             schedule(); // admission resumes

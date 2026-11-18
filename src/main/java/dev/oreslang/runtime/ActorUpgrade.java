@@ -37,6 +37,19 @@ import java.util.function.Predicate;
  */
 public final class ActorUpgrade<M> {
 
+    /** What a missed drain deadline does (spec ch. 27 rule 12). */
+    public enum DeadlinePolicy {
+        /** Abandon the upgrade: generation N stays installed and admission resumes. */
+        ROLL_BACK,
+        /**
+         * Cancel generation N's outstanding owned Futures. Their continuations
+         * still run on N and observe the cancellation, so cleanup runs; then the
+         * switch proceeds. If N still has not drained after a second deadline,
+         * the upgrade rolls back.
+         */
+        CANCEL
+    }
+
     public enum Outcome {
         /** Generation N+1 is installed. */
         COMMITTED,
@@ -89,9 +102,12 @@ public final class ActorUpgrade<M> {
     final Predicate<? super M> admitsQueued;
     final Consumer<ActorRuntime.ActorInboxMail<M>> onRejected;
     final Duration drainDeadline;
+    final DeadlinePolicy deadlinePolicy;
 
     private ActorUpgrade(Rebind<M> rebind, Migrate<M> migrate, Predicate<? super M> admitsQueued,
-                         Consumer<ActorRuntime.ActorInboxMail<M>> onRejected, Duration drainDeadline) {
+                         Consumer<ActorRuntime.ActorInboxMail<M>> onRejected, Duration drainDeadline,
+                         DeadlinePolicy deadlinePolicy) {
+        this.deadlinePolicy = Objects.requireNonNull(deadlinePolicy, "deadlinePolicy");
         this.rebind = rebind;
         this.migrate = migrate;
         this.admitsQueued = Objects.requireNonNull(admitsQueued, "admitsQueued");
@@ -104,26 +120,30 @@ public final class ActorUpgrade<M> {
 
     public static <M> ActorUpgrade<M> sameSchema(Rebind<M> rebind) {
         return new ActorUpgrade<>(Objects.requireNonNull(rebind, "rebind"), null,
-                message -> true, mail -> { }, DEFAULT_DRAIN_DEADLINE);
+                message -> true, mail -> { }, DEFAULT_DRAIN_DEADLINE, DeadlinePolicy.ROLL_BACK);
     }
 
     public static <M> ActorUpgrade<M> migrating(Migrate<M> migrate) {
         return new ActorUpgrade<>(null, Objects.requireNonNull(migrate, "migrate"),
-                message -> true, mail -> { }, DEFAULT_DRAIN_DEADLINE);
+                message -> true, mail -> { }, DEFAULT_DRAIN_DEADLINE, DeadlinePolicy.ROLL_BACK);
     }
 
     /** Which mail queued under generation N generation N+1 still accepts. */
     public ActorUpgrade<M> admitsQueued(Predicate<? super M> admits) {
-        return new ActorUpgrade<>(rebind, migrate, admits, onRejected, drainDeadline);
+        return new ActorUpgrade<>(rebind, migrate, admits, onRejected, drainDeadline, deadlinePolicy);
     }
 
     /** Receives each rejected queued message, with its sender, on the actor's turn. */
     public ActorUpgrade<M> onRejected(Consumer<ActorRuntime.ActorInboxMail<M>> sink) {
-        return new ActorUpgrade<>(rebind, migrate, admitsQueued, sink, drainDeadline);
+        return new ActorUpgrade<>(rebind, migrate, admitsQueued, sink, drainDeadline, deadlinePolicy);
     }
 
     public ActorUpgrade<M> drainDeadline(Duration deadline) {
-        return new ActorUpgrade<>(rebind, migrate, admitsQueued, onRejected, deadline);
+        return new ActorUpgrade<>(rebind, migrate, admitsQueued, onRejected, deadline, deadlinePolicy);
+    }
+
+    public ActorUpgrade<M> onDrainDeadline(DeadlinePolicy policy) {
+        return new ActorUpgrade<>(rebind, migrate, admitsQueued, onRejected, drainDeadline, policy);
     }
 
     /**
