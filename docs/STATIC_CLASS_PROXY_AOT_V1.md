@@ -256,9 +256,9 @@ proxy an airtight authority boundary. In particular, **no one-shot
 continuation capability is exposed**, so this slice cannot claim the full
 virtual-interceptor contract in `atto-spec#83`.
 
-This branch defines **31** JUnit cases, including eleven new opt-in hook
+This branch defines **35** JUnit cases, including fifteen new opt-in hook
 regressions. The source-org workflow demands nonempty exact-head passing
-Surefire receipts for all 31. Until executed, all backend tests and
+Surefire receipts for all 35. Until executed, all backend tests and
 standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
@@ -279,3 +279,25 @@ may still hide suspension, panic, IO, or external capability operations.
 Complete checked call-graph/effect analysis, dynamic-dispatch closure and
 ownership proof are required before this experimental source form becomes
 a normative or merge-ready interceptor feature.
+
+### Closed-world transitive helper admission
+
+The candidate now computes the reachable synchronous hook call graph by
+existing name-and-arity slots. It accepts local `self.helper(...)` calls
+whose method signatures, argument and result shapes are scalar and whose
+bodies recursively use supported synchronous statements/expressions.
+Recursion, cycles, unresolved/dynamic dispatch, mutable/borrowed helper
+parameters, unknown method calls, effect-declared methods and unproven
+suspension all fail closed. A bounded traversal (32 frames / 4096 nodes)
+prevents adversarial graph blowups. The only explicitly recognized external
+operation is `stdio.stdout.write(...)` or `stdio.stderr.write(...)`,
+which remains intentional observable IO (NOT purity, infallibility, or a
+general effect-elision exemption); the admission gate rejects direct
+namespace/parameter/field shadowing. Source loops, nested closures,
+assignments, aggregate construction and unknown AST types are rejected
+rather than speculatively treated as synchronous.
+
+This is still a **restricted proof**, not full effect inference. Target method
+bodies and imported/dynamically linked helpers require separate analysis.
+No claim is made that Java JUnit, GraalVM Native Image or other backend
+tests passed until a source-executing runner produces an exact-head receipt.
