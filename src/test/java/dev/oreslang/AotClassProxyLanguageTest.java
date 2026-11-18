@@ -936,6 +936,87 @@ final class AotClassProxyLanguageTest {
                 error.getMessage());
     }
 
+    @Test
+    void rejectsDeeplyNestedBeforeHookExpressionWithinBoundedVerifier() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        Ast.Expr nested = new Ast.NameExpr("value");
+        // The former prepass recursively visited all nested AST expressions
+        // before the bounded call-graph checker, risking StackOverflowError.
+        for (int depth = 0; depth < 96; depth++) {
+            nested = new Ast.UnaryExpr("+", nested);
+        }
+        Ast.MethodDecl hook = new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(integer, "value")), Ast.TypeRef.simple("void"),
+                List.of(), List.of(new Ast.ExprStmt(nested), new Ast.ReturnStmt(null)));
+        Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                List.of(hook));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks))));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        program, Set.of(), List.of(
+                                new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                                        "Foo", "Hooks"))));
+        assertTrue(error.getMessage().contains("depth/node budget"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsImplicitDivisionEffectsAndVoidHelperArguments() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        Ast.MethodDecl dividingHook = new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(integer, "value")), Ast.TypeRef.simple("void"),
+                List.of(), List.of(
+                        new Ast.ExprStmt(new Ast.BinaryExpr("/",
+                                new Ast.NameExpr("value"), new Ast.LiteralExpr(0))),
+                        new Ast.ReturnStmt(null)));
+        var request = new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                "Foo", "Hooks");
+        Ast.Program division = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target,
+                        new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                                List.of(dividingHook))))));
+        IllegalArgumentException divisionError = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        division, Set.of(), List.of(request)));
+        assertTrue(divisionError.getMessage().contains("unverified effects"),
+                divisionError.getMessage());
+
+        Ast.MethodDecl helper = new Ast.MethodDecl("helper", Ast.Visibility.PRIVATE,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(Ast.TypeRef.simple("void"), "invalid")),
+                Ast.TypeRef.simple("void"), List.of(),
+                List.of(new Ast.ReturnStmt(null)));
+        Ast.MethodDecl callingHook = new Ast.MethodDecl("before_read",
+                Ast.Visibility.PUBLIC, false, false, false, false, false,
+                null, List.of(), List.of(new Ast.Param(integer, "value")),
+                Ast.TypeRef.simple("void"), List.of(), List.of(
+                        new Ast.ExprStmt(new Ast.CallExpr(
+                                new Ast.MemberExpr(new Ast.NameExpr("self"), "helper"),
+                                List.of(new Ast.NameExpr("value")))),
+                        new Ast.ReturnStmt(null)));
+        Ast.Program voidParam = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target,
+                        new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                                List.of(helper, callingHook))))));
+        IllegalArgumentException paramError = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        voidParam, Set.of(), List.of(request)));
+        assertTrue(paramError.getMessage().contains("unsafe parameter contract"),
+                paramError.getMessage());
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
