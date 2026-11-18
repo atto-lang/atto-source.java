@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -50,6 +51,9 @@ public final class ActorRegistry<K, M> implements AutoCloseable {
             new HashMap<>();
     private final Map<VirtualActorActivationRegistry.Identity, Pending> creating =
             new HashMap<>();
+    /** Identity comparison is intentional: no aliasing two keys to one physical actor. */
+    private final Map<ActorRuntime.ActorRef<M>, VirtualActorActivationRegistry.Identity> byRef =
+            new IdentityHashMap<>();
     private boolean closed;
 
     public ActorRegistry(ActorRuntime runtime, String domain, String declaration,
@@ -159,9 +163,15 @@ public final class ActorRegistry<K, M> implements AutoCloseable {
                     throw new IllegalArgumentException("factory returned stopped or foreign actor");
                 synchronized (lock) {
                     ensureOpen();
-                    if (active.containsValue(created))
+                    if (byRef.containsKey(created))
                         throw new IllegalArgumentException("one physical actor cannot own two keys");
-                    active.put(id, created);
+                    byRef.put(created, id);
+                    try {
+                        active.put(id, created);
+                    } catch (RuntimeException | Error failure) {
+                        byRef.remove(created);
+                        throw failure;
+                    }
                 }
                 // Runtime-owned completion: never hold the directory monitor
                 // while attaching a callback or executing a host factory.
@@ -193,6 +203,7 @@ public final class ActorRegistry<K, M> implements AutoCloseable {
         synchronized (lock) {
             if (active.get(id) != expected) return false;
             active.remove(id);
+            byRef.remove(expected);
             return true;
         }
     }
@@ -212,8 +223,16 @@ public final class ActorRegistry<K, M> implements AutoCloseable {
         synchronized (lock) {
             if (!creating.isEmpty())
                 throw new IllegalStateException("cannot close registry during actor initialization");
+            // Abandoning an active registration would allow another directory
+            // to create a second owner while this actor still executes.
+            for (var ref : active.values()) {
+                if (!ref.done().isDone())
+                    throw new IllegalStateException(
+                            "cannot close registry before actor finalization");
+            }
             closed = true;
             active.clear();
+            byRef.clear();
         }
     }
 }

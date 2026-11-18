@@ -217,14 +217,17 @@ final class ActorRegistryTest {
     }
 
     @Test
-    void closeDoesNotStopSupervisorOwnedActors() {
+    void closeRefusesToAbandonAnActiveActor() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var registry = registry(runtime, 4);
             var actor = registry.get_or_create("orders", key -> worker(runtime));
-            registry.close();
+            assertThrows(IllegalStateException.class, registry::close);
             assertTrue(actor.isAlive());
-            assertThrows(IllegalStateException.class, () -> registry.lookup("orders"));
+            assertSame(actor, registry.lookup("orders").orElseThrow());
             actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            registry.close();
+            assertThrows(IllegalStateException.class, () -> registry.lookup("orders"));
         }
     }
 }
