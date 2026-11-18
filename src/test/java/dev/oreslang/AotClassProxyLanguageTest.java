@@ -454,18 +454,22 @@ final class AotClassProxyLanguageTest {
 
     @Test
     void rejectsBeforeHookParameterTypeMismatchAndExtraSlots() {
-        for (String bad : List.of(
-                "pub before_do_work(String value): void",
-                "pub before_do_work(int value): void { return; }\n"
-                        + "pub before_other(int value): void")) {
-            String src = BEFORE_HOOK_SOURCE.replace(
-                    "pub before_do_work(int value): void", bad);
-            IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class, () -> Parser.parse(src));
-            assertTrue(error.getMessage().contains("interceptor parameter contract mismatch")
-                    || error.getMessage().contains("does not match any forwarded public method"),
-                    error.getMessage());
-        }
+        String mismatched = BEFORE_HOOK_SOURCE.replace(
+                "pub before_do_work(int value): void",
+                "pub before_do_work(String value): void");
+        IllegalArgumentException badSignature = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(mismatched));
+        assertTrue(badSignature.getMessage().contains("interceptor parameter contract mismatch"),
+                badSignature.getMessage());
+
+        String extra = BEFORE_HOOK_SOURCE.replace(
+                "            end\\n            pub routine main(): void",
+                "              pub before_other(int value): void { return; }\\n"
+                        + "            end\\n            pub routine main(): void");
+        IllegalArgumentException unknownSlot = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(extra));
+        assertTrue(unknownSlot.getMessage().contains("does not match any forwarded public method"),
+                unknownSlot.getMessage());
     }
 
     @Test
