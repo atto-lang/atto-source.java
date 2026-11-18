@@ -139,4 +139,41 @@ final class ActorScalarFrameStoreTest {
         }
         if (failure.get() != null) fail("cross-turn frame replay", failure.get());
     }
+
+    @Test
+    void anotherActorCannotReuseAFrameEvenWhenSharingTheSameRuntime() throws Exception {
+        AtomicReference<ActorScalarFrameStore.Frame> leaked = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch first = new CountDownLatch(1);
+        CountDownLatch second = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            var actorA = runtime.<String>spawnShared(() -> (message, turn) -> {
+                try (var store = new ActorScalarFrameStore()) {
+                    leaked.set(store.enter(1, 0));
+                    leaked.get().putLocal(0, ActorScalarFrameStore.Scalar.ofLong(17));
+                } catch (Throwable error) { failure.set(error); }
+                finally { first.countDown(); turn.self().stop(); }
+            });
+            actorA.send("first");
+            assertTrue(first.await(5, TimeUnit.SECONDS));
+            assertTrue(actorA.awaitTermination(5, TimeUnit.SECONDS));
+
+            var actorB = runtime.<String>spawnShared(() -> (message, turn) -> {
+                try {
+                    assertThrows(SecurityException.class, () -> leaked.get().local(0));
+                    try (var own = new ActorScalarFrameStore()) {
+                        var frame = own.enter(1, 0);
+                        frame.putLocal(0, ActorScalarFrameStore.Scalar.ofLong(19));
+                        assertEquals(19, frame.local(0).asLong());
+                    }
+                } catch (Throwable error) { failure.set(error); }
+                finally { second.countDown(); turn.self().stop(); }
+            });
+            actorB.send("second");
+            assertTrue(second.await(5, TimeUnit.SECONDS));
+            assertTrue(actorB.awaitTermination(5, TimeUnit.SECONDS));
+        }
+        if (failure.get() != null) fail("cross-actor frame capability reuse", failure.get());
+    }
 }
