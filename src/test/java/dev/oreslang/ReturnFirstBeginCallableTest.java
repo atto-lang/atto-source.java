@@ -161,4 +161,61 @@ final class ReturnFirstBeginCallableTest {
         assertEquals("int", klass.methods().getFirst().returnType().name());
     }
 
+    @Test
+    void tokenizationDoesNotStealLessThanNegativeArithmetic() {
+        var kinds = new dev.oreslang.parser.Lexer("1<-2").scan().stream()
+                .map(dev.oreslang.parser.Token::type).toList();
+        assertEquals(java.util.List.of(
+                dev.oreslang.parser.Token.Type.INT,
+                dev.oreslang.parser.Token.Type.LT,
+                dev.oreslang.parser.Token.Type.MINUS,
+                dev.oreslang.parser.Token.Type.INT,
+                dev.oreslang.parser.Token.Type.EOF), kinds);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc compare(): bool {
+                  return 1<-2;
+                }
+                """)));
+    }
+
+    @Test
+    void standaloneBeginAllowsCommentButRejectsSameLineStatements() {
+        Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
+                Parser.parse("""
+                    int <- good()
+                    begin // opener comment is allowed
+                      return 42;
+                    end; // closer comment is allowed
+                    """).modules().getFirst().declarations().getFirst());
+        assertEquals(1, fn.body().size());
+        for (String invalid : new String[] {
+                "int <- bad()\\nbegin return 42;\\nend",
+                "int <- bad()\\nbegin end",
+                "int <- bad()\\nbegin;\\nreturn 42;\\nend"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(invalid), invalid);
+        }
+    }
+
+    @Test
+    void structuralAndGenericReturnTypesPreserveTheTypeAst() {
+        Ast.Program program = Parser.parse("""
+                fnc struct{value: int} <- shape()
+                begin
+                  return {value: 42};
+                end
+                fnc Result<int, string>• result()
+                begin
+                  return Ok(42);
+                end;
+                """);
+        Ast.FunctionDecl shape = assertInstanceOf(Ast.FunctionDecl.class,
+                program.modules().getFirst().declarations().get(0));
+        assertEquals(1, shape.body().size());
+        Ast.FunctionDecl result = assertInstanceOf(Ast.FunctionDecl.class,
+                program.modules().getFirst().declarations().get(1));
+        assertEquals("Result", result.returnType().name());
+        assertEquals(2, result.returnType().arguments().size());
+    }
+
 }
