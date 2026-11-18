@@ -514,6 +514,20 @@ public final class InvertedColumnStore implements AutoCloseable {
             columns[i] = new byte[0];
             buffers[i] = ByteBuffer.wrap(columns[i]).order(ByteOrder.LITTLE_ENDIAN);
         }
-        length = capacity = 0;
+        // Even though closed=true revokes all handles, stale row mappings
+        // and generations still reside in the metadata arrays. Scrub them
+        // before dropping references. Outstanding ColumnLoan.close() must
+        // keep its reader/writer accounting, so do not clear loan counters.
+        Arrays.fill(rowSlots, 0);
+        Arrays.fill(slotRows, 0);
+        Arrays.fill(generations, 0L);
+        Arrays.fill(live, false);
+        Arrays.fill(reusable, 0);
+        rowSlots = new int[0];
+        slotRows = new int[0];
+        generations = new long[0];
+        live = new boolean[0];
+        reusable = new int[0];
+        length = capacity = slotCount = freeCount = 0;
     }
 }

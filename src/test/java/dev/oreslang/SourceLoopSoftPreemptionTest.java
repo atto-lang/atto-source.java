@@ -45,7 +45,7 @@ final class SourceLoopSoftPreemptionTest {
                   if true; do
                     loop do
                       i = i + 1;
-                      if i % 3 == 0; do
+                      if Integer.rem(i, 3) == 0; do
                         continue;
                       fi
                       count = count + 1;
@@ -547,6 +547,67 @@ final class SourceLoopSoftPreemptionTest {
         assertTrue(output.startsWith("4000|"), output);
         assertTrue(Long.parseLong(output.substring("4000|".length())) > 0,
                 "while must lower to the same resumable budgeted backedge");
+    }
+
+    @Test
+    void recursiveSynchronousFunctionUsesHeapOwnedSourceTaskBoundary() throws Exception {
+        assertEquals("4096", run("""
+                fnc descend(n: int): int {
+                  if n <= 0; do
+                    return 0;
+                  fi
+                  return descend(n - 1) + 1;
+                }
+
+                pub async routine main(): void {
+                  stdio.stdout.write(descend(4096));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void mutuallyRecursiveFunctionsUseHeapOwnedSourceTaskBoundaries() throws Exception {
+        assertEquals("true", run("""
+                fnc even(n: int): bool {
+                  if n <= 0; do
+                    return true;
+                  fi
+                  return odd(n - 1);
+                }
+
+                fnc odd(n: int): bool {
+                  if n <= 0; do
+                    return false;
+                  fi
+                  return even(n - 1);
+                }
+
+                pub async routine main(): void {
+                  stdio.stdout.write(even(4096));
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void recursiveInstanceMethodUsesHeapOwnedSourceTaskBoundary() throws Exception {
+        assertEquals("4096", run("""
+                define class Counter as
+                  pub descend(int n): int {
+                    if n <= 0; do
+                      return 0;
+                    fi
+                    return self.descend(n - 1) + 1;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val counter = new Counter();
+                  stdio.stdout.write(counter.descend(4096));
+                  return;
+                }
+                """));
     }
 
     private static String run(String sourceText) throws Exception {

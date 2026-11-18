@@ -1,0 +1,36 @@
+name: Supervisor hot upgrade host-only contract
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/SupervisorHotUpgradeGateV1.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorHotUpgradeGateV1Test.java'
+      - 'examples/hot-upgrade/**'
+      - 'docs/SUPERVISOR_ACTOR_HOT_UPGRADE_V1.md'
+      - '.github/workflows/supervisor-hot-upgrade-host-only.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  standalone-host-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile checked-in host-only demo
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/atto-supervisor-gate"
+          javac --release 21 -Xlint:all -Werror -d "$RUNNER_TEMP/atto-supervisor-gate" \
+            src/main/java/dev/oreslang/runtime/SupervisorHotUpgradeGateV1.java \
+            examples/hot-upgrade/SupervisorHotUpgradeHostDemo.java
+      - name: Execute host-only demo (not guest hot upgrade)
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -ea -cp "$RUNNER_TEMP/atto-supervisor-gate" \
+            dev.oreslang.runtime.SupervisorHotUpgradeHostDemo
