@@ -429,6 +429,39 @@ final class AotClassProxyLanguageTest {
     }
 
     @Test
+    void beforeInterceptorConstructsOperandsOnceAndInSourceOrder() throws Exception {
+        String source = """
+                define class Foo as
+                  constructor() {
+                    stdio.stdout.write(1);
+                  }
+                  pub do_work(int value): int {
+                    stdio.stdout.write(4);
+                    return value + 1;
+                  }
+                end
+                define class Hook as
+                  constructor() {
+                    stdio.stdout.write(2);
+                  }
+                  pub before_do_work(int value): void {
+                    stdio.stdout.write(3);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  stdio.stdout.write(p.do_work(41));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        // 1 = target constructor, 2 = hook constructor,
+        // 3 = prehook, 4 = target invocation, 42 = returned value.
+        assertEquals("123442", run(source));
+    }
+
+    @Test
     void rejectsMissingOrWrongArityBeforeHook() {
         String src = BEFORE_HOOK_SOURCE.replace(
                 "before_do_work(int value)", "before_do_work()");
