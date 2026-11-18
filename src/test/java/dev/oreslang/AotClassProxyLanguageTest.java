@@ -489,6 +489,27 @@ final class AotClassProxyLanguageTest {
         assertTrue(capture.getMessage().contains("collides"), capture.getMessage());
     }
 
+    @Test
+    void rejectsBeforeHookReusingOwnedNominalArguments() {
+        String source = """
+                define class Payload as end
+                define class Foo as
+                  pub consume(Payload p): int { return 1; }
+                end
+                define class Hook as
+                  pub before_consume(Payload p): void { return; }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(error.getMessage().contains("requires copyable scalar arguments"),
+                error.getMessage());
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
