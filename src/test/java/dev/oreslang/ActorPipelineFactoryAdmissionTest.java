@@ -48,8 +48,8 @@ final class ActorPipelineFactoryAdmissionTest {
     }
 
     @Test void unrelatedObjectPipeAndConnectMethodsRemainOrdinaryCalls() {
-        assertDoesNotThrow(() -> Parser.parse(program("obj.pipe(1)")));
-        assertDoesNotThrow(() -> Parser.parse(program("obj.connect(2)")));
+        assertDoesNotThrow(() -> Parser.parse(program("pipe_target.pipe(1)")));
+        assertDoesNotThrow(() -> Parser.parse(program("pipe_target.connect(2)")));
         assertDoesNotThrow(() -> Parser.parse(program("Other.pipe(1)")));
         assertDoesNotThrow(() -> Parser.parse(program("actor.gc()")));
     }
