@@ -329,7 +329,7 @@ public final class StaticProxySynthesis {
                     || !hook.genericParameters().isEmpty() || !hook.effects().isEmpty()
                     || !hook.annotations().isEmpty()
                     || !hook.returnType().equals(Ast.TypeRef.simple("void"))) {
-                throw fail("interceptor method must be public, synchronous, void and effect-free: "
+                throw fail("interceptor method must be public, synchronous, void and have no declared checked exceptional effects: "
                         + interceptor.name() + "." + hook.name());
             }
             for (int i = 0; i < hook.parameters().size(); i++) {
