@@ -22,8 +22,11 @@ final class StaticProxyHookEffectClosure {
             Set.of("int", "float", "bool", "String", "string", "void");
     // Syntax may represent other operators in the same BinaryExpr/UnaryExpr
     // families. Only scalar primitive operations are admitted in a hook.
+    // Division and modulo are excluded even for numeric operands: a zero
+    // divisor can introduce an implicit exceptional outcome despite an empty
+    // declared effect set. Admit them only after checked effect inference.
     private static final Set<String> SAFE_BINARY_OPERATORS = Set.of(
-            "+", "-", "*", "/", "%", "eq", "neq", "==", "!=",
+            "+", "-", "*", "eq", "neq", "==", "!=",
             "<", ">", "<=", ">=", "and", "or", "&&", "||",
             "&", "|", "^", "<<", ">>");
     private static final Set<String> SAFE_UNARY_OPERATORS =
@@ -122,6 +125,7 @@ final class StaticProxyHookEffectClosure {
             Set<String> params = new HashSet<>();
             for (Ast.Param param : method.parameters()) {
                 if (param.mutable() || param.structural() || !scalar(param.type())
+                        || param.type().name().equals("void")
                         || !params.add(param.name()) || param.name().equals("self")
                         || param.name().equals("stdio")
                         || param.name().equals("__proxy_target")
@@ -156,6 +160,8 @@ final class StaticProxyHookEffectClosure {
                 for (Ast.Stmt s : branch.body()) visitStatement(s, depth + 1, params);
             }
             for (Ast.Stmt s : condition.elseBody()) visitStatement(s, depth + 1, params);
+        } else if (stmt instanceof Ast.TaskScopeStmt) {
+            throw fail("interceptor hook has unproven suspension/async control flow");
         } else {
             // Locals/closures/loops/try/defer/select/async and future statement
             // forms require lexical identity or unwind/suspension proofs.
@@ -236,8 +242,14 @@ final class StaticProxyHookEffectClosure {
             throw fail("interceptor call has unresolved/indirect dispatch: "
                     + callee.member() + "/" + call.arguments().size());
         }
-        // Member extraction, assignments, await, tasks, runtime intrinsics,
-        // lambdas, structural aggregates and all new nodes fail closed.
+        if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.TaskExpr
+                || expr instanceof Ast.ChannelOpExpr || expr instanceof Ast.DynamicSelectExpr
+                || expr instanceof Ast.LambdaExpr || expr instanceof Ast.RuntimeCallExpr) {
+            throw fail("interceptor hook has unproven suspension/async control flow: "
+                    + expr.getClass().getSimpleName());
+        }
+        // Member extraction, assignments, aggregates and all unknown AST
+        // nodes fail closed. Do not reintroduce an unbounded syntax prepass.
         throw fail("interceptor expression has unverified effects/escapes: "
                 + expr.getClass().getSimpleName());
     }
