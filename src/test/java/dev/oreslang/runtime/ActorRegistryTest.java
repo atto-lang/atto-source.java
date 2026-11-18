@@ -128,6 +128,39 @@ final class ActorRegistryTest {
     }
 
     @Test
+    void slowFactoryDoesNotBlockUnrelatedKeysOrPermitPrematureClose() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var pool = Executors.newFixedThreadPool(2)) {
+            var registry = registry(runtime, 4);
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var slow = pool.submit(() -> registry.get_or_create("slow", key -> {
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS))
+                        throw new IllegalStateException("factory release timeout");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return worker(runtime);
+            }));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                assertThrows(IllegalStateException.class, registry::close);
+                var fast = pool.submit(() -> registry.get_or_create(
+                        "fast", key -> worker(runtime)));
+                assertTrue(fast.get(2, TimeUnit.SECONDS).isAlive(),
+                        "unrelated activation must not wait for slow factory");
+            } finally {
+                release.countDown();
+            }
+            assertTrue(slow.get(5, TimeUnit.SECONDS).isAlive());
+            assertEquals(2, registry.registered_count());
+        }
+    }
+
+    @Test
     void failedFactoryWakesWaitersAndAllowsRetry() throws Exception {
         try (var runtime = new ActorRuntime();
              var pool = Executors.newFixedThreadPool(2)) {
