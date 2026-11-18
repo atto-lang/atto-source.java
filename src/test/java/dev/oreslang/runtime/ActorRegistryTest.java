@@ -26,14 +26,14 @@ final class ActorRegistryTest {
     }
 
     @Test
-    void sameKey32WayContentionReusesOneRealActorReference() throws Exception {
+    void thousandKeyedLookupsWith32WorkersReuseOneActorReference() throws Exception {
         try (var runtime = new ActorRuntime();
              var pool = Executors.newFixedThreadPool(32)) {
             var registry = registry(runtime, 4);
             var start = new CountDownLatch(1);
             var creations = new AtomicInteger();
             var futures = new ArrayList<java.util.concurrent.Future<ActorRuntime.ActorRef<Integer>>>();
-            for (int i = 0; i < 32; i++) {
+            for (int i = 0; i < 1_000; i++) {
                 futures.add(pool.submit(() -> {
                     if (!start.await(5, TimeUnit.SECONDS)) throw new AssertionError("start timeout");
                     return registry.get_or_create("orders", key -> {
