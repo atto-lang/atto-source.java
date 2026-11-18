@@ -6225,7 +6225,7 @@ public final class ActorRuntime implements AutoCloseable {
         return spawnInternal(kind, policy, context -> behaviorFactory.get(), true);
     }
 
-    private static void requireStatelessActorFactory(Object factory) {
+    static void requireStatelessActorFactory(Object factory) {
         for (Class<?> type = factory.getClass();
              type != null && type != Object.class;
              type = type.getSuperclass()) {
@@ -6550,7 +6550,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
         policy = effectivePolicy;
         if (behaviorFactory != null && !trustedFactory) {
-            requireStatelessActorFactory(behaviorFactory);
+            if (behaviorFactory instanceof SupervisorStrategy.SupervisorFactory<?> supervisor) {
+                // A runtime-owned restart supervisor carries its child specs, not
+                // host state. Every child factory was proven stateless when the
+                // supervisor was built; adversarial policies still get none of it.
+                if (effectivePolicy.adversarial()) {
+                    throw new SecurityException(
+                            "adversarial actors cannot host a restart supervisor");
+                }
+                supervisor.requireStatelessChildren();
+            } else {
+                requireStatelessActorFactory(behaviorFactory);
+            }
         }
 
         ActorCell<?> parent = currentActor.get();
