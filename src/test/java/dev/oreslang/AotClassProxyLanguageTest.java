@@ -635,6 +635,126 @@ final class AotClassProxyLanguageTest {
         }
     }
 
+    @Test
+    void beforeHookTraversesKnownSynchronousLocalHelperChain() throws Exception {
+        String source = """
+                define class Foo as
+                  pub do_work(int value): int {
+                    return value + 1;
+                  }
+                end
+                define class Hook as
+                  private emit_value(int value): void {
+                    stdio.stdout.write(value);
+                    return;
+                  }
+                  private forward_value(int value): void {
+                    self.emit_value(value);
+                    return;
+                  }
+                  pub before_do_work(int value): void {
+                    self.forward_value(value);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  stdio.stdout.write(p.do_work(41));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("4142", run(source));
+    }
+
+    @Test
+    void rejectsSuspensionReachedThroughAnOtherwiseSynchronousHelper() {
+        String source = """
+                define class Foo as
+                  pub do_work(int value): int { return value + 1; }
+                end
+                define class Hook as
+                  private dangerous(int value): void {
+                    await value;
+                    return;
+                  }
+                  pub before_do_work(int value): void {
+                    self.dangerous(value);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(error.getMessage().contains("unverified") ||
+                error.getMessage().contains("unproven"), error.getMessage());
+    }
+
+    @Test
+    void rejectsRecursiveAndUnresolvedHelperDispatchBeforeTypeChecking() {
+        String source = """
+                define class Foo as
+                  pub do_work(int value): int { return value + 1; }
+                end
+                define class Hook as
+                  private helper(int value): void {
+                    self.helper(value);
+                    return;
+                  }
+                  pub before_do_work(int value): void {
+                    self.helper(value);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  return;
+                }
+                """;
+        IllegalArgumentException cycle = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(cycle.getMessage().contains("recursive interceptor helper dispatch"),
+                cycle.getMessage());
+        String missing = source.replace("self.helper(value);", "self.not_found(value);");
+        IllegalArgumentException unresolved = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(missing));
+        assertTrue(unresolved.getMessage().contains("unresolved local slot"),
+                unresolved.getMessage());
+        String freeCall = source.replace("self.helper(value);", "untrusted(value);");
+        IllegalArgumentException indirect = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(freeCall));
+        assertTrue(indirect.getMessage().contains("unresolved/indirect dispatch"),
+                indirect.getMessage());
+    }
+
+    @Test
+    void rejectsBeforeHookStdioNamespaceShadowing() {
+        String source = """
+                define class Foo as
+                  pub do_work(int value): int { return value + 1; }
+                end
+                define class Hook as
+                  val int stdio;
+                  pub before_do_work(int value): void {
+                    stdio.stdout.write(value);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(error.getMessage().contains("interceptor field conflicts"),
+                error.getMessage());
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
