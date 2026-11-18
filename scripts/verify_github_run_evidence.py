@@ -79,6 +79,11 @@ def check(evidence, *, expected_repo, expected_repo_id, expected_sha, required):
         if name not in required:
             continue
         require(job.get("run_id") == run["id"], "job is from another workflow run")
+        require(type(job.get("run_attempt")) is int
+                and job["run_attempt"] == run["run_attempt"],
+                "job is from a different workflow run attempt")
+        require(job.get("head_sha") == expected_sha,
+                "job commit SHA does not match the required head")
         require(job.get("status") == "completed" and job.get("conclusion") == "success",
                 "required job did not succeed: " + name)
         require(positive_int(job.get("runner_id"))
