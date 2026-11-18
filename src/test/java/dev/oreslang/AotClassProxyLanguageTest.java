@@ -463,9 +463,9 @@ final class AotClassProxyLanguageTest {
                 badSignature.getMessage());
 
         String extra = BEFORE_HOOK_SOURCE.replace(
-                "            end\\n            pub routine main(): void",
-                "              pub before_other(int value): void { return; }\\n"
-                        + "            end\\n            pub routine main(): void");
+                "            end\n            pub routine main(): void",
+                "              pub before_other(int value): void { return; }\n"
+                        + "            end\n            pub routine main(): void");
         IllegalArgumentException unknownSlot = assertThrows(
                 IllegalArgumentException.class, () -> Parser.parse(extra));
         assertTrue(unknownSlot.getMessage().contains("does not match any forwarded public method"),
