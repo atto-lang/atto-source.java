@@ -96,6 +96,11 @@ def check(evidence, *, expected_repo, expected_repo_id, expected_sha, required):
                     and step_name not in seen_steps, "missing/duplicate step name")
             seen_steps.add(step_name)
             require(positive_int(step.get("number")), "missing step sequence number")
+            # A green job may hide continue-on-error failures. Never accept
+            # explicit failing/pending steps as successful CI evidence.
+            require(step.get("status") == "completed"
+                    and step.get("conclusion") in ("success", "skipped"),
+                    "job contains a failed or unfinished step: " + step_name)
             if step_name in required[name]:
                 require(step.get("status") == "completed"
                         and step.get("conclusion") == "success",
