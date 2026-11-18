@@ -382,6 +382,109 @@ final class AotClassProxyLanguageTest {
         }
     }
 
+    private static final String BEFORE_HOOK_SOURCE = """
+            define class Foo as
+              pub do_work(int value): int {
+                return value + 1;
+              }
+            end
+            define class Hook as
+              pub before_do_work(int value): void {
+                stdio.stdout.write(7);
+                return;
+              }
+            end
+            pub routine main(): void {
+              val p = new Proxy(new Foo(), new Hook());
+              stdio.stdout.write(p.do_work(41));
+              return;
+            }
+            """;
+
+    @Test
+    void typedBeforeInterceptorExpandsIntoOrdinaryMethodsWithoutReflection() {
+        Ast.Program parsed = Parser.parse(BEFORE_HOOK_SOURCE);
+        Ast.ClassDecl generated = parsed.modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(d -> d instanceof Ast.ClassDecl klass
+                        && klass.name().equals("FooWithHookProxy"))
+                .map(d -> (Ast.ClassDecl) d).findFirst().orElseThrow();
+        assertEquals(2, generated.fields().size());
+        assertEquals(2, generated.constructor().arity());
+        assertEquals("Foo", generated.constructor().parameters().get(0).type().name());
+        assertEquals("Hook", generated.constructor().parameters().get(1).type().name());
+        Ast.MethodDecl method = generated.methods().stream()
+                .filter(m -> m.name().equals("do_work")).findFirst().orElseThrow();
+        assertEquals(2, method.body().size());
+        assertInstanceOf(Ast.ExprStmt.class, method.body().getFirst());
+        Ast.CallExpr hook = (Ast.CallExpr) ((Ast.ExprStmt) method.body().getFirst()).expression();
+        assertEquals("before_do_work", ((Ast.MemberExpr) hook.callee()).member());
+        assertInstanceOf(Ast.ReturnStmt.class, method.body().get(1));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(BEFORE_HOOK_SOURCE));
+    }
+
+    @Test
+    void typedBeforeInterceptorRunsBeforeExactlyOneTargetCall() throws Exception {
+        assertEquals("742", run(BEFORE_HOOK_SOURCE));
+    }
+
+    @Test
+    void rejectsMissingOrWrongArityBeforeHook() {
+        String src = BEFORE_HOOK_SOURCE.replace(
+                "before_do_work(int value)", "before_do_work()");
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(src));
+        assertTrue(error.getMessage().contains("missing typed interceptor method"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsPrivateOrWrongReturnBeforeHook() {
+        for (String bad : List.of(
+                "private before_do_work(int value): void",
+                "pub before_do_work(int value): int")) {
+            String src = BEFORE_HOOK_SOURCE.replace(
+                    "pub before_do_work(int value): void", bad);
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(src));
+            assertTrue(error.getMessage().contains("interceptor method must"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsBeforeHookParameterTypeMismatchAndExtraSlots() {
+        for (String bad : List.of(
+                "pub before_do_work(String value): void",
+                "pub before_do_work(int value): void { return; }\n"
+                        + "pub before_other(int value): void")) {
+            String src = BEFORE_HOOK_SOURCE.replace(
+                    "pub before_do_work(int value): void", bad);
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(src));
+            assertTrue(error.getMessage().contains("interceptor parameter contract mismatch")
+                    || error.getMessage().contains("does not match any forwarded public method"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsRuntimeInterceptorInferenceAndSyntheticNameCapture() {
+        String runtime = BEFORE_HOOK_SOURCE.replace(
+                "val p = new Proxy(new Foo(), new Hook());",
+                "val h = new Hook();\nval p = new Proxy(new Foo(), h);");
+        IllegalArgumentException inferred = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(runtime));
+        assertTrue(inferred.getMessage().contains("statically known"),
+                inferred.getMessage());
+        String collision = BEFORE_HOOK_SOURCE.replace(
+                "pub routine main(): void", "define class FooWithHookProxy as end\n"
+                        + "pub routine main(): void");
+        IllegalArgumentException capture = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(collision));
+        assertTrue(capture.getMessage().contains("collides"), capture.getMessage());
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
