@@ -125,7 +125,7 @@ final class CoreAssertTest {
     @Test void doubleColonDoesNotConfuseTypeAnnotationsOrTernary() throws Exception {
         assertEquals("true", run("""
             pub routine main(): void {
-                const result: bool = Assert::equal(1, 1);
+                val result: bool = Assert::equal(1, 1);
                 stdio.stdout.write(result ? true : false);
                 return;
             }
