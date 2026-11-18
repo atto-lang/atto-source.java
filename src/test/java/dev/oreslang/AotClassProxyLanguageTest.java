@@ -1124,6 +1124,66 @@ final class AotClassProxyLanguageTest {
                 error.getMessage());
     }
 
+    @Test
+    void rejectsSharedHelperReachedAgainThroughDeeperCallPath() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.TypeRef voidType = Ast.TypeRef.simple("void");
+        Ast.Param argument = new Ast.Param(integer, "value");
+        Ast.MethodDecl read = proxySurfaceMethod(integer, List.of(argument), List.of());
+        Ast.MethodDecl write = new Ast.MethodDecl("write", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(argument), integer, List.of(), List.of());
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(read, write));
+
+        // Each entrypoint is checked against the same helper class. "leaf"
+        // is safe when reached directly by before_read, but not at the depth
+        // reached by before_write -> stage_0 ... -> stage_5 -> leaf.
+        Ast.Expr deepExpression = new Ast.NameExpr("value");
+        for (int i = 0; i < 12; i++) {
+            deepExpression = new Ast.UnaryExpr("+", deepExpression);
+        }
+        List<Ast.MethodDecl> methods = new java.util.ArrayList<>();
+        methods.add(new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(argument), voidType, List.of(), List.of(
+                        new Ast.ExprStmt(new Ast.CallExpr(
+                                new Ast.MemberExpr(new Ast.NameExpr("self"), "leaf"),
+                                List.of(new Ast.NameExpr("value")))),
+                        new Ast.ReturnStmt(null))));
+        methods.add(new Ast.MethodDecl("before_write", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(argument), voidType, List.of(), List.of(
+                        new Ast.ExprStmt(new Ast.CallExpr(
+                                new Ast.MemberExpr(new Ast.NameExpr("self"), "stage_0"),
+                                List.of(new Ast.NameExpr("value")))),
+                        new Ast.ReturnStmt(null))));
+        methods.add(new Ast.MethodDecl("leaf", Ast.Visibility.PRIVATE,
+                false, false, false, false, false, null, List.of(),
+                List.of(argument), voidType, List.of(),
+                List.of(new Ast.ExprStmt(deepExpression), new Ast.ReturnStmt(null))));
+        for (int i = 0; i < 6; i++) {
+            String next = i == 5 ? "leaf" : "stage_" + (i + 1);
+            methods.add(new Ast.MethodDecl("stage_" + i, Ast.Visibility.PRIVATE,
+                    false, false, false, false, false, null, List.of(),
+                    List.of(argument), voidType, List.of(), List.of(
+                            new Ast.ExprStmt(new Ast.CallExpr(
+                                    new Ast.MemberExpr(new Ast.NameExpr("self"), next),
+                                    List.of(new Ast.NameExpr("value")))),
+                            new Ast.ReturnStmt(null))));
+        }
+        Ast.Program input = new Ast.Program(List.of(new Ast.ModuleDecl("first",
+                List.of(target, new Ast.ClassDecl("Hooks", false,
+                        List.of(), List.of(), methods)))));
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        input, Set.of(), List.of(
+                                new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                                        "Foo", "Hooks"))));
+        assertTrue(exception.getMessage().contains("depth/node budget"),
+                exception.getMessage());
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
