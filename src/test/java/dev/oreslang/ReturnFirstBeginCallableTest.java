@@ -158,8 +158,9 @@ final class ReturnFirstBeginCallableTest {
         }) {
             for (String marker : new String[] {"<-", "•"}) {
                 for (String introducer : new String[] {"", "fnc ", "mtd "}) {
+                    String signaturePrefix = marker.equals("•") ? "void• " : "void <- ";
                     String source = "define actor A as\n  " + introducer
-                            + "void " + marker + " " + name
+                            + signaturePrefix + name
                             + "()\n  begin\n    return;\n  end\nend\n";
                     IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
                             () -> Parser.parse(source), source);
