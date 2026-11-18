@@ -21,6 +21,17 @@ import java.util.function.Function;
  * must use compiler-admitted capabilities rather than importing this host API.</p>
  */
 public final class ActorRegistry<K, M> implements AutoCloseable {
+    /** Distinguish an unknown key from an actor that is still initializing or retiring. */
+    public enum LookupPhase { ABSENT, INITIALIZING, ACTIVE, RETIRING }
+
+    /** Snapshot only; mailbox admission independently validates actor lifetime. */
+    public record LookupSnapshot<M>(LookupPhase phase, ActorRuntime.ActorRef<M> actor) {
+        public LookupSnapshot {
+            Objects.requireNonNull(phase, "phase");
+            if ((phase == LookupPhase.ACTIVE) != (actor != null))
+                throw new IllegalArgumentException("only an active actor can be returned");
+        }
+    }
     private static final long CREATION_WAIT_SECONDS = 5L;
 
     private static final class Pending {
@@ -40,6 +51,10 @@ public final class ActorRegistry<K, M> implements AutoCloseable {
 
         public Optional<ActorRuntime.ActorRef<M>> resolve_existing() {
             return lookupIdentity(identity);
+        }
+
+        public LookupSnapshot<M> inspect() {
+            return inspectIdentity(identity);
         }
     }
 
@@ -98,20 +113,37 @@ public final class ActorRegistry<K, M> implements AutoCloseable {
         return lookupIdentity(identity(key));
     }
 
+    public LookupSnapshot<M> lookup_state(K key) {
+        return inspectIdentity(identity(key));
+    }
+
     private Optional<ActorRuntime.ActorRef<M>> lookupIdentity(
             VirtualActorActivationRegistry.Identity id) {
+        return Optional.ofNullable(inspectIdentity(id).actor());
+    }
+
+    private LookupSnapshot<M> inspectIdentity(
+            VirtualActorActivationRegistry.Identity id) {
         requireHost();
-        ActorRuntime.ActorRef<M> ref;
-        synchronized (lock) {
-            ensureOpen();
-            ref = active.get(id);
+        // Retry after cleaning an already-finalized activation: a successor may
+        // have been published between reading the old slot and cleanup.
+        for (;;) {
+            ActorRuntime.ActorRef<M> ref;
+            synchronized (lock) {
+                ensureOpen();
+                ref = active.get(id);
+                if (ref == null) {
+                    return new LookupSnapshot<>(creating.containsKey(id)
+                            ? LookupPhase.INITIALIZING : LookupPhase.ABSENT, null);
+                }
+            }
+            if (runtime.isAlive(ref)) return new LookupSnapshot<>(LookupPhase.ACTIVE, ref);
+            // A stopped actor may still be executing. This state MUST NOT be
+            // mistaken for missing durable queue metadata or safe reactivation.
+            if (!ref.done().isDone())
+                return new LookupSnapshot<>(LookupPhase.RETIRING, null);
+            removeIfCurrent(id, ref);
         }
-        if (ref == null) return Optional.empty();
-        if (runtime.isAlive(ref)) return Optional.of(ref);
-        // A stopped actor may still be executing a turn. Do not release its
-        // directory ownership until the runtime reports physical finalization.
-        if (ref.done().isDone()) removeIfCurrent(id, ref);
-        return Optional.empty();
     }
 
     /**
@@ -213,7 +245,10 @@ public final class ActorRegistry<K, M> implements AutoCloseable {
 
     public int registered_count() {
         requireHost();
-        synchronized (lock) { return active.size(); }
+        synchronized (lock) {
+            ensureOpen();
+            return active.size();
+        }
     }
 
     private void ensureOpen() {

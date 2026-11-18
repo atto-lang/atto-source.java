@@ -270,4 +270,82 @@ final class ActorRegistryTest {
             assertThrows(IllegalStateException.class, () -> registry.lookup("orders"));
         }
     }
+    @Test
+    void lookupStateDistinguishesPendingAndUnknownKeys() throws Exception {
+        try (var runtime = new ActorRuntime();
+             var pool = Executors.newFixedThreadPool(2)) {
+            var registry = registry(runtime, 3);
+            var logical = registry.ref_for("orders");
+            assertEquals(ActorRegistry.LookupPhase.ABSENT, logical.inspect().phase());
+            assertTrue(logical.resolve_existing().isEmpty());
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var factory = pool.submit(() -> registry.get_or_create("orders", key -> {
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS))
+                        throw new AssertionError("factory blocked too long");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return worker(runtime);
+            }));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                assertEquals(ActorRegistry.LookupPhase.INITIALIZING, logical.inspect().phase());
+                assertTrue(registry.lookup("orders").isEmpty());
+                assertEquals(ActorRegistry.LookupPhase.ABSENT,
+                        registry.lookup_state("missing").phase());
+            } finally { release.countDown(); }
+            var actor = factory.get(5, TimeUnit.SECONDS);
+            var active = logical.inspect();
+            assertEquals(ActorRegistry.LookupPhase.ACTIVE, active.phase());
+            assertSame(actor, active.actor());
+            assertSame(actor, logical.resolve_existing().orElseThrow());
+        }
+    }
+
+    @Test
+    void lookupStateSeparatesRetiringFromAbsent() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var registry = registry(runtime, 2);
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var actor = registry.get_or_create("orders", key -> runtime.<Integer>spawnShared(
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        if (!release.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("release timeout");
+                    }));
+            actor.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            try {
+                actor.stop();
+                assertEquals(ActorRegistry.LookupPhase.RETIRING,
+                        registry.lookup_state("orders").phase());
+                assertTrue(registry.lookup("orders").isEmpty());
+                assertThrows(IllegalStateException.class,
+                        () -> registry.get_or_create("orders", key -> worker(runtime)));
+            } finally { release.countDown(); }
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(ActorRegistry.LookupPhase.ABSENT,
+                    registry.lookup_state("orders").phase());
+        }
+    }
+
+    @Test
+    void registryCloseRevokesStatusQueriesAndOldLogicalReferences() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var registry = registry(runtime, 2);
+            var logical = registry.ref_for("orders");
+            registry.close();
+            assertThrows(IllegalStateException.class, logical::inspect);
+            assertThrows(IllegalStateException.class, logical::resolve_existing);
+            assertThrows(IllegalStateException.class, registry::registered_count);
+            assertThrows(IllegalStateException.class,
+                    () -> registry.lookup_state("orders"));
+        }
+    }
+
 }
