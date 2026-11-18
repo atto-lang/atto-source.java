@@ -10,6 +10,8 @@ A source file may contain multiple named modules. A module owns declarations and
 
 A source namespace does **not** imply that all backend implementations can link or execute it. In particular, the native LLVM backend currently fails closed on runtime namespace use and on linked namespace/type identities; Java/Graal support must not be advertised as cross-backend parity.
 
+The compiler reserves `__root__` for its synthetic file-root module. User code cannot define `namespace __root__`, `define module __root__`, import `module __root__`, or use `__root__` as an import alias. A synthetic root module is **not** a public namespace export. The compiler keeps `CompiledUnit.namespace` separate from `CompiledUnit.packageId`; absent verified manifest grouping, each normalized source file receives a singleton package identity.
+
 ```ores
 define module math
   pub fnc add(int a, int b): int {

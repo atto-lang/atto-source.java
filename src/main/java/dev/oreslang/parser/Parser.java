@@ -218,6 +218,9 @@ public final class Parser {
         }
         if (useNamespaceHeader || match(NAMESPACE)) {
             namespace = consume(IDENT, "expected flat namespace name").lexeme();
+            if (ROOT_MODULE.equals(namespace)) {
+                throw error(previous(), "namespace name '" + ROOT_MODULE + "' is reserved for file-root declarations");
+            }
             if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
             consume(SEMICOLON, "namespace declaration must end with ';'");
         }
@@ -464,7 +467,7 @@ public final class Parser {
             kind = Ast.ImportKind.ALL;
             wildcard = true;
             consume(AS, "'import *' requires 'as <namespace>'");
-            namespace = consume(IDENT, "expected import namespace").lexeme();
+            namespace = consumeImportAlias("expected import namespace");
         } else {
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "function imports use 'import fnc', not 'import fn'");
@@ -484,7 +487,7 @@ public final class Parser {
             if (match(STAR)) {
                 wildcard = true;
                 consume(AS, "wildcard import requires 'as <namespace>'");
-                namespace = consume(IDENT, "expected import namespace").lexeme();
+                namespace = consumeImportAlias("expected import namespace");
             } else {
                 parseImportSelection(kind, names);
             }
@@ -493,7 +496,7 @@ public final class Parser {
                 if (names.size() != 1) {
                     throw error(previous(), "named import aliases require exactly one selected name");
                 }
-                namespace = consume(IDENT, "expected import alias").lexeme();
+                namespace = consumeImportAlias("expected import alias");
             }
         }
 
@@ -502,6 +505,14 @@ public final class Parser {
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
         consume(SEMICOLON, "expected ';' after import");
         return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
+    }
+
+    private String consumeImportAlias(String message) {
+        String alias = consume(IDENT, message).lexeme();
+        if (ROOT_MODULE.equals(alias)) {
+            throw error(previous(), "import alias '" + ROOT_MODULE + "' is reserved for file-root declarations");
+        }
+        return alias;
     }
 
     private void parseImportSelection(Ast.ImportKind kind, List<String> names) {
@@ -526,7 +537,11 @@ public final class Parser {
         if (kind == Ast.ImportKind.FUNCTION) {
             return consumeCallableName("expected imported function name");
         }
-        return consume(IDENT, "expected imported name").lexeme();
+        String name = consume(IDENT, "expected imported name").lexeme();
+        if (kind == Ast.ImportKind.MODULE && ROOT_MODULE.equals(name)) {
+            throw error(previous(), "module name '" + ROOT_MODULE + "' is reserved for file-root declarations");
+        }
+        return name;
     }
 
     /**
@@ -554,6 +569,9 @@ public final class Parser {
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         rejectModuleCompilerAnnotations(annotations);
         String name = consume(IDENT, "expected flat module name").lexeme();
+        if (ROOT_MODULE.equals(name)) {
+            throw error(previous(), "module name '" + ROOT_MODULE + "' is reserved for file-root declarations");
+        }
         if (name.equals(ROOT_MODULE)) {
             throw error(previous(), "module name '" + ROOT_MODULE + "' is reserved for file-root declarations");
         }
