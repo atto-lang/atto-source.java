@@ -256,9 +256,9 @@ proxy an airtight authority boundary. In particular, **no one-shot
 continuation capability is exposed**, so this slice cannot claim the full
 virtual-interceptor contract in `atto-spec#83`.
 
-This branch defines **36** JUnit cases, including sixteen new opt-in hook
+This branch defines **38** JUnit cases, including eighteen new opt-in hook
 regressions. The source-org workflow demands nonempty exact-head passing
-Surefire receipts for all 36. Until executed, all backend tests and
+Surefire receipts for all 38. Until executed, all backend tests and
 standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
@@ -303,3 +303,23 @@ No claim is made that Java JUnit, GraalVM Native Image or other backend
 tests passed until a source-executing runner produces an exact-head receipt.
 
 To avoid treating a syntactically ordinary AST operator as automatically pure,\nthe closed-world helper verifier additionally restricts operators to known\nscalar primitives and rejects opaque, synthetic literal payloads. This is\ncompiler source hardening, not evidence that a backend executed the fixture.\n
+### Independent isolated helper compilation and source hardening
+
+The exact `StaticProxyHookEffectClosure.java` source blob at commit
+`82edcc7c53209dba0fad4d5335e41f8794cbf772` (blob SHA
+`c44ab2b817b134e39b282e3ab83250f256ee5b41`) was compiled
+offline using JDK 21 with a **minimal mock AST** mirroring the called
+record members. Its independent Java harness executed 20 assertions
+successfully, including allowed helper chaining, recursive/dynamic/async
+rejection, unsafe operators, value escapes and namespace/protected-declaration
+spoofing. This verifies that helper source's syntax and local admission
+logic, **not** the real compiler, Java guest runtime or JDK 25/GraalVM.
+It is not a substitute for the 38 source JUnit tests.
+
+The public `expand` API now idempotently deduplicates repeated identical
+target/interceptor type requests, preserving first-source-occurrence order
+for deterministic generated class names. Multiple user-created proxy
+instances must share the generated nominal class; otherwise a second
+construction would fail or emit a duplicate declaration. The parser
+already deduplicates these inputs, but alternate AST producers must
+not invalidate the compiler's invariant.
