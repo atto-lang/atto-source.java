@@ -349,6 +349,7 @@ public final class Parser {
                         continue;
                     }
                 }
+                rejectUnimplementedInvertedAggregate();
                 throw error(previous(), "expected module, class, interface, trait, type, fnc, or routine after 'define'");
             }
 
@@ -674,6 +675,7 @@ public final class Parser {
             if (check(FNC) || check(ROUTINE)) {
                 return parseDeclarationAfterModifiers(annotations, modifiers);
             }
+            rejectUnimplementedInvertedAggregate();
             throw error(previous(), "expected class, interface, trait, type, fnc, or routine after 'define'");
         }
 
@@ -1112,6 +1114,26 @@ public final class Parser {
             return type == DEFINE;
         }
         return false;
+    }
+
+    /**
+     * `inverted` is a contextual keyword: it only means something directly after
+     * `define` (and visibility/abstract modifiers), so `inverted` stays a legal
+     * identifier elsewhere. `define inverted class|struct` is specified by
+     * docs/INVERTED_CLASS_DOP_V1.md but has no lowering yet, so it fails closed
+     * with a precise diagnostic instead of the generic `define` error or a silent
+     * fallback to ordinary row-wise (AoS) class storage.
+     */
+    private void rejectUnimplementedInvertedAggregate() {
+        if (!check(IDENT) || !peek().lexeme().equals("inverted")) return;
+        Token keyword = peek();
+        String kind = checkNext(CLASS) ? "class" : checkNext(STRUCT) ? "struct" : null;
+        if (kind == null) {
+            throw error(keyword, "'inverted' must be followed by 'class' or 'struct'");
+        }
+        throw error(keyword, "'define inverted " + kind + "' is specified (INVERTED_CLASS_DOP_V1) but not yet"
+                + " executable on this backend; it is rejected rather than silently lowered to row-wise"
+                + " (AoS) storage. Until lowering lands, keep one explicit array per field");
     }
 
     private void validateClassModifiers(Modifiers modifiers) {
