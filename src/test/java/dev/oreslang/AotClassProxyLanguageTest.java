@@ -787,6 +787,66 @@ final class AotClassProxyLanguageTest {
         }
     }
 
+    @Test
+    void repeatedIdenticalInterceptorRequestsReuseOneGeneratedClass() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        Ast.MethodDecl hook = new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(integer, "value")), Ast.TypeRef.simple("void"),
+                List.of(), List.of(new Ast.ReturnStmt(null)));
+        Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                List.of(hook));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks))));
+        var request = new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                "Foo", "Hooks");
+        Ast.Program expanded = assertDoesNotThrow(() ->
+                dev.oreslang.ast.StaticProxySynthesis.expand(
+                        program, Set.of(), List.of(request, request, request)));
+        long generated = expanded.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof Ast.ClassDecl klass
+                        && klass.name().equals("FooWithHooksProxy")).count();
+        assertEquals(1, generated, "identical proxy instances share the AOT class");
+    }
+
+    @Test
+    void rejectsNamespaceAndProtectedDeclarationSpoofingBuiltinStdio() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        Ast.MethodDecl hook = new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(integer, "value")), Ast.TypeRef.simple("void"),
+                List.of(), List.of(new Ast.ReturnStmt(null)));
+        Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                List.of(hook));
+        var request = new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                "Foo", "Hooks");
+        Ast.Program shadowedNamespace = new Ast.Program("stdio", List.of(), List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks))));
+        Ast.Program shadowedContainer = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks,
+                        new Ast.StateContainerDecl("stdio", Ast.Visibility.PRIVATE,
+                                List.of(), List.of())))));
+        Ast.Program shadowedVirtualActor = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks,
+                        new Ast.VirtualActorDecl("stdio", Ast.Visibility.PRIVATE,
+                                List.of(), List.of())))));
+        for (Ast.Program program : List.of(
+                shadowedNamespace, shadowedContainer, shadowedVirtualActor)) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            program, Set.of(), List.of(request)));
+            assertTrue(error.getMessage().contains("stdio")
+                    && error.getMessage().contains("shadowed"), error.getMessage());
+        }
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
