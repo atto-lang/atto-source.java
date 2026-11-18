@@ -1,0 +1,63 @@
+name: Execution-affine sleep / susp NIO runtime evidence
+on:
+  push:
+    branches: ['feat/susp-nio-execution-affine-sleep-*']
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
+      - 'src/test/java/dev/oreslang/runtime/ExecutionAffineSleepRuntimeTest.java'
+      - 'docs/SUSPENDS_AWAIT_EXECUTION_CONTEXT_V1.md'
+      - '.github/workflows/execution-affine-sleep-runtime.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  execution-affine-sleep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Immutable source checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Source SHA and Git tree receipt
+        shell: bash
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test -z "$(git status --porcelain)"
+          echo "SOURCE_SHA=$(git rev-parse HEAD)"
+          echo "SOURCE_TREE=$(git rev-parse HEAD^{tree})"
+      - name: GraalVM Java 25 / Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+      - name: Execute timer, NIO and execution-context runtime suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=ExecutionAffineSleepRuntimeTest,SuspendsAwaitExecutionContextRuntimeTest,OresTimersTest,SharedReactorPoolTest test
+      - name: Require nonempty passing JUnit suite receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,xml.etree.ElementTree as ET
+          suites=['ExecutionAffineSleepRuntimeTest','SuspendsAwaitExecutionContextRuntimeTest','OresTimersTest','SharedReactorPoolTest']
+          for name in suites:
+              path=pathlib.Path('target/surefire-reports/TEST-dev.oreslang.runtime.'+name+'.xml')
+              assert path.is_file(),name+' missing JUnit XML'
+              root=ET.parse(path).getroot()
+              attrs=root.attrib
+              assert int(attrs.get('tests','0'))>0,(name,'no tests')
+              for field in ('failures','errors','skipped'):
+                  assert int(attrs.get(field,'0'))==0,(name,field,attrs.get(field))
+              print('RECEIPT',name,attrs.get('tests'))
+          print('EXECUTED_RUNTIME_SUITES=4')
+          PY

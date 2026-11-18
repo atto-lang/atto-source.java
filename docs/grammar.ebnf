@@ -247,11 +247,18 @@ statement       = binding_decl
                 | switch_stmt
                 | try_stmt
                 | select_stmt
+                | do_channel_stmt
                 | defer_stmt
                 | for_stmt
                 | while_stmt
                 | loop_stmt
                 | expression stmt_terminator ;
+
+(* Explicit result-discarding channel operations remain suspending and use
+   the same SourceTask/continuation lowering as plain readch/writech.
+   Do not accept 'do nb readch/writech': pending Futures require ownership. *)
+do_channel_stmt = "do" ( "readch" unary
+                        | "writech" unary "," expression ) stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;

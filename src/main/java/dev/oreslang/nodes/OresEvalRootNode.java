@@ -32,6 +32,7 @@ import dev.oreslang.runtime.TaskScope;
 import dev.oreslang.runtime.TaskHandle;
 import dev.oreslang.runtime.SourceTaskHandles;
 import dev.oreslang.runtime.SourceCooperationQuantum;
+import dev.oreslang.runtime.SourceActorPubSub;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
@@ -930,16 +931,24 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
-            Invocation current = initial;
-            int tailHops = 0;
-            while (true) {
-                Object result = current.owner().executeRaw(current);
-                if (!(result instanceof TailCall tail)) return result;
-                current = tail.invocation();
-                tailHops++;
-                if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
-                    current.owner().context.schedulerSafepoint();
+            // One guest frame per nested call, charged to the current logical
+            // stack (receive invocation or Task). Tail hops stay inside this
+            // frame, so proper tail calls never grow the logical stack.
+            dev.oreslang.runtime.LogicalStackQuota.pushFrame();
+            try {
+                Invocation current = initial;
+                int tailHops = 0;
+                while (true) {
+                    Object result = current.owner().executeRaw(current);
+                    if (!(result instanceof TailCall tail)) return result;
+                    current = tail.invocation();
+                    tailHops++;
+                    if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
+                        current.owner().context.schedulerSafepoint();
+                    }
                 }
+            } finally {
+                dev.oreslang.runtime.LogicalStackQuota.popFrame();
             }
         }
 
@@ -1435,7 +1444,7 @@ public final class OresEvalRootNode extends RootNode {
                     // or resumed continuation wraps the original exception.
                     if (!cancellationUnwinding && function != null
                             && function.trapped() && isTrappableFailure(failure)) {
-                        return OresScheduler.done(new OptionValue(false, null));
+                        return OresScheduler.done(trapErr(failure));
                     }
                     throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId,
                             function != null ? function.name() : method != null ? method.name() : "<block>",
@@ -1773,7 +1782,7 @@ public final class OresEvalRootNode extends RootNode {
                                 : "method " + method.name();
                 Object shaped = shapeReturnedValue(returnType, value, label);
                 return function != null && function.trapped()
-                        ? new OptionValue(true, shaped) : shaped;
+                        ? trapOk(shaped) : shaped;
             }
         }
 
@@ -2093,13 +2102,23 @@ public final class OresEvalRootNode extends RootNode {
         private boolean functionContainsPotentialSuspension(
                 Ast.FunctionDecl function,
                 Set<Object> seen) {
-            if (!seen.add(function)) return false;
-            for (Ast.Stmt stmt : function.body()) {
-                if (statementContainsPotentialSuspension(stmt, seen)) {
-                    return true;
+            // Re-entering a callable on the active analysis path is a recursive
+            // call-graph cycle. Promote it to a SourceTask boundary so recursive
+            // guest calls suspend through heap-owned continuations instead of
+            // growing the interpreter's Java call stack.
+            if (!seen.add(function)) return true;
+            try {
+                for (Ast.Stmt stmt : function.body()) {
+                    if (statementContainsPotentialSuspension(stmt, seen)) {
+                        return true;
+                    }
                 }
+                return false;
+            } finally {
+                // Keep this set path-sensitive: a shared helper reached from a
+                // second branch is not recursion once its first walk has ended.
+                seen.remove(function);
             }
-            return false;
         }
 
         private boolean statementContainsPotentialSuspension(
@@ -2297,11 +2316,15 @@ public final class OresEvalRootNode extends RootNode {
                         if (!visitedClasses.add(klass)) continue;
                         for (Ast.MethodDecl method : klass.methods()) {
                             if (method.name().equals(member.member())
-                                    && method.arity() == call.arguments().size()
-                                    && seen.add(method)) {
-                                if (method.async() || method.suspends()) return true;
-                                for (Ast.Stmt statement : method.body()) {
-                                    if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                    && method.arity() == call.arguments().size()) {
+                                if (!seen.add(method)) return true;
+                                try {
+                                    if (method.async() || method.suspends()) return true;
+                                    for (Ast.Stmt statement : method.body()) {
+                                        if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                    }
+                                } finally {
+                                    seen.remove(method);
                                 }
                             }
                         }
@@ -4383,10 +4406,10 @@ public final class OresEvalRootNode extends RootNode {
                     evalSuspendableExpr(task, trapped.expression(), env,
                             (t, value, failure) -> {
                                 if (failure == null) {
-                                    continuation.accept(t, new OptionValue(true, value), null);
+                                    continuation.accept(t, trapOk(value), null);
                                 } else if (failure instanceof RuntimeException ordinary
                                         && isTrappableFailure(ordinary)) {
-                                    continuation.accept(t, new OptionValue(false, null), null);
+                                    continuation.accept(t, trapErr(ordinary), null);
                                 } else {
                                     continuation.accept(t, null, failure);
                                 }
@@ -6550,12 +6573,12 @@ public final class OresEvalRootNode extends RootNode {
                 return callFunctionBodyUnchecked(fn, args);
             }
             try {
-                return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
+                return trapOk(callFunctionBodyUnchecked(fn, args));
             } catch (RuntimeException failure) {
                 if (!isTrappableFailure(failure)) throw failure;
-                // trap is deliberately lossy: ordinary guest/runtime failure
-                // becomes None. Control and authority failures always escape.
-                return new OptionValue(false, null);
+                // An ordinary failure becomes Err(Error), sanitized. Control and
+                // authority failures always escape.
+                return trapErr(failure);
             }
         }
 
@@ -8360,10 +8383,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 try {
-                    return new OptionValue(true, eval(trapped.expression(), env));
+                    return trapOk(eval(trapped.expression(), env));
                 } catch (RuntimeException failure) {
                     if (!isTrappableFailure(failure)) throw failure;
-                    return new OptionValue(false, null);
+                    return trapErr(failure);
                 }
             }
             if (expr instanceof Ast.UnaryExpr unary) {
@@ -9583,7 +9606,115 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ActorFacade actor) {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
+                    case "group" -> (Invokable) actor::group;
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver instanceof SourceActorPubSub.Group group) {
+                return switch (name) {
+                    case "name" -> group.name();
+                    case "join" -> (Invokable) args -> {
+                        requireOne(args, "ActorGroup.join");
+                        if (!(args.getFirst() instanceof ActorRuntime.ActorRef<?> ref)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.join expects ActorRef<T>");
+                        }
+                        group.join(ref);
+                        return null;
+                    };
+                    case "leave" -> (Invokable) args -> {
+                        requireOne(args, "ActorGroup.leave");
+                        if (!(args.getFirst() instanceof ActorRuntime.ActorRef<?> ref)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.leave expects ActorRef<T>");
+                        }
+                        group.leave(ref);
+                        return null;
+                    };
+                    case "contains" -> (Invokable) args -> {
+                        requireOne(args, "ActorGroup.contains");
+                        if (!(args.getFirst() instanceof ActorRuntime.ActorRef<?> ref)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.contains expects ActorRef<T>");
+                        }
+                        return group.contains(ref);
+                    };
+                    case "member_count" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.member_count");
+                        return (long) group.memberCount();
+                    };
+                    case "topic" -> (Invokable) args -> {
+                        if (args.size() == 1) {
+                            return group.topic(
+                                    requireString(args.getFirst(), "ActorGroup.topic name"));
+                        }
+                        if (args.size() != 3) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.topic<T> expects name or name, policy, capacity");
+                        }
+                        String topicName =
+                                requireString(args.get(0), "ActorGroup.topic name");
+                        String policy =
+                                requireString(args.get(1), "ActorGroup.topic policy");
+                        if (!(args.get(2) instanceof Number number) || !isIntegral(number)) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.topic capacity must be an integer");
+                        }
+                        long capacity = number.longValue();
+                        if (capacity < 1 || capacity > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException(
+                                    "ActorGroup.topic capacity must be 1..2147483647");
+                        }
+                        return group.topic(topicName, policy, (int) capacity);
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "ActorGroup.close");
+                        group.close();
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown ActorGroup member " + name);
+                };
+            }
+            if (receiver instanceof SourceActorPubSub.Topic topic) {
+                return switch (name) {
+                    case "name" -> topic.name();
+                    case "publish" -> (Invokable) args -> {
+                        requireOne(args, "Topic.publish");
+                        return topic.publish(args.getFirst());
+                    };
+                    case "subscribe" -> (Invokable) args -> {
+                        requireZero(args, "Topic.subscribe");
+                        return topic.subscribe();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Topic member " + name);
+                };
+            }
+            if (receiver instanceof SourceActorPubSub.Subscription subscription) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.next");
+                        return subscription.next();
+                    };
+                    case "try_read" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.try_read");
+                        java.util.Optional<Object> value = subscription.tryRead();
+                        return value.isPresent()
+                                ? new OptionValue(true, value.get())
+                                : new OptionValue(false, null);
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.close");
+                        subscription.close();
+                        return null;
+                    };
+                    case "closed" -> (Invokable) args -> {
+                        requireZero(args, "Subscription.closed");
+                        return subscription.closed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Subscription member " + name);
                 };
             }
             if (receiver instanceof ChannelRuntime.Channel<?> channel) {
@@ -11205,6 +11336,18 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
+            if (pattern instanceof Ast.SequencePattern sequence) {
+                Map<String, Object> captures =
+                        dev.oreslang.runtime.OresByteBitPatternMatcher.captures(sequence, value);
+                if (captures == null) return false;
+                // Never publish a partial set of pattern captures.
+                for (String name : captures.keySet())
+                    if (bindings.containsKey(name))
+                        throw new IllegalStateException(
+                                "duplicate sequence pattern capture: " + name);
+                bindings.putAll(captures);
+                return true;
+            }
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
                 if (bindings.containsKey(binding.name())) {
@@ -13007,6 +13150,35 @@ public final class OresEvalRootNode extends RootNode {
             return CycleSafeDisplay.render(this);
         }
     }
+    /**
+     * Guest-visible value of an ordinary failure caught by `trap`: a bounded,
+     * printable kind, type name and message. It never carries the host
+     * exception, its cause chain or a stack trace across the trap boundary.
+     */
+    private record TrapError(String type, String message) {
+        private static final int MAX_TEXT = 256;
+        static TrapError of(Throwable failure) {
+            return new TrapError(bounded(failure.getClass().getSimpleName()),
+                    bounded(failure.getMessage() == null ? "" : failure.getMessage()));
+        }
+        private static String bounded(String text) {
+            StringBuilder out = new StringBuilder(Math.min(text.length(), MAX_TEXT));
+            for (int i = 0; i < text.length() && out.length() < MAX_TEXT; i++) {
+                char c = text.charAt(i);
+                out.append(c >= 0x20 && c < 0x7f ? c : '?');
+            }
+            return out.toString();
+        }
+        @Override public String toString() { return "Error(" + type + ": " + message + ")"; }
+    }
+    /** `trap` success: a value that is already a Result is not wrapped again. */
+    private static Object trapOk(Object value) {
+        return value instanceof ResultValue result ? result : new ResultValue(true, value);
+    }
+    /** `trap` failure: Err(Error) with a sanitized payload. */
+    private static ResultValue trapErr(Throwable failure) {
+        return new ResultValue(false, TrapError.of(failure));
+    }
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }
@@ -13209,6 +13381,9 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record ActorFacade(OresContext context) {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
+        private Object group(List<Object> args){
+            return context.actorPubSub().group(requireStringArg(args, "actor.group"));
+        }
     }
     private static List<Object> expandArgumentSequence(Object value,String name){
         if(value instanceof List<?> list)return new ArrayList<>(list);
