@@ -1253,7 +1253,8 @@ public final class ActorNativeArena implements AutoCloseable {
             // may throw or report a different address after the original
             // slot was stored. Looking up the existing slot identity is only
             // allowed during overwrite; a regular get() remains fail-closed.
-            NativeValue previous = referencesByOffset.get(read(slot, 8));
+            NativeValue previous = referencesByOffset.get(
+                    ActorCompressed32Reference.decodeStored(read(slot, 8)));
             if (previous == null) {
                 throw new SecurityException("stale actor-native slot reference has no registry entry");
             }
@@ -1275,8 +1276,11 @@ public final class ActorNativeArena implements AutoCloseable {
         if (tag == DOUBLE) return Double.longBitsToDouble(bits);
         if (tag == CHARACTER) return (char) bits;
         if (tag == REFERENCE) {
-            NativeValue value = referencesByOffset.get(bits);
-            if (value == null || value.nativeArena() != this || value.nativeOffset() != bits) {
+            // The slot holds an unsigned compressed32 actor-relative word, not
+            // a host pointer or raw 64-bit offset; nonzero high bits fail closed.
+            long offset = ActorCompressed32Reference.decodeStored(bits);
+            NativeValue value = referencesByOffset.get(offset);
+            if (value == null || value.nativeArena() != this || value.nativeOffset() != offset) {
                 throw new SecurityException("stale or moved actor resource reference");
             }
             return value;
@@ -1353,9 +1357,12 @@ public final class ActorNativeArena implements AutoCloseable {
             if (occupant != null && occupant != v) {
                 throw new SecurityException("duplicate actor-relative native address");
             }
+            // Encode before publishing either registry entry, so an unaligned or
+            // unrepresentable address never leaves a half-published alias.
+            // Cross-backend word (LLVM/.NET/Wasm): 0 = null, offset/8 + 1.
+            bits = Integer.toUnsignedLong(ActorCompressed32Reference.encode(address));
             referenceOffsets.putIfAbsent(v, address);
             referencesByOffset.putIfAbsent(address, v);
-            bits = address;
         } else {
             throw new IllegalArgumentException("actor field requires native value lowering for "
                     + value.getClass().getName() + "; managed guest payload fallback is disabled");
@@ -1388,13 +1395,14 @@ public final class ActorNativeArena implements AutoCloseable {
                 tag == REFERENCE && (oldTag != REFERENCE || oldBits != bits);
         boolean newCapabilityReference =
                 tag == CAPABILITY && (oldTag != CAPABILITY || oldBits != bits);
-        if (newNativeReference) referenceRefCounts.merge(bits, 1, Math::addExact);
+        if (newNativeReference) referenceRefCounts.merge(
+                ActorCompressed32Reference.decodeStored(bits), 1, Math::addExact);
         if (newCapabilityReference) capabilityRefCounts.merge(bits, 1, Math::addExact);
         write(slot, 8, bits);
         write(slot, 16, length);
         write(slot, 0, tag);
         if (oldTag == REFERENCE && (tag != REFERENCE || oldBits != bits)) {
-            releaseNativeReference(oldBits);
+            releaseNativeReference(ActorCompressed32Reference.decodeStored(oldBits));
         }
         if (oldTag == CAPABILITY && (tag != CAPABILITY || oldBits != bits)) {
             releaseCapabilityReference(oldBits);
