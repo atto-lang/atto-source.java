@@ -256,9 +256,9 @@ proxy an airtight authority boundary. In particular, **no one-shot
 continuation capability is exposed**, so this slice cannot claim the full
 virtual-interceptor contract in `atto-spec#83`.
 
-This branch defines **41** JUnit cases, including twenty-one new opt-in hook
+This branch defines **43** JUnit cases, including twenty-three new opt-in hook
 regressions. The source-org workflow demands nonempty exact-head passing
-Surefire receipts for all 41. Until executed, all backend tests and
+Surefire receipts for all 43. Until executed, all backend tests and
 standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
@@ -314,7 +314,7 @@ successfully, including allowed helper chaining, recursive/dynamic/async
 rejection, unsafe operators, value escapes and namespace/protected-declaration
 spoofing. This verifies that helper source's syntax and local admission
 logic, **not** the real compiler, Java guest runtime or JDK 25/GraalVM.
-It is not a substitute for the 41 source JUnit tests.
+It is not a substitute for the 43 source JUnit tests.
 
 The public `expand` API now idempotently deduplicates repeated identical
 target/interceptor type requests, preserving first-source-occurrence order
@@ -337,3 +337,20 @@ diagnostic. Both are source-defined JUnit cases only until executed by JDK25 CI.
 
 At the latest audit, the GitHub PR had been marked ready despite no runner steps;
 it was returned to draft to preserve the project's exact-head test requirement.
+
+### Bounded syntax security fix (2026-11-18)
+
+The historical `hookBodyHasUnprovenSuspension`/`hookExprHasUnprovenSuspension`
+prepass recursively scanned arbitrary nested AST before the budgeted effect
+closure. It is removed: **all** before-hook body syntax now passes only through
+the single bounded 32-depth/4,096-node verifier, with explicit suspension
+rejections. A 96-level synthetically nested AST must produce a typed
+`AOT_PROXY_UNSUPPORTED` budget diagnostic, not `StackOverflowError`.
+
+Until checked exceptional-effect inference is available, hook/helper `/`
+and `%` operators fail closed because zero-divisor behavior can introduce an
+implicit exceptional outcome even when no checked effects are declared.
+`void` is rejected as a helper parameter type. The exact-head workflow also
+triggers on changes to `StaticProxyHookEffectClosure.java` so a helper-only
+change cannot escape the 43-case guest CI admission gate. These JUnit tests
+are defined, not executed, until source runner admission is restored.
