@@ -43,7 +43,7 @@ public final class ActorRef32ArenaTest {
             reject(() -> first.read_i64(pa, restart, 101, 0), "restart context");
             reject(() -> first.read_i64(pb, a, 101, 0), "wrong-origin handle");
             reject(() -> second.read_i64(pa, b, 101, 0), "sibling numeric collision");
-            reject(() -> first.release(pa, a, 101), "foreign release");
+            reject(() -> first.release(pb, a, 101), "foreign release");
             reject(() -> first.release(pa, a, 999), "wrong type release");
             first.release(pa, a, 101);
             reject(() -> first.release(pa, a, 101), "double free accepted");
