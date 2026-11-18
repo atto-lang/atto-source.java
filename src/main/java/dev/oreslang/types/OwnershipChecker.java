@@ -1031,6 +1031,44 @@ public final class OwnershipChecker {
      * constructor/function results: those produce independent values under
      * their separate expression and return-ownership contracts.
      */
+    /**
+     * A class/record/array projection may evaluate to a scalar Copy value,
+     * but its receiver can still be a borrowed caller-owned capability.
+     * Do not interpret a direct `rt share loan.field` as permission to
+     * publish that borrow's owner through the field's scalar Copy trait.
+     *
+     * Require the caller to materialize an independent primitive snapshot
+     * (`rt copy loan.field`) and share that detached value instead.
+     * Nested projections are rejected using their root's lexical state;
+     * no runtime borrow instrumentation or pointer syntax is introduced.
+     */
+    private void rejectBorrowedShareProjection(Ast.Expr argument, Scope scope) {
+        Ast.Expr root = argument;
+        boolean projected = false;
+        while (true) {
+            if (root instanceof Ast.MemberExpr member) {
+                root = member.receiver();
+                projected = true;
+            } else if (root instanceof Ast.IndexExpr indexed) {
+                root = indexed.receiver();
+                projected = true;
+            } else {
+                break;
+            }
+        }
+        if (!projected || !(root instanceof Ast.NameExpr name)) return;
+        VarState owner = scope.lookup(name.name());
+        if (owner != null && (isIncomingBorrow(owner)
+                || owner.kind == ValueKind.IMM_BORROW
+                || owner.kind == ValueKind.MUT_BORROW
+                || (owner.type != null && owner.type.isBorrow())
+                || isActorConfinedBorrow(owner))) {
+            throw error("E_SHARE_BORROWED_PROJECTION: rt share cannot publish a "
+                    + "projected value rooted in a borrowed capability; "
+                    + "materialize an independently proven Copy value first");
+        }
+    }
+
     private void rejectUntrackedTakePlace(Ast.Expr expression) {
         if (expression instanceof Ast.MemberExpr) {
             throw error("rt take cannot transfer a field projection without "
@@ -1274,6 +1312,9 @@ public final class OwnershipChecker {
                     yield source;
                 }
                 case "share" -> {
+                    // A direct projected scalar value must not erase the
+                    // borrow provenance of its named receiver.
+                    rejectBorrowedShareProjection(argument, scope);
                     ValueInfo source = checkExpr(argument, scope, false);
                     if (isBorrowValue(source) || containsBorrowType(source.type)) {
                         throw error("rt share cannot publish a borrowed capability without explicit lifetime proof");
