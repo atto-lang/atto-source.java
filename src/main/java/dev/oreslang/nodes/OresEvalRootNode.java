@@ -2102,13 +2102,23 @@ public final class OresEvalRootNode extends RootNode {
         private boolean functionContainsPotentialSuspension(
                 Ast.FunctionDecl function,
                 Set<Object> seen) {
-            if (!seen.add(function)) return false;
-            for (Ast.Stmt stmt : function.body()) {
-                if (statementContainsPotentialSuspension(stmt, seen)) {
-                    return true;
+            // Re-entering a callable on the active analysis path is a recursive
+            // call-graph cycle. Promote it to a SourceTask boundary so recursive
+            // guest calls suspend through heap-owned continuations instead of
+            // growing the interpreter's Java call stack.
+            if (!seen.add(function)) return true;
+            try {
+                for (Ast.Stmt stmt : function.body()) {
+                    if (statementContainsPotentialSuspension(stmt, seen)) {
+                        return true;
+                    }
                 }
+                return false;
+            } finally {
+                // Keep this set path-sensitive: a shared helper reached from a
+                // second branch is not recursion once its first walk has ended.
+                seen.remove(function);
             }
-            return false;
         }
 
         private boolean statementContainsPotentialSuspension(
@@ -2303,11 +2313,15 @@ public final class OresEvalRootNode extends RootNode {
                         if (!visitedClasses.add(klass)) continue;
                         for (Ast.MethodDecl method : klass.methods()) {
                             if (method.name().equals(member.member())
-                                    && method.arity() == call.arguments().size()
-                                    && seen.add(method)) {
-                                if (method.async() || method.suspends()) return true;
-                                for (Ast.Stmt statement : method.body()) {
-                                    if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                    && method.arity() == call.arguments().size()) {
+                                if (!seen.add(method)) return true;
+                                try {
+                                    if (method.async() || method.suspends()) return true;
+                                    for (Ast.Stmt statement : method.body()) {
+                                        if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                    }
+                                } finally {
+                                    seen.remove(method);
                                 }
                             }
                         }
