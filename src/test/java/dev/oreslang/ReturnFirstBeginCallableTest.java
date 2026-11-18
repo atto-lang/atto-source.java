@@ -206,9 +206,9 @@ final class ReturnFirstBeginCallableTest {
                     """).modules().getFirst().declarations().getFirst());
         assertEquals(1, fn.body().size());
         for (String invalid : new String[] {
-                "int <- bad()\\nbegin return 42;\\nend",
-                "int <- bad()\\nbegin end",
-                "int <- bad()\\nbegin;\\nreturn 42;\\nend"
+                "int <- bad()\nbegin return 42;\nend",
+                "int <- bad()\nbegin end",
+                "int <- bad()\nbegin;\nreturn 42;\nend"
         }) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(invalid), invalid);
         }
