@@ -256,9 +256,11 @@ proxy an airtight authority boundary. In particular, **no one-shot
 continuation capability is exposed**, so this slice cannot claim the full
 virtual-interceptor contract in `atto-spec#83`.
 
-This branch defines **27** JUnit cases, including seven new opt-in hook
+This branch defines **30** JUnit cases, including ten new opt-in hook
 regressions. The source-org workflow demands nonempty exact-head passing
-Surefire receipts for all 27. Until executed, all backend tests and
+Surefire receipts for all 30. Until executed, all backend tests and
 standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
+
+The compiler currently represents only declared checked exceptional effects\n(throws/raises/panics). A missing declaration is **not** a proof of\nside-effect freedom or transitive exceptional closure: ordinary logging and\nother externally visible calls can still occur in a before hook. This\nprototype does not claim inferred IO purity, async/suspension closure, or\nchecked propagation across arbitrary hook callees. Those checks remain an\nexplicit merge gate.\n
