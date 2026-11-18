@@ -21,12 +21,39 @@ import java.util.Set;
  */
 public final class StaticProxySynthesis {
     private static final String TARGET_FIELD = "__proxy_target";
+    private static final String HOOK_FIELD = "__proxy_hooks";
+
+    /** A statically known interceptor construction request. */
+    public record InterceptorRequest(String targetName, String interceptorName) {
+        public InterceptorRequest {
+            if (targetName == null || interceptorName == null
+                    || !targetName.matches("[A-Za-z_][A-Za-z_0-9]*")
+                    || !interceptorName.matches("[A-Za-z_][A-Za-z_0-9]*")) {
+                throw fail("interceptor target and type names must be plain identifiers");
+            }
+        }
+
+        public String generatedName() {
+            return targetName + "With" + interceptorName + "Proxy";
+        }
+    }
 
     private StaticProxySynthesis() { }
 
     public static Ast.Program expand(Ast.Program program, Set<String> requestedNames) {
-        if (requestedNames.isEmpty()) return program;
-        Set<String> requested = Set.copyOf(requestedNames);
+        return expand(program, requestedNames, List.of());
+    }
+
+    public static Ast.Program expand(Ast.Program program, Set<String> requestedNames,
+                                     List<InterceptorRequest> interceptorRequests) {
+        if (requestedNames.isEmpty() && interceptorRequests.isEmpty()) return program;
+        Set<String> requested = new HashSet<>(requestedNames);
+        for (InterceptorRequest request : interceptorRequests) requested.add(request.targetName());
+        Set<InterceptorRequest> uniqueRequests = new HashSet<>(interceptorRequests);
+        if (uniqueRequests.size() != interceptorRequests.size()) {
+            throw fail("duplicate compiler-generated proxy interceptor request");
+        }
+        Map<String, Target> interceptors = new HashMap<>();
         Map<String, Target> found = new LinkedHashMap<>();
         Set<String> unresolvedTypeAliases = new HashSet<>();
         // Resolution of generated nominal types is not yet namespace-qualified.
@@ -49,6 +76,12 @@ public final class StaticProxySynthesis {
         if (occupiedNames.contains("Proxy")) {
             throw fail("an imported Proxy name conflicts with the compiler intrinsic");
         }
+        for (InterceptorRequest request : interceptorRequests) {
+            if (importedNames.contains(request.interceptorName())) {
+                throw fail("proxy interceptor '" + request.interceptorName()
+                        + "' collides with an imported name or namespace alias");
+            }
+        }
         for (String target : requested) {
             if (importedNames.contains(target)) {
                 throw fail("proxy target '" + target
@@ -64,6 +97,13 @@ public final class StaticProxySynthesis {
                 if (declaration instanceof Ast.TypeAliasDecl alias) {
                     occupiedNames.add(alias.name());
                     unresolvedTypeAliases.add(alias.name());
+                }
+                if (declaration instanceof Ast.ClassDecl klass
+                        && interceptorRequests.stream().anyMatch(r -> r.interceptorName().equals(klass.name()))) {
+                    if (interceptors.putIfAbsent(klass.name(), new Target(module.name(), klass)) != null) {
+                        throw fail("proxy interceptor class '" + klass.name()
+                                + "' is ambiguous across modules");
+                    }
                 }
                 if (declaration instanceof Ast.ClassDecl klass && requested.contains(klass.name())) {
                     if (found.putIfAbsent(klass.name(), new Target(module.name(), klass)) != null) {
@@ -82,18 +122,43 @@ public final class StaticProxySynthesis {
                         + "' must be an ordinary class declared in this compilation unit");
             }
         }
+        for (InterceptorRequest request : interceptorRequests) {
+            Target target = found.get(request.targetName());
+            Target hook = interceptors.get(request.interceptorName());
+            if (hook == null) {
+                throw fail("interceptor '" + request.interceptorName()
+                        + "' must be an ordinary class declared in this compilation unit");
+            }
+            if (!target.module().equals(hook.module())) {
+                throw fail("interceptor and target must be declared in the same module: "
+                        + request.targetName() + ", " + request.interceptorName());
+            }
+        }
         List<Ast.ModuleDecl> modules = new ArrayList<>(program.modules().size());
         for (Ast.ModuleDecl module : program.modules()) {
             List<Ast.Decl> output = new ArrayList<>(module.declarations());
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.ClassDecl klass)
                         || !requested.contains(klass.name())) continue;
-                String generatedName = klass.name() + "Proxy";
-                if (!occupiedNames.add(generatedName)) {
-                    throw fail("generated class '" + generatedName
-                            + "' collides with an existing or generated declaration");
+                if (requestedNames.contains(klass.name())) {
+                    String generatedName = klass.name() + "Proxy";
+                    if (!occupiedNames.add(generatedName)) {
+                        throw fail("generated class '" + generatedName
+                                + "' collides with an existing or generated declaration");
+                    }
+                    output.add(proxyClass(klass, generatedName, unresolvedTypeAliases));
                 }
-                output.add(proxyClass(klass, generatedName, unresolvedTypeAliases));
+                for (InterceptorRequest request : interceptorRequests) {
+                    if (!request.targetName().equals(klass.name())) continue;
+                    String generatedName = request.generatedName();
+                    if (!occupiedNames.add(generatedName)) {
+                        throw fail("generated class '" + generatedName
+                                + "' collides with an existing or generated declaration");
+                    }
+                    output.add(interceptorProxyClass(
+                            klass, interceptors.get(request.interceptorName()).klass(),
+                            generatedName, unresolvedTypeAliases));
+                }
             }
             modules.add(new Ast.ModuleDecl(
                     module.name(), module.annotations(), module.contracts(), output));
@@ -196,6 +261,103 @@ public final class StaticProxySynthesis {
         return new Ast.ClassDecl(generatedName, target.visibility(), false,
                 Ast.ActorKind.NONE, List.of(), List.of(), List.of(),
                 List.of(delegate), constructor, methods);
+    }
+
+    /**
+     * Typed, synchronous "before" interceptor slice. The ordinary method
+     * vtable dispatches the hook, without reflective method enumeration or
+     * a dynamically manufactured callable. A checked one-shot around/proceed
+     * continuation is deliberately NOT implemented here.
+     */
+    private static Ast.ClassDecl interceptorProxyClass(
+            Ast.ClassDecl target, Ast.ClassDecl interceptor, String generatedName,
+            Set<String> unresolvedTypeAliases) {
+        if (interceptor.actorKind() != Ast.ActorKind.NONE || interceptor.isAbstract()
+                || !interceptor.parents().isEmpty() || !interceptor.interfaces().isEmpty()
+                || !interceptor.genericParameters().isEmpty()) {
+            throw fail("interceptor must be a concrete, nonactor, nongeneric local class: "
+                    + interceptor.name());
+        }
+        Ast.ClassDecl delegate = proxyClass(target, generatedName, unresolvedTypeAliases);
+        Map<Ast.MethodArity, Ast.MethodDecl> hooks = new HashMap<>();
+        for (Ast.MethodDecl hook : interceptor.methods()) {
+            if (!hook.name().startsWith("before_")) continue;
+            if (hooks.putIfAbsent(hook.overloadIdentity(), hook) != null) {
+                throw fail("ambiguous interceptor slot: " + interceptor.name() + "."
+                        + hook.name() + "/" + hook.arity());
+            }
+        }
+
+        List<Ast.MethodDecl> methods = new ArrayList<>();
+        Set<Ast.MethodArity> consumed = new HashSet<>();
+        for (Ast.MethodDecl method : delegate.methods()) {
+            Ast.MethodArity slot = new Ast.MethodArity("before_" + method.name(), method.arity());
+            Ast.MethodDecl hook = hooks.get(slot);
+            if (hook == null) {
+                throw fail("missing typed interceptor method " + interceptor.name() + "."
+                        + slot.name() + "/" + slot.arity());
+            }
+            consumed.add(slot);
+            if (hook.visibility() != Ast.Visibility.PUBLIC || hook.isStatic()
+                    || hook.isAbstract() || hook.async() || hook.suspends()
+                    || hook.structural() || hook.explicitReceiverType() != null
+                    || !hook.genericParameters().isEmpty() || !hook.effects().isEmpty()
+                    || !hook.annotations().isEmpty()
+                    || !hook.returnType().equals(Ast.TypeRef.simple("void"))) {
+                throw fail("interceptor method must be public, synchronous, void and effect-free: "
+                        + interceptor.name() + "." + hook.name());
+            }
+            for (int i = 0; i < hook.parameters().size(); i++) {
+                Ast.Param provided = hook.parameters().get(i);
+                Ast.Param expected = method.parameters().get(i);
+                if (provided.structural() || provided.mutable()
+                        || !provided.type().equals(expected.type())
+                        || "self".equals(provided.name()) || TARGET_FIELD.equals(provided.name())
+                        || HOOK_FIELD.equals(provided.name())) {
+                    throw fail("interceptor parameter contract mismatch: "
+                            + interceptor.name() + "." + hook.name());
+                }
+            }
+            List<Ast.Expr> args = new ArrayList<>();
+            for (Ast.Param parameter : method.parameters()) {
+                args.add(new Ast.NameExpr(parameter.name()));
+            }
+            Ast.CallExpr hookCall = new Ast.CallExpr(
+                    new Ast.MemberExpr(
+                            new Ast.MemberExpr(new Ast.NameExpr("self"), HOOK_FIELD),
+                            hook.name()), args);
+            List<Ast.Stmt> body = new ArrayList<>();
+            body.add(new Ast.ExprStmt(hookCall));
+            body.addAll(method.body());
+            methods.add(new Ast.MethodDecl(
+                    method.name(), method.visibility(), method.isStatic(), method.isAbstract(),
+                    method.async(), method.suspends(), method.structural(),
+                    method.explicitReceiverType(), method.genericParameters(),
+                    method.parameters(), method.returnType(), method.annotations(), body,
+                    method.effects()));
+        }
+        for (Ast.MethodArity slot : hooks.keySet()) {
+            if (!consumed.contains(slot)) {
+                throw fail("interceptor method does not match any forwarded public method: "
+                        + interceptor.name() + "." + slot.name() + "/" + slot.arity());
+            }
+        }
+
+        List<Ast.FieldDecl> fields = new ArrayList<>(delegate.fields());
+        fields.add(new Ast.FieldDecl(HOOK_FIELD, Ast.Visibility.PRIVATE,
+                Ast.BindingKind.VAL, Ast.TypeRef.simple(interceptor.name()),
+                List.of(), null, false));
+        List<Ast.Param> parameters = List.of(
+                new Ast.Param(Ast.TypeRef.simple(target.name()), "target"),
+                new Ast.Param(Ast.TypeRef.simple(interceptor.name()), "hooks"));
+        List<Ast.Stmt> constructorBody = new ArrayList<>(delegate.constructor().body());
+        constructorBody.add(new Ast.ExprStmt(new Ast.AssignExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("self"), HOOK_FIELD),
+                new Ast.NameExpr("hooks"))));
+        Ast.ConstructorDecl constructor = new Ast.ConstructorDecl(
+                delegate.constructor().visibility(), parameters, List.of(), constructorBody);
+        return new Ast.ClassDecl(generatedName, target.visibility(), false,
+                Ast.ActorKind.NONE, List.of(), List.of(), List.of(), fields, constructor, methods);
     }
 
     /**
