@@ -3445,7 +3445,27 @@ public final class Parser {
         if (match(DO)) {
             if (match(MATCH)) return parseMatch(true);
             if (match(SWITCH)) return parseSwitch();
-            throw error(previous(), "'do' requires match, switch, or a braced select");
+            // Explicitly discard a channel read result (or write's unit result)
+            // without changing the operation's cooperative suspension mode.
+            // An nb channel operation returns a Future and must not be silently
+            // detached by 'do'; retain the handle or await it instead.
+            if (match(READCH, WRITECH)) {
+                Token operation = previous();
+                Ast.Expr channelOp = parseChannelOperation(
+                        operation.type() == READCH
+                                ? Ast.ChannelOperation.READ
+                                : Ast.ChannelOperation.WRITE,
+                        Ast.WaitMode.BLOCKING);
+                consumeExpressionStatementTerminator(
+                        channelOp, "do channel operation should end with ';'");
+                return new Ast.ExprStmt(channelOp);
+            }
+            if (check(NB) && (checkNext(READCH) || checkNext(WRITECH))) {
+                throw error(peek(),
+                        "do nb readch/writech would discard a pending Future; bind or await it");
+            }
+            throw error(previous(),
+                    "'do' requires match, switch, readch, writech, or a braced select");
         }
         // Legacy statement syntax remains accepted during migration.
         if (match(MATCH)) return parseMatch(false);
