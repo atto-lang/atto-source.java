@@ -1050,7 +1050,7 @@ public final class OwnershipChecker {
             BorrowPlace place = borrowPlace(runtime.arguments().getFirst(), scope);
             beginPersistentBorrow(place.owner(), false);
             value = new ValueInfo(
-                    Ast.TypeRef.borrowed(place.type(), false),
+                    loanType(place.type(), false),
                     ValueKind.IMM_BORROW,
                     ownershipRoot(place.owner()),
                     true);
@@ -1063,7 +1063,7 @@ public final class OwnershipChecker {
             }
             beginPersistentBorrow(place.owner(), mutableBorrow);
             value = new ValueInfo(
-                    Ast.TypeRef.borrowed(place.type(), mutableBorrow),
+                    loanType(place.type(), mutableBorrow),
                     mutableBorrow ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW,
                     ownershipRoot(place.owner()),
                     true);
@@ -1318,7 +1318,7 @@ public final class OwnershipChecker {
                     throw error("mutable projected borrows need path-exclusive loan tracking");
                 }
                 validateBorrow(place.owner(), mutable);
-                return new ValueInfo(Ast.TypeRef.borrowed(place.type(), mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(place.owner()));
+                return new ValueInfo(loanType(place.type(), mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, ownershipRoot(place.owner()));
             }
             return checkExpr(unary.operand(), scope, false);
         }
@@ -1383,7 +1383,7 @@ public final class OwnershipChecker {
                     BorrowPlace place = borrowPlace(argument, scope);
                     validateBorrow(place.owner(), false);
                     yield new ValueInfo(
-                            Ast.TypeRef.borrowed(place.type(), false),
+                            loanType(place.type(), false),
                             ValueKind.IMM_BORROW,
                             ownershipRoot(place.owner()));
                 }
@@ -1441,6 +1441,12 @@ public final class OwnershipChecker {
                     CopyPolicyProjection projected = copyProjectionPolicy(argument, scope);
                     if (projected != null && projected.noCopy()) {
                         throw error("E_COPY_FORBIDDEN: rt copy of @NoCopy field '" + projected.origin() + "'");
+                    }
+                    if (source.type != null && source.type.isBorrow()
+                            && isPrimitiveCopyType(source.type.borrowedTarget())) {
+                        // Read the loan but return independent immutable data.
+                        // The source binding keeps its existing loan/lifetime.
+                        yield new ValueInfo(source.type.borrowedTarget(), ValueKind.COPY, null);
                     }
                     Ast.ClassDecl sourceClass = source.type == null ? null : findClass(source.type.name());
                     if (sourceClass != null && hasCopyPolicy(sourceClass.annotations(), "NoCopy")) {
@@ -1604,6 +1610,7 @@ public final class OwnershipChecker {
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
+            requireKnownReceiverBorrow(receiverValue);
             if (receiverValue.type.name().equals("$TelemetrySpan")) {
                 throw error("lexical telemetry span methods are direct-call-only; do not extract a callable");
             }
@@ -1713,6 +1720,7 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             if (consuming) rejectConsumingCopyProjection(indexed, scope);
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
+            requireKnownReceiverBorrow(receiver);
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
@@ -2570,6 +2578,7 @@ public final class OwnershipChecker {
                 }
             }
             ValueInfo receiverValue = checkExpr(member.receiver(), scope, false);
+            requireKnownReceiverBorrow(receiverValue);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver == null) {
                 concreteReceiver = receiverValue.type.isBorrow()
@@ -2722,6 +2731,24 @@ public final class OwnershipChecker {
                                 throw new IllegalStateException("missing shared method receiver loan");
                             root.immutableBorrows--;
                         }
+                    }
+                } else if (member.receiver() instanceof Ast.MemberExpr
+                        || member.receiver() instanceof Ast.IndexExpr) {
+                    // The implicit receiver is a live loan even when its place
+                    // is projected. Reserve the containing owner for the whole
+                    // argument evaluation; root tracking conservatively prevents
+                    // sibling writes too, until path-exclusive loans are proven.
+                    BorrowPlace place = borrowPlace(member.receiver(), scope);
+                    boolean exclusive = method.explicitReceiverType() != null
+                            && method.explicitReceiverType().isBorrow()
+                            && method.explicitReceiverType().mutableBorrow();
+                    beginPersistentBorrow(place.owner(), exclusive);
+                    VarState root = ownershipRoot(place.owner());
+                    try {
+                        checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                    } finally {
+                        if (exclusive) root.mutableBorrowed = false;
+                        else root.immutableBorrows--;
                     }
                 } else {
                     checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
@@ -3524,6 +3551,13 @@ public final class OwnershipChecker {
      */
     private record BorrowPlace(VarState owner, Ast.TypeRef type) { }
 
+    private static Ast.TypeRef loanType(Ast.TypeRef source, boolean mutable) {
+        // A reborrow refers to the same storage, not to a borrow wrapper.
+        // validateBorrow enforces privileges and provenance stays on its root.
+        return Ast.TypeRef.borrowed(source.isBorrow() ? source.borrowedTarget() : source, mutable);
+    }
+
+
     private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope) {
         return borrowPlace(operand, scope, false);
     }
@@ -3689,6 +3723,16 @@ public final class OwnershipChecker {
         if (mutable) root.mutableBorrowed = true;
         else root.immutableBorrows++;
         shadowEvent(mutable ? "BORROW_MUT" : "BORROW_SHARED", root);
+    }
+
+    private void requireKnownReceiverBorrow(ValueInfo receiver) {
+        // Returned loans currently have no call-site lifetime summary. A
+        // method/field/index receiver must not hide its owner from later
+        // arguments or recover ownership of a non-Copy field through a loan.
+        if (isBorrowValue(receiver) && receiver.borrowSource == null) {
+            throw error("receiver borrow has unknown lifetime provenance; "
+                    + "use a named owner/borrow until return-lifetime summaries are supported");
+        }
     }
 
     private boolean isBorrowValue(ValueInfo value) {
@@ -5956,6 +6000,16 @@ public final class OwnershipChecker {
         if (type == null) return ValueKind.MOVE_ONLY;
         if (type.isBorrow()) return type.mutableBorrow() ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW;
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
+    }
+
+    private boolean isPrimitiveCopyType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow() || !type.arguments().isEmpty()) return false;
+        return switch (type.name()) {
+            case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
+                    "f32","f64","float","decimal","complex64","complex128","complex",
+                    "bool","Bool","string","String" -> true;
+            default -> false;
+        };
     }
 
     /**
