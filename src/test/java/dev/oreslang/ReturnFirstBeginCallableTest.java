@@ -156,9 +156,18 @@ final class ReturnFirstBeginCallableTest {
                 "tear_down", "handle_state", "on_panic", "on_throw",
                 "on_throws", "on_raise", "on_recover"
         }) {
-            String source = "define actor A as\n  void <- " + name
-                    + "()\n  begin\n    return;\n  end\nend\n";
-            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+            for (String marker : new String[] {"<-", "•"}) {
+                for (String introducer : new String[] {"", "fnc ", "mtd "}) {
+                    String source = "define actor A as\n  " + introducer
+                            + "void " + marker + " " + name
+                            + "()\n  begin\n    return;\n  end\nend\n";
+                    IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                            () -> Parser.parse(source), source);
+                    assertTrue(denied.getMessage().contains("return-first actor lifecycle/CONTROL"),
+                            "must reject through the CONTROL-specific gate, not a generic syntax error: "
+                                    + source + " => " + denied.getMessage());
+                }
+            }
         }
     }
 
