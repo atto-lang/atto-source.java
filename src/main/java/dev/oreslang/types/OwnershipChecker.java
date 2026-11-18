@@ -1046,9 +1046,12 @@ public final class OwnershipChecker {
     // identifies this limited place. Stable heap/tenant origin IDs and layout
     // alias proofs remain separate typed-MIR obligations.
     private record ResolvedOwnershipPlace(
-            String rootName, VarState root, List<String> projections,
+            String rootName, VarState root, BindingId bindingId,
+            OriginId allocationOriginId, List<String> projections,
             boolean includesIndex) {
         boolean projected() { return !projections.isEmpty(); }
+        // Different lexical BindingIds are not independent heap origins.
+        boolean hasProvenAllocation() { return allocationOriginId.value() != 0L; }
     }
 
     private ResolvedOwnershipPlace resolveOwnershipPlace(Ast.Expr argument, Scope scope) {
@@ -1076,9 +1079,26 @@ public final class OwnershipChecker {
                 || name.name().indexOf('.') >= 0) return null;
         VarState state = scope.lookup(name.name());
         if (state == null) return null;
+        // A lexical alias forwards its source owner identity; it cannot
+        // acquire a new one by copying the source name or value kind.
+        java.util.Set<VarState> visited = java.util.Collections.newSetFromMap(
+                new IdentityHashMap<>());
+        while (state.aliasSource != null) {
+            if (!visited.add(state) || visited.size() > 64) return null;
+            state = state.aliasSource;
+        }
+        if (!visited.add(state) || state.bindingId.value() == 0L) return null;
+        // Following an alias into a closed scope or a detached captured
+        // VarState must not grant authority over storage that is no longer
+        // part of this lexical borrow-checker's visible owner inventory.
+        if (!scope.visibleStates().contains(state)) return null;
+        if (scope.identityRoot.issuedBindings.get(state.bindingId.value()) != state)
+            return null;
+        if (state.allocationOriginId.value() != 0L) return null;
         java.util.Collections.reverse(reversed);
         return new ResolvedOwnershipPlace(
-                name.name(), state, List.copyOf(reversed), includesIndex);
+                name.name(), state, state.bindingId, state.allocationOriginId,
+                List.copyOf(reversed), includesIndex);
     }
 
     private void rejectBorrowedShareProjection(Ast.Expr argument, Scope scope) {
@@ -5377,6 +5397,9 @@ public final class OwnershipChecker {
         }
     }
 
+    private record BindingId(long value) {}
+    private record OriginId(long value) {}
+
     private static final class VarState {
         private Ast.TypeRef type;
         private final boolean mutable;
@@ -5390,6 +5413,11 @@ public final class OwnershipChecker {
         private boolean borrowLease;
         /** Narrowing/pattern alias: ownership operations are forwarded to this root place. */
         private VarState aliasSource;
+        // One compiler-checked lexical declaration, never a source-chosen ID.
+        // Zero denotes unminted. Allocation/heap origin remains unknown (0)
+        // until a separate typed-MIR constructor/move proof is implemented.
+        private BindingId bindingId = new BindingId(0L);
+        private OriginId allocationOriginId = new OriginId(0L);
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
         private List<VarState> aggregateSources = List.of();
         private String debugName = "<value>";
@@ -5410,6 +5438,9 @@ public final class OwnershipChecker {
 
     private static final class Scope {
         private final Scope parent;
+        private final Scope identityRoot;
+        private long nextBindingId = 1L;
+        private final Map<Long,VarState> issuedBindings = new LinkedHashMap<>();
         private final boolean descendantsNonLexical;
         private final Map<String,VarState> locals = new LinkedHashMap<>();
         private final Map<String,Ast.TypeRef> inferredTypes = new LinkedHashMap<>();
@@ -5428,12 +5459,31 @@ public final class OwnershipChecker {
         private Scope(Scope parent) { this(parent, parent != null && parent.descendantsNonLexical); }
         private Scope(Scope parent, boolean descendantsNonLexical) {
             this.parent = parent;
+            this.identityRoot = parent == null ? this : parent.identityRoot;
             this.descendantsNonLexical = descendantsNonLexical;
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
 
         private void define(String name, VarState state) {
-            if (locals.putIfAbsent(name, state) != null) throw new IllegalArgumentException("Oreslang ownership error: duplicate binding '" + name + "'");
+            if (locals.containsKey(name))
+                throw new IllegalArgumentException("Oreslang ownership error: duplicate binding '" + name + "'");
+            if (state.bindingId.value() == 0L) {
+                if (identityRoot.nextBindingId <= 0L)
+                    throw new IllegalArgumentException("Oreslang ownership error: exhausted compiler binding identities");
+                state.bindingId = new BindingId(identityRoot.nextBindingId++);
+                identityRoot.issuedBindings.put(state.bindingId.value(), state);
+            } else if (identityRoot.issuedBindings.get(state.bindingId.value()) != state) {
+                // No newly allocated VarState may present the ID of another
+                // declaration or one minted in an unrelated function scope.
+                throw new IllegalArgumentException(
+                        "Oreslang ownership error: foreign or duplicated compiler binding identity");
+            }
+            // Allocation-origin proof is not yet available in Java typed
+            // MIR. An origin number on a source state is never authority.
+            if (state.allocationOriginId.value() != 0L)
+                throw new IllegalArgumentException(
+                        "Oreslang ownership error: unverified allocation origin identity");
+            locals.put(name, state);
             state.debugName = name;
         }
 
