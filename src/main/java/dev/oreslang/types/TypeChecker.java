@@ -3156,6 +3156,8 @@ public final class TypeChecker {
                 return new Named("$BooleanOps", List.of());
             }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+            // Arithmetic (sign-preserving) right shift: `>>` is channel data-flow.
+            if (name.name().equals("ashr")) return new Function(List.of(Primitive.INT, Primitive.INT), Primitive.INT);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) {

@@ -7624,7 +7624,7 @@ public final class OresEvalRootNode extends RootNode {
                     && env.accessClass() != null // nlex closures lose receiver authority
                     && env.lookup(unqualified.name()) == Env.MISSING
                     && !Set.of("init", "Some", "Ok", "Err", "And", "Or", "Xor",
-                            "print", "task_context", "task_cancel_requested",
+                            "print", "ashr", "task_context", "task_cancel_requested",
                             "$task_context_enter", "$task_context_exit").contains(unqualified.name())) {
                 Object lexicalSelf = env.lookup("self");
                 if (lexicalSelf instanceof OresObject receiver) {
@@ -8203,6 +8203,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
+                };
+                if (name.name().equals("ashr")) return (Invokable) args -> {
+                    if (args.size() != 2) throw new IllegalArgumentException("ashr(value, distance) takes 2 arguments");
+                    return integralLong(args.get(0)) >> shiftDistance(args.get(1));
                 };
                 if (name.name().equals("task_cancel_requested")) return (Invokable) args -> {
                     requireZero(args, "task_cancel_requested");
