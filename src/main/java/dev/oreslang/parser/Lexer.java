@@ -48,16 +48,60 @@ public final class Lexer {
     public Lexer(String source) { this.source = source == null ? "" : source; }
 
     public List<Token> scan() {
+        // A scan must not reuse tokens or cursors from an earlier pass.
+        // This also resets partially emitted tokens after a parser-facing error.
+        tokens.clear();
+        start = 0;
+        current = 0;
+        line = 1;
+        column = 1;
+        startColumn = 1;
         // Validate ignored comments and string contents as well as tokens.
         // Embedders can pass malformed UTF-16 without a UTF-8 file decoder.
+        // Track UTF-16 code-unit positions using the same CRLF semantics as
+        // scanToken(). This preflight must report a location even for bytes
+        // concealed in comments, strings or raw template contents.
+        int sourceLine = 1;
+        int sourceColumn = 1;
         for (int i = 0; i < source.length(); i++) {
             char c = source.charAt(i);
-            if (c == '\0') throw new IllegalArgumentException("source contains NUL byte");
+            if (c == '\0') {
+                throw sourceAdmissionError(sourceLine, sourceColumn, "source contains NUL byte");
+            }
+            // Reject controls in raw source (including comments, templates and
+            // string literals) before any tokenization or trivia elision. Do
+            // not include attacker-controlled text in diagnostics.
+            if (c == 0x061c || c == 0x200e || c == 0x200f ||
+                    (c >= 0x202a && c <= 0x202e) ||
+                    (c >= 0x2066 && c <= 0x2069)) {
+                throw sourceAdmissionError(sourceLine, sourceColumn,
+                        "source contains bidirectional Unicode control");
+            }
+            if (c == 0x0085 || c == 0x2028 || c == 0x2029) {
+                throw sourceAdmissionError(sourceLine, sourceColumn,
+                        "source contains Unicode line separator");
+            }
+            if (c == 0x001b || c == 0x007f) {
+                throw sourceAdmissionError(sourceLine, sourceColumn,
+                        "source contains terminal control");
+            }
             if (Character.isHighSurrogate(c)) {
-                if (++i >= source.length() || !Character.isLowSurrogate(source.charAt(i)))
-                    throw new IllegalArgumentException("source contains invalid UTF-16");
+                if (i + 1 >= source.length() || !Character.isLowSurrogate(source.charAt(i + 1))) {
+                    throw sourceAdmissionError(sourceLine, sourceColumn, "source contains invalid UTF-16");
+                }
+                i++; // A valid supplementary character occupies two UTF-16 columns.
+                sourceColumn += 2;
             } else if (Character.isLowSurrogate(c)) {
-                throw new IllegalArgumentException("source contains invalid UTF-16");
+                throw sourceAdmissionError(sourceLine, sourceColumn, "source contains invalid UTF-16");
+            } else if (c == '\r') {
+                if (i + 1 < source.length() && source.charAt(i + 1) == '\n') i++;
+                sourceLine++;
+                sourceColumn = 1;
+            } else if (c == '\n') {
+                sourceLine++;
+                sourceColumn = 1;
+            } else {
+                sourceColumn++;
             }
         }
         while (!isAtEnd()) {
@@ -321,6 +365,12 @@ public final class Lexer {
     private boolean isDigit(char c) { return c >= '0' && c <= '9'; }
     private boolean isIdentStart(char c) { return Character.isLetter(c) || c == '_'; }
     private boolean isIdentPart(char c) { return isIdentStart(c) || isDigit(c); }
+    private static IllegalArgumentException sourceAdmissionError(
+            int line, int column, String message) {
+        return new IllegalArgumentException(
+                "Oreslang lexer error at " + line + ":" + column + ": " + message);
+    }
+
     private IllegalArgumentException error(String message) {
         return new IllegalArgumentException("Oreslang lexer error at " + line + ":" + startColumn + ": " + message);
     }
