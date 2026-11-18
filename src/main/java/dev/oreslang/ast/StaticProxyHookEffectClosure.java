@@ -16,6 +16,7 @@ import java.util.Set;
  */
 final class StaticProxyHookEffectClosure {
     private static final int MAX_NODES = 4096;
+    private static final int MAX_METHOD_SLOTS = 4096;
     private static final int MAX_DEPTH = 32;
     private static final Set<String> SCALAR_TYPES =
             Set.of("int", "float", "bool", "String", "string", "void");
@@ -68,6 +69,9 @@ final class StaticProxyHookEffectClosure {
             }
         }
         for (Ast.MethodDecl method : owner.methods()) {
+            if (methods.size() >= MAX_METHOD_SLOTS) {
+                throw fail("interceptor method table exceeds slot budget: " + owner.name());
+            }
             if (methods.putIfAbsent(method.overloadIdentity(), method) != null) {
                 throw fail("ambiguous interceptor call graph slot: "
                         + owner.name() + "." + method.name() + "/" + method.arity());
@@ -76,7 +80,20 @@ final class StaticProxyHookEffectClosure {
     }
 
     static void verify(Ast.Program program, Ast.ClassDecl owner, Ast.MethodDecl hook) {
-        new StaticProxyHookEffectClosure(program, owner).visitMethod(hook, 0);
+        verifyAll(program, owner, List.of(hook));
+    }
+
+    /**
+     * Index once for every hook using this interceptor class. Shared helper
+     * DAGs are admitted once and the traversal budget covers all roots,
+     * preventing per-hook reindexing from becoming quadratic work.
+     */
+    static void verifyAll(Ast.Program program, Ast.ClassDecl owner,
+            List<Ast.MethodDecl> hooks) {
+        StaticProxyHookEffectClosure closure = new StaticProxyHookEffectClosure(program, owner);
+        for (Ast.MethodDecl hook : hooks) {
+            closure.visitMethod(hook, 0);
+        }
     }
 
     private void budget(int depth) {
