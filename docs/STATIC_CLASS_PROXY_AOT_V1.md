@@ -256,9 +256,9 @@ proxy an airtight authority boundary. In particular, **no one-shot
 continuation capability is exposed**, so this slice cannot claim the full
 virtual-interceptor contract in `atto-spec#83`.
 
-This branch defines **35** JUnit cases, including fifteen new opt-in hook
+This branch defines **36** JUnit cases, including sixteen new opt-in hook
 regressions. The source-org workflow demands nonempty exact-head passing
-Surefire receipts for all 35. Until executed, all backend tests and
+Surefire receipts for all 36. Until executed, all backend tests and
 standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
@@ -301,3 +301,5 @@ This is still a **restricted proof**, not full effect inference. Target method
 bodies and imported/dynamically linked helpers require separate analysis.
 No claim is made that Java JUnit, GraalVM Native Image or other backend
 tests passed until a source-executing runner produces an exact-head receipt.
+
+To avoid treating a syntactically ordinary AST operator as automatically pure,\nthe closed-world helper verifier additionally restricts operators to known\nscalar primitives and rejects opaque, synthetic literal payloads. This is\ncompiler source hardening, not evidence that a backend executed the fixture.\n
