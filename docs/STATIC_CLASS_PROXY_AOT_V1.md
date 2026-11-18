@@ -256,9 +256,9 @@ proxy an airtight authority boundary. In particular, **no one-shot
 continuation capability is exposed**, so this slice cannot claim the full
 virtual-interceptor contract in `atto-spec#83`.
 
-This branch defines **38** JUnit cases, including eighteen new opt-in hook
+This branch defines **39** JUnit cases, including nineteen new opt-in hook
 regressions. The source-org workflow demands nonempty exact-head passing
-Surefire receipts for all 38. Until executed, all backend tests and
+Surefire receipts for all 39. Until executed, all backend tests and
 standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
@@ -314,7 +314,7 @@ successfully, including allowed helper chaining, recursive/dynamic/async
 rejection, unsafe operators, value escapes and namespace/protected-declaration
 spoofing. This verifies that helper source's syntax and local admission
 logic, **not** the real compiler, Java guest runtime or JDK 25/GraalVM.
-It is not a substitute for the 38 source JUnit tests.
+It is not a substitute for the 39 source JUnit tests.
 
 The public `expand` API now idempotently deduplicates repeated identical
 target/interceptor type requests, preserving first-source-occurrence order
@@ -323,3 +323,5 @@ instances must share the generated nominal class; otherwise a second
 construction would fail or emit a duplicate declaration. The parser
 already deduplicates these inputs, but alternate AST producers must
 not invalidate the compiler's invariant.
+
+An additional executable source fixture constructs two typed proxy values\nwith the same target/hook pair and requires one generated nominal class,\nwhile checking per-call hook dispatch and distinct forwarded outputs.\nIts expected output is `742743`; execution remains pending JDK 25 CI.\n
