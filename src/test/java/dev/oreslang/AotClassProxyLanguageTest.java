@@ -755,6 +755,38 @@ final class AotClassProxyLanguageTest {
                 error.getMessage());
     }
 
+    @Test
+    void rejectsUnsafeOperatorsAndOpaqueLiteralPayloadInHookBody() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        for (Ast.Expr unverified : List.of(
+                new Ast.BinaryExpr("|>", new Ast.NameExpr("value"),
+                        new Ast.LiteralExpr(1)),
+                new Ast.UnaryExpr("take!", new Ast.NameExpr("value")),
+                new Ast.LiteralExpr(new Object()))) {
+            Ast.MethodDecl hook = new Ast.MethodDecl("before_read",
+                    Ast.Visibility.PUBLIC, false, false, false, false, false,
+                    null, List.of(), List.of(new Ast.Param(integer, "value")),
+                    Ast.TypeRef.simple("void"), List.of(),
+                    List.of(new Ast.ExprStmt(unverified), new Ast.ReturnStmt(null)));
+            Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(),
+                    List.of(), List.of(hook));
+            Ast.Program program = new Ast.Program(List.of(
+                    new Ast.ModuleDecl("first", List.of(target, hooks))));
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            program, Set.of(), List.of(
+                                    new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                                            "Foo", "Hooks"))));
+            assertTrue(error.getMessage().contains("unverified effects")
+                    || error.getMessage().contains("not a recognized scalar"),
+                    error.getMessage());
+        }
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));
