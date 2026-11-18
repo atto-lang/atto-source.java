@@ -236,7 +236,11 @@ that invokes `self.__proxy_hooks.before_<method>(args)` and then delegates
 to `self.__proxy_target.<method>(args)`. Both calls use the established
 name-and-arity dispatch table and ordinary type/ownership checking. Hooks
 must be public synchronous void methods with the exact target parameter
-types and no declared effects or annotations. A before hook may receive only\nclearly copyable immutable scalar arguments (int/float/bool/String), because\nthe generated method must subsequently pass those same arguments to its target.\nThis draft does not yet prove inferred effects or hook-body purity; that proof\nis required before calling it an effect-safe interception boundary. Missing, ambiguous, extra,
+types and no declared effects or annotations. A before hook may receive only
+clearly copyable immutable scalar arguments (int/float/bool/String), because
+the generated method must subsequently pass those same arguments to its target.
+This draft does not yet prove inferred effects or hook-body purity; that proof
+is required before calling it an effect-safe interception boundary. Missing, ambiguous, extra,
 private, asynchronous, effectful, structurally typed, or mismatched hooks
 fail closed. Target and hook must be ordinary, concrete, nongeneric classes
 declared in the same module. Synthetic names, receiver names and storage
@@ -263,7 +267,14 @@ standalone native AOT verification remain **NOT_EXECUTED**. The source
 prototype may not be promoted or merged on a host-only or zero-step
 workflow receipt.
 
-The compiler currently represents only declared checked exceptional effects\n(throws/raises/panics). A missing declaration is **not** a proof of\nside-effect freedom or transitive exceptional closure: ordinary logging and\nother externally visible calls can still occur in a before hook. This\nprototype does not claim inferred IO purity, async/suspension closure, or\nchecked propagation across arbitrary hook callees. Those checks remain an\nexplicit merge gate.\n
+The compiler currently represents only declared checked exceptional effects
+(throws/raises/panics). A missing declaration is **not** a proof of
+side-effect freedom or transitive exceptional closure: ordinary logging and
+other externally visible calls can still occur in a before hook. This
+prototype does not claim inferred IO purity, async/suspension closure, or
+checked propagation across arbitrary hook callees. Those checks remain an
+explicit merge gate.
+
 ### Direct suspension rejection
 
 The experimental before-hook synthesizer now refuses explicit source
@@ -302,7 +313,11 @@ bodies and imported/dynamically linked helpers require separate analysis.
 No claim is made that Java JUnit, GraalVM Native Image or other backend
 tests passed until a source-executing runner produces an exact-head receipt.
 
-To avoid treating a syntactically ordinary AST operator as automatically pure,\nthe closed-world helper verifier additionally restricts operators to known\nscalar primitives and rejects opaque, synthetic literal payloads. This is\ncompiler source hardening, not evidence that a backend executed the fixture.\n
+To avoid treating a syntactically ordinary AST operator as automatically pure,
+the closed-world helper verifier additionally restricts operators to known
+scalar primitives and rejects opaque, synthetic literal payloads. This is
+compiler source hardening, not evidence that a backend executed the fixture.
+
 ### Independent isolated helper compilation and source hardening
 
 The exact `StaticProxyHookEffectClosure.java` source blob at commit
@@ -324,7 +339,11 @@ construction would fail or emit a duplicate declaration. The parser
 already deduplicates these inputs, but alternate AST producers must
 not invalidate the compiler's invariant.
 
-An additional executable source fixture constructs two typed proxy values\nwith the same target/hook pair and requires one generated nominal class,\nwhile checking per-call hook dispatch and distinct forwarded outputs.\nIts expected output is `742743`; execution remains pending JDK 25 CI.\n
+An additional executable source fixture constructs two typed proxy values
+with the same target/hook pair and requires one generated nominal class,
+while checking per-call hook dispatch and distinct forwarded outputs.
+Its expected output is `742743`; execution remains pending JDK 25 CI.
+
 ### Shared hook graph and resource budget
 
 One closed-world analysis now indexes each interceptor method table once per
@@ -363,7 +382,7 @@ wrapped-target identity, and opaque erased returns now share a non-recursive
 Previously 96-level synthetic `Option<...>` types could exhaust the compiler
 stack before reporting a useful error. An added JUnit regression exercises
 both nested return and parameter types, alongside a shallow acceptable
-`Option<int>` control. The 44-case suite remains **not executed** without
+`Option<int>` control. The 48-case suite remains **not executed** without
 JDK25/GraalVM runner admission.
 
 ## Current-main forward-port (2026-11-18)
