@@ -249,10 +249,15 @@ final class SupervisorEscrowSubtreeRecoveryV1 {
         // cannot erase a logical admission that predates the crash fence.
         if (bridge.dataInFlightInSubtree(nodeId) != 0)
             return RestartBlocker.DATA_ADMISSIONS_IN_FLIGHT;
+        // Report unacknowledged failures before inspecting release evidence,
+        // independent of the snapshot's iteration order.
         for (var entry : states.entrySet()) {
             long id = entry.getKey();
+            if (entry.getValue().pending() && (id == nodeId || isBelow(id, nodeId, states)))
+                return RestartBlocker.PENDING_FAILURE;
+        }
+        for (long id : states.keySet()) {
             if (id != nodeId && !isBelow(id, nodeId, states)) continue;
-            if (entry.getValue().pending()) return RestartBlocker.PENDING_FAILURE;
             ActorRuntime.ActorRef<?> ref;
             synchronized (lock) { ref = refs.get(id); }
             if (ref == null || !ref.done().isDone()) return RestartBlocker.CHILD_STILL_RUNNING;
