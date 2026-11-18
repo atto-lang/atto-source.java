@@ -133,4 +133,32 @@ final class ReturnFirstBeginCallableTest {
         assertEquals("int", klass.methods().getFirst().returnType().name());
     }
 
+    @Test
+    void returnFirstCannotBypassActorLifecycleAndSupervisorControlRestrictions() {
+        for (String name : new String[] {
+                "tear_down", "handle_state", "on_panic", "on_throw",
+                "on_throws", "on_raise", "on_recover"
+        }) {
+            String source = "define actor A as\n  void <- " + name
+                    + "()\n  begin\n    return;\n  end\nend\n";
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+    }
+
+    @Test
+    void staticReturnFirstFunctionKeepsStaticDispatch() {
+        Ast.Program program = Parser.parse("""
+                define class Helpers as
+                  static fnc int <- utility()
+                  begin
+                    return 42;
+                  end.
+                end
+                """);
+        Ast.ClassDecl klass = assertInstanceOf(Ast.ClassDecl.class,
+                program.modules().getFirst().declarations().getFirst());
+        assertTrue(klass.methods().getFirst().isStatic());
+        assertEquals("int", klass.methods().getFirst().returnType().name());
+    }
+
 }
