@@ -28,7 +28,7 @@ Do not use python for anything, use Rust instead of python to support the langua
 Notes on the compiler and runtime:
 
 - Strive for min gc or zero gc where possible. Having separate heaps/arenas per actor helps reduce gc overhead. Our borrow checking should reduce need for gc to zero.
-- Borrow checking uses reserved keywords `rt copy, rt share, rt take, rt borrow`
+- Legacy ownership syntax in this checkout includes `rt copy`, `rt share`, `rt take` and `rt borrow`; current AttoLang source design prefers `copy!`, `copy!!` (deep copy), `share!`, `take!`, `borrow!`, and implicit checked parameter borrows. Check [atto-spec](https://github.com/atto-lang/atto-spec) and backend admission tests before rewriting historical fixtures.
 - We want full AOT for GraalVM with Native Images so we can get single binary executable files.
 - Strive for hard real time not just soft-real time by minimizing JIT (or having JIT switched off for certain paths) and moving towards full AOT.
 - Use data-oriented design and data oriented programming - be mindful of using AoS, SoA, AoSoA and SoAoS where possible.
@@ -44,7 +44,7 @@ The language is intentionally opinionated:
 - class construction uses a single explicit `constructor(...)` declaration (never a Java-style class-name constructor); top-level classes/constructors are file-private, while module classes/constructors are private by default and may be `pub`;
 - classes cannot nest inside classes; class bodies contain fields, an optional constructor, methods, and `static fnc` members only;
 - one return value only (tuples/arrays/records are ordinary single values);
-- `val`, `const`, and `let` are the only variable declarations;
+- Historical local declarations use `val`, `const` and `let`; the current [file/module `define const` target](https://github.com/atto-lang/atto-spec/blob/main/language/file-module-const-v1.md) also permits static immutable constants initialized by constexpr or a single guarded runtime `os.read_env` read, pending compiler conformance;
 - private actor state is logically confined in the current backend; shared actors may access explicit synchronized shared cells; protected per-actor heaps are under development;
 - immutable/sendable values may be message-passed, and explicitly frozen regions may be shared read-only;
 - host access is denied and Oreslang APIs are capability-gated by default; the current actor kinds alone do not establish an OS sandbox;
@@ -54,7 +54,7 @@ The language is intentionally opinionated:
 - class-level `static fnc` functions separated from receiver methods;
 - first-class function aliases/types and canonical `|args| -> expression` lambdas (block-form acceptance is backend-specific);
 - lexical closures with persistent captured environments;
-- affine ownership, move checking, borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax; source ownership uses `rt copy`, `rt share`, `rt take`, `rt borrow`, and `rt mut borrow` (no `&`/`*` pointer/reference/dereference syntax)
+- affine ownership, moves and checked borrows are intended; the legacy `rt copy`/`rt share`/`rt take`/`rt borrow`/`rt mut borrow` spellings below are historical backend syntax. Modern target source uses `copy!`/`copy!!`/`share!`/`take!`/`borrow!` and implicit nonprimitive argument borrowing, where separately implemented and tested (not Rust `&`/`*` borrow syntax)
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; instance/actor methods are direct-call-only, and callbacks use explicit lambdas instead of implicit bound-method values;
 - multiple named modules may appear in one source file;
