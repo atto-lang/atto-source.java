@@ -201,3 +201,64 @@ effect preservation, no target identity escape, and no bypass through
 unintended target aliases. The portable proposal belongs to
 `atto-lang/atto-spec`; this draft cannot be described as implementing
 virtual interception.
+
+## Experimental statically typed before-interceptor candidate (2026-11-17)
+
+This *stacked draft branch* adds an **opt-in** second constructor operand,
+without changing the original one-operand `new Proxy(new Foo(...))` form.
+The additional operand must be an inline, statically named `new LocalHooks(...)`,
+not a runtime object, inferred name, interface, actor or reflection descriptor.
+
+```atto
+define class Counter as
+    pub add(int value): int { return value + 1; }
+end
+
+define class CounterHooks as
+    pub before_add(int value): void {
+        stdio.stdout.write(7);
+        return;
+    }
+end
+
+pub routine main(): void {
+    val wrapped = new Proxy(new Counter(), new CounterHooks());
+    stdio.stdout.write(wrapped.add(41)); // expected: "742"
+    return;
+}
+```
+
+The parser rewrites this to
+`new CounterWithCounterHooksProxy(new Counter(), new CounterHooks())`.
+The synthesizer emits two private fields and a constructor storing them.
+For every public eligible target method, it generates an ordinary typed method
+that invokes `self.__proxy_hooks.before_<method>(args)` and then delegates
+to `self.__proxy_target.<method>(args)`. Both calls use the established
+name-and-arity dispatch table and ordinary type/ownership checking. Hooks
+must be public synchronous void methods with the exact target parameter
+types and no declared effects or annotations. Missing, ambiguous, extra,
+private, asynchronous, effectful, structurally typed, or mismatched hooks
+fail closed. Target and hook must be ordinary, concrete, nongeneric classes
+declared in the same module. Synthetic names, receiver names and storage
+names cannot collide.
+
+The target constructor and hook constructor are each evaluated exactly once,
+left-to-right as arguments to the compiler-generated constructor. Each
+*normal-returning* call runs its before hook once and then its original target
+method once. A hook failure aborts the call before delegation under ordinary
+language failure semantics; no exception is silently swallowed.
+
+**Important distinction:** this is a first typed *before* interception slice,
+not a complete `around` or `proceed` implementation. It introduces no
+untyped method-name reflection, bypasses neither the original target's
+internal `self` calls nor independent target aliases, and does not make a
+proxy an airtight authority boundary. In particular, **no one-shot
+continuation capability is exposed**, so this slice cannot claim the full
+virtual-interceptor contract in `atto-spec#83`.
+
+This branch defines **26** JUnit cases, including six new opt-in hook
+regressions. The source-org workflow demands nonempty exact-head passing
+Surefire receipts for all 26. Until executed, all backend tests and
+standalone native AOT verification remain **NOT_EXECUTED**. The source
+prototype may not be promoted or merged on a host-only or zero-step
+workflow receipt.
