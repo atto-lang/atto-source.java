@@ -946,8 +946,15 @@ public final class Parser {
         if (!matchContextualKeyword("begin")) {
             throw error(peek(), "return-first callable requires 'begin' after its signature");
         }
-        if (previous().line() == headerEnd.line()) {
-            throw error(previous(), "'begin' must start on the line after a return-first signature");
+        Token begin = previous();
+        if (begin.line() == headerEnd.line()) {
+            throw error(begin, "'begin' must start on the line after a return-first signature");
+        }
+        // No executable token may trail the opener: otherwise a compact
+        // 'begin return ... end' body would disagree with the formatter's
+        // standalone begin/end frame and permit boundary confusion.
+        if (peek().line() == begin.line()) {
+            throw error(peek(), "'begin' must be the only code on its line");
         }
         localTypeScopes.push(new java.util.HashSet<>());
         try {
