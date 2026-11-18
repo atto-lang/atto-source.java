@@ -22,6 +22,7 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
 
     /** Stable, non-sensitive error codes; never leak internal runtime exceptions. */
     public static final class SnapshotFailure extends IllegalStateException {
+        @java.io.Serial private static final long serialVersionUID = 1L;
         private final String code;
         private SnapshotFailure(String code) {
             super(code);
@@ -35,8 +36,11 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         private final Thread callerThread;
         private final CompletableFuture<SupervisorRegistryObservation.Snapshot> result =
                 new CompletableFuture<>();
-        private final AtomicBoolean started = new AtomicBoolean();
+        private final ControlObservationTurnGate physicalTurn = new ControlObservationTurnGate();
         private final AtomicBoolean released = new AtomicBoolean();
+        // Completing a successful observation must follow *physical* lease
+        // retirement. Exceptional timeouts/cancellation still notify promptly.
+        private final CompletableFuture<Void> retired = new CompletableFuture<>();
         private Request(SupervisorRegistryObservation.Grant grant, Thread callerThread) {
             this.grant = grant;
             this.callerThread = callerThread;
@@ -77,8 +81,14 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         observation.revoke(grant);
         Request request;
         synchronized (admissionLock) { request = pending.get(grant); }
-        if (request != null) request.result.completeExceptionally(new SnapshotFailure("DENIED"));
-        // Do not free the slot here. Accepted CONTROL work may still execute.
+        if (request != null) {
+            // Publish revocation only after reclaiming QUEUED capacity. An
+            // external waiter must not observe DENIED and then find a stale
+            // slot when retrying immediately with a fresh grant. A STARTED
+            // turn retains its slot until its actual physical finally.
+            if (request.physicalTurn.abandonIfQueued()) release(request);
+            request.result.completeExceptionally(new SnapshotFailure("DENIED"));
+        }
     }
 
     /**
@@ -106,7 +116,32 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
 
         // This future's JDK deadline is an observer timeout, not a new
         // executor/carrier pool or cancellation receipt for the CONTROL work.
+        // The timer may abandon a still-queued physical turn atomically;
+        // already started work retains its lease until the actual finally.
+        // A completed observer timeout must also mean that any QUEUED
+        // accounting slot has been reclaimed. CompletableFuture may wake
+        // ordinary waiters before executing independent whenComplete actions,
+        // so return the dependent completion stage rather than the raw result.
+        CompletableFuture<SupervisorRegistryObservation.Snapshot> observed =
+                new CompletableFuture<>();
+        request.result.whenComplete((snapshot, failure) -> {
+            if (failure instanceof TimeoutException
+                    && request.physicalTurn.abandonIfQueued()) {
+                release(request);
+            }
+            if (failure != null) {
+                observed.completeExceptionally(failure);
+            } else {
+                // The underlying completion may happen in the CONTROL turn
+                // before its finally runs. Do not expose SUCCESS to callers
+                // until pending.remove() has actually retired its lease.
+                request.retired.thenRun(() -> observed.complete(snapshot));
+            }
+        });
         request.result.orTimeout(timeoutNanos, TimeUnit.NANOSECONDS);
+        // A deadline may have expired before dispatch admission. Do not
+        // schedule a runnable that has already lost its start authority.
+        if (request.result.isDone()) return observed.minimalCompletionStage();
 
         final OresFuture<Void> dispatch;
         try {
@@ -114,33 +149,41 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
                     execute(request, authenticatedSession, tenantId,
                             expectedGeneration, maxNodes, maxDepth, timeoutNanos));
         } catch (RuntimeException | Error error) {
+            // A dispatcher may throw after enqueueing a runnable. Retire
+            // QUEUED capacity before publishing CONTROL_UNAVAILABLE, so a
+            // host waiter never sees a stale slot on immediate retry.
+            // STARTED work retains physical ownership until its finally.
+            if (request.physicalTurn.abandonIfQueued()) release(request);
             request.result.completeExceptionally(new SnapshotFailure("CONTROL_UNAVAILABLE"));
-            release(request);
-            return request.result.minimalCompletionStage();
+            return observed.minimalCompletionStage();
         }
         try {
             dispatch.whenCompleteRuntime((ignored, failure) -> {
                 if (failure == null) return;
+                // Report failure only after atomic QUEUED retirement. A
+                // duplicate/late physical invocation cannot run after the
+                // winning abandon; STARTED turns still own their lease.
+                if (request.physicalTurn.abandonIfQueued()) release(request);
                 request.result.completeExceptionally(
                         new SnapshotFailure("CONTROL_DISPATCH_FAILED"));
-                // The dispatcher claims non-execution on failure. If a task
-                // began anyway, only its physical finally may free the slot.
-                if (!request.started.get()) release(request);
             });
         } catch (RuntimeException | Error error) {
+            if (request.physicalTurn.abandonIfQueued()) release(request);
             request.result.completeExceptionally(
                     new SnapshotFailure("CONTROL_DISPATCH_FAILED"));
-            if (!request.started.get()) release(request);
         }
-        return request.result.minimalCompletionStage();
+        return observed.minimalCompletionStage();
     }
 
     private void execute(Request request, Object session, String tenantId,
                          long generation, int maxNodes, int maxDepth,
                          long timeoutNanos) {
-        if (!request.started.compareAndSet(false, true)) {
-            request.result.completeExceptionally(new SnapshotFailure("CONTROL_DUPLICATE_TURN"));
-            return; // the first physical execution retains release ownership
+        if (!request.physicalTurn.tryStart()) {
+            // This runnable either lost to an already running CONTROL turn
+            // or was abandoned by a failed dispatcher. Neither case owns
+            // the result or its physical accounting lease. In particular a
+            // duplicate must not fail the legitimate in-flight observation.
+            return;
         }
         try {
             if (Thread.currentThread() == request.callerThread) {
@@ -170,6 +213,9 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         synchronized (admissionLock) {
             pending.remove(request.grant, request);
         }
+        // Publish retirement only after the admission map was updated.
+        // Dependents then see a released physical CONTROL turn on SUCCESS.
+        request.retired.complete(null);
     }
 
     public int activeControlRequests() {
@@ -191,9 +237,12 @@ public final class SupervisorControlSnapshotCoordinator implements AutoCloseable
         }
         observation.close();
         for (Request request : outstanding) {
+            // An unstarted request may be physically canceled now, before
+            // exposing COORDINATOR_CLOSED to any independent host waiter.
+            // STARTED work still owns its slot until physical completion.
+            if (request.physicalTurn.abandonIfQueued()) release(request);
             request.result.completeExceptionally(
                     new SnapshotFailure("COORDINATOR_CLOSED"));
         }
-        // Retain physical work accounting until queued/running turns finish.
     }
 }
