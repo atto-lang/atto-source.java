@@ -69,7 +69,9 @@ final class LocalityCarrierPool extends AbstractExecutorService {
 
     private final Worker[] workers;
     private final ThreadFactory factory;
-    private final ConcurrentLinkedQueue<Runnable> shared = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<Entry> shared = new ConcurrentLinkedQueue<>();
+    /** Global submission order across the shared queue and every local deque. */
+    private final java.util.concurrent.atomic.AtomicLong submissions = new java.util.concurrent.atomic.AtomicLong();
     private final Semaphore queueSlots;
     private final long graceNanos;
     private final int localSlack;
@@ -187,7 +189,7 @@ final class LocalityCarrierPool extends AbstractExecutorService {
         Worker home = preferred >= 0 && preferred < workers.length ? workers[preferred] : null;
         if (home != null && graceNanos > 0 && home.thread != null && !home.exited) {
             if (home.localSize.incrementAndGet() <= localSlack) {
-                Entry entry = new Entry(task, System.nanoTime());
+                Entry entry = new Entry(task, System.nanoTime(), submissions.incrementAndGet());
                 home.local.offerLast(entry);
                 preferredPlacements.increment();
                 if (runState.get() == STOP && home.local.removeFirstOccurrence(entry)) {
@@ -206,9 +208,10 @@ final class LocalityCarrierPool extends AbstractExecutorService {
             }
             home.localSize.decrementAndGet();
         }
-        shared.offer(task);
+        Entry queued = new Entry(task, System.nanoTime(), submissions.incrementAndGet());
+        shared.offer(queued);
         sharedPlacements.increment();
-        if (runState.get() == STOP && shared.remove(task)) {
+        if (runState.get() == STOP && shared.remove(queued)) {
             queueSlots.release();
             throw new RejectedExecutionException("carrier pool is shut down");
         }
@@ -250,9 +253,9 @@ final class LocalityCarrierPool extends AbstractExecutorService {
         runState.set(STOP);
         closeStartWithoutCarriers();
         List<Runnable> drained = new ArrayList<>();
-        for (Runnable task; (task = shared.poll()) != null; ) {
+        for (Entry entry; (entry = shared.poll()) != null; ) {
             queueSlots.release();
-            drained.add(task);
+            drained.add(entry.task);
         }
         for (Worker worker : workers) {
             for (Entry entry; (entry = worker.local.pollFirst()) != null; ) {
@@ -291,10 +294,13 @@ final class LocalityCarrierPool extends AbstractExecutorService {
     private static final class Entry {
         final Runnable task;
         final long enqueuedNanos;
+        /** Global submission sequence: lower is older. */
+        final long sequence;
 
-        Entry(Runnable task, long enqueuedNanos) {
+        Entry(Runnable task, long enqueuedNanos, long sequence) {
             this.task = task;
             this.enqueuedNanos = enqueuedNanos;
+            this.sequence = sequence;
         }
     }
 
@@ -343,7 +349,7 @@ final class LocalityCarrierPool extends AbstractExecutorService {
                     if (runState.get() == STOP) {
                         queueSlots.release();
                     } else {
-                        shared.offer(entry.task);
+                        shared.offer(entry); // keeps its submission order
                     }
                 }
                 CURRENT.remove();
@@ -369,6 +375,17 @@ final class LocalityCarrierPool extends AbstractExecutorService {
                 Runnable fromShared = pollShared();
                 if (fromShared != null) return fromShared;
             }
+            // Serve in submission order: locality decides WHICH carrier runs a
+            // continuation, never that it overtakes older work. Without this, a
+            // few tasks re-entering their local deques get about 61x the turns
+            // of everything in the shared queue, and fresh CONTROL work (a new
+            // root task, a Mailman dispatch) waits ~61 turns per older item.
+            Entry head = local.peekFirst();
+            Entry oldestShared = shared.peek();
+            if (oldestShared != null && (head == null || oldestShared.sequence < head.sequence)) {
+                Runnable fromShared = pollShared();
+                if (fromShared != null) return fromShared;
+            }
             Entry own = local.pollFirst();
             if (own != null) {
                 localSize.decrementAndGet();
@@ -382,12 +399,11 @@ final class LocalityCarrierPool extends AbstractExecutorService {
         }
 
         private Runnable pollShared() {
-            Runnable task = shared.poll();
-            if (task != null) {
-                queueSlots.release();
-                sharedRuns.increment();
-            }
-            return task;
+            Entry entry = shared.poll();
+            if (entry == null) return null;
+            queueSlots.release();
+            sharedRuns.increment();
+            return entry.task;
         }
 
         private Runnable steal() {
