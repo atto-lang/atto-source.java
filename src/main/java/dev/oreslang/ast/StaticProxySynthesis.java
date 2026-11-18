@@ -162,10 +162,20 @@ public final class StaticProxySynthesis {
                 throw fail("proxy return type can expose the wrapped target: "
                         + target.name() + "." + method.name());
             }
+            if (erasesTargetIdentity(method.returnType())) {
+                // Foo may be returned through Any/Object/dynamic (including a
+                // nested container). Until compiler alias and return-value
+                // provenance checks exist, do not expose an opaque result.
+                throw fail("proxy return type may erase wrapped-target identity: "
+                        + target.name() + "." + method.name());
+            }
             if (method.name().equals(TARGET_FIELD))
                 throw fail("proxy storage name collides with callable " + target.name() + "." + TARGET_FIELD);
             List<Ast.Expr> arguments = new ArrayList<>();
             for (Ast.Param parameter : method.parameters()) {
+                if ("self".equals(parameter.name()) || TARGET_FIELD.equals(parameter.name()))
+                    throw fail("proxy parameter shadows generated receiver/storage: "
+                            + target.name() + "." + method.name());
                 if (parameter.structural() || parameter.mutable()
                         || unsafeSignatureType(parameter.type(), unresolvedTypeAliases))
                     throw fail("proxy parameter borrows/structural contracts need proven reborrowing: "
@@ -212,6 +222,25 @@ public final class StaticProxySynthesis {
         if (type.name().equals(targetName) || type.name().equals("self")) return true;
         for (Ast.TypeRef arg : type.arguments()) {
             if (exposesTargetType(arg, targetName)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * A statically declared Foo return is already rejected above, but an opaque
+     * supertype or erased nested payload may hide Foo at runtime. Until the
+     * compiler proves an identity-preserving adapter, fail closed. Future
+     * qualified type resolution can replace this conservative name check.
+     */
+    private static boolean erasesTargetIdentity(Ast.TypeRef type) {
+        String name = type.name();
+        if (name.equals("Any") || name.equals("any")
+                || name.equals("Object") || name.equals("object")
+                || name.equals("Unknown") || name.equals("unknown")
+                || name.equals("Dynamic") || name.equals("dynamic")
+                || name.equals("?")) return true;
+        for (Ast.TypeRef arg : type.arguments()) {
+            if (erasesTargetIdentity(arg)) return true;
         }
         return false;
     }
