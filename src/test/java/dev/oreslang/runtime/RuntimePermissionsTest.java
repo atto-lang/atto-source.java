@@ -58,6 +58,11 @@ final class RuntimePermissionsTest {
                         RuntimePermissions.Permission.READ, granted.resolve("safe.txt").toString(), "test"));
         assertThrows(IllegalArgumentException.class, () -> permissions.requireLexicalFilesystemPath(
                 RuntimePermissions.Permission.NET, "example.com", "test"));
+        SecurityException invalid = assertThrows(SecurityException.class,
+                () -> permissions.requireLexicalFilesystemPath(RuntimePermissions.Permission.READ,
+                        granted + "\\u001B[31m", "test"));
+        assertTrue(invalid.getMessage().contains("<invalid>"));
+        assertFalse(invalid.getMessage().contains("\\u001B"));
     }
 
     @Test

@@ -227,9 +227,11 @@ public final class RuntimePermissions {
                     && (rule.allowAll() || matchesLexicalPath(path, rule.allowed()));
         }
         if (!allowed) {
+            // Never echo control bytes or malformed Unicode into host diagnostics.
+            String rendered = safeScope(resource) ? resource : "<invalid>";
             throw new SecurityException(
                     "Oreslang permission denied: " + permission.cliName()
-                            + " access to '" + resource + "' required by " + api);
+                            + " access to '" + rendered + "' required by " + api);
         }
     }
 
