@@ -5,11 +5,13 @@
 // and stage semantics only; untrusted guest code cannot hold this object.
 public final class ProxyReceiptGateV1 {
     public record Identity(int protocolMajor, long tenant, long callerIncarnation,
-                           long targetActor, long targetIncarnation, long placementEpoch,
+                           long targetActor, long targetIncarnation, long associationGeneration,
+                           long placementEpoch,
                            long messageId, long attempt) {
         public boolean valid() {
             return protocolMajor == 1 && tenant > 0 && callerIncarnation > 0 &&
-                   targetActor > 0 && targetIncarnation > 0 && placementEpoch > 0 &&
+                   targetActor > 0 && targetIncarnation > 0 && associationGeneration > 0 &&
+                   placementEpoch > 0 &&
                    messageId > 0 && attempt > 0;
         }
     }
