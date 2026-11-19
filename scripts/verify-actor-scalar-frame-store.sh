@@ -28,24 +28,5 @@ rm -rf target/surefire-reports
 mvn -B -ntp -DfailIfNoTests=true \
   -Dtest=ScalarFrameLayoutTest,ActorScalarFrameStoreTest,ActorScalarFrameCodecTest test
 
-python3 - <<'PY'
-from pathlib import Path
-from xml.etree import ElementTree as ET
-
-required = {
-    "dev.oreslang.runtime.ScalarFrameLayoutTest": 6,
-    "dev.oreslang.runtime.ActorScalarFrameStoreTest": 6,
-    "dev.oreslang.runtime.ActorScalarFrameCodecTest": 3,
-}
-for name, expected in required.items():
-    path = Path("target/surefire-reports") / ("TEST-" + name + ".xml")
-    if not path.is_file() or not path.stat().st_size:
-        raise SystemExit(f"FAIL missing nonempty test receipt: {path}")
-    suite = ET.parse(path).getroot()
-    counts = {field: int(suite.attrib.get(field, -1))
-              for field in ("tests", "failures", "errors", "skipped")}
-    if counts != {"tests": expected, "failures": 0, "errors": 0, "skipped": 0}:
-        raise SystemExit(f"FAIL unexpected receipt {path}: {counts}")
-    print(f"FRAME_EXECUTED_SUITE {name} tests={expected}")
-print("FRAME_HOST_RUNTIME_TESTS_PASS count=15")
-PY
+# JDK source-file mode: no Python toolchain or external XML parser.
+java scripts/VerifyActorScalarFrameReports.java
