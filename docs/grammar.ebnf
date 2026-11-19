@@ -305,12 +305,22 @@ canonical_match_arm
                 = "on" pattern [ "when" expression ] [ "->" ] block ;
 match_arm       = ( pattern | "else" ) [ "when" expression ] "->" block ;
 (* "over" is reserved. "on" and "when" remain contextual arm words.
-   "structural" remains contextual and is consumed only where grammar requires it. *)
+   "structural" remains contextual and is consumed only where grammar requires it.
+   The tilde form with braces is a structural field-shape test, distinct from
+   the preexisting '~(field: pattern)' record-pattern syntax and '~array(...)'. *)
 pattern         = "_"
                 | literal
+                | structural_match_pattern
                 | IDENT
                 | IDENT "(" [ pattern { "," pattern } ] ")"
-                | "is" type_ref [ IDENT ] ;
+                | "is" type_ref [ "as" IDENT | IDENT ] ;
+structural_match_pattern
+                = ( "~" | "structural" ) type_ref [ "as" IDENT ] ;
+(* 'structural TypeName name' remains an accepted legacy binding form, but
+   'as name' is canonical and mandatory for a binding in the new '~ {...}' form.
+   The inline record-shaped type tests accessible fields, not nominal identity.
+   Records, structs and classes are intended matches; semantic parity requires
+   separate type-checker and backend execution tests. *)
 
 switch_stmt     = [ "do" ] "switch" expression [ ";" ]
                   { switch_case } [ switch_default ] "end" ;
