@@ -63,7 +63,7 @@ public final class AttoFuturePipelinePlanProbe {
             new Stage(Kind.TASK, false, null), new Stage(Kind.AWAIT, true, null),
             new Stage(Kind.CAPTURE_VAL, false, "answer"),
             new Stage(Kind.RETURN, true, null))));
-        reject("E_PIPELINE_AFTER_RETURN", () -> check(true, valid, List.of(
+        reject("E_RETURN_TYPE", () -> check(true, valid, List.of(
             new Stage(Kind.TASK, false, null), new Stage(Kind.AWAIT, true, null),
             new Stage(Kind.CAPTURE_VAL, false, "answer"),
             new Stage(Kind.RETURN, false, null), new Stage(Kind.PLUS_ONE, false, null))));
