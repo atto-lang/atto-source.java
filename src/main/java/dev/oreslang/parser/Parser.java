@@ -2567,14 +2567,14 @@ public final class Parser {
     // parameter-list terminator. The latter is followed by the slim arrow.
     // Preserve unrestricted unions in ordinary (...) parameter declarations.
     private Ast.TypeRef parsePipeParameterType() {
-        Ast.TypeRef first = parseTypeAtom();
+        Ast.TypeRef first = parsePostfixTypeAtom();
         if (!check(PIPE) || checkNext(ARROW)) return first;
 
         List<Ast.TypeRef> options = new ArrayList<>();
         options.add(first);
         do {
             consume(PIPE, "expected '|' between union parameter types");
-            options.add(parseTypeAtom());
+            options.add(parsePostfixTypeAtom());
         } while (check(PIPE) && !checkNext(ARROW));
         return Ast.TypeRef.union(options);
     }
@@ -2774,14 +2774,30 @@ public final class Parser {
         return List.copyOf(result);
     }
 
+    /** Postfix type '?' is Option<T> sugar and binds more tightly than union '|'. */
     private Ast.TypeRef parseTypeRef() {
-        Ast.TypeRef first = parseTypeAtom();
+        Ast.TypeRef first = parsePostfixTypeAtom();
         if (!match(PIPE)) return first;
 
         List<Ast.TypeRef> options = new ArrayList<>();
         options.add(first);
-        do options.add(parseTypeAtom()); while (match(PIPE));
+        do options.add(parsePostfixTypeAtom()); while (match(PIPE));
         return Ast.TypeRef.union(options);
+    }
+
+    /** Group a union explicitly before '?' to wrap the complete union. */
+    private Ast.TypeRef parsePostfixTypeAtom() {
+        Ast.TypeRef type = parseTypeAtom();
+        if (!match(QUESTION)) return type;
+        if (type.name().equals("void") || type.name().equals("null")
+                || type.inferArguments()) {
+            throw error(previous(), "type-level '?' requires a concrete value type");
+        }
+        type = new Ast.TypeRef("Option", List.of(type), false);
+        if (check(QUESTION)) {
+            throw error(peek(), "a type may have only one postfix '?' suffix; use Option<Option<T>> for nested Option");
+        }
+        return type;
     }
 
     private Ast.TypeRef parseTypeAtom() {
