@@ -165,3 +165,34 @@ Ref<T>
 Hot loops should preserve indices rather than eagerly materializing object
 references. This keeps vectorization, cache locality and future GPU/accelerator
 lowering compatible with the same logical Oreslang program.
+
+## Native tagged REFERENCE slots use the compressed32 word (2026-11-16)
+
+Actor-native tagged slots (`ActorNativeArena`, 24-byte `tag | bits | length`)
+store a `REFERENCE` as the **cross-backend compressed32 word**, not as a raw
+64-bit actor offset or host pointer:
+
+- `0` is null; otherwise `word = (actor_offset / 8) + 1`, decoded unsigned
+  (`ActorCompressed32Reference`). This is bit-identical to LLVM
+  `ManagedRefLowering` (`(offset >> 3) + 1`): both pin the same deterministic
+  100,000-word corpus digest `FNV64 = 0x46402ba55da7cde5`
+  (`ActorCompressed32ReferenceTest`, LLVM `tests/managed_ref_test.cpp`).
+- The word is encoded **before** either reference registry entry is
+  published, so an unaligned or unrepresentable offset never leaves a
+  half-published alias. Loads and overwrites reject any nonzero upper half,
+  word `0`, and well-formed words the arena never issued.
+- Words are actor-relative: two actors may hold the same word for different
+  objects; decoding is only meaningful through the owning arena's registry,
+  and a foreign actor's value is never storable.
+- Every issued native value starts at an 8-aligned actor offset inside the
+  per-actor unsigned 32-bit offset space (`reserveActorOffset`), so every
+  reference is encodable. Physical arena memory is allocated with explicit
+  natural 16-byte alignment (`posix_memalign` in `src/main/c/oresarena.c`),
+  never `calloc`'s ABI-dependent alignment, because on 32-bit hosts
+  `alignof(int64_t)`/`alignof(double)` can be 4.
+
+Not yet claimed: the slot's physical bits field is still 8 bytes (the word is
+zero-extended); a packed 4-byte reference column, compiler-selected packed
+layouts, a 32-bit JVM/i686 execution receipt, and Native Image guest evidence
+need their own gates. Supersedes draft #1849 (stacked on the stale October #1822 arena
+branch) by porting its codec and tests onto current `main`.

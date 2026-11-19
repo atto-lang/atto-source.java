@@ -1,4 +1,19 @@
-# Oreslang core / alloc / actor / std library boundary (proposal v1)
+# Oreslang core / alloc / actor / std library boundary (proposal v1, SUPERSEDED)
+
+> **Superseded on 2026-10-26.** Do not implement the four public tiers below.
+> Oreslang has exactly two public library layers, `ores.core` and `ores.std`.
+> Allocation, actor execution, mailboxes, trusted control and clocks are
+> explicit *providers* beneath those layers, not separate `alloc`/`actor`
+> libraries. `alloc`, `actor` and `otp` are forbidden public profile names.
+>
+> Current authorities:
+> - `docs/CORE_STD_BOUNDARY.md` in this repository
+> - `oreslang-common-source` `contracts/library/v1/library-profiles.json` (normative)
+> - `oreslang-target-profiles` `docs/FREESTANDING_TIER_ADMISSION.md`
+>
+> This file is kept for its rationale (explicit allocator ABI, bounded static
+> mailboxes, no hidden allocation or OS use in core), which now applies to the
+> provider model.
 
 Status: **architecture contract proposed 2026-10-16; not yet a compiler, runtime, or backend implementation**.
 This document specifies the eventual source-level and runtime dependency policy. It does not claim that the Java/Truffle host is bare-metal capable.
