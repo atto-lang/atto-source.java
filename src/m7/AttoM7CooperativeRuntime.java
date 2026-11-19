@@ -53,7 +53,10 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
         final ArrayDeque<Long> inbox = new ArrayDeque<>();
         final Set<Long> carriers = new HashSet<>();
         Frame active;
-        boolean running, scheduled, accepting = true, retired, fenced;
+        // An accepted message remains in flight during frame construction and YIELD.
+        // Never infer in-flight status solely from the nullable active frame.
+        boolean inFlight, running, scheduled, accepting = true, retired, fenced;
+        int resumePc = -1;
         boolean controlQueued;
         ControlKind pendingControl, lastControl;
         long accepted, completed, failed, abandoned, yielded, slices, resultSum;
@@ -129,7 +132,8 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
     }
     private void schedule(Actor actor) {
         if (!actor.scheduled && !actor.running && !actor.fenced &&
-            (actor.active != null || !actor.inbox.isEmpty())) {
+            ((actor.inFlight && actor.active != null) ||
+             (!actor.inFlight && !actor.inbox.isEmpty()))) {
             actor.scheduled = true;
             ready.addLast(actor);
             gate.notifyAll();
@@ -158,8 +162,22 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
             return true;
         }
     }
+    // Asynchronous fatal CONTROL: reject new sends immediately. Running guest
+    // code is NEVER interrupted or reclaimed; a yielded frame is invalidated
+    // by the supervisor after it has been physically released by its carrier.
+    public boolean request_panic(ActorRef ref) {
+        synchronized (gate) {
+            Actor actor = resolve(ref);
+            if (actor == null) return false;
+            actor.accepting = false;
+            actor.fenced = true;
+            control(actor, ControlKind.PANIC);
+            gate.notifyAll();
+            return true;
+        }
+    }
     private void retire_if_quiescent(Actor actor) {
-        if (!actor.accepting && actor.active == null && !actor.running &&
+        if (!actor.accepting && !actor.inFlight && !actor.running &&
             actor.inbox.isEmpty() && !actor.controlQueued) {
             actor.retired = true;
             if (actor.scheduled) ready.remove(actor);
@@ -186,9 +204,11 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                         actor.inbox.clear();
                         // A currently running callback is allowed to physically quiesce.
                         // A yielded frame is safe to abandon here (no carrier owns it).
-                        if (!actor.running && actor.active != null) {
+                        if (!actor.running && actor.inFlight) {
                             actor.abandoned++;
+                            actor.inFlight = false;
                             actor.active = null;
+                            actor.resumePc = -1;
                         }
                     }
                     if (!actor.fenced) schedule(actor);
@@ -207,40 +227,28 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
         try {
             while (true) {
                 Actor actor;
-                Frame frame;
+                Frame frame = null;
+                boolean create = false;
+                long message = 0L;
                 synchronized (gate) {
                     for (;;) {
                         if (stopping && ready.isEmpty() && controls.isEmpty()) return;
-                        // Supervisor CONTROL must finish before any new DATA resume/start.
+                        // The CONTROL loop must finish before any DATA resume/start.
                         if (!controls.isEmpty() || ready.isEmpty()) {
                             gate.wait(); continue;
                         }
                         actor = ready.removeFirst();
                         actor.scheduled = false;
                         if (actor.fenced || actor.retired || actor.running) continue;
-                        if (actor.active == null) {
+                        if (!actor.inFlight) {
                             if (actor.inbox.isEmpty()) continue;
-                            long mail = actor.inbox.removeFirst();
-                            try { actor.active = actor.factory.new_frame(mail); }
-                            catch (Throwable e) {
-                                // Failed factory consumed the accepted mail, not a new send.
-                                actor.failed++;
-                                actor.fenced = true;
-                                actor.accepting = false;
-                                actor.abandoned += actor.inbox.size();
-                                actor.inbox.clear();
-                                control(actor, ControlKind.PANIC);
-                                continue;
-                            }
-                            if (actor.active == null) {
-                                actor.failed++;
-                                actor.fenced = true; actor.accepting = false;
-                                actor.abandoned += actor.inbox.size(); actor.inbox.clear();
-                                control(actor, ControlKind.PANIC);
-                                continue;
-                            }
+                            message = actor.inbox.removeFirst();
+                            actor.inFlight = true; // Reserve BEFORE calling guest factory.
+                            create = true;
+                        } else {
+                            if (actor.active == null) continue;
+                            frame = actor.active;
                         }
-                        frame = actor.active;
                         actor.running = true;
                         actor.concurrent++;
                         actor.maxConcurrent = Math.max(actor.maxConcurrent, actor.concurrent);
@@ -248,35 +256,79 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                         break;
                     }
                 }
-                var slice = new Slice(reductionBudget, nanoBudget);
-                Step result = null;
+
+                // Absolutely no guest callback executes under the global scheduler lock:
+                // factory.new_frame(), frame.advance(), frame.result(), frame.resume_pc().
                 Throwable failure = null;
-                try { result = frame.advance(slice); }
-                catch (Throwable e) { failure = e; }
+                Step result = null;
+                long value = 0L;
+                int pc = -1;
+                var slice = new Slice(reductionBudget, nanoBudget);
+                if (create) {
+                    try {
+                        frame = actor.factory.new_frame(message);
+                        if (frame == null)
+                            throw new IllegalStateException("compiled frame factory returned null");
+                    } catch (Throwable e) {
+                        failure = e;
+                    }
+                }
+                boolean alreadyFenced;
+                synchronized (gate) {
+                    alreadyFenced = actor.fenced;
+                }
+                if (failure == null && !alreadyFenced) {
+                    try {
+                        result = frame.advance(slice);
+                        if (result == Step.YIELD) {
+                            if (slice.charged_reductions() == 0)
+                                throw new IllegalStateException("YIELD without safe-point charge");
+                            pc = frame.resume_pc();
+                            if (pc < 0 || pc > 4096)
+                                throw new IllegalStateException("invalid committed continuation PC");
+                        } else if (result == Step.DONE) {
+                            value = frame.result();
+                        } else {
+                            throw new IllegalStateException("invalid continuation outcome");
+                        }
+                    } catch (Throwable e) {
+                        failure = e;
+                    }
+                }
+
                 synchronized (gate) {
                     actor.running = false;
                     actor.concurrent--;
                     actor.slices++;
-                    if (failure == null && (result == null ||
-                        (result == Step.YIELD && slice.charged_reductions() == 0))) {
-                        failure = new IllegalStateException("invalid safe-point frame outcome");
-                    }
                     if (failure != null) {
+                        // Factory / guest / result / PC failure settles exactly the
+                        // one reserved message, even if PANIC was already delivered.
                         actor.failed++;
+                        actor.inFlight = false;
                         actor.active = null;
+                        actor.resumePc = -1;
                         actor.accepting = false;
                         actor.fenced = true;
                         actor.abandoned += actor.inbox.size();
                         actor.inbox.clear();
                         control(actor, ControlKind.PANIC);
+                    } else if (actor.fenced) {
+                        // PANIC raced a physically running callback. It has now
+                        // quiesced; never resume a formerly yielded continuation.
+                        actor.abandoned++;
+                        actor.inFlight = false;
+                        actor.active = null;
+                        actor.resumePc = -1;
                     } else if (result == Step.YIELD) {
-                        // The same accepted turn remains in flight and carries its PC.
+                        // Same accepted message, no new mailbox admission/settlement.
+                        actor.active = frame;
+                        actor.resumePc = pc;
                         actor.yielded++;
                     } else {
                         try {
-                            actor.resultSum = Math.addExact(actor.resultSum, frame.result());
+                            actor.resultSum = Math.addExact(actor.resultSum, value);
                             actor.completed++;
-                        } catch (Throwable e) {
+                        } catch (ArithmeticException error) {
                             actor.failed++;
                             actor.accepting = false;
                             actor.fenced = true;
@@ -284,7 +336,9 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                             actor.inbox.clear();
                             control(actor, ControlKind.PANIC);
                         }
+                        actor.inFlight = false;
                         actor.active = null;
+                        actor.resumePc = -1;
                     }
                     if (!actor.fenced) schedule(actor);
                     retire_if_quiescent(actor);
@@ -306,10 +360,10 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("stale actor handle");
             return new Snapshot(actor.accepted, actor.completed, actor.failed,
                 actor.abandoned, actor.yielded, actor.slices, actor.resultSum,
-                actor.inbox.size(), actor.active != null, actor.running,
+                actor.inbox.size(), actor.inFlight, actor.running,
                 actor.accepting, actor.retired, actor.controlsDelivered,
                 actor.lastControl, actor.maxConcurrent, actor.carriers.size(),
-                actor.active == null ? -1 : actor.running ? -2 : actor.active.resume_pc());
+                actor.running ? -2 : actor.resumePc);
         }
     }
     public Queues queues() {
