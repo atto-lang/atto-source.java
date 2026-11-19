@@ -320,9 +320,6 @@ class StaticActorPilotTests(unittest.TestCase):
             "return 43;", "return Class.forName(7);"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
     def test_caret_main_return_matches_keyword_after_actor_teardown(self):
         self.source.write_text(self.source.read_text().replace("return 43;", "^ 43;"))
@@ -377,3 +374,5 @@ if __name__ == "__main__":
         self.assertEqual(manifest["expected_guest_result"], 7)
         self.assertEqual(manifest["actor_sends"], 3)
 
+if __name__ == "__main__":
+    unittest.main()
