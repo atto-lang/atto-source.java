@@ -2336,6 +2336,16 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (call.callee() instanceof Ast.NameExpr name
                         && !functionNameBoundLocally(name.name())) {
+                    ImportedBinding sourceImport = namedImports.get(name.name());
+                    if (sourceImport != null
+                            && sourceImport.declaration().kind() == Ast.ImportKind.FUNCTION) {
+                        // The imported body is in another evaluator, not the
+                        // current unit's local suspension index. Always enter
+                        // the resumable caller path: its declared return type
+                        // determines whether the result is awaited or kept as
+                        // a first-class Future.
+                        return true;
+                    }
                     Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
                     if (target != null) {
                         // Creating a generator activation does not pull or await it.
@@ -5568,6 +5578,37 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
+                ImportedBinding sourceImport = namedImports.get(name.name());
+                if (sourceImport != null
+                        && sourceImport.declaration().kind() == Ast.ImportKind.FUNCTION) {
+                    evalSuspendableArguments(
+                            task, call.arguments(), env,
+                            (t, values, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                Invocation invocation;
+                                boolean declaredFuture;
+                                try {
+                                    invocation = importedTarget(sourceImport.declaration())
+                                            .prepareImportedInvocation(
+                                                    Ast.ImportKind.FUNCTION,
+                                                    sourceImport.sourceName(), values);
+                                    declaredFuture = invocationDeclaresAsync(invocation);
+                                } catch (RuntimeException | Error invalid) {
+                                    continuation.accept(t, null, invalid);
+                                    return;
+                                }
+                                // A plain imported function may run its body
+                                // on a source-task Future; await that result.
+                                // A declared async/Future export remains a
+                                // Future value and must require explicit await.
+                                completeSourceInvocation(
+                                        t, invocation, declaredFuture, env, continuation);
+                            });
+                    return;
+                }
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, name.name());
