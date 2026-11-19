@@ -1,6 +1,7 @@
 package dev.oreslang.config;
 
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.imports.ImportPathInterpolation;
 import org.tomlj.Toml;
 import org.tomlj.TomlArray;
 import org.tomlj.TomlParseResult;
@@ -34,6 +35,8 @@ public final class OresProjectConfig {
     public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
     public static final String ATTO_MANIFEST_NAME = ".atto.pkg.toml";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
+    public static final String ENV_ORES_PATHS = "ORES_PATHS";
+    public static final String ENV_ATTO_PATHS = "ATTO_PATHS";
     public static final String SCHEMA_VERSION = "1";
 
     /**
@@ -75,6 +78,7 @@ public final class OresProjectConfig {
     private final List<Path> sourceRoots;
     private final List<Path> importPaths;
     private final List<Path> environmentPaths;
+    private final Map<String, String> environment;
     private final Path mainEntrypoint;
     private final LibraryProfile libraryProfile;
 
@@ -86,6 +90,7 @@ public final class OresProjectConfig {
             List<Path> sourceRoots,
             List<Path> importPaths,
             List<Path> environmentPaths,
+            Map<String, String> environment,
             Path mainEntrypoint,
             LibraryProfile libraryProfile) {
         this.manifestPath = manifestPath;
@@ -95,6 +100,7 @@ public final class OresProjectConfig {
         this.sourceRoots = List.copyOf(sourceRoots);
         this.importPaths = List.copyOf(importPaths);
         this.environmentPaths = List.copyOf(environmentPaths);
+        this.environment = Map.copyOf(environment);
         this.mainEntrypoint = mainEntrypoint;
         this.libraryProfile = java.util.Objects.requireNonNull(libraryProfile, "libraryProfile");
     }
@@ -128,6 +134,7 @@ public final class OresProjectConfig {
                 List.of(root),
                 List.of(),
                 parseEnvironmentPaths(environment),
+                environment,
                 null,
                 LibraryProfile.STD);
     }
@@ -153,7 +160,18 @@ public final class OresProjectConfig {
         }
 
         String schemaVersion = toml.getString("schema_version");
-        if (schemaVersion == null || !SCHEMA_VERSION.equals(schemaVersion)) {
+        // Zed's native AttoLang package marker is [package] name="...".
+        // Accept that form only for the modern manifest name; the compiler's
+        // explicit schema_version = "1" form remains valid. Never permit an
+        // absent schema without a validated package identity.
+        if (schemaVersion == null
+                && ATTO_MANIFEST_NAME.equals(absoluteManifest.getFileName().toString())) {
+            String packageName = toml.getString("package.name");
+            if (packageName == null || !packageName.matches("[a-z0-9][a-z0-9-]*")) {
+                throw new IllegalArgumentException(
+                        ATTO_MANIFEST_NAME + " requires schema_version = \"1\" or validated [package].name");
+            }
+        } else if (!SCHEMA_VERSION.equals(schemaVersion)) {
             throw new IllegalArgumentException(
                     manifestName + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
         }
@@ -194,6 +212,7 @@ public final class OresProjectConfig {
                 sourceRoots,
                 importPaths,
                 parseEnvironmentPaths(environment),
+                environment,
                 mainEntrypoint,
                 libraryProfile);
     }
@@ -251,9 +270,49 @@ public final class OresProjectConfig {
         }
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
-        String unix = importPath.replace('\\', '/');
+        // Expand only explicit ${NAME} placeholders from the caller-supplied
+        // compilation snapshot. $repo is NOT a magic root alias; +/ retains
+        // its existing independent project-root namespace.
+        String expanded = ImportPathInterpolation.expand(importPath, environment);
+        if (expanded.startsWith("https://") || expanded.startsWith("http://")) {
+            throw new IllegalArgumentException("remote source imports require locked Zed URL admission (not implemented)");
+        }
+        // Do not let environment interpolation turn a static filesystem
+        // import into an implicit java:, file:, ftp:, or other URI import.
+        // Windows drive-qualified absolute paths are the only colon prefix
+        // admitted here; they still go through physical source authorization.
+        if (expanded.matches("(?i)^[a-z][a-z0-9+.-]*:.*")) {
+            boolean windowsDrive = expanded.length() >= 3
+                    && Character.isLetter(expanded.charAt(0))
+                    && expanded.charAt(1) == ':'
+                    && (expanded.charAt(2) == '/' || expanded.charAt(2) == '\\');
+            if (!windowsDrive) {
+                throw new IllegalArgumentException(
+                        "unsupported import URI scheme; use a verified filesystem or locked Zed source");
+            }
+        }
+        if (expanded.startsWith("+")) {
+            if (!expanded.startsWith("+/")) {
+                throw new IllegalArgumentException("project-root source imports require canonical +/ prefix");
+            }
+            return Optional.of(resolveProjectRootSource(importer, expanded));
+        }
+        String unix = expanded.replace('\\', '/');
         Path raw = Path.of(unix);
-        if (raw.isAbsolute()) return existingSource(raw);
+        if (raw.isAbsolute()) {
+            Optional<Path> selected = existingSource(raw);
+            if (importPath.contains("${")) {
+                // Env-derived absolute paths are NOT unrestricted reads.
+                // The source must be owned by the importing project, or by an
+                // explicit manifest import path. Never let ambient paths grant
+                // package authority to an environment-variable substitution.
+                if (selected.isEmpty()) {
+                    throw new IllegalArgumentException("expanded absolute import source not found");
+                }
+                requireAuthorizedEnvironmentSource(selected.get());
+            }
+            return selected;
+        }
 
         if (unix.startsWith(".")) {
             Path parent = importer.toAbsolutePath().normalize().getParent();
@@ -271,7 +330,110 @@ public final class OresProjectConfig {
             Optional<Path> resolved = existingSource(candidate);
             if (resolved.isPresent()) return resolved;
         }
+        if (importPath.contains("${")) {
+            throw new IllegalArgumentException("expanded import source not found");
+        }
         return Optional.empty();
+    }
+
+    private Path resolveProjectRootSource(Path importer, String expanded) {
+        if (manifestPath == null || !ATTO_MANIFEST_NAME.equals(manifestPath.getFileName().toString())) {
+            throw new IllegalArgumentException("canonical +/ source imports require nearest .atto.pkg.toml");
+        }
+        String suffix = expanded.substring(2);
+        if (suffix.isEmpty() || expanded.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 4096) {
+            throw new IllegalArgumentException("invalid canonical project-root import length");
+        }
+        for (String component : suffix.split("/", -1)) {
+            if (component.isEmpty() || component.equals(".") || component.equals("..")
+                    || !component.matches("[A-Za-z0-9_.-]+")) {
+                throw new IllegalArgumentException("invalid canonical project-root import component");
+            }
+        }
+        Path root = checkedPhysicalRoot(projectRoot);
+        Path manifestDirectory = checkedPhysicalRoot(manifestPath.getParent());
+        if (!root.startsWith(manifestDirectory)) {
+            throw new IllegalArgumentException("configured project.root escapes physical manifest directory");
+        }
+        Path spelled = projectRoot.resolve(suffix);
+        if (!spelled.normalize().startsWith(projectRoot)) {
+            throw new IllegalArgumentException("project-root import escapes selected root");
+        }
+        Optional<Path> found = existingSource(spelled);
+        if (found.isEmpty()) throw new IllegalArgumentException("project-root import source not found");
+        Path target = checkedPhysicalSource(found.get());
+        requireWithinPackage(root, target);
+        requireNoNestedManifest(projectRoot.toAbsolutePath().normalize(), spelled); // logical vs logical
+        requireNoNestedManifest(root, target);
+        return target;
+    }
+
+    private void requireAuthorizedEnvironmentSource(Path candidate) {
+        if (manifestPath == null) {
+            throw new IllegalArgumentException(
+                    "environment-derived absolute imports require an explicit project manifest");
+        }
+        Path target = checkedPhysicalSource(candidate);
+        // This is the package root or the manifest's explicitly configured
+        // import paths ONLY. ATTO_PATHS/ORES_PATHS are search hints, not an
+        // authorization to read arbitrary env-selected absolute files.
+        LinkedHashSet<Path> authorized = new LinkedHashSet<>();
+        authorized.add(projectRoot);
+        authorized.addAll(importPaths);
+        for (Path root : authorized) {
+            if (!Files.isDirectory(root)) continue;
+            Path physicalRoot = checkedPhysicalRoot(root);
+            if (target.startsWith(physicalRoot) && !target.equals(physicalRoot)) {
+                // Compare like with like: the caller's logical spelling against the logical
+                // root, and the resolved target against the resolved root (OS aliases such
+                // as macOS /var -> /private/var differ between the two).
+                requireNoNestedManifest(root.toAbsolutePath().normalize(), candidate);
+                requireNoNestedManifest(physicalRoot, target);
+                return;
+            }
+        }
+        throw new IllegalArgumentException(
+                "environment-derived absolute import is outside authorized project source roots");
+    }
+
+    private static Path checkedPhysicalRoot(Path root) {
+        try {
+            return root.toRealPath();
+        } catch (IOException error) {
+            throw new IllegalArgumentException("cannot resolve verified import root", error);
+        }
+    }
+
+    private static Path checkedPhysicalSource(Path source) {
+        try {
+            if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException("import source must be a regular non-symlink file");
+            }
+            return source.toRealPath();
+        } catch (IOException error) {
+            throw new IllegalArgumentException("cannot resolve verified import source", error);
+        }
+    }
+
+    private static void requireWithinPackage(Path root, Path target) {
+        if (!target.startsWith(root) || target.equals(root)) {
+            throw new IllegalArgumentException("import escapes physical package root");
+        }
+    }
+
+    private static void requireNoNestedManifest(Path root, Path candidate) {
+        Path normalized = candidate.toAbsolutePath().normalize();
+        requireWithinPackage(root, normalized);
+        for (Path cursor = normalized.getParent(); !cursor.equals(root); cursor = cursor.getParent()) {
+            if (cursor == null || cursor.equals(cursor.getRoot())) {
+                throw new IllegalArgumentException("import escapes package boundary");
+            }
+            for (String name : List.of(ATTO_MANIFEST_NAME, MANIFEST_NAME)) {
+                if (Files.exists(cursor.resolve(name), LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IllegalArgumentException("import crosses nested package boundary");
+                }
+            }
+        }
     }
 
     private static Optional<Path> existingSource(Path candidate) {
@@ -324,7 +486,13 @@ public final class OresProjectConfig {
     }
 
     private static List<Path> parseEnvironmentPaths(Map<String, String> environment) {
-        String raw = environment.get(ENV_ORESLANG_PATH);
+        // Canonical ATTO_PATHS wins when present, even when explicitly empty.
+        // ORES_PATHS and ORESLANG_PATH remain strictly ordered legacy fallbacks.
+        String raw = environment.containsKey(ENV_ATTO_PATHS)
+                ? environment.get(ENV_ATTO_PATHS)
+                : environment.containsKey(ENV_ORES_PATHS)
+                ? environment.get(ENV_ORES_PATHS)
+                : environment.get(ENV_ORESLANG_PATH);
         if (raw == null || raw.isBlank()) return List.of();
 
         LinkedHashSet<Path> paths = new LinkedHashSet<>();

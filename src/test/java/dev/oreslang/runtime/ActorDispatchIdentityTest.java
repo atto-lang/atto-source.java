@@ -107,6 +107,12 @@ final class ActorDispatchIdentityTest {
                 actor.ready().get(3, TimeUnit.SECONDS);
                 Object actorCell = cell(runtime, actor.id());
                 cellForReplay.set(actorCell);
+                Method rejectDispatch = actorCell.getClass().getDeclaredMethod(
+                        "stopRejectedDispatchIfCurrent", Object.class);
+                rejectDispatch.setAccessible(true);
+                // An absent token must never authorize actor STOP, including
+                // after a cleared schedule or before another turn is issued.
+                rejectDispatch.invoke(actorCell, (Object) null);
 
                 actor.send(1);
                 assertTrue(firstEntered.await(3, TimeUnit.SECONDS));
@@ -128,6 +134,19 @@ final class ActorDispatchIdentityTest {
                         "runBatch", Object.class);
                 runBatch.setAccessible(true);
                 runBatch.invoke(actorCell, oldTicket);
+                assertSame(newTicket, activeTicket(actorCell));
+                assertEquals(2, deliveries.get());
+
+                // A delayed executor/gate rejection for the old ticket must
+                // not stop the actor currently executing under newTicket.
+                // Exercise the actual rejection-stop entrypoint, rather than
+                // only rechecking ticket equality in a source-free model.
+                rejectDispatch.invoke(actorCell, oldTicket);
+                assertSame(newTicket, activeTicket(actorCell));
+
+                // Even if a broken submitter reports a failure *after*
+                // physical entry, its current turn cannot be revoked.
+                rejectDispatch.invoke(actorCell, newTicket);
                 assertSame(newTicket, activeTicket(actorCell));
                 assertEquals(2, deliveries.get());
 
