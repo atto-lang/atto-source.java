@@ -136,5 +136,87 @@ class StaticActorPilotTests(unittest.TestCase):
         self.assertIn("source byte budget", result.stderr)
 
 
+
+    def test_guard_false_native_main_returns_early_after_all_actors_stop(self):
+        self.source.write_text(self.source.read_text().replace(
+            "return 43;", "guard false { return 7; }\n  return 43;"))
+        result = self.compile()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertEqual(manifest["expected_guest_result"], 7)
+        java = (self.output / "AttoGeneratedMain.java").read_text()
+        self.assertIn("if (!false) return 7L;", java)
+        self.assertLess(java.index("handle_1.close();"), java.index("if (!false) return 7L;"))
+        self.assertIn("return 43L;", java)
+
+    def test_guard_true_native_main_falls_through(self):
+        self.source.write_text(self.source.read_text().replace(
+            "return 43;", "guard true { return 7; }\n  return 43;"))
+        result = self.compile()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertEqual(manifest["expected_guest_result"], 43)
+        self.assertIn("if (!true) return 7L;",
+                      (self.output / "AttoGeneratedMain.java").read_text())
+
+    def test_first_false_guard_wins_without_skipping_actor_teardown(self):
+        self.source.write_text(self.source.read_text().replace(
+            "return 43;", "guard true { return 8; }\n"
+                          "  guard false { return 7; }\n"
+                          "  guard false { return 9; }\n  return 43;"))
+        result = self.compile()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertEqual(manifest["expected_guest_result"], 7)
+
+    def test_guard_cannot_escape_before_actor_retirement(self):
+        self.rejects("guard may exit only after all actor handles are stopped",
+                     self.source.read_text().replace(
+                         "stop first;", "guard true { return 7; }\n  stop first;"))
+
+    def test_guard_rejects_int_truthiness(self):
+        self.rejects("guard condition must be a bool literal",
+                     self.source.read_text().replace(
+                         "return 43;", "guard 1 { return 7; }\n  return 43;"))
+
+    def test_guard_rejects_unknown_boolean_variable_without_typed_scope(self):
+        self.rejects("guard condition must be a bool literal",
+                     self.source.read_text().replace(
+                         "return 43;", "guard ready { return 7; }\n  return 43;"))
+
+    def test_guard_requires_terminal_return(self):
+        self.rejects("expected 'return'",
+                     self.source.read_text().replace(
+                         "return 43;", "guard false { 7; }\n  return 43;"))
+
+    def test_guard_rejects_redundant_else(self):
+        self.rejects("expected",
+                     self.source.read_text().replace(
+                         "return 43;", "guard false { return 7; } else { return 8; }\n  return 43;"))
+
+    def test_guard_rejects_extra_effect_after_early_return(self):
+        self.rejects("expected '}'",
+                     self.source.read_text().replace(
+                         "return 43;", "guard false { return 7; stop first; }\n  return 43;"))
+
+    def test_guard_rejects_i64_overflow_before_native_artifact(self):
+        self.rejects("exceeds the AttoLang native i64 range",
+                     self.source.read_text().replace(
+                         "return 43;", "guard false { return 9223372036854775808; }\n  return 43;"))
+
+    def test_guard_keyword_is_reserved_in_actor_name(self):
+        self.rejects("reserved AttoLang guard keyword",
+                     self.source.read_text().replace("Counter", "guard"))
+
+    def test_guard_keyword_is_reserved_as_actor_handle(self):
+        self.rejects("reserved AttoLang guard keyword",
+                     self.source.read_text().replace("const first", "const guard"))
+
+    def test_guard_limit_is_eight(self):
+        cases = "guard true { return 1; }\n  " * 9
+        self.rejects("guard v1 limit exceeded (8)",
+                     self.source.read_text().replace("return 43;", cases + "return 43;"))
+
+
 if __name__ == "__main__":
     unittest.main()

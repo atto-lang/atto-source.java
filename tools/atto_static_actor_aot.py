@@ -68,6 +68,8 @@ class Parser:
         x = self.take()
         if not NAME.fullmatch(x):
             raise CompileError("expected an identifier")
+        if x == "guard":
+            raise CompileError("reserved AttoLang guard keyword cannot be an identifier")
         return x
 
     def integer(self):
@@ -131,6 +133,7 @@ class Parser:
         actions = []
         sends = 0
         instances = 0
+        guards = 0
         while True:
             token = self.peek()
             if token is None:
@@ -162,6 +165,25 @@ class Parser:
                     raise CompileError("invalid or already retired actor handle: " + variable)
                 del live[variable]
                 actions.append(("stop", variable, None))
+            elif token == "guard":
+                # Experimental fail-on-false guard, restricted to the literal
+                # bool subset. Do not allow a path to return while any
+                # arena-backed actor remains alive: that would skip stop.
+                if live:
+                    raise CompileError("guard may exit only after all actor handles are stopped")
+                guards += 1
+                if guards > 8:
+                    raise CompileError("guard v1 limit exceeded (8)")
+                self.take("guard")
+                condition = self.take()
+                if condition not in ("true", "false"):
+                    raise CompileError("guard condition must be a bool literal in the NativeAOT pilot")
+                self.take("{")
+                self.take("return")
+                early_value = self.integer()
+                self.take(";")
+                self.take("}")
+                actions.append(("guard", condition == "true", early_value))
             elif token == "return":
                 self.take("return")
                 result = self.integer()
@@ -263,6 +285,11 @@ def generate(kinds, actions, result):
             out.append("        " + aliases[arg] + " " + variable + " = new " + aliases[arg] + "();")
         elif kind == "send":
             out.append("        " + variables[name] + ".send(" + long_literal(arg) + ");")
+        elif kind == "guard":
+            # A real generated Java conditional/return, folded only by
+            # GraalVM's native compiler. No runtime source interpreter.
+            out.append("        if (!" + ("true" if name else "false") + ") return " +
+                       long_literal(arg) + ";")
         else:
             out.append("        " + variables[name] + ".close();")
     out += [
@@ -464,6 +491,10 @@ def main(argv=None):
         if result.exists() or result.is_symlink():
             raise CompileError("output path exists; refusing to replace artifacts")
         java = generate(kinds, actions, guest_result)
+        # Predict the expected exit from the already-validated literal
+        # guards, but do not claim success until the native binary runs.
+        expected_result = next((value for kind, condition, value in actions
+                                if kind == "guard" and not condition), guest_result)
         manifest = {
             "schema": "atto.static-actor-graal-aot-pilot.v1",
             "input": path.name,
@@ -475,7 +506,7 @@ def main(argv=None):
             "compiler_authority": "CANONICAL_LLVM_AST" if args.checked_exporter else "RESTRICTED_PYTHON_PILOT",
             "canonical_exporter_sha256": args.checked_exporter_sha256 if args.checked_exporter else None,
             "actor_instances": sum(1 for kind, _, _ in actions if kind == "spawn"),
-            "expected_guest_result": guest_result,
+            "expected_guest_result": expected_result,
             "status": "GENERATED_SOURCE_NOT_YET_EXECUTED",
             "scope": "single-threaded static actor syntax subset, no tenant sandbox or full AttoLang compiler",
         }

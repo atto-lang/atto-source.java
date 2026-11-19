@@ -20,7 +20,12 @@ python3 -m unittest discover -s tests -p test_static_actor_aot.py -v
 python3 -m unittest discover -s tests -p test_static_actor_aot_hardening.py -v
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-source="${ATTO_M4_FIXTURE:-fixtures/actor_counter.atto}"
+source="${ATTO_STATIC_GUEST_FIXTURE:-${ATTO_M4_FIXTURE:-fixtures/actor_counter.atto}}"
+case "$source" in
+  fixtures/actor_counter.atto|fixtures/m4/shared_actor_counter.atto) expected_result=43 ;;
+  fixtures/actor_counter_guard.atto) expected_result=7 ;;
+  *) echo "ATTO_STATIC_AOT_NOT_EXECUTED: fixture path not admitted" >&2; exit 2 ;;
+esac
 if [[ "$source" == "fixtures/m4/shared_actor_counter.atto" ]]; then
   exact_blob="$(git hash-object "$source")"
   if [[ "$exact_blob" != "0f9aca24deb195d7f604a1bfb944e237629803f4" ]]; then
@@ -30,7 +35,7 @@ if [[ "$source" == "fixtures/m4/shared_actor_counter.atto" ]]; then
 fi
 source_pin="$(sha256sum "$source" | cut -d ' ' -f 1)"
 python3 tools/atto_static_actor_aot.py "$source" --source-sha256 "$source_pin" --out "$tmp/generated"
-python3 - "$tmp/generated" "$source_pin" <<'PY'
+python3 - "$tmp/generated" "$source_pin" "$expected_result" <<'PY'
 import hashlib, json, pathlib, sys
 folder=pathlib.Path(sys.argv[1])
 m=json.loads((folder/"manifest.json").read_text())
@@ -39,7 +44,7 @@ assert m["schema"]=="atto.static-actor-graal-aot-pilot.v1"
 assert m["status"]=="GENERATED_SOURCE_NOT_YET_EXECUTED"
 assert m["source_sha256"]==sys.argv[2]
 assert m["generated_java_sha256"]==hashlib.sha256(java).hexdigest()
-assert m["actor_kinds"]==1 and m["actor_instances"]==2 and m["actor_sends"]==3 and m["expected_guest_result"]==43
+assert m["actor_kinds"]==1 and m["actor_instances"]==2 and m["actor_sends"]==3 and m["expected_guest_result"]==int(sys.argv[3])
 print("ATTO_STATIC_SOURCE_MANIFEST_VERIFIED=1")
 print("ATTO_GUEST_SOURCE_SHA256="+m["source_sha256"])
 print("ATTO_GENERATED_JAVA_SHA256="+m["generated_java_sha256"])
@@ -72,11 +77,13 @@ if [[ -s "$tmp/stderr" ]]; then
   cat "$tmp/stderr" >&2
   exit 1
 fi
-grep -Fx 'ATTO_GUEST_NATIVE_AOT_RETURN=43' "$tmp/stdout"
+grep -Fx "ATTO_GUEST_NATIVE_AOT_RETURN=$expected_result" "$tmp/stdout"
 grep -Fx 'ATTO_GUEST_ACTOR_SENDS=3' "$tmp/stdout"
 grep -Fx 'ATTO_GUEST_ACTOR_CLOSES=2' "$tmp/stdout"
 grep -Fx 'ATTO_GUEST_ACTOR_STATE_DIGEST=7021' "$tmp/stdout"
 grep -Fx 'ATTO_GUEST_GC_DELTA=0' "$tmp/stdout"
 grep -Fx 'ATTO_NATIVE_AOT_SCOPE=STATIC_ATTO_ACTOR_SUBSET_NOT_TENANT_SANDBOX' "$tmp/stdout"
 echo 'ATTO_STATIC_ACTOR_GRAAL_EPSILON_NATIVE_GUEST=PASSED'
+echo "ATTO_STATIC_GUEST_FIXTURE_VERIFIED=$source"
+echo "ATTO_STATIC_GUEST_COMPILER_SOURCE_SHA256=$(sha256sum tools/atto_static_actor_aot.py | cut -d ' ' -f 1)"
 echo 'EVIDENCE_SCOPE=APPLICATION_SPECIFIC_NATIVE_AOT_SMALL_ATTO_ACTOR_SUBSET_NO_TENANT_SANDBOX'
