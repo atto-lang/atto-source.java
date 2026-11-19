@@ -5683,13 +5683,12 @@ public final class Parser {
         if (mutableBorrow) advance();
         String operation = advance().lexeme();
         consume(BANG, "expected '!' attached to ownership operation");
-        // Canonical mutable borrow is `mut borrow! value`, matching main's
-        // canonical `rt mut borrow value`; the trailing-mut word order is
-        // rejected exactly like legacy `rt borrow mut value`.
+        // Canonical borrow! mut and compatibility mut borrow! lower to the
+        // SAME checked &mut AST. 'mutfoo' remains an ordinary identifier.
+        // The qualifier is consumed only after the complete attached verb!.
         if (operation.equals("borrow") && match(MUT)) {
             if (mutableBorrow) throw error(previous(), "duplicate mutable borrow qualifier");
-            throw error(previous(),
-                    "legacy 'borrow! mut value' is not valid AttoLang; use 'mut borrow! value'");
+            mutableBorrow = true;
         }
         // Check explicitly before descending into the operand. Otherwise a
         // malformed borrow! mut mut item can fail as unrelated unary syntax
@@ -5997,9 +5996,15 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
+        // Both historical orders are compatibility spellings. They must
+        // produce the same checked &mut AST, without weakening the borrow
+        // checker or allowing a second mutable qualifier.
         if (name.equals("borrow") && match(MUT)) {
-            throw error(previous(),
-                    "legacy 'rt borrow mut value' is not valid Oreslang; use 'rt mut borrow value'");
+            if (mutableBorrow) throw error(previous(), "duplicate mutable borrow qualifier");
+            mutableBorrow = true;
+        }
+        if (mutableBorrow && check(MUT)) {
+            throw error(peek(), "duplicate mutable borrow qualifier");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
