@@ -8,6 +8,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorScalarFrameStoreTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorScalarFrameCodecTest.java'
       - 'scripts/verify-actor-scalar-frame-store.sh'
+      - 'scripts/VerifyActorScalarFrameReports.java'
       - '.github/workflows/actor-scalar-frame-store.yml'
   workflow_dispatch:
 permissions:
