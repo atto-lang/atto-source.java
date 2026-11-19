@@ -362,6 +362,46 @@ final class AotClassProxyLanguageTest {
         }
     }
 
+    @Test
+    void rejectsErasedReturnsThatCouldDisguiseTheWrappedTarget() {
+        for (String name : List.of("Any", "any", "Object", "object",
+                "Unknown", "unknown", "Dynamic", "dynamic", "?")) {
+            Ast.MethodDecl method = proxySurfaceMethod(Ast.TypeRef.simple(name),
+                    List.of(), List.of());
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            proxySurfaceProgram(List.of(method)), Set.of("Foo")));
+            assertTrue(error.getMessage().contains("erase wrapped-target identity"),
+                    name + ": " + error.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsErasedReturnsInsideNestedGenericPayloads() {
+        Ast.TypeRef nested = new Ast.TypeRef("Result", List.of(
+                new Ast.TypeRef("Option", List.of(Ast.TypeRef.simple("Any")), false),
+                Ast.TypeRef.simple("int")), false);
+        Ast.MethodDecl method = proxySurfaceMethod(nested, List.of(), List.of());
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        proxySurfaceProgram(List.of(method)), Set.of("Foo")));
+        assertTrue(error.getMessage().contains("erase wrapped-target identity"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsParametersShadowingGeneratedReceiverOrBackingStorage() {
+        for (String reserved : List.of("self", "__proxy_target")) {
+            Ast.MethodDecl method = proxySurfaceMethod(Ast.TypeRef.simple("int"),
+                    List.of(new Ast.Param(Ast.TypeRef.simple("int"), reserved)), List.of());
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            proxySurfaceProgram(List.of(method)), Set.of("Foo")));
+            assertTrue(error.getMessage().contains("shadows generated receiver/storage"),
+                    reserved + ": " + error.getMessage());
+        }
+    }
+
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
         Ast.ClassDecl klass = new Ast.ClassDecl("Foo", false, List.of(), List.of(), methods);
         return new Ast.Program(List.of(new Ast.ModuleDecl("first", List.of(klass))));

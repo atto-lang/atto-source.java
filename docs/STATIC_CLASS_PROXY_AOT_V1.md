@@ -170,3 +170,34 @@ The generated implementation lives in
 recognition is in `src/main/java/dev/oreslang/parser/Parser.java`.
 The generated class contains normal typed AST members only; backends must not
 replace it with unverified runtime reflection.
+
+
+## 2026-11-17 source admission audit: opaque return identities
+
+The generated class is a delegation wrapper, **not yet a virtual
+interceptor**. It cannot be used as a security boundary that guarantees
+every call to the wrapped target passes through a proxy. In particular,
+target-internal self calls and any aliases published by the target
+constructor bypass its forwarders.
+
+The conservative compiler now rejects public return types whose declared
+shape could erase the target identity: `Any`, `Object`, `Unknown`,
+`Dynamic` (including their lower-case spellings or an unbounded `?`),
+recursively through `Option`, `Result`, arrays and other type arguments.
+Returning an opaque value might be safe for some implementations, but until
+full value-origin and ownership analysis can prove that it does not contain
+the wrapped target, emitting a method would incorrectly imply a checked
+proxy boundary. It also rejects explicit method parameter names `self`
+and `__proxy_target` that can shadow reserved generated receiver/storage.
+
+Three new focused JUnit cases bring the declared suite to **20 tests**.
+The exact-head CI admission gate now requires >=20 executed passing cases.
+These are **defined assertions only** pending actual compiler-backed guest
+execution; no new positive or negative guest receipt is claimed.
+
+The eventual virtual-interceptor feature must separately prove receiver
+vtable dispatch, a linear typed `proceed` operation, ownership and
+effect preservation, no target identity escape, and no bypass through
+unintended target aliases. The portable proposal belongs to
+`atto-lang/atto-spec`; this draft cannot be described as implementing
+virtual interception.
