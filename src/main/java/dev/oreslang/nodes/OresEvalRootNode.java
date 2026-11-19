@@ -2297,6 +2297,9 @@ public final class OresEvalRootNode extends RootNode {
                 return runtime.arguments().stream()
                         .anyMatch(argument -> expressionContainsPotentialSuspension(argument, seen));
             }
+            if (expr instanceof Ast.NamedArgExpr named) {
+                return expressionContainsPotentialSuspension(named.value(), seen);
+            }
             if (expr instanceof Ast.CallExpr call) {
                 for (Ast.Expr argument : call.arguments()) {
                     if (expressionContainsPotentialSuspension(argument, seen)) return true;
@@ -4825,6 +4828,8 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.NewExpr created) {
+                    rejectUnloweredNamedArguments(
+                            created.arguments(), "suspendable constructor");
                     evalSuspendableArguments(
                             task,
                             created.arguments(),
@@ -5490,11 +5495,21 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        private static void rejectUnloweredNamedArguments(
+                List<Ast.Expr> arguments, String surface) {
+            if (arguments.stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
+                throw new IllegalStateException(
+                        "NAMED_CALL_BINDING_UNSUPPORTED: " + surface
+                                + " reached runtime without a checked source-to-formal binding plan");
+            }
+        }
+
         private void evalSuspendableCall(
                 SourceTask task,
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            rejectUnloweredNamedArguments(call.arguments(), "suspendable call");
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr) {
                 // Preserve left-to-right value-first evaluation even when the
@@ -8111,6 +8126,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.NamedArgExpr) {
+                throw new IllegalStateException(
+                        "NAMED_CALL_BINDING_UNSUPPORTED: named argument reached runtime without a checked call plan");
+            }
             if (expr instanceof Ast.WithExpr update) {
                 Object source = eval(update.source(), env);
                 Map<String, Object> original;
@@ -8494,6 +8513,7 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
+                rejectUnloweredNamedArguments(call.arguments(), "synchronous call");
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
@@ -8506,6 +8526,7 @@ public final class OresEvalRootNode extends RootNode {
                         indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
+                rejectUnloweredNamedArguments(created.arguments(), "constructor call");
                 if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                     List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                     return instantiateEvaluated(created, args, env);

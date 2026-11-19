@@ -1399,7 +1399,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr, WithExpr,
-            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr,
+            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr, NamedArgExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
             TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
@@ -1661,6 +1661,20 @@ public final class Ast {
 
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
+
+    /**
+     * Named call argument. The AST preserves the source label and expression
+     * at the original lexical position; only a checked call plan may map it
+     * to a formal ABI slot. It is not independently executable.
+     */
+    public record NamedArgExpr(String name, Expr value) implements Expr {
+        public NamedArgExpr {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("named argument name cannot be blank");
+            }
+            java.util.Objects.requireNonNull(value, "named argument value");
+        }
+    }
 
     /** Syntax provenance, not proof that asynchronous pipeline lowering exists. */
     public enum CallOrigin {
@@ -1988,6 +2002,10 @@ public final class Ast {
         for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
             transfer.copy(source, target);
         }
+        // The call-plan side table lives in the types package rather than
+        // inside Ast, so it has an explicit transfer hook outside the enum
+        // that enumerates only Ast-owned side tables.
+        dev.oreslang.types.CheckedCallPlan.copyCheckedMetadata(source, target);
     }
 
     static java.util.Set<String> checkedMetadataTransferPolicy() {
