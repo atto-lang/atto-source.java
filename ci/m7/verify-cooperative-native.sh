@@ -31,6 +31,13 @@ assert manifest["actor_name"] == "CooperativeSum"
 assert manifest["canonical_compiler"] is False
 print("M7_COMPILER_MANIFEST_SHA256_VERIFIED=PASS")
 PY
+# New M9 conformance is Rust-first. The legacy M7 compiler remains a
+# restricted Python pilot and is tracked separately for migration.
+command -v rustc >/dev/null || { echo M9_RUST_TOOLCHAIN_REQUIRED >&2; exit 2; }
+rustc --edition=2021 --test tests/m9_notice_wire.rs -o "$tmp/m9-wire-tests"
+"$tmp/m9-wire-tests" --nocapture
+rustc --edition=2021 tests/m9_notice_wire.rs -o "$tmp/m9-wire-check"
+echo 'M9_JAVA_RUST_CONFORMANCE_TESTS=PASS'
 mkdir -p "$tmp/classes"
 "$JAVA_HOME/bin/javac" -d "$tmp/classes" \
   src/m7/AttoM7CooperativeRuntime.java \
@@ -77,6 +84,7 @@ for marker in \
   M9_JAVA_FAULT_MESSAGE_GENERATION_METADATA=PASS \
   M9_JAVA_ACCEPTED_FAILED_ABANDONED_CONSERVATION=PASS \
   M9_JAVA_REINCARNATION_FENCE=PASS \
+  M9_JAVA_NUMERIC_ACTOR_ID_CANONICAL_WIRE=PASS \
   M9_JAVA_SCOPE=HOST_CONTROL_NOT_JAVA_COMPILER_FULL_ACTOR_PARITY \
   M7_RESTRICTED_COMPILED_ATTO_HOST_SCHEDULER=PASS \
   M7_SCOPE=RESTRICTED_STATIC_ATTO_LOOP_COOPERATE_NOT_FULL_COMPILER_OR_HARD_RT; do
@@ -86,6 +94,9 @@ done
 grep -Fx "M7_COMPILED_GUEST_SOURCE_SHA256=$source_sha" "$tmp/native" >/dev/null || {
   echo 'M7_NATIVE_EXECUTED_DIFFERENT_GUEST_SOURCE' >&2; exit 1;
 }
+"$tmp/m9-wire-check" --verify-output "$tmp/jvm"
+"$tmp/m9-wire-check" --verify-output "$tmp/native"
 cmp "$tmp/jvm" "$tmp/native" || { echo 'M7_JVM_NATIVE_OUTPUT_DIFFERENCE' >&2; exit 1; }
+echo 'M9_RUST_CROSS_JVM_NATIVE_WIRE_EQUALITY=PASS'
 echo 'M7_COMPILED_STATIC_ATTO_COOPERATIVE_GRAALVM_NATIVE=PASS'
 echo 'M7_EVIDENCE_SCOPE=RESTRICTED_COMPILED_ATTO_NOT_CANONICAL_FRONTEND_OR_HARD_REAL_TIME'

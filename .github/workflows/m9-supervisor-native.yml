@@ -6,6 +6,9 @@ on:
     paths:
       - 'src/m7/AttoM7CooperativeRuntime.java'
       - 'tests/m9/**'
+      - 'tests/m9_notice_wire.rs'
+      - 'contracts/m9-supervisor-notice-wire-v1.json'
+      - 'tests/fixtures/m9/**'
       - 'tests/m7/**'
       - 'ci/m7/**'
       - 'ci/m9/**'
@@ -26,6 +29,11 @@ jobs:
         with:
           distribution: graalvm
           java-version: '25'
+      - name: Install pinned Rust test toolchain
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup default 1.85.1
+          rustc --version
       - name: Execute M9 priority supervisor notice and full M7/M8 Native Image
         env:
           ATTO_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

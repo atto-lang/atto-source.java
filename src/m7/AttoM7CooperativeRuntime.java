@@ -47,13 +47,58 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
     public record Queues(int ready, int control, int actors, int running) {}
     // Host-level receipt: emitted only by the supervisor priority CONTROL path.
     // Fault code 1=checked arithmetic, 101=generic guest/host panic.
-    public record SupervisorNotice(ControlKind kind, String actorName,
+    public record SupervisorNotice(ControlKind kind, long actorId, String actorName,
           long generation, long supervisorId, long messageId, int faultCode,
-          String reason) {}
+          String reason) {
+        // Canonical M9 notice wire: exact JSON key order matches the Rust/Wasm
+        // host. Preserve the name for diagnostic use, not as wire identity.
+        public String to_wire_json() {
+            if (kind == null || actorId < 0 || actorId > MAX_WIRE_ID ||
+                generation <= 0 || generation > MAX_WIRE_ID ||
+                supervisorId < 0 || supervisorId > MAX_WIRE_ID ||
+                messageId < 0 || messageId > MAX_WIRE_ID ||
+                reason == null || reason.isEmpty() ||
+                reason.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 128 ||
+                (kind == ControlKind.STOP && (messageId != 0 || faultCode != 0)) ||
+                (kind == ControlKind.PANIC &&
+                    faultCode != 1 && faultCode != 2 && faultCode != 100 &&
+                    faultCode != 101))
+                throw new IllegalArgumentException("invalid canonical M9 supervisor notice");
+            return "{\"kind\":\"" + kind.name() + "\",\"actor_id\":" + actorId +
+                ",\"generation\":" + generation + ",\"supervisor_id\":" + supervisorId +
+                ",\"message_id\":" + messageId + ",\"fault_code\":" + faultCode +
+                ",\"reason\":" + quote_json(reason) + "}";
+        }
+        private static String quote_json(String value) {
+            var b = new StringBuilder("\"");
+            for (int i = 0; i < value.length(); i++) {
+                char ch = value.charAt(i);
+                switch (ch) {
+                    case '"' -> b.append("\\\"");
+                    case '\\' -> b.append("\\\\");
+                    case '\n' -> b.append("\\n");
+                    case '\r' -> b.append("\\r");
+                    case '\t' -> b.append("\\t");
+                    case '\b' -> b.append("\\b");
+                    case '\f' -> b.append("\\f");
+                    default -> {
+                        if (ch < 0x20) {
+                            b.append("\\u");
+                            for (int shift = 12; shift >= 0; shift -= 4)
+                                b.append(Character.forDigit((ch >> shift) & 0xf, 16));
+                        } else b.append(ch);
+                    }
+                }
+            }
+            return b.append('"').toString();
+        }
+    }
     private record Mail(long messageId, long value) {}
+    private static final long MAX_WIRE_ID = 9_007_199_254_740_991L;
 
     private static final class Actor {
         final ActorRef ref;
+        final long actorId;
         final FrameFactory factory;
         final int capacity;
         final long supervisorId;
@@ -72,14 +117,16 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
         ControlKind pendingControl, lastControl;
         long accepted, completed, failed, abandoned, yielded, slices, resultSum;
         int concurrent, maxConcurrent, controlsDelivered;
-        Actor(ActorRef ref, int capacity, FrameFactory factory,
+        Actor(ActorRef ref, long actorId, int capacity, FrameFactory factory,
               long supervisorId) {
-            this.ref = ref; this.capacity = capacity; this.factory = factory;
+            this.ref = ref; this.actorId = actorId;
+            this.capacity = capacity; this.factory = factory;
             this.supervisorId = supervisorId;
         }
     }
 
     private final Object gate = new Object();
+    private long nextActorId; // Monotonic within runtime, never reused on reincarnation.
     private final Map<String, Actor> actors = new HashMap<>();
     private final Map<String, Long> generations = new HashMap<>();
     private final ArrayDeque<Actor> ready = new ArrayDeque<>();
@@ -116,7 +163,8 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
     public ActorRef spawn(String name, int capacity, FrameFactory factory,
                           long supervisorId) {
         if (name == null || name.isEmpty() || name.length() > 128 || factory == null ||
-            capacity < 1 || capacity > 4096 || supervisorId < 0)
+            capacity < 1 || capacity > 4096 || supervisorId < 0 ||
+            supervisorId > MAX_WIRE_ID)
             throw new IllegalArgumentException("invalid actor");
         synchronized (gate) {
             if (closing || stopping) throw new IllegalStateException("runtime closed");
@@ -126,9 +174,12 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
             if (previous == null && actors.size() >= maxActors)
                 throw new IllegalStateException("actor registration limit");
             long generation = Math.addExact(generations.getOrDefault(name, 0L), 1L);
+            if (generation > MAX_WIRE_ID || nextActorId > MAX_WIRE_ID)
+                throw new IllegalStateException("M9 actor wire identity exhausted");
+            long actorId = nextActorId++;
             generations.put(name, generation);
             var ref = new ActorRef(name, generation);
-            actors.put(name, new Actor(ref, capacity, factory, supervisorId));
+            actors.put(name, new Actor(ref, actorId, capacity, factory, supervisorId));
             return ref;
         }
     }
@@ -143,8 +194,13 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
             if (actor == null) return Admission.STALE;
             if (closing || stopping || !actor.accepting || actor.fenced) return Admission.CLOSED;
             if (actor.inbox.size() >= actor.capacity) return Admission.FULL;
-            long id = Math.addExact(actor.nextMessageId, 0L);
-            actor.nextMessageId = Math.addExact(id, 1L);
+            long id = actor.nextMessageId;
+            if (id > MAX_WIRE_ID) {
+                actor.accepting = false;
+                control(actor, ControlKind.STOP);
+                return Admission.CLOSED;
+            }
+            actor.nextMessageId = id + 1L;
             actor.inbox.addLast(new Mail(id, value));
             actor.accepted++;
             schedule(actor);
@@ -232,8 +288,8 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
                             ? "actor failed" : actor.lastFaultReason)
                         : "graceful stop";
                     supervisorNotices.addLast(new SupervisorNotice(kind,
-                        actor.ref.name(), actor.ref.generation(), actor.supervisorId,
-                        noticeId, noticeFault, noticeReason));
+                        actor.actorId, actor.ref.name(), actor.ref.generation(),
+                        actor.supervisorId, noticeId, noticeFault, noticeReason));
                     if (kind == ControlKind.PANIC) {
                         actor.fenced = true;
                         actor.accepting = false;
@@ -399,6 +455,17 @@ public final class AttoM7CooperativeRuntime implements AutoCloseable {
             synchronized (gate) {
                 if (!stopping) throw new AssertionError("M7 carrier interrupted", e);
             }
+        }
+    }
+    // Numeric actor ID is for supervisor notice wire equality. The ActorRef
+    // object, not its numeric fields, remains the only mailbox authority.
+    public long actor_id(ActorRef ref) {
+        synchronized (gate) {
+            if (ref == null) throw new IllegalArgumentException("null actor ref");
+            Actor actor = actors.get(ref.name());
+            if (actor == null || actor.ref != ref)
+                throw new IllegalArgumentException("stale actor identity");
+            return actor.actorId;
         }
     }
     public SupervisorNotice poll_supervisor_notice() {

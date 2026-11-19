@@ -34,6 +34,7 @@ public final class M9JavaSupervisorNoticeProbe {
                     @Override public int resume_pc() { return 0; }
                 }, 777);
             try {
+                require(rt.actor_id(fault) == 0L, "first actor numeric ID must be zero");
                 require(rt.try_send(fault, 1) == AttoM7CooperativeRuntime.Admission.ACCEPTED,
                     "faulting send not admitted");
                 require(entered.await(5, TimeUnit.SECONDS), "guest callback did not start");
@@ -47,9 +48,15 @@ public final class M9JavaSupervisorNoticeProbe {
                     "duplicate STOP incorrectly failed");
                 var stop = rt.await_supervisor_notice(5_000);
                 require(stop != null && stop.kind() == AttoM7CooperativeRuntime.ControlKind.STOP &&
-                    stop.actorName().equals("m9-fault") && stop.generation() == 1 &&
+                    stop.actorId() == 0 && stop.actorName().equals("m9-fault") &&
+                    stop.generation() == 1 &&
                     stop.supervisorId() == 777 && stop.messageId() == 0 &&
                     stop.faultCode() == 0, "STOP not delivered through independent CONTROL: " + stop);
+                String stopWire = stop.to_wire_json();
+                require(stopWire.equals(
+                    "{\"kind\":\"STOP\",\"actor_id\":0,\"generation\":1,\"supervisor_id\":777,\"message_id\":0,\"fault_code\":0,\"reason\":\"graceful stop\"}"),
+                    "noncanonical Java STOP wire: " + stopWire);
+                System.out.println("M9_WIRE_STOP_JSON=" + stopWire);
                 require(rt.try_send(fault, 99) != AttoM7CooperativeRuntime.Admission.ACCEPTED,
                     "STOP did not fence fresh DATA");
                 AttoM7CooperativeRuntime.check_conservation(rt.snapshot(fault));
@@ -57,11 +64,16 @@ public final class M9JavaSupervisorNoticeProbe {
                 var panic = rt.await_supervisor_notice(10_000);
                 require(panic != null &&
                     panic.kind() == AttoM7CooperativeRuntime.ControlKind.PANIC &&
-                    panic.actorName().equals("m9-fault") &&
+                    panic.actorId() == 0 && panic.actorName().equals("m9-fault") &&
                     panic.generation() == 1 && panic.supervisorId() == 777 &&
                     panic.messageId() == 1 && panic.faultCode() == 1 &&
                     panic.reason().equals("checked arithmetic"),
                     "PANIC notice missing fault/actor/parent/message identity: " + panic);
+                String panicWire = panic.to_wire_json();
+                require(panicWire.equals(
+                    "{\"kind\":\"PANIC\",\"actor_id\":0,\"generation\":1,\"supervisor_id\":777,\"message_id\":1,\"fault_code\":1,\"reason\":\"checked arithmetic\"}"),
+                    "noncanonical Java PANIC wire: " + panicWire);
+                System.out.println("M9_WIRE_PANIC_JSON=" + panicWire);
                 require(rt.await_terminal(fault, 10_000), "faulting actor did not retire");
                 var snapshot = rt.snapshot(fault);
                 require(snapshot.accepted() == 3 && snapshot.completed() == 0 &&
@@ -75,6 +87,12 @@ public final class M9JavaSupervisorNoticeProbe {
                     "retired actor identity regained mailbox authority");
                 var reincarnated = rt.spawn("m9-fault", 2,
                     M9JavaSupervisorNoticeProbe::done, 778);
+                require(rt.actor_id(reincarnated) == 1L,
+                    "actor numeric identity reused on reincarnation");
+                try {
+                    rt.actor_id(fault);
+                    throw new AssertionError("stale actor ref regained numeric authority");
+                } catch (IllegalArgumentException expected) { }
                 require(reincarnated.generation() == 2,
                     "actor incarnation generation failed to increment");
                 require(rt.try_send(fault, 1) == AttoM7CooperativeRuntime.Admission.STALE,
@@ -94,6 +112,28 @@ public final class M9JavaSupervisorNoticeProbe {
                 require(next.accepted() == 1 && next.completed() == 1 &&
                     next.resultSum() == 8, "new actor lost DATA: " + next);
                 AttoM7CooperativeRuntime.check_conservation(next);
+                // Mutating wire identity and invalid control semantics must fail
+                // BEFORE a network/router consumer sees serialized JSON.
+                var invalid = new AttoM7CooperativeRuntime.SupervisorNotice(
+                    AttoM7CooperativeRuntime.ControlKind.PANIC,
+                    9_007_199_254_740_992L, "forged", 1, 777, 1, 1, "fault");
+                try {
+                    invalid.to_wire_json();
+                    throw new AssertionError("unrepresentable JS actor id accepted");
+                } catch (IllegalArgumentException expected) { }
+                invalid = new AttoM7CooperativeRuntime.SupervisorNotice(
+                    AttoM7CooperativeRuntime.ControlKind.STOP,
+                    0, "forged", 1, 777, 1, 1, "fault");
+                try {
+                    invalid.to_wire_json();
+                    throw new AssertionError("forged STOP fault/id accepted");
+                } catch (IllegalArgumentException expected) { }
+                var escaped = new AttoM7CooperativeRuntime.SupervisorNotice(
+                    AttoM7CooperativeRuntime.ControlKind.PANIC,
+                    0, "quoted", 1, 777, 1, 101, "line\nquote\"slash\\");
+                require(escaped.to_wire_json().endsWith(
+                    "\"reason\":\"line\\nquote\\\"slash\\\\\"}"),
+                    "supervisor reason not JSON-escaped");
             } finally {
                 release.countDown();
             }
@@ -103,6 +143,7 @@ public final class M9JavaSupervisorNoticeProbe {
         System.out.println("M9_JAVA_FAULT_MESSAGE_GENERATION_METADATA=PASS");
         System.out.println("M9_JAVA_ACCEPTED_FAILED_ABANDONED_CONSERVATION=PASS");
         System.out.println("M9_JAVA_REINCARNATION_FENCE=PASS");
+        System.out.println("M9_JAVA_NUMERIC_ACTOR_ID_CANONICAL_WIRE=PASS");
         System.out.println("M9_JAVA_SCOPE=HOST_CONTROL_NOT_JAVA_COMPILER_FULL_ACTOR_PARITY");
     }
 }
