@@ -36,6 +36,7 @@ mkdir -p "$tmp/classes"
   src/m7/AttoM7CooperativeRuntime.java \
   tests/m7/M7CompiledActorProbe.java \
   tests/m7/M7CallbackIsolationAuditProbe.java \
+  tests/m9/M9JavaSupervisorNoticeProbe.java \
   "$tmp/generated/M7GeneratedActor.java"
 if ! timeout 120 "$JAVA_HOME/bin/java" -cp "$tmp/classes" M7CompiledActorProbe \
         > "$tmp/jvm" 2> "$tmp/jvm.err"; then
@@ -71,6 +72,12 @@ for marker in \
   M7_AUDIT_BLOCKED_RESULT_NO_GLOBAL_MONITOR=PASS \
   M7_AUDIT_PANIC_SUSPENDED_FRAME_CONSERVATION=PASS \
   M7_AUDIT_PANIC_RUNNING_PC_QUISCES=PASS \
+  M9_JAVA_PRIORITY_STOP_THEN_PANIC_NOTICE=PASS \
+  M9_JAVA_SATURATED_DATA_CONTROL_INDEPENDENT=PASS \
+  M9_JAVA_FAULT_MESSAGE_GENERATION_METADATA=PASS \
+  M9_JAVA_ACCEPTED_FAILED_ABANDONED_CONSERVATION=PASS \
+  M9_JAVA_REINCARNATION_FENCE=PASS \
+  M9_JAVA_SCOPE=HOST_CONTROL_NOT_JAVA_COMPILER_FULL_ACTOR_PARITY \
   M7_RESTRICTED_COMPILED_ATTO_HOST_SCHEDULER=PASS \
   M7_SCOPE=RESTRICTED_STATIC_ATTO_LOOP_COOPERATE_NOT_FULL_COMPILER_OR_HARD_RT; do
   grep -Fx "$marker" "$tmp/native" >/dev/null || { echo "M7_NATIVE_MARKER_MISSING=$marker" >&2; exit 1; }
