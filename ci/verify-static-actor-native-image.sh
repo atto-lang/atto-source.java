@@ -17,6 +17,7 @@ test -x "$JAVA_HOME/bin/native-image" && test -x "$JAVA_HOME/bin/javac" || {
   echo 'ATTO_STATIC_AOT_NOT_EXECUTED: actual GraalVM Native Image JDK required' >&2; exit 2;
 }
 python3 -m unittest discover -s tests -p test_static_actor_aot.py -v
+python3 -m unittest discover -s tests -p test_static_actor_aot_hardening.py -v
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 source="${ATTO_M4_FIXTURE:-fixtures/actor_counter.atto}"
@@ -38,13 +39,14 @@ assert m["schema"]=="atto.static-actor-graal-aot-pilot.v1"
 assert m["status"]=="GENERATED_SOURCE_NOT_YET_EXECUTED"
 assert m["source_sha256"]==sys.argv[2]
 assert m["generated_java_sha256"]==hashlib.sha256(java).hexdigest()
-assert m["actor_kinds"]==1 and m["actor_sends"]==3 and m["expected_guest_result"]==43
+assert m["actor_kinds"]==1 and m["actor_instances"]==2 and m["actor_sends"]==3 and m["expected_guest_result"]==43
 print("ATTO_STATIC_SOURCE_MANIFEST_VERIFIED=1")
 print("ATTO_GUEST_SOURCE_SHA256="+m["source_sha256"])
 print("ATTO_GENERATED_JAVA_SHA256="+m["generated_java_sha256"])
 PY
 mkdir -p "$tmp/classes"
-"$JAVA_HOME/bin/javac" -d "$tmp/classes" "$tmp/generated/AttoGeneratedMain.java"
+"$JAVA_HOME/bin/javac" -d "$tmp/classes" "$tmp/generated/AttoGeneratedMain.java" "$repo/tests/AttoGeneratedAtomicityProbe.java"
+"$JAVA_HOME/bin/java" -cp "$tmp/classes" AttoGeneratedAtomicityProbe
 (
   cd "$tmp"
   "$JAVA_HOME/bin/native-image" --no-fallback --gc=epsilon \
@@ -55,6 +57,7 @@ file "$tmp/atto-static-actor-guest" | grep -Eq 'ELF|Mach-O' || {
   echo 'ATTO_STATIC_AOT_NOT_EXECUTED: artifact not native OS machine code' >&2; exit 1;
 }
 sha256sum "$tmp/atto-static-actor-guest"
+echo "ATTO_GRAAL_NATIVE_GUEST_SHA256=$(sha256sum "$tmp/atto-static-actor-guest" | cut -d ' ' -f 1)"
 native_exit=0
 "$tmp/atto-static-actor-guest" > "$tmp/stdout" 2> "$tmp/stderr" || native_exit=$?
 if (( native_exit != 0 )); then

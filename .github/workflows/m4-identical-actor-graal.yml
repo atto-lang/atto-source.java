@@ -5,6 +5,8 @@ on:
   pull_request:
     paths:
       - 'fixtures/m4/**'
+      - 'tests/test_static_actor_aot_hardening.py'
+      - 'tests/AttoGeneratedAtomicityProbe.java'
       - 'ci/verify-static-actor-native-image.sh'
       - '.github/workflows/m4-identical-actor-graal.yml'
 permissions:
