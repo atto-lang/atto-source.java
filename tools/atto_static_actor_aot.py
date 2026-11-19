@@ -14,6 +14,9 @@ import json
 from pathlib import Path
 import re
 import sys
+import os
+import subprocess
+import tempfile
 
 TOKEN = re.compile(r"\s+|//[^\n]*|-?[0-9]+|[A-Za-z_][A-Za-z_0-9]*|[{}():;.=+]", re.ASCII)
 NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z", re.ASCII)
@@ -294,11 +297,113 @@ def generate(kinds, actions, result):
     return "\n".join(out) + "\n"
 
 
+
+def compile_with_checked_exporter(source_bytes, exporter, claimed_sha256):
+    """Compile from the canonical LLVM frontend's checked actor AST projection.
+
+    The exporter MUST be an actual executable verified against caller's
+    pinned binary hash. No ability to supply precomputed JSON: a checked
+    binary is executed on exactly the source bytes being compiled.
+    """
+    executable = Path(exporter)
+    if (not executable.is_file() or executable.is_symlink() or
+            not os.access(executable, os.X_OK) or executable.stat().st_size > 150 * 1024 * 1024):
+        raise CompileError("canonical exporter binary missing, unsafe or not executable")
+    raw_executable = executable.read_bytes()
+    if (not re.fullmatch(r"[0-9a-f]{64}", claimed_sha256) or
+            hashlib.sha256(raw_executable).hexdigest() != claimed_sha256):
+        raise CompileError("canonical exporter executable digest mismatch")
+    with tempfile.TemporaryDirectory(prefix="atto-m5-canonical-") as temp:
+        pinned = Path(temp) / "input.atto"
+        pinned.write_bytes(source_bytes)
+        try:
+            result = subprocess.run(
+                [str(executable.resolve()), str(pinned)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                check=False, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as err:
+            raise CompileError("canonical checked frontend could not execute") from err
+        if result.returncode != 0 or len(result.stdout) > 131072 or len(result.stderr) > 8192:
+            raise CompileError("canonical checked frontend rejected source or exceeded its output budget")
+        try:
+            ir = json.loads(result.stdout.decode("utf-8", "strict"))
+        except (UnicodeError, ValueError) as err:
+            raise CompileError("canonical checked frontend emitted invalid JSON") from err
+    return validate_checked_actor_ir(ir)
+
+
+def validate_checked_actor_ir(ir):
+    """A strict typed-IR shape validator; never independently authorizes guest source."""
+    if not isinstance(ir, dict) or set(ir) != {
+            "schema", "checker", "status", "actor", "spawns",
+            "actions", "return_i64", "limits", "unsupported"}:
+        raise CompileError("canonical checked IR schema or fields invalid")
+    if (ir["schema"] != "atto.canonical-checked-actor-ir.v0" or
+            ir["checker"] != "LLVM_PARSE_PROGRAM_OWNERSHIP_SCALAR_TYPES" or
+            ir["status"] != "CHECKED_RESTRICTED_ACTOR_SLICE" or
+            ir["limits"] != {"max_actor_instances": 64, "max_source_sends": 1024}):
+        raise CompileError("canonical checked IR checker or type contract invalid")
+    a = ir["actor"]
+    if not isinstance(a, dict) or set(a) != {"name", "field", "initial", "parameter", "operation"}:
+        raise CompileError("canonical actor record invalid")
+    name, field, parameter = a["name"], a["field"], a["parameter"]
+    if (not all(isinstance(v, str) and NAME.fullmatch(v) and len(v) <= 128
+                for v in (name, field, parameter)) or field == parameter or
+            a["operation"] != "checked_add_i64_return_field" or
+            type(a["initial"]) is not int or not -(1 << 63) <= a["initial"] < (1 << 63)):
+        raise CompileError("canonical actor typed additive handler invalid")
+    if not isinstance(ir["spawns"], list) or not 1 <= len(ir["spawns"]) <= MAX_ACTOR_INSTANCES:
+        raise CompileError("canonical actor spawn budget invalid")
+    actions = []
+    live = set()
+    seen = set()
+    for item in ir["spawns"]:
+        if (not isinstance(item, dict) or set(item) != {"ref", "kind"} or
+                not isinstance(item["ref"], str) or not NAME.fullmatch(item["ref"]) or
+                item["kind"] != name or item["ref"] in seen):
+            raise CompileError("canonical spawn identity or actor kind invalid")
+        live.add(item["ref"])
+        seen.add(item["ref"])
+        actions.append(("spawn", item["ref"], name))
+    ops = ir["actions"]
+    if not isinstance(ops, list) or len(ops) > MAX_SENDS + MAX_ACTOR_INSTANCES:
+        raise CompileError("canonical actor action budget invalid")
+    sends = 0
+    for op in ops:
+        if not isinstance(op, dict) or op.get("ref") not in seen:
+            raise CompileError("canonical actor handle missing")
+        ref = op["ref"]
+        if op.get("op") == "send" and set(op) == {"op", "ref", "value"}:
+            if ref not in live or type(op["value"]) is not int or not -(1 << 63) <= op["value"] < (1 << 63):
+                raise CompileError("canonical invalid/stale send or payload type")
+            actions.append(("send", ref, op["value"]))
+            sends += 1
+            if sends > MAX_SENDS:
+                raise CompileError("canonical message budget exceeded")
+        elif op.get("op") == "stop" and set(op) == {"op", "ref"}:
+            if ref not in live:
+                raise CompileError("canonical duplicate or stale actor stop")
+            live.remove(ref)
+            actions.append(("stop", ref, None))
+        else:
+            raise CompileError("canonical unsupported actor action")
+    if live or sends == 0:
+        raise CompileError("canonical actor handles not closed or no messages executed")
+    result = ir["return_i64"]
+    if type(result) is not int or not -(1 << 63) <= result < (1 << 63):
+        raise CompileError("canonical main return must be i64")
+    if not isinstance(ir["unsupported"], list) or not {"rt_take", "rt_share", "tenant_sandbox"}.issubset(set(ir["unsupported"])):
+        raise CompileError("canonical unsupported ownership or tenant operations silently omitted")
+    return {name: (name, field, parameter, a["initial"])}, actions, result, sends
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("source")
     ap.add_argument("--source-sha256", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--checked-exporter", help="run exact pinned canonical LLVM frontend IR exporter")
+    ap.add_argument("--checked-exporter-sha256")
     args = ap.parse_args(argv)
     try:
         path = Path(args.source)
@@ -311,7 +416,13 @@ def main(argv=None):
         if not re.fullmatch("[0-9a-f]{64}", args.source_sha256) or args.source_sha256 != exact:
             raise CompileError("source bytes do not match supplied SHA-256")
         source = raw.decode("utf-8", errors="strict")
-        kinds, actions, guest_result, sends = parse_atto(source)
+        if bool(args.checked_exporter) != bool(args.checked_exporter_sha256):
+            raise CompileError("canonical exporter binary and SHA256 must be provided together")
+        if args.checked_exporter:
+            kinds, actions, guest_result, sends = compile_with_checked_exporter(
+                raw, args.checked_exporter, args.checked_exporter_sha256)
+        else:
+            kinds, actions, guest_result, sends = parse_atto(source)
         result = Path(args.out)
         if result.exists() or result.is_symlink():
             raise CompileError("output path exists; refusing to replace artifacts")
@@ -324,6 +435,8 @@ def main(argv=None):
             "generated_java_sha256": hashlib.sha256(java.encode()).hexdigest(),
             "actor_kinds": len(kinds),
             "actor_sends": sends,
+            "compiler_authority": "CANONICAL_LLVM_AST" if args.checked_exporter else "RESTRICTED_PYTHON_PILOT",
+            "canonical_exporter_sha256": args.checked_exporter_sha256 if args.checked_exporter else None,
             "actor_instances": sum(1 for kind, _, _ in actions if kind == "spawn"),
             "expected_guest_result": guest_result,
             "status": "GENERATED_SOURCE_NOT_YET_EXECUTED",
