@@ -33,6 +33,25 @@ a `Generation.start()` success is **not** enough to change the route of a
 currently running actor. A second-stage runtime PR must implement that
 operation and test stable `ActorRef` identity with real mailbox receipts.
 
+## Non-HTTP code-image retention admission (separate host foundation)
+
+`HotCodeGenerationRetentionV1` now exposes a code-generation `CodeLease`
+for trusted callers to pin a code image through suspended work, actor callbacks,
+FFI and trace-code entries. The admission and cleanup decisions share one
+monitor: physical cleanup fails while any explicit non-HTTP code lease remains,
+even if the HTTP ledger is drained and a loader reports cleanup. Duplicate
+lease close is idempotent; quarantined or retired images reject new code pins.
+The image's charged byte budget remains held until the final physical cleanup
+acknowledgement. Race tests exercise pin versus cleanup linearization.
+
+**Not yet integrated into all runtime entry/continuation/FFI call sites.**
+The lease object is a Java control-plane allocation, not a zero-allocation
+per-call guest ABI. A zero ledger count does **not** prove all runtime pins
+are absent; the loader's independently authenticated physical-quiescence
+witness remains mandatory. This does not implement full guest AOT, JIT code
+publication, compiled guest hot upgrades, zero guest tracing GC or OTLP.
+Do not promote this host-only foundation as real guest execution evidence.
+
 ## Test
 
 ```sh

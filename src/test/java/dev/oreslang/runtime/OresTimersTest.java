@@ -52,6 +52,7 @@ final class OresTimersTest {
         }
     }
 
+
     @Test
     void timeoutObservesCompletedSourceWithoutArmingTimer() throws Exception {
         try (OresTimers timers = new OresTimers()) {

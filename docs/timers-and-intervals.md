@@ -2,10 +2,7 @@
 
 Status: **proposed source API** with initial host-runtime primitives (2026-10-14).
 
-For actor-specific timer heap placement, CONTROL delivery, task-free awaits,
-observer-vs-owned-work cancellation and teardown fences, see
-[actor timer ownership and timeout contract](actor-timer-ownership-and-timeout-contract.md).
-This companion is normative design, **not** evidence of runnable guest bindings.
+For owned actor timer heaps, CONTROL-lane delivery, observer timeout cancellation, and teardown fences, see [the timer ownership contract](actor-timer-ownership-and-timeout-contract.md). This describes a staged contract rather than confirmed guest bindings.
 These snippets are **target syntax**, not evidence that both compilers accept them.
 
 ## Public API (proposed)

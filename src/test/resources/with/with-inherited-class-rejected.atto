@@ -1,0 +1,13 @@
+define class Parent as
+    pub final int x: 1;
+end
+
+define class Child extends Parent as
+    pub final int y: 2;
+end
+
+pub routine main(): void {
+    const Child original = new Child();
+    const Child updated = rt copy original with {y => 3};
+    return;
+}

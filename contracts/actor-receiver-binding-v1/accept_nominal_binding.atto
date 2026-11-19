@@ -1,0 +1,6 @@
+// Static-only nominal binding: this must NOT be accepted as executable guest code.
+define module workers as
+  pub define actor Worker as worker;
+  define pub mtd get_count(Worker w)(): int { return 42; }
+  define pub fnc inspect(Worker worker_ref): void { return; }
+end

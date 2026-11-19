@@ -1,7 +1,11 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
 source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
-namespace_decl  = "namespace" IDENT ";" ;
+namespace_decl  = [ "use" ] "namespace" IDENT ";" ;
+(* Canonical: "use namespace x;" only at the source-file header.
+   "use" is contextual and DOES NOT import module members into lexical scope;
+   an imported module requires "import module Name from \"./file.atto\";".
+   The legacy "namespace x;" header is still accepted for migration. *)
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
@@ -122,10 +126,17 @@ contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
 module_contract_body = "{" { module_contract_member } "}"
                      | { module_contract_member } "end" ;
 module_contract_member = interface_member
-                       | "actor" IDENT member_terminator ;
-(* Stage 1: 'actor IDENT;' requires a public nominal actor declaration in
-   the conforming module. External 'mtd(Actor receiver)' implementations and
-   per-actor method requirements are NOT yet part of this grammar. *)
+                       | "actor" IDENT member_terminator
+                       | [ visibility ] "mtd" IDENT "(" type_ref IDENT ")"
+                         "(" [ param_list ] ")" [ (":" | "=>") type_ref ]
+                         member_terminator ;
+(* Stage 1: 'actor IDENT;' requires a public nominal actor declaration.
+   Stage 2: 'pub mtd f(Actor a)(Args...): T;' requires an existing
+   mailbox-dispatched actor method with an exact signature and visibility.
+   No external executable 'define mtd' declarations, standalone actor alias,
+   runtime witness, or actor-state capability is introduced by this rule.
+   Stage 2 currently rejects checked effects, generic receiver types,
+   structural arguments, and generic contracts with receiver requirements. *)
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -183,6 +194,12 @@ binding_decl    = named_inferred_binding
                   | [ type_ref ] IDENT )
                   "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
+(* Type declarations use 'type T = <type_ref>'. Type names are immutable by
+   definition; 'const type T = ...' is not a declaration. Inside a callable
+   every 'const type' spelling (including 'const type T value = ...') is
+   rejected as redundant; write 'const T value = ...'.
+   Function/block-local type declarations and their public return ABI are
+   NOT enabled in this grammar revision. *)
 named_inferred_binding
                 = "const" IDENT IDENT "=" named_inferred_literal stmt_terminator ;
 named_inferred_literal
@@ -230,11 +247,18 @@ statement       = binding_decl
                 | switch_stmt
                 | try_stmt
                 | select_stmt
+                | do_channel_stmt
                 | defer_stmt
                 | for_stmt
                 | while_stmt
                 | loop_stmt
                 | expression stmt_terminator ;
+
+(* Explicit result-discarding channel operations remain suspending and use
+   the same SourceTask/continuation lowering as plain readch/writech.
+   Do not accept 'do nb readch/writech': pending Futures require ownership. *)
+do_channel_stmt = "do" ( "readch" unary
+                        | "writech" unary "," expression ) stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
@@ -244,7 +268,7 @@ continue_stmt   = "continue" stmt_terminator ;
 loop_stmt       = "loop" block ;
 while_stmt      = "while" ( "(" condition_head ")" | condition_head ) [ ";" ] loop_body ;
 
-if_stmt         = "if" condition_head
+if_stmt         = ( "if" | "ifnot" | "unless" ) condition_head
                   ( braced_if_tail
                   | [ ";" ] ( "then" | deprecated_if_do ) { statement }
                     { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement } }
@@ -267,8 +291,10 @@ condition_head  = condition
                 | "let" refutable_pattern "=" logic_or [ "&&" condition ]
                 | logic_or "as" "let" IDENT "when" condition
                 | "(" logic_or "as" "let" IDENT "when" condition ")" ;
-condition       = condition_and { "|" condition_and } ;
-condition_and   = equality { "," equality } ;
+(* Condition heads use the canonical expression grammar plus two condition-only
+   aliases (spec ch.16): ',' means && and binds loosest, and a bare '|' between
+   bool operands means ||. Prefer && and || in new code. *)
+condition       = logic_or { "," logic_or } ;
 
 match_stmt      = [ "do" ] "match" [ "first" ] expression
                   ( "over"
@@ -279,12 +305,22 @@ canonical_match_arm
                 = "on" pattern [ "when" expression ] [ "->" ] block ;
 match_arm       = ( pattern | "else" ) [ "when" expression ] "->" block ;
 (* "over" is reserved. "on" and "when" remain contextual arm words.
-   "structural" remains contextual and is consumed only where grammar requires it. *)
+   "structural" remains contextual and is consumed only where grammar requires it.
+   The tilde form with braces is a structural field-shape test, distinct from
+   the preexisting '~(field: pattern)' record-pattern syntax and '~array(...)'. *)
 pattern         = "_"
                 | literal
+                | structural_match_pattern
                 | IDENT
                 | IDENT "(" [ pattern { "," pattern } ] ")"
-                | "is" type_ref [ IDENT ] ;
+                | "is" type_ref [ "as" IDENT | IDENT ] ;
+structural_match_pattern
+                = ( "~" | "structural" ) type_ref [ "as" IDENT ] ;
+(* 'structural TypeName name' remains an accepted legacy binding form, but
+   'as name' is canonical and mandatory for a binding in the new '~ {...}' form.
+   The inline record-shaped type tests accessible fields, not nominal identity.
+   Records, structs and classes are intended matches; semantic parity requires
+   separate type-checker and backend execution tests. *)
 
 switch_stmt     = [ "do" ] "switch" expression [ ";" ]
                   { switch_case } [ switch_default ] "end" ;
@@ -368,7 +404,13 @@ pipeline_stage  = IDENT [ call_suffix ]
    stages associate leftwards, and actor 'pipe' remains a distinct operator. *)
 
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
-logic_or        = equality { "|" equality } ;
+(* Canonical bool punctuation: && > ^^ > ||, left associative.
+   && and || short-circuit. ^^ evaluates both sides once, left-to-right.
+   Outside condition heads, bare |, bare &, single ^ and word operators are
+   not logical syntax. *)
+logic_or        = logic_xor { "||" logic_xor } ;
+logic_xor       = logic_and { "^^" logic_and } ;
+logic_and       = equality { "&&" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
                   { ( "<" | "<=" | ">" | ">=" ) additive
@@ -497,8 +539,13 @@ type_atom       = borrow_type
 
 borrow_type     = "&" [ "mut" ] type_atom ;
 tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
+(* A record or struct prefix in type position is a type-shape marker.
+   At a declaration initializer / return-expression site the same prefix
+   instead introduces a value literal; never inspect field payload spelling
+   to decide which grammar applies. *)
 empty_named_tuple_type = ( "Tuple" | "~tuple" ) "[" "]" ;
-record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
+record_type     = [ "record" | "struct" ]
+                  "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
 alias_marker    = "type" named_type ;
@@ -632,6 +679,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      break exits and continue advances the nearest enclosing loop/for; return
      still exits the enclosing callable. Loop control never crosses a callable
      boundary.
+   - ifnot/unless negate the first boolean condition exactly once; later elif predicates are positive.
+     Else, braced branches, and fi have their usual meaning. Negated heads with binding
+     patterns or as-let conditional captures are rejected until narrowing is checked.
    - Every if statement closes with "fi". Braces delimit branch bodies but never
      replace the structural terminator. "then" is the canonical keyword-delimited
      branch introducer; deprecated "do" remains accepted for migration and may
