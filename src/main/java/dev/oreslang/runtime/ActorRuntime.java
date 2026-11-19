@@ -2593,6 +2593,42 @@ public final class ActorRuntime implements AutoCloseable {
             return ActorRuntime.this.closed.get() || physicallyDrained();
         }
 
+        /**
+         * Non-parking output poll. Empty means no record is presently queued;
+         * isDone() distinguishes an open stream from terminal EOF.
+         * Runtime shutdown seals observation under runtimeLifecycleLock.
+         */
+        public Optional<ActorOutput<M>> tryNext() {
+            synchronized (runtimeLifecycleLock) {
+                try {
+                    if (ActorRuntime.this.closed.get()) return Optional.empty();
+                    Optional<ActorOutputEnvelope> candidate;
+                    try {
+                        candidate = channel.tryRead();
+                    } catch (java.util.concurrent.CompletionException failure) {
+                        Throwable terminal = OresFuture.unwrap(failure);
+                        if (terminal instanceof ChannelRuntime.ChannelClosedException closed) {
+                            if (closed.getCause() == null) return Optional.empty();
+                            throw new java.util.concurrent.CompletionException(closed.getCause());
+                        }
+                        throw failure;
+                    }
+                    if (candidate.isEmpty()) return Optional.empty();
+                    ActorOutputEnvelope envelope = candidate.orElseThrow();
+                    try {
+                        @SuppressWarnings("unchecked")
+                        ActorOutput<M> output = (ActorOutput<M>) envelope.output();
+                        return Optional.of(output);
+                    } finally {
+                        // One committed output consumes exactly one reservation.
+                        envelope.close();
+                    }
+                } finally {
+                    if (isDone()) actorOutputStreams.remove(this);
+                }
+            }
+        }
+
         public OresFuture<GeneratorRuntime.Step<ActorOutput<M>>> next() {
             if (ActorRuntime.this.closed.get()) {
                 return OresFuture.completed(GeneratorRuntime.Step.doneStep());
