@@ -27,7 +27,10 @@ final class OwnershipBangGuestTest {
     private static final Map<String, String> PINS = Map.of(
             "compact", "5336fa679a7816dbd353be4480f95dac639b6af7",
             "spaced", "06afd973b34a6cd09d1d78cee258134b1c3b0451",
-            "legacy", "fa3d3ef8173d046783efdae808bd291be00891be");
+            "legacy", "fa3d3ef8173d046783efdae808bd291be00891be",
+            "mut-canonical", "a518f08a495763f349c7ab21baa5d61d0cfc7769",
+            "mut-compact", "a7e3b55ebd128a671cdb48ede3557aee6dc1b2b0",
+            "mut-rt-tail", "b1e982f0ca85291a5e9924e3c6ff571ba13efebe");
 
     private static String shaOfGitBlob(byte[] bytes) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-1");
@@ -37,8 +40,11 @@ final class OwnershipBangGuestTest {
     }
 
     @Test
-    void compactSpacedAndLegacyPrefixesCompileAndExecuteAttoGuest() throws Exception {
-        for (String variant : new String[]{"compact", "spaced", "legacy"}) {
+    void ownershipPrefixesAndMutableBorrowAliasesExecuteAttoGuest() throws Exception {
+        // These are actual Java/Truffle guests, not parser-only source checks.
+        // Borrow aliases must preserve exclusive access to the same Item.
+        for (String variant : new String[]{"compact", "spaced", "legacy",
+                "mut-canonical", "mut-compact", "mut-rt-tail"}) {
             Path file = ROOT.resolve(variant + ".atto");
             assertTrue(Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS), variant);
             // Regular-file checks on the leaf are insufficient if any parent
