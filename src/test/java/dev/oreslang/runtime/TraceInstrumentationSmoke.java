@@ -68,22 +68,68 @@ public final class TraceInstrumentationSmoke {
         check(router.retainedGenerations() == 2, "old pinned version retained");
         rejects(IllegalStateException.class, () -> router.prepare(TraceInstrumentationControlV1.CALL, 5));
         old.close(); old.close();
-        check(router.retainedGenerations() == 1, "old version reclaimed after pin release");
+        check(router.retainedGenerations() == 2, "AOT baseline retained after pin release");
+        next.close();
+        rejects(IllegalStateException.class, next::executable);
         var t2 = router.prepare(TraceInstrumentationControlV1.CALL, 5);
         adaptive.configure(0);
         rejects(SecurityException.class, () -> router.publish(t2, new AdaptiveTraceCodeV1.Candidate<>(
                 identity("tenant-a"), TraceInstrumentationControlV1.CALL, "v2")));
         router.abort(t2);
         adaptive.configure(TraceInstrumentationControlV1.CALL);
+        var duringStop = router.pin();
+        check(duringStop.executable().equals("v0"), "revoked JIT does not revive");
         var t3 = router.prepare(TraceInstrumentationControlV1.CALL, 5);
         router.retire();
         rejects(SecurityException.class, () -> router.publish(t3, new AdaptiveTraceCodeV1.Candidate<>(
                 identity("tenant-a"), TraceInstrumentationControlV1.CALL, "late")));
         rejects(IllegalStateException.class, router::pin);
-        check(next.executable().equals("v1"), "retirement preserves already-running code");
-        next.close();
+        check(duringStop.executable().equals("v0"), "retirement preserves already-running code");
+        duringStop.close();
         check(router.isRetired(), "retired after stop");
         check(router.compilationAttempts() == 3, "bounded attempts include aborted");
+        // Independent OFF/ON and retention regression: a policy revision is an
+        // authorization epoch, not simply the latest enabled bitmask.
+        var revision = new TraceInstrumentationControlV1(TraceInstrumentationControlV1.BuildMode.ADAPTIVE);
+        revision.configure(TraceInstrumentationControlV1.CALL);
+        var versions = new AdaptiveTraceCodeV1<>(revision, identity("tenant-a"), 8, "aot", 6, 2);
+        var install = versions.prepare(TraceInstrumentationControlV1.CALL, 8);
+        versions.publish(install, new AdaptiveTraceCodeV1.Candidate<>(identity("tenant-a"),
+                TraceInstrumentationControlV1.CALL, "jit-one"));
+        var running = versions.pin();
+        check(running.executable().equals("jit-one"), "JIT active before revocation");
+        revision.configure(0);
+        var plain = versions.pin();
+        check(plain.executable().equals("aot"), "OFF dispatches to immutable baseline");
+        check(running.executable().equals("jit-one"), "existing JIT invocation survives OFF");
+        plain.close();
+        revision.configure(TraceInstrumentationControlV1.CALL);
+        var notRevived = versions.pin();
+        check(notRevived.executable().equals("aot"), "ON does not revive stale JIT code");
+        notRevived.close();
+        running.close();
+        rejects(IllegalStateException.class, running::executable);
+        check(versions.retainedGenerations() == 1, "revoked unpinned JIT reclaims safely");
+        var revoked = versions.prepare(TraceInstrumentationControlV1.CALL, 8);
+        revision.configure(0);
+        revision.configure(TraceInstrumentationControlV1.CALL);
+        rejects(SecurityException.class, () -> versions.publish(revoked,
+                new AdaptiveTraceCodeV1.Candidate<>(identity("tenant-a"),
+                        TraceInstrumentationControlV1.CALL, "replay-after-reenable")));
+        versions.abort(revoked);
+        var fresh = versions.prepare(TraceInstrumentationControlV1.CALL, 8);
+        versions.publish(fresh, new AdaptiveTraceCodeV1.Candidate<>(identity("tenant-a"),
+                TraceInstrumentationControlV1.CALL, "jit-two"));
+        var freshInvocation = versions.pin();
+        check(freshInvocation.executable().equals("jit-two"), "fresh policy revision is executable");
+        freshInvocation.close();
+        var newest = versions.prepare(TraceInstrumentationControlV1.CALL, 8);
+        versions.publish(newest, new AdaptiveTraceCodeV1.Candidate<>(identity("tenant-a"),
+                TraceInstrumentationControlV1.CALL, "jit-three"));
+        var recent = versions.pin();
+        check(recent.executable().equals("jit-three"), "unpinned old JIT slot is reused");
+        recent.close();
+        check(versions.retainedGenerations() == 2, "AOT baseline retained forever during owner lifetime");
         System.out.println("TRACE_INSTRUMENTATION_PASS assertions=" + assertions);
     }
 }
