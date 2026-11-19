@@ -24,6 +24,12 @@ mkdir -p "$work/classes" "$work/generated"
   "$work/generated/M10GeneratedActor.java" \
   tests/m10/M10MailboxTurnProbe.java \
   tests/m10/M10RemoteActorProcessProbe.java
+"$JAVA_HOME/bin/javac" --release 21 -cp "$work/classes" -d "$work/classes" \
+  tests/m6/M6NioRuntimeProbe.java \
+  tests/m6/M6SelectorLifecycleAuditProbe.java \
+  tests/m6/M6ControlBudgetStressProbe.java
+timeout 120 "$JAVA_HOME/bin/java" -cp "$work/classes" M6NioRuntimeProbe | tee "$work/m6.log"
+grep -Fx 'M6_NIO_SCHEDULER_SUPERVISOR_NATIVE_HOST=PASS' "$work/m6.log" >/dev/null
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10MailboxTurnProbe | tee "$work/mailbox.log"
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10RemoteActorProcessProbe | tee "$work/process.log"
 for marker in \
