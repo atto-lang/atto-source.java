@@ -1,0 +1,8 @@
+suspends fnc bad(Topic<String> topic): void {
+  // A SourceTask parameter cannot import an actor-owned Topic handle.
+  return;
+}
+
+pub fnc main(): void {
+  return;
+}

@@ -72,6 +72,82 @@ final class ActorOutputStreamTest {
     }
 
     @Test
+    void shutdownSealWinsBufferedOutputReadArbitration() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) -> {
+                        turn.runtime().emitCurrentActorOutput("buffered-1");
+                        turn.runtime().emitCurrentActorOutput("buffered-2");
+                        turn.runtime().endCurrentActor();
+                    });
+            ref.ready().join();
+            ref.send("go");
+            ref.done().join();
+
+            java.lang.reflect.Field lifecycle =
+                    ActorRuntime.class.getDeclaredField("runtimeLifecycleLock");
+            lifecycle.setAccessible(true);
+            Object lifecycleLock = lifecycle.get(runtime);
+
+            java.util.concurrent.atomic.AtomicReference<
+                    GeneratorRuntime.Step<ActorRuntime.ActorOutput<Object>>> observed =
+                            new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Throwable> readerFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            Thread reader;
+            synchronized (lifecycleLock) {
+                reader = Thread.ofPlatform().daemon(true).start(() -> {
+                    try {
+                        observed.set(ref.outputs().next().get(
+                                5, java.util.concurrent.TimeUnit.SECONDS));
+                    } catch (Throwable failure) {
+                        readerFailure.set(failure);
+                    }
+                });
+
+                long deadline = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                while (reader.isAlive()
+                        && reader.getState() != Thread.State.BLOCKED
+                        && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertTrue(reader.isAlive(),
+                        "buffered output read must reach shutdown arbitration before publishing");
+                assertEquals(Thread.State.BLOCKED, reader.getState(),
+                        "output completion must linearize through runtimeLifecycleLock");
+
+                // Reentrant on this host thread. The waiting output completion
+                // observes the sealed runtime only after this monitor releases.
+                runtime.sealShutdownAdmission();
+            }
+
+            reader.join(java.util.concurrent.TimeUnit.SECONDS.toMillis(5));
+            assertFalse(reader.isAlive());
+            assertNull(readerFailure.get(), String.valueOf(readerFailure.get()));
+            assertNotNull(observed.get());
+            assertTrue(observed.get().done(),
+                    "shutdown winning arbitration must hide the buffered output");
+            assertNull(observed.get().value());
+            assertTrue(ref.outputs().isDone());
+
+            java.lang.reflect.Field streamsField =
+                    ActorRuntime.class.getDeclaredField("actorOutputStreams");
+            streamsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Set<ActorRuntime.ActorOutputStream<?>> streams =
+                    (java.util.Set<ActorRuntime.ActorOutputStream<?>>)
+                            streamsField.get(runtime);
+            assertTrue(streams.contains(ref.outputs()),
+                    "logical shutdown must retain physically buffered output for teardown");
+        } finally {
+            runtime.close();
+        }
+    }
+
+    @Test
     void outputStreamRejectsLiveActorCapabilitiesAtRuntimeBoundary() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
@@ -83,10 +159,11 @@ final class ActorOutputStreamTest {
 
             CompletionException failed =
                     assertThrows(CompletionException.class, () -> ref.done().join());
-            assertInstanceOf(IllegalArgumentException.class, failed.getCause());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failed.getCause());
+            assertInstanceOf(IllegalArgumentException.class, ref.failure().orElseThrow());
             assertTrue(
-                    failed.getCause().getMessage().contains("data values only"),
-                    failed.getCause().getMessage());
+                    ref.failure().orElseThrow().getMessage().contains("data values only"),
+                    ref.failure().orElseThrow().getMessage());
 
             CompletionException outputFailure =
                     assertThrows(
@@ -123,10 +200,11 @@ final class ActorOutputStreamTest {
 
             CompletionException failed =
                     assertThrows(CompletionException.class, () -> ref.done().join());
-            assertInstanceOf(IllegalArgumentException.class, failed.getCause());
+            assertInstanceOf(ActorRuntime.ActorFailureSnapshotException.class, failed.getCause());
+            assertInstanceOf(IllegalArgumentException.class, ref.failure().orElseThrow());
             assertTrue(
-                    failed.getCause().getMessage().contains("not Sendable"),
-                    failed.getCause().getMessage());
+                    ref.failure().orElseThrow().getMessage().contains("not Sendable"),
+                    ref.failure().orElseThrow().getMessage());
 
             CompletionException outputFailure =
                     assertThrows(
@@ -283,5 +361,6 @@ final class ActorOutputStreamTest {
             throw new AssertionError("cannot inspect output stream retention", failure);
         }
     }
+
 
 }
