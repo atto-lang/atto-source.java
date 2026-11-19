@@ -56,6 +56,15 @@ public final class ReadonlyShapeFieldAbiProbe {
                        "foo", cat_bytes, cat, x -> x) == 42,
               "disjoint reordered field offsets remain valid");
         rejects("invalid compiled", () -> layout(new Field("foo", Scalar.INT, 1, true, false, true)));
+        rejects("invalid compiled", () -> field("bad name", Scalar.INT, 0));
+        rejects("invalid compiled", () -> field("foo\\nbar", Scalar.INT, 0));
+        rejects("invalid compiled", () -> field("foо", Scalar.INT, 0)); // Unicode confusable
+        rejects("invalid compiled", () -> field("a".repeat(129), Scalar.INT, 0));
+        rejects("invalid nominal", () -> new Layout("", List.of(), false));
+        rejects("invalid nominal", () -> new Layout("Foo\\nBar", List.of(), false));
+        rejects("invalid nominal", () -> new Layout("A".repeat(129), List.of(), false));
+        check(new Layout("pkg.Foo", List.of(field("x", Scalar.INT, 0)), false).fields().size() == 1,
+              "valid qualified nominal shape identifier");
         dog.mark_moved();
         rejects("E_MOVED", () -> with_int(first, "foo", dog_bytes, dog, x -> x));
         System.out.println("JAVA_SHAPE_FIELD_WITNESS_PASS checks=" + passed);
