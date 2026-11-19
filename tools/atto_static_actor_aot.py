@@ -491,6 +491,63 @@ def main(argv=None):
         if result.exists() or result.is_symlink():
             raise CompileError("output path exists; refusing to replace artifacts")
         java = generate(kinds, actions, guest_result)
+        # The exact closed graph comes from parser-validated declarations,
+        # not regex guesses over arbitrary user text. This application-specific
+        # pilot has no generic, typeclass, dynamic-module or FFI source syntax.
+        # A native Image can still include host-library internals: this is
+        # NOT a full linked-binary reachability or zero-GC certificate.
+        spawned_actor_types = {
+            actor_type for kind, _, actor_type in actions if kind == "spawn"
+        }
+        declared_actor_nodes = [
+            {"source_actor": name, "generated_type": "AttoGeneratedMain.Actor_" + str(index)}
+            for index, name in enumerate(kinds)
+        ]
+        actor_roots = [
+            {
+                "source_actor": name,
+                "generated_type": "AttoGeneratedMain.Actor_" + str(index),
+                "handler": "AttoGeneratedMain.Actor_" + str(index) + ".send",
+                "retirement": "AttoGeneratedMain.Actor_" + str(index) + ".close",
+            }
+            for index, name in enumerate(kinds) if name in spawned_actor_types
+        ]
+        for index in range(len(declared_actor_nodes)):
+            if ("private static final class Actor_" + str(index)) not in java:
+                raise CompileError("generated actor type missing from closed-world profile")
+        if "private static long guest_main()" not in java:
+            raise CompileError("generated entrypoint missing from closed-world profile")
+        forbidden_static_java = (
+            "Class.forName(", "java.lang.reflect.", "MethodHandles.lookup(",
+            "Proxy.newProxyInstance(", "Runtime.getRuntime(", "ProcessBuilder(",
+            "javax.script.", "Unsafe.allocateInstance(", "System.loadLibrary(",
+        )
+        if any(word in java for word in forbidden_static_java):
+            raise CompileError("unapproved dynamic Java API in static actor lowering")
+        closed_world = {
+            "schema": "atto.static-actor.closed-world.pilot.v1",
+            "status": "COMPILER_GENERATED_RESTRICTED_GRAPH_NOT_CERTIFIED",
+            "single_source_sha256": exact,
+            "entry_roots": ["AttoGeneratedMain.guest_main"],
+            "declared_actor_nodes": declared_actor_nodes,
+            "actor_roots": actor_roots,
+            "actor_instance_spawns": sum(kind == "spawn" for kind, _, _ in actions),
+            "action_count": len(actions),
+            "action_kinds": sorted({kind for kind, _, _ in actions}),
+            "generic_specializations": [],
+            "typeclass_witnesses": [],
+            "guest_dynamic_imports": [],
+            "guest_dynamic_loading": False,
+            "guest_runtime_reflection": False,
+            "guest_runtime_codegen": False,
+            "host_primitives": [
+                "ffm.confined_actor_arena", "java.checked_arithmetic",
+                "java.gc_metrics", "java.stdout_observation",
+            ],
+            "actor_storage_mode": "CONFINED_OFFHEAP_ARENA_WITH_EXPLICIT_RETIREMENT",
+            "native_aot_artifact_verified": False,
+            "authenticated_execution_receipt": False,
+        }
         # Predict the expected exit from the already-validated literal
         # guards, but do not claim success until the native binary runs.
         expected_result = next((value for kind, condition, value in actions
@@ -506,6 +563,7 @@ def main(argv=None):
             "compiler_authority": "CANONICAL_LLVM_AST" if args.checked_exporter else "RESTRICTED_PYTHON_PILOT",
             "canonical_exporter_sha256": args.checked_exporter_sha256 if args.checked_exporter else None,
             "actor_instances": sum(1 for kind, _, _ in actions if kind == "spawn"),
+            "closed_world": closed_world,
             "expected_guest_result": expected_result,
             "status": "GENERATED_SOURCE_NOT_YET_EXECUTED",
             "scope": "single-threaded static actor syntax subset, no tenant sandbox or full AttoLang compiler",

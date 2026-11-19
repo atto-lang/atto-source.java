@@ -45,7 +45,24 @@ assert m["status"]=="GENERATED_SOURCE_NOT_YET_EXECUTED"
 assert m["source_sha256"]==sys.argv[2]
 assert m["generated_java_sha256"]==hashlib.sha256(java).hexdigest()
 assert m["actor_kinds"]==1 and m["actor_instances"]==2 and m["actor_sends"]==3 and m["expected_guest_result"]==int(sys.argv[3])
+cw=m["closed_world"]
+assert cw["schema"]=="atto.static-actor.closed-world.pilot.v1"
+assert cw["status"]=="COMPILER_GENERATED_RESTRICTED_GRAPH_NOT_CERTIFIED"
+assert cw["single_source_sha256"]==m["source_sha256"]
+assert cw["entry_roots"]==["AttoGeneratedMain.guest_main"]
+assert len(cw["declared_actor_nodes"])==1 and len(cw["actor_roots"])==1
+assert cw["actor_roots"][0]["handler"]=="AttoGeneratedMain.Actor_0.send"
+assert cw["actor_roots"][0]["retirement"]=="AttoGeneratedMain.Actor_0.close"
+assert cw["actor_instance_spawns"]==2
+assert cw["action_count"]==(8 if int(sys.argv[3])==7 else 7)
+assert cw["action_kinds"]==(["guard","send","spawn","stop"] if int(sys.argv[3])==7 else ["send","spawn","stop"])
+assert cw["guest_dynamic_imports"]==[] and cw["generic_specializations"]==[]
+assert cw["typeclass_witnesses"]==[]
+for flag in ("guest_dynamic_loading","guest_runtime_reflection","guest_runtime_codegen",
+             "native_aot_artifact_verified","authenticated_execution_receipt"):
+    assert cw[flag] is False, flag
 print("ATTO_STATIC_SOURCE_MANIFEST_VERIFIED=1")
+print("ATTO_RESTRICTED_CLOSED_WORLD_GRAPH_VERIFIED=1; CERTIFIED=false")
 print("ATTO_GUEST_SOURCE_SHA256="+m["source_sha256"])
 print("ATTO_GENERATED_JAVA_SHA256="+m["generated_java_sha256"])
 PY

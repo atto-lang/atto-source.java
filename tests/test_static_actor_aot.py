@@ -218,5 +218,84 @@ class StaticActorPilotTests(unittest.TestCase):
                      self.source.read_text().replace("return 43;", cases + "return 43;"))
 
 
+
+    def test_compiler_generated_closed_world_actor_graph_is_bounded_and_explicit(self):
+        result = self.compile()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        cw = manifest["closed_world"]
+        self.assertEqual(cw["schema"], "atto.static-actor.closed-world.pilot.v1")
+        self.assertEqual(cw["status"], "COMPILER_GENERATED_RESTRICTED_GRAPH_NOT_CERTIFIED")
+        self.assertEqual(cw["single_source_sha256"], manifest["source_sha256"])
+        self.assertEqual(cw["entry_roots"], ["AttoGeneratedMain.guest_main"])
+        self.assertEqual(cw["declared_actor_nodes"], [
+            {"source_actor": "Counter", "generated_type": "AttoGeneratedMain.Actor_0"}])
+        self.assertEqual(cw["actor_roots"], [{
+            "source_actor": "Counter",
+            "generated_type": "AttoGeneratedMain.Actor_0",
+            "handler": "AttoGeneratedMain.Actor_0.send",
+            "retirement": "AttoGeneratedMain.Actor_0.close",
+        }])
+        self.assertEqual(cw["actor_instance_spawns"], 2)
+        self.assertEqual(cw["action_count"], 7)
+        self.assertEqual(cw["action_kinds"], ["send", "spawn", "stop"])
+        self.assertEqual(cw["generic_specializations"], [])
+        self.assertEqual(cw["typeclass_witnesses"], [])
+        self.assertEqual(cw["guest_dynamic_imports"], [])
+        self.assertEqual(cw["host_primitives"], [
+            "ffm.confined_actor_arena", "java.checked_arithmetic",
+            "java.gc_metrics", "java.stdout_observation",
+        ])
+        for name in ("guest_dynamic_loading", "guest_runtime_reflection",
+                     "guest_runtime_codegen", "native_aot_artifact_verified",
+                     "authenticated_execution_receipt"):
+            self.assertIs(cw[name], False, name)
+        java = (self.output / "AttoGeneratedMain.java").read_text()
+        self.assertIn("private static final class Actor_0", java)
+        self.assertIn("private static long guest_main()", java)
+        self.assertNotIn("Class.forName(", java)
+        self.assertNotIn("Proxy.newProxyInstance(", java)
+
+    def test_actor_reachability_excludes_unspawned_declared_actor(self):
+        original = self.source.read_text()
+        actor = original.split("pub fnc main(): int {")[0]
+        extra = actor.replace("Counter", "Idle")
+        self.source.write_text(original.replace(
+            "pub fnc main(): int {", extra + "pub fnc main(): int {"))
+        result = self.compile()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cw = json.loads((self.output / "manifest.json").read_text())["closed_world"]
+        self.assertEqual([x["source_actor"] for x in cw["declared_actor_nodes"]],
+                         ["Counter", "Idle"])
+        self.assertEqual([x["source_actor"] for x in cw["actor_roots"]], ["Counter"])
+        self.assertEqual(cw["actor_instance_spawns"], 2)
+
+    def test_guards_are_counted_as_static_graph_actions_not_dynamic_imports(self):
+        self.source.write_text(self.source.read_text().replace(
+            "return 43;", "guard false { return 7; }\n  return 43;"))
+        result = self.compile()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        cw = manifest["closed_world"]
+        self.assertEqual(manifest["expected_guest_result"], 7)
+        self.assertEqual(cw["action_kinds"], ["guard", "send", "spawn", "stop"])
+        self.assertEqual(cw["action_count"], 8)
+        self.assertEqual(cw["guest_dynamic_imports"], [])
+        self.assertIs(cw["authenticated_execution_receipt"], False)
+
+    def test_manifest_is_deterministic_over_identical_admitted_source(self):
+        first = self.compile()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        before = (self.output / "manifest.json").read_bytes()
+        second_out = self.dir / "second"
+        second = self.compile(out=second_out)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(before, (second_out / "manifest.json").read_bytes())
+
+    def test_forbidden_dynamic_guest_source_has_no_closed_world_manifest(self):
+        self.rejects("expected", self.source.read_text().replace(
+            "return 43;", "return Class.forName(7);"))
+
+
 if __name__ == "__main__":
     unittest.main()
