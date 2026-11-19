@@ -138,6 +138,14 @@ final class TelemetrySpanScopeTest {
                         () -> scope.attribute("request.api_key", "sensitive"));
                 assertThrows(SecurityException.class,
                         () -> scope.attribute("http.headers", "sensitive"));
+                assertThrows(SecurityException.class,
+                        () -> scope.attribute("file.path", "/private/keys"));
+                assertThrows(SecurityException.class,
+                        () -> scope.attribute("url.query", "password=secret"));
+                assertThrows(SecurityException.class,
+                        () -> scope.attribute("db.query.parameters", "sensitive"));
+                assertThrows(SecurityException.class,
+                        () -> scope.attribute("trace.baggage", "secret"));
                 scope.attribute("attempt", 1L);
                 assertEquals("1", scope.attributesSnapshot().get("attempt"));
             }
