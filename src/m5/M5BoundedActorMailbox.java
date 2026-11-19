@@ -20,6 +20,9 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
     private boolean paused;
     private boolean stopping;
     private boolean closed;
+    private boolean arenaReleased;
+    // Captured before nativeArena.close(): snapshot remains legal after disposal.
+    private long terminalState;
     private long accepted;
     private long rejectedFull;
     private long rejectedClosed;
@@ -67,6 +70,8 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
     }
 
     private void runWorker() {
+        // An interruption while idle is a worker failure, not a failed admitted turn.
+        boolean turnInFlight = false;
         synchronized (gate) { workerThreadId = Thread.currentThread().threadId(); }
         try {
             while (true) {
@@ -81,6 +86,7 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
                     value = ring.get(ValueLayout.JAVA_LONG, (long) head * Long.BYTES);
                     head = (head + 1) % capacity;
                     queued--;
+                    turnInFlight = true;
                     gate.notifyAll();
                 }
                 // State is written by precisely this worker (actor-owner), never
@@ -89,14 +95,16 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
                 state.set(ValueLayout.JAVA_LONG, 0, next);
                 synchronized (gate) {
                     processed++;
+                    turnInFlight = false;
                     gate.notifyAll();
                 }
             }
         } catch (Throwable error) {
             synchronized (gate) {
                 fault = error;
-                failedTurns++;
-                controlNotices++; // Supervisor-only CONTROL result; actor cannot consume.
+                if (turnInFlight) failedTurns++;
+                // Diagnostic counter only. No real supervisor CONTROL queue exists yet.
+                controlNotices++;
                 abandoned += queued;
                 queued = 0;
                 stopping = true;
@@ -104,6 +112,8 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
             }
         } finally {
             synchronized (gate) {
+                // The worker is now quiescent; capture off-heap state before disposal.
+                terminalState = state.get(ValueLayout.JAVA_LONG, 0);
                 closed = true;
                 gate.notifyAll();
             }
@@ -126,8 +136,8 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
 
     public Snapshot snapshot() {
         synchronized (gate) {
-            // Reading the actor-owned state is permitted only after retirement.
-            long v = closed ? state.get(ValueLayout.JAVA_LONG, 0) : Long.MIN_VALUE;
+            // Immutable terminal copy; never dereference the released off-heap arena.
+            long v = closed ? terminalState : Long.MIN_VALUE;
             return new Snapshot(accepted, processed, rejectedFull, rejectedClosed,
                 abandoned, failedTurns, controlNotices, maximumDepth, capacity, queued,
                 closed, v, workerThreadId, fault != null);
@@ -136,7 +146,13 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
 
     @Override public void close() throws InterruptedException {
         await_done();
-        nativeArena.close();
+        // Serializes competing close() calls and preserves legal post-close snapshots.
+        synchronized (gate) {
+            if (!arenaReleased) {
+                nativeArena.close();
+                arenaReleased = true;
+            }
+        }
     }
 
     public record Snapshot(
