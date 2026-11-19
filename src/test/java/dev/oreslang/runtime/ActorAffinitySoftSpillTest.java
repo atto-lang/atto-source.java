@@ -64,6 +64,46 @@ final class ActorAffinitySoftSpillTest {
     }
 
     @Test
+    void physicalExecutionLaneIsReportedAfterIdleSteal() throws Exception {
+        ActorAffinityDispatcher dispatcher = new ActorAffinityDispatcher(
+                2, 8, new int[0], ignored -> Executors.newSingleThreadExecutor(),
+                false, TimeUnit.MICROSECONDS.toNanos(10));
+        CountDownLatch homeEntered = new CountDownLatch(1);
+        CountDownLatch releaseHome = new CountDownLatch(1);
+        CountDownLatch stolen = new CountDownLatch(1);
+        AtomicInteger actualLane = new AtomicInteger(-1);
+        AtomicInteger executions = new AtomicInteger();
+        try {
+            dispatcher.executeOnLane(0, () -> {
+                homeEntered.countDown();
+                try {
+                    if (!releaseHome.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("home carrier did not release");
+                    }
+                } catch (InterruptedException interruption) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(homeEntered.await(5, TimeUnit.SECONDS));
+            // Submitted to lane 0, but lane 0 is held. Lane 1 is idle and
+            // must report its REAL execution identity after the steal grace.
+            assertEquals(0, dispatcher.executeOnLane(0, (int executingLane) -> {
+                actualLane.set(executingLane);
+                executions.incrementAndGet();
+                stolen.countDown();
+            }));
+            assertTrue(stolen.await(5, TimeUnit.SECONDS));
+            assertEquals(1, actualLane.get(), "hint must follow the winning carrier");
+            assertEquals(1, executions.get(), "steal and original queue race exactly once");
+            assertEquals(1, dispatcher.steals());
+        } finally {
+            releaseHome.countDown();
+            dispatcher.shutdownNow();
+            assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void enqueuedThenRejectedLaneTurnCannotExecuteAfterAdmissionFailure() {
         class EnqueueThenThrow extends AbstractExecutorService {
             private boolean closed;

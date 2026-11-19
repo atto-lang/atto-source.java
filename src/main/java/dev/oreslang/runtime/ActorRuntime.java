@@ -11001,8 +11001,25 @@ public final class ActorRuntime implements AutoCloseable {
                 Runnable dispatch = () -> runBatch(dispatchTicket);
                 java.util.function.Consumer<Runnable> submit = runnable -> {
                     if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                        int placed = lanes.executeOnLane(dispatchLane, runnable);
-                        if (lanes.rehomesOnSpill()) dispatchLane = placed;
+                        // Placement can differ from execution after delayed idle
+                        // stealing. Only the winning physical QueuedTurn supplies
+                        // the next soft home hint; the queued target is NOT the
+                        // carrier that warmed this actor's cache.
+                        lanes.executeOnLane(dispatchLane, actualLane -> {
+                            if (lanes.rehomesOnSpill()) {
+                                synchronized (lifecycleLock) {
+                                    // A stale or rejected dispatch cannot rehome
+                                    // a successor or revive a retired actor.
+                                    if (scheduledDispatchToken == dispatchTicket
+                                            && scheduled.get() && !carrierActive) {
+                                        dispatchLane = actualLane;
+                                    }
+                                }
+                            }
+                            // The gate wrapper (when present) still owns its
+                            // permit, cancellation and exactly-once claim.
+                            runnable.run();
+                        });
                     } else {
                         dispatcher.execute(runnable);
                     }

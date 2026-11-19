@@ -110,8 +110,10 @@ final class ActorScalarFrameStoreTest {
         AtomicReference<Throwable> failure = new AtomicReference<>();
         CountDownLatch first = new CountDownLatch(1);
         CountDownLatch second = new CountDownLatch(1);
+        // Each message must be a distinct physical dispatch; throughput=8 can
+        // process both on one valid segment and only exercise closed-frame denial.
         try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
-                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+                new ActorRuntime.DispatcherConfig(1, 1, 1))) {
             var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
                 try {
                     if (message.equals("first")) {
