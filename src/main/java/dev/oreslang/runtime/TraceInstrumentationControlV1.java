@@ -55,6 +55,14 @@ final class TraceInstrumentationControlV1 {
     int activeMask() { return policy.enabledMask; }
     long version() { return policy.version; }
 
+    /** One immutable volatile policy read, avoiding mixed-version mask checks. */
+    boolean permitsAtVersion(int probeMask, long expectedVersion) {
+        Policy current = policy;
+        return probeMask != 0 && (probeMask & ~ALL) == 0
+                && current.version == expectedVersion
+                && (probeMask & ~current.enabledMask) == 0;
+    }
+
     /** The AOT binary has static sites; adaptive code has to be compiled. */
     boolean hasStaticSite(int probeKind) {
         return buildMode != BuildMode.ADAPTIVE &&
