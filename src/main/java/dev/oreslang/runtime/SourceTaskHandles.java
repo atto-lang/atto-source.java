@@ -116,9 +116,20 @@ public final class SourceTaskHandles {
      * only unsubscribed, never cancelled.
      */
     public static OresFuture<Object> first(java.util.List<?> children) {
-        OresFuture<Object> winner = OresFutures.race(children);
+        Objects.requireNonNull(children, "children");
+        // Take a single authority snapshot BEFORE subscribing to completions.
+        // OresFutures.race internally snapshots its inputs, but its snapshot
+        // must not diverge from the list used below to cancel owned losers.
+        // A mutable caller list otherwise permits canceling a later-added
+        // unrelated task, or silently omitting an original losing task.
+        if (children.size() > OresFutures.MAX_FAN_IN) {
+            throw new IllegalArgumentException(
+                    "Future.first exceeds maximum fan-in " + OresFutures.MAX_FAN_IN);
+        }
+        java.util.List<?> snapshot = java.util.List.copyOf(children);
+        OresFuture<Object> winner = OresFutures.race(snapshot);
         winner.whenCompleteRuntime((value, failure) -> {
-            for (Object child : children) {
+            for (Object child : snapshot) {
                 if (child instanceof OresFuture<?> future && !future.isDone()) {
                     TaskHandle<?> loser = lookup(future);
                     if (loser != null) loser.cancel("lost Future.first");

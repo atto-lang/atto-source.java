@@ -96,6 +96,69 @@ public final class ChannelRuntime {
     }
 
     /**
+     * One immediate owned-send attempt. Only COMMITTED consumes the payload.
+     * A rejected attempt returns exactly the supplied object, including when
+     * the channel was closed. The result intentionally contains no payload on
+     * COMMITTED, so a guest binding can implement affine ownership transfer.
+     *
+     * <p>Host Java references are not linear: a compiler/guest lowering must
+     * reject uses of the original binding after a committed send. This record
+     * must not be described as guest-level ownership enforcement.</p>
+     */
+    public enum OwnedWriteOutcome {
+        COMMITTED,
+        BACKPRESSURE,
+        CLOSED
+    }
+
+    public static final class OwnedTryWriteResult<T> {
+        // Only this runtime can mint admission receipts. Do not expose a
+        // publicly constructible record to a future guest ownership bridge.
+        private final OwnedWriteOutcome outcome;
+        private final T returnedPayload;
+
+        private OwnedTryWriteResult(
+                OwnedWriteOutcome outcome, T returnedPayload) {
+            this.outcome = Objects.requireNonNull(outcome, "outcome");
+            if (outcome == OwnedWriteOutcome.COMMITTED) {
+                if (returnedPayload != null) {
+                    throw new IllegalArgumentException(
+                            "a committed send cannot return a second payload owner");
+                }
+            } else {
+                Objects.requireNonNull(returnedPayload,
+                        "a rejected send must return its original payload");
+            }
+            this.returnedPayload = returnedPayload;
+        }
+
+        public OwnedWriteOutcome outcome() {
+            return outcome;
+        }
+
+        public T returnedPayload() {
+            return returnedPayload;
+        }
+
+        public boolean committed() {
+            return outcome == OwnedWriteOutcome.COMMITTED;
+        }
+
+        private static <T> OwnedTryWriteResult<T> accepted() {
+            return new OwnedTryWriteResult<>(OwnedWriteOutcome.COMMITTED, null);
+        }
+
+        private static <T> OwnedTryWriteResult<T> rejected(
+                OwnedWriteOutcome cause, T payload) {
+            if (cause == OwnedWriteOutcome.COMMITTED) {
+                throw new IllegalArgumentException(
+                        "a committed result cannot carry a rejected payload");
+            }
+            return new OwnedTryWriteResult<>(cause, payload);
+        }
+    }
+
+    /**
      * Read-only channel capability. It cannot write, close, or expose the
      * underlying bidirectional channel.
      */
@@ -136,6 +199,11 @@ public final class ChannelRuntime {
 
         public boolean tryWrite(T value) {
             return channel.tryWrite(value);
+        }
+
+        /** Directional capability for immediate, recoverable owned attempts. */
+        public OwnedTryWriteResult<T> tryWriteOwned(T value) {
+            return channel.tryWriteOwned(value);
         }
 
         public OresFuture<Void> writeAsync(T value) {
@@ -296,6 +364,34 @@ public final class ChannelRuntime {
             return SelectSet.of(write(this, value))
                     .trySelect(SelectPolicy.PRIORITY)
                     .isPresent();
+        }
+
+        /**
+         * Immediate, non-parking send with a recoverable rejection result.
+         * Reuse tryWrite's select coordinator: a second queue or capacity
+         * pre-check would introduce a close/reader admission race.
+         *
+         * <p>The only recoverable terminal results here are BACKPRESSURE
+         * (no value committed) and CLOSED (closure won admission). The
+         * asynchronous writeAsync API remains non-recoverable until a
+         * separate cancellation-safe escrow and affine guest contract exist.
+         * Do not expose this as a guest ownership guarantee without that
+         * compiler lowering.</p>
+         */
+        public OwnedTryWriteResult<T> tryWriteOwned(T value) {
+            requireValue(value);
+            try {
+                return tryWrite(value)
+                        ? OwnedTryWriteResult.accepted()
+                        : OwnedTryWriteResult.rejected(
+                                OwnedWriteOutcome.BACKPRESSURE, value);
+            } catch (java.util.concurrent.CompletionException failure) {
+                if (OresFuture.unwrap(failure) instanceof ChannelClosedException) {
+                    return OwnedTryWriteResult.rejected(
+                            OwnedWriteOutcome.CLOSED, value);
+                }
+                throw failure;
+            }
         }
 
         /**

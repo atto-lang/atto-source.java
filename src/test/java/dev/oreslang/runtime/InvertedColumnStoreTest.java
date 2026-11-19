@@ -485,6 +485,53 @@ final class InvertedColumnStoreTest {
 
 
     @Test
+    void closeScrubsRowCapabilityMetadataEvenWhenColumnLoanRemainsOutstanding() throws Exception {
+        var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
+                                            InvertedColumnStore.Kind.BOOL);
+        var first = store.push(11, true);
+        var second = store.push(22, false);
+        store.reserve(8);
+        store.eraseSwap(first);
+
+        var rowSlotsField = InvertedColumnStore.class.getDeclaredField("rowSlots");
+        var slotRowsField = InvertedColumnStore.class.getDeclaredField("slotRows");
+        var generationsField = InvertedColumnStore.class.getDeclaredField("generations");
+        var liveField = InvertedColumnStore.class.getDeclaredField("live");
+        var reusableField = InvertedColumnStore.class.getDeclaredField("reusable");
+        for (var field : new java.lang.reflect.Field[]{
+                rowSlotsField, slotRowsField, generationsField, liveField, reusableField}) {
+            field.setAccessible(true);
+        }
+        int[] oldRowSlots = (int[]) rowSlotsField.get(store);
+        int[] oldSlotRows = (int[]) slotRowsField.get(store);
+        long[] oldGenerations = (long[]) generationsField.get(store);
+        boolean[] oldLive = (boolean[]) liveField.get(store);
+        int[] oldReusable = (int[]) reusableField.get(store);
+        assertTrue(oldGenerations[second.slot()] != 0);
+        assertTrue(oldLive[second.slot()]);
+
+        var outstanding = store.borrowRead(0);
+        store.close();
+        store.close(); // idempotent teardown
+        assertThrows(IllegalStateException.class, () -> store.get(second, 0));
+        assertThrows(IllegalStateException.class, () -> outstanding.get(0));
+
+        for (int v : oldRowSlots) assertEquals(0, v);
+        for (int v : oldSlotRows) assertEquals(0, v);
+        for (long v : oldGenerations) assertEquals(0L, v);
+        for (boolean v : oldLive) assertFalse(v);
+        for (int v : oldReusable) assertEquals(0, v);
+        assertEquals(0, ((int[]) rowSlotsField.get(store)).length);
+        assertEquals(0, ((int[]) slotRowsField.get(store)).length);
+        assertEquals(0, ((long[]) generationsField.get(store)).length);
+        assertEquals(0, ((boolean[]) liveField.get(store)).length);
+        assertEquals(0, ((int[]) reusableField.get(store)).length);
+        // Loan retirement after owner teardown must not underflow accounting.
+        outstanding.close();
+        outstanding.close();
+    }
+
+    @Test
     void guardedDenseAccessUsesSameLockForIdentityEpochBoundsAndFieldLoans() {
         var store = new InvertedColumnStore(InvertedColumnStore.Kind.I32,
                                             InvertedColumnStore.Kind.BOOL);
@@ -556,4 +603,5 @@ final class InvertedColumnStoreTest {
         }
         assertThrows(IllegalStateException.class, store::captureLayoutGuard);
     }
+
 }

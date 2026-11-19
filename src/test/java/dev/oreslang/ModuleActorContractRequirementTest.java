@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.ExportInterfaceCodec;
 import dev.oreslang.compiler.ExportInterfaceCollector;
@@ -268,22 +269,28 @@ final class ModuleActorContractRequirementTest {
 
     @Test
     void standaloneActorBindingIsNotYetAccepted() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+        Ast.Program parsed = Parser.parse("""
                 define module cart_mod as
                   pub define actor Cart as cart;
                 end
-                """));
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(error.getMessage().contains("STANDALONE_ACTOR_LOWERING_UNSUPPORTED"));
     }
 
     @Test
     void externalReceiverMethodDoesNotAccidentallyBecomeFreeFunction() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+        Ast.Program parsed = Parser.parse("""
                 define module cart_mod as
                   pub define actor Cart as
                   end
-                  define pub mtd receive(Cart a)(): void { return; }
+                  define pub mtd get_count(Cart a)(): int { return 42; }
                 end
-                """));
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(error.getMessage().contains("EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED"));
     }
 
     @Test

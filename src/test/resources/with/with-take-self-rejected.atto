@@ -1,0 +1,7 @@
+define class Counter as
+    pub final int x: 1;
+
+    pub bad(): Counter {
+        return (rt take self) with {x => 2};
+    }
+end
