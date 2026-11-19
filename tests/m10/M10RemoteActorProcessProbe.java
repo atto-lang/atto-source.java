@@ -48,7 +48,11 @@ public final class M10RemoteActorProcessProbe {
                     Files.deleteIfExists(ready);
                 }
             }
-            require(runtime.request_stop(target) && runtime.await_terminal(target, 5_000),
+            // A faulting source handler may already have been retired by
+            // supervisor PANIC; STOP is idempotent but not required to succeed
+            // on a retired ActorRef.
+            runtime.request_stop(target);
+            require(runtime.await_terminal(target, 5_000),
                     "server actor failed to retire");
         }
         System.out.println("M10_SERVER_RESTRICTED_ATTO_SOURCE_SHA256=" +
