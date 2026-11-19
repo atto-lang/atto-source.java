@@ -2529,6 +2529,19 @@ public final class Parser {
         boolean untrustedSeen = false;
 
         while (true) {
+            // The target critical-fnc contract is intentionally NOT enabled
+            // by this parser: no typed guard owner, FIFO admission or transitive
+            // no-suspend proof is wired for arbitrary methods. Reject the
+            // modifier explicitly rather than allowing a misleading
+            // fall-through parse error or a silently unsynchronized function.
+            // A method literally named critical(...) is left to the normal
+            // callable-name path during migration.
+            if (isContextualIdentifier("critical") && !checkNext(LPAREN)) {
+                if (suspends || checkNext(SUSPENDS)) {
+                    throw error(peek(), "E_CALLABLE_MODIFIERS: critical suspends callable is forbidden");
+                }
+                throw error(peek(), "E_CRITICAL_UNSUPPORTED: critical fnc requires an authenticated owned guard and verified no-suspend effects");
+            }
             // These spellings are recognized but deliberately unavailable
             // until typed RW admission / actor pipeline source lowering is
             // implemented. Never admit them as ordinary method names or
