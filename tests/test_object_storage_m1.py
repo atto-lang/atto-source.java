@@ -160,9 +160,9 @@ class ObjectM1CompilerGuests(unittest.TestCase):
 
         argv = [str(GENERATOR), str(source), "--source-sha256", sha,
                 "--backend", args.backend, "--out", str(dest)]
-        with mock.patch.object(module.os, "link", side_effect=plant_destination), \\
-             mock.patch("sys.argv", argv):
-            self.assertEqual(module.main(), 2)
+        with mock.patch.object(module.os, "link", side_effect=plant_destination):
+            with mock.patch("sys.argv", argv):
+                self.assertEqual(module.main(), 2)
         self.assertEqual(len(observed), 1)
         self.assertEqual(dest.read_text(encoding="utf-8"), "ATTACKER_OWNED")
         self.assertFalse(list(self.root.glob(".atto-object-m1-*")),
