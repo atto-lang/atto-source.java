@@ -16,13 +16,15 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
     private int head;
     private int tail;
     private int queued;
+    // The only worker may have exactly one dequeued, unfinished turn.
+    private int inFlight;
     private int maximumDepth;
     private boolean paused;
     private boolean stopping;
     private boolean closed;
-    private boolean arenaReleased;
-    // Captured before nativeArena.close(): snapshot remains legal after disposal.
-    private long terminalState;
+    private boolean arenaClosed;
+    // Captured by the worker before retirement; never access freed off-heap state.
+    private long retiredState;
     private long accepted;
     private long rejectedFull;
     private long rejectedClosed;
@@ -70,8 +72,6 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
     }
 
     private void runWorker() {
-        // An interruption while idle is a worker failure, not a failed admitted turn.
-        boolean turnInFlight = false;
         synchronized (gate) { workerThreadId = Thread.currentThread().threadId(); }
         try {
             while (true) {
@@ -86,7 +86,7 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
                     value = ring.get(ValueLayout.JAVA_LONG, (long) head * Long.BYTES);
                     head = (head + 1) % capacity;
                     queued--;
-                    turnInFlight = true;
+                    inFlight = 1;
                     gate.notifyAll();
                 }
                 // State is written by precisely this worker (actor-owner), never
@@ -95,16 +95,17 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
                 state.set(ValueLayout.JAVA_LONG, 0, next);
                 synchronized (gate) {
                     processed++;
-                    turnInFlight = false;
+                    inFlight = 0;
                     gate.notifyAll();
                 }
             }
         } catch (Throwable error) {
             synchronized (gate) {
                 fault = error;
-                if (turnInFlight) failedTurns++;
-                // Diagnostic counter only. No real supervisor CONTROL queue exists yet.
-                controlNotices++;
+                // A wait interruption before dequeue must not invent a failed turn.
+                failedTurns += inFlight;
+                inFlight = 0;
+                controlNotices++; // Supervisor-only CONTROL result; actor cannot consume.
                 abandoned += queued;
                 queued = 0;
                 stopping = true;
@@ -112,8 +113,7 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
             }
         } finally {
             synchronized (gate) {
-                // The worker is now quiescent; capture off-heap state before disposal.
-                terminalState = state.get(ValueLayout.JAVA_LONG, 0);
+                retiredState = state.get(ValueLayout.JAVA_LONG, 0);
                 closed = true;
                 gate.notifyAll();
             }
@@ -136,21 +136,23 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
 
     public Snapshot snapshot() {
         synchronized (gate) {
-            // Immutable terminal copy; never dereference the released off-heap arena.
-            long v = closed ? terminalState : Long.MIN_VALUE;
+            // Only the worker reads the off-heap actor state. Snapshots after
+            // close() must not dereference memory released by Arena.close().
+            long v = closed ? retiredState : Long.MIN_VALUE;
             return new Snapshot(accepted, processed, rejectedFull, rejectedClosed,
                 abandoned, failedTurns, controlNotices, maximumDepth, capacity, queued,
-                closed, v, workerThreadId, fault != null);
+                closed, v, workerThreadId, fault != null, inFlight);
         }
     }
 
     @Override public void close() throws InterruptedException {
         await_done();
-        // Serializes competing close() calls and preserves legal post-close snapshots.
+        // Multiple callers may race to close. A single serialized release
+        // prevents double-close and post-close off-heap reads.
         synchronized (gate) {
-            if (!arenaReleased) {
+            if (!arenaClosed) {
                 nativeArena.close();
-                arenaReleased = true;
+                arenaClosed = true;
             }
         }
     }
@@ -159,6 +161,6 @@ public final class M5BoundedActorMailbox implements AutoCloseable {
         long accepted, long processed, long rejectedFull, long rejectedClosed,
         long abandoned, long failedTurns, long supervisorControlNotices, int maxDepth, int capacity,
         int remaining, boolean closed, long finalState, long workerThreadId,
-        boolean failed
+        boolean failed, int inFlight
     ) {}
 }
