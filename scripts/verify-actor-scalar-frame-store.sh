@@ -12,6 +12,7 @@ git diff --cached --quiet
 test -z "$(git status --porcelain)"
 
 for file in \
+  scripts/VerifyActorScalarFrameReports.java \
   src/main/java/dev/oreslang/runtime/ScalarFrameLayout.java \
   src/main/java/dev/oreslang/runtime/ActorScalarFrameStore.java \
   src/test/java/dev/oreslang/runtime/ScalarFrameLayoutTest.java \
