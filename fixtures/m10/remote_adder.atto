@@ -1,0 +1,6 @@
+// Replaced with the exact bounded no-comment source expected by M10.
+define actor RemoteAdder as {
+    pub fnc on_message(int value): int {
+        return value + 10;
+    }
+}
