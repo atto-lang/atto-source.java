@@ -201,3 +201,221 @@ effect preservation, no target identity escape, and no bypass through
 unintended target aliases. The portable proposal belongs to
 `atto-lang/atto-spec`; this draft cannot be described as implementing
 virtual interception.
+
+## Experimental statically typed before-interceptor candidate (2026-11-17)
+
+This *stacked draft branch* adds an **opt-in** second constructor operand,
+without changing the original one-operand `new Proxy(new Foo(...))` form.
+The additional operand must be an inline, statically named `new LocalHooks(...)`,
+not a runtime object, inferred name, interface, actor or reflection descriptor.
+
+```atto
+define class Counter as
+    pub add(int value): int { return value + 1; }
+end
+
+define class CounterHooks as
+    pub before_add(int value): void {
+        stdio.stdout.write(7);
+        return;
+    }
+end
+
+pub routine main(): void {
+    val wrapped = new Proxy(new Counter(), new CounterHooks());
+    stdio.stdout.write(wrapped.add(41)); // expected: "742"
+    return;
+}
+```
+
+The parser rewrites this to
+`new CounterWithCounterHooksProxy(new Counter(), new CounterHooks())`.
+The synthesizer emits two private fields and a constructor storing them.
+For every public eligible target method, it generates an ordinary typed method
+that invokes `self.__proxy_hooks.before_<method>(args)` and then delegates
+to `self.__proxy_target.<method>(args)`. Both calls use the established
+name-and-arity dispatch table and ordinary type/ownership checking. Hooks
+must be public synchronous void methods with the exact target parameter
+types and no declared effects or annotations. A before hook may receive only
+clearly copyable immutable scalar arguments (int/float/bool/String), because
+the generated method must subsequently pass those same arguments to its target.
+This draft does not yet prove inferred effects or hook-body purity; that proof
+is required before calling it an effect-safe interception boundary. Missing, ambiguous, extra,
+private, asynchronous, effectful, structurally typed, or mismatched hooks
+fail closed. Target and hook must be ordinary, concrete, nongeneric classes
+declared in the same module. Synthetic names, receiver names and storage
+names cannot collide.
+
+The target constructor and hook constructor are each evaluated exactly once,
+left-to-right as arguments to the compiler-generated constructor. Each
+*normal-returning* call runs its before hook once and then its original target
+method once. A hook failure aborts the call before delegation under ordinary
+language failure semantics; no exception is silently swallowed.
+
+**Important distinction:** this is a first typed *before* interception slice,
+not a complete `around` or `proceed` implementation. It introduces no
+untyped method-name reflection, bypasses neither the original target's
+internal `self` calls nor independent target aliases, and does not make a
+proxy an airtight authority boundary. In particular, **no one-shot
+continuation capability is exposed**, so this slice cannot claim the full
+virtual-interceptor contract in `atto-spec#83`.
+
+This branch defines **49** JUnit cases, including twenty-eight new opt-in hook
+regressions. The source-org workflow demands nonempty exact-head passing
+Surefire receipts for all 49. Until executed, all backend tests and
+standalone native AOT verification remain **NOT_EXECUTED**. The source
+prototype may not be promoted or merged on a host-only or zero-step
+workflow receipt.
+
+The compiler currently represents only declared checked exceptional effects
+(throws/raises/panics). A missing declaration is **not** a proof of
+side-effect freedom or transitive exceptional closure: ordinary logging and
+other externally visible calls can still occur in a before hook. This
+prototype does not claim inferred IO purity, async/suspension closure, or
+checked propagation across arbitrary hook callees. Those checks remain an
+explicit merge gate.
+
+### Direct suspension rejection
+
+The experimental before-hook synthesizer now refuses explicit source
+`await`, task scopes, tasks, runtime intrinsics, channel/select operations,
+lambdas, defer, and loops (which may cooperate), including those inside
+supported conditional/match/try expression and statement trees. New unit
+fixtures build both direct and nested suspension ASTs and require an
+`AOT_PROXY_UNSUPPORTED` diagnostic rather than permitting the target method
+to run before hook completion.
+
+This is a *syntactic*, **not transitive**, proof. An ordinary helper call
+may still hide suspension, panic, IO, or external capability operations.
+Complete checked call-graph/effect analysis, dynamic-dispatch closure and
+ownership proof are required before this experimental source form becomes
+a normative or merge-ready interceptor feature.
+
+### Closed-world transitive helper admission
+
+The candidate now computes the reachable synchronous hook call graph by
+existing name-and-arity slots. It accepts local `self.helper(...)` calls
+whose method signatures, argument and result shapes are scalar and whose
+bodies recursively use supported synchronous statements/expressions.
+Recursion, cycles, unresolved/dynamic dispatch, mutable/borrowed helper
+parameters, unknown method calls, effect-declared methods and unproven
+suspension all fail closed. A bounded traversal (32 frames / 4096 nodes)
+prevents adversarial graph blowups. The only explicitly recognized external
+operation is `stdio.stdout.write(...)` or `stdio.stderr.write(...)`,
+which remains intentional observable IO (NOT purity, infallibility, or a
+general effect-elision exemption); the admission gate rejects direct
+namespace/parameter/field shadowing. Source loops, nested closures,
+assignments, aggregate construction and unknown AST types are rejected
+rather than speculatively treated as synchronous.
+
+This is still a **restricted proof**, not full effect inference. Target method
+bodies and imported/dynamically linked helpers require separate analysis.
+No claim is made that Java JUnit, GraalVM Native Image or other backend
+tests passed until a source-executing runner produces an exact-head receipt.
+
+To avoid treating a syntactically ordinary AST operator as automatically pure,
+the closed-world helper verifier additionally restricts operators to known
+scalar primitives and rejects opaque, synthetic literal payloads. This is
+compiler source hardening, not evidence that a backend executed the fixture.
+
+### Independent isolated helper compilation and source hardening
+
+The exact `StaticProxyHookEffectClosure.java` source blob at commit
+`82edcc7c53209dba0fad4d5335e41f8794cbf772` (blob SHA
+`c44ab2b817b134e39b282e3ab83250f256ee5b41`) was compiled
+offline using JDK 21 with a **minimal mock AST** mirroring the called
+record members. Its independent Java harness executed 20 assertions
+successfully, including allowed helper chaining, recursive/dynamic/async
+rejection, unsafe operators, value escapes and namespace/protected-declaration
+spoofing. This verifies that helper source's syntax and local admission
+logic, **not** the real compiler, Java guest runtime or JDK 25/GraalVM.
+It is not a substitute for the 49 source JUnit tests.
+
+The public `expand` API now idempotently deduplicates repeated identical
+target/interceptor type requests, preserving first-source-occurrence order
+for deterministic generated class names. Multiple user-created proxy
+instances must share the generated nominal class; otherwise a second
+construction would fail or emit a duplicate declaration. The parser
+already deduplicates these inputs, but alternate AST producers must
+not invalidate the compiler's invariant.
+
+An additional executable source fixture constructs two typed proxy values
+with the same target/hook pair and requires one generated nominal class,
+while checking per-call hook dispatch and distinct forwarded outputs.
+Its expected output is `742743`; execution remains pending JDK 25 CI.
+
+### Shared hook graph and resource budget
+
+One closed-world analysis now indexes each interceptor method table once per
+synthesized target/hook pair. All matched before-hook roots share a visited
+helper graph and a single 4,096-node/32-depth budget. An interceptor declaring
+more than 4,096 method slots fails before unbounded method-index growth.
+A new two-hook fixture calls a shared helper and expects output `40414042`;
+an AST-only negative fixture creates 4,097 methods and requires the slot-budget
+diagnostic. Both are source-defined JUnit cases only until executed by JDK25 CI.
+
+At the latest audit, the GitHub PR had been marked ready despite no runner steps;
+it was returned to draft to preserve the project's exact-head test requirement.
+
+### Bounded syntax security fix (2026-11-18)
+
+The historical `hookBodyHasUnprovenSuspension`/`hookExprHasUnprovenSuspension`
+prepass recursively scanned arbitrary nested AST before the budgeted effect
+closure. It is removed: **all** before-hook body syntax now passes only through
+the single bounded 32-depth/4,096-node verifier, with explicit suspension
+rejections. A 96-level synthetically nested AST must produce a typed
+`AOT_PROXY_UNSUPPORTED` budget diagnostic, not `StackOverflowError`.
+
+Until checked exceptional-effect inference is available, hook/helper `/`
+and `%` operators fail closed because zero-divisor behavior can introduce an
+implicit exceptional outcome even when no checked effects are declared.
+`void` is rejected as a helper parameter type. The exact-head workflow also
+triggers on changes to `StaticProxyHookEffectClosure.java` so a helper-only
+change cannot escape the 49-case guest CI admission gate. These JUnit tests
+are defined, not executed, until source runner admission is restored.
+
+### Deep generic signature metadata admission
+
+The three recursive scans for unsafe borrowed/callable signature types,
+wrapped-target identity, and opaque erased returns now share a non-recursive
+`ArrayDeque` traversal with a 64-level/4,096-node fail-closed budget.
+Previously 96-level synthetic `Option<...>` types could exhaust the compiler
+stack before reporting a useful error. An added JUnit regression exercises
+both nested return and parameter types, alongside a shallow acceptable
+`Option<int>` control. The 48-case suite remains **not executed** without
+JDK25/GraalVM runner admission.
+
+## Current-main forward-port (2026-11-18)
+
+This fresh same-repository integration branch starts from exact current-main SHA
+`56122e4ddf1fbc4f7683bb33a0b107c37cf4fb30`. The modern
+`Parser.java` is **not** replaced with the obsolete parser; only the proxy
+intrinsic, internal request collection, import and synthesis call are inserted.
+The current parser's `exports` collection remains intact. Modern
+`Ast.Program.exports()` is preserved by synthesis (the older three-argument
+program constructor otherwise silently dropped export authority).
+
+New reserved nominal names include protected state containers, virtual actors,
+GPU actors and standalone actors. Proxying a class carrying new main AST class
+annotations is rejected rather than silently stripping its policy metadata.
+Proxying methods flagged `critical` is rejected rather than manufacturing
+an unguarded forwarder, and critical helper hooks are not admitted. Test
+coverage on this branch is **49** JUnit definitions, including four
+integration-specific modern AST/authorization guards. An executable JDK25
+GraalVM Surefire receipt is required before asserting compiler compatibility.
+
+The original stacked PRs #2650, #3175 and #3178 remain independently open,
+and no merge is implied by this integration branch.
+
+### Depth-sensitive helper DAG cache (2026-11-18)
+
+A visited set indexed solely by method name/arity was insufficient for a
+shared helper DAG: a helper's valid shallow traversal was incorrectly reused
+on a deeper path, where its same expressions could cross the 32-level AST
+budget. The verifier now caches the **deepest validated entry depth** per
+method and re-traverses shared descendants whenever the newly reached depth
+is greater. Active recursion checks run before cache reuse. An adversarial
+49th JUnit fixture verifies a shared helper is reached first shallowly and
+then by a six-stage chain from a second `before_*` hook; the second path must
+fail closed with the depth-budget diagnostic. An old 20-case isolated JDK21
+mock-AST smoke predates this change and does not certify the current helper.

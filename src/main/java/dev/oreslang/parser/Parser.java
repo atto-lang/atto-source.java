@@ -22,8 +22,10 @@ public final class Parser {
     }
 
     private final List<Token> tokens;
-    /** Closed-world proxy targets, never runtime proxy descriptors. */
+    /** Compiler-only static proxy requests; no runtime reflection descriptors. */
     private final java.util.Set<String> staticProxyTargets = new java.util.LinkedHashSet<>();
+    private final List<StaticProxySynthesis.InterceptorRequest> staticProxyInterceptors =
+            new ArrayList<>();
     // Null preserves the shipping Oreslang parser's historical behavior.
     private final AttoCallableVersion attoCallableVersion;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
@@ -353,7 +355,7 @@ public final class Parser {
                 }
                 // Compatibility: both `pub define fnc` and `define pub fnc`
                 // denote the same file-root callable, with identical modifiers.
-                if (check(FNC) || check(ROUTINE)) {
+                if (check(FNC) || check(ROUTINE) || looksLikeReturnFirstCallableHead()) {
                     Ast.Decl callable = parseDeclarationAfterModifiers(annotations, modifiers);
                     if (callable != null) {
                         rootDeclarations.add(callable);
@@ -376,7 +378,8 @@ public final class Parser {
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         return StaticProxySynthesis.expand(
-                new Ast.Program(namespace, imports, modules, exports), staticProxyTargets);
+                new Ast.Program(namespace, imports, modules, exports),
+                staticProxyTargets, staticProxyInterceptors);
     }
 
     /** `export pub Foo;` and `export pub[pkg] class Bar;` are file-level declarations. */
@@ -699,7 +702,7 @@ public final class Parser {
             }
             // Legacy nested `define` is accepted, but never creates a new
             // scope or changes the callable's public symbol identity.
-            if (check(FNC) || check(ROUTINE)) {
+            if (check(FNC) || check(ROUTINE) || looksLikeReturnFirstCallableHead()) {
                 return parseDeclarationAfterModifiers(annotations, modifiers);
             }
             rejectUnimplementedInvertedAggregate();
@@ -771,6 +774,14 @@ public final class Parser {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        }
+        // Return-type-first declarations are ordinary free/module fnc values,
+        // not a new callable kind. The marker is checked by the lexer.
+        if (looksLikeReturnFirstCallableHead()) {
+            if (modifiers.shared || modifiers.untrusted || modifiers.isStatic) {
+                throw error(peek(), "return-first free fnc cannot carry actor/static modifiers");
+            }
+            return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         }
         if (modifiers.generator) {
             if (!modifiers.generatorStarred) {
@@ -845,11 +856,15 @@ public final class Parser {
         }
         CallableStructural structural = normalizeCallableStructural(annotations, modifiers.structural);
         annotations = structural.annotations();
+        Ast.TypeRef prefixReturnType = parseReturnFirstTypeIfPresent();
         String name = consumeCallableName("expected callable name");
         List<Ast.GenericParameter> specs = parseGenericParameterSpecs();
         List<String> generics = specs.stream().map(Ast.GenericParameter::name).toList();
 
         if (match(EQUAL)) {
+            if (prefixReturnType != null) {
+                throw error(previous(), "return-first declarations require a parameter list and begin/end body");
+            }
             consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
             List<Ast.Param> params = parseDeclaredPipeParameters();
             consume(PIPE, "expected closing '|' in lambda-style callable declaration");
@@ -868,11 +883,119 @@ public final class Parser {
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         boolean arrowReturn = check(ARROW);
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = prefixReturnType == null
+                ? parseReturnType(annotations)
+                : validateReturnFirstType(prefixReturnType, annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
-        List<Ast.Stmt> body = parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
+        List<Ast.Stmt> body = prefixReturnType != null
+                ? parseBeginEndCallableBody()
+                : parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
+    }
+
+    /**
+     * A type-first callable must have the complete form Type <- name(...)
+     * or Type• name(...). Both markers lower to the existing typed callable
+     * AST. Lookahead restores the cursor even on malformed generic types.
+     */
+    // Recognize <- only in declaration context. In expressions the same
+    // unspaced characters mean '<' followed by unary '-', so the lexer
+    // must continue emitting LT and MINUS as separate tokens.
+    private boolean isAdjacentReturnFirstArrow() {
+        return check(LT) && checkNext(MINUS)
+                && adjacent(tokens.get(current), tokens.get(current + 1));
+    }
+
+    private boolean matchReturnFirstMarker() {
+        if (match(BULLET)) return true;
+        if (isAdjacentReturnFirstArrow()) {
+            advance(); // <
+            advance(); // -
+            return true;
+        }
+        return false;
+    }
+
+    private boolean looksLikeReturnFirstCallableHead() {
+        int mark = current;
+        try {
+            parseTypeRef();
+            if (!matchReturnFirstMarker()) return false;
+            consumeCallableName("expected callable name after return-first marker");
+            parseGenericParameterSpecs();
+            return check(LPAREN);
+        } catch (IllegalArgumentException malformed) {
+            return false;
+        } finally {
+            current = mark;
+        }
+    }
+
+    private String peekReturnFirstCallableName() {
+        if (!looksLikeReturnFirstCallableHead()) return null;
+        int mark = current;
+        try {
+            parseTypeRef();
+            // '<-' consists of two contextual tokens (LT and MINUS).
+            // Advancing only once leaves the cursor on MINUS, allowing
+            // return-first actor lifecycle names to bypass their CONTROL
+            // admission gate. Consume the complete validated marker.
+            if (!matchReturnFirstMarker()) {
+                throw error(peek(), "malformed return-first callable marker");
+            }
+            return peek().lexeme();
+        } finally {
+            current = mark;
+        }
+    }
+
+    private Ast.TypeRef parseReturnFirstTypeIfPresent() {
+        if (!looksLikeReturnFirstCallableHead()) return null;
+        Ast.TypeRef type = parseTypeRef();
+        if (!matchReturnFirstMarker()) {
+            throw error(peek(), "return-first callable requires '<-' or '•'");
+        }
+        return type;
+    }
+
+    private Ast.TypeRef validateReturnFirstType(Ast.TypeRef type, List<Ast.Annotation> annotations) {
+        if (check(COLON) || check(ARROW) || check(FAT_ARROW)) {
+            throw error(peek(), "return-first callable cannot declare a second return type");
+        }
+        boolean annotated = annotations.stream().anyMatch(a -> a.name().equals("Ret"));
+        Ast.TypeRef annotationType = parseReturnType(annotations);
+        if (annotated && !sameType(type, annotationType)) {
+            throw error(previous(), "@Ret type and return-first declared type disagree");
+        }
+        return type;
+    }
+
+    /** The explicit begin owns exactly one end (optionally followed by . or ;). */
+    private List<Ast.Stmt> parseBeginEndCallableBody() {
+        Token headerEnd = previous();
+        if (!matchContextualKeyword("begin")) {
+            throw error(peek(), "return-first callable requires 'begin' after its signature");
+        }
+        Token begin = previous();
+        if (begin.line() == headerEnd.line()) {
+            throw error(begin, "'begin' must start on the line after a return-first signature");
+        }
+        // No executable token may trail the opener: otherwise a compact
+        // 'begin return ... end' body would disagree with the formatter's
+        // standalone begin/end frame and permit boundary confusion.
+        if (peek().line() == begin.line()) {
+            throw error(peek(), "'begin' must be the only code on its line");
+        }
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            List<Ast.Stmt> body = parseUntil(END);
+            consume(END, "expected 'end' after begin callable body");
+            match(DOT, SEMICOLON);
+            return body;
+        } finally {
+            localTypeScopes.pop();
+        }
     }
 
     /** Contextual mtd only counts as a source receiver declaration in a define head. */
@@ -1612,6 +1735,16 @@ public final class Parser {
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
             }
+            // A return-type-first head leaves the return type at peek(), not
+            // the method name. Do not let this spelling bypass the dedicated
+            // lifecycle/CONTROL admission rules below.
+            String returnFirstActorName = peekReturnFirstCallableName();
+            if (returnFirstActorName != null && java.util.Set.of(
+                    "tear_down", "handle_state", "on_panic", "on_throw",
+                    "on_throws", "on_raise", "on_recover").contains(returnFirstActorName)) {
+                throw error(peek(), "return-first actor lifecycle/CONTROL method '"
+                        + returnFirstActorName + "' is reserved; use the checked legacy hook declaration");
+            }
             // Reserved lifecycle and unhandled-failure methods must not be
             // silently treated as ordinary actor methods before runtime
             // teardown dispatch and typed exceptional-effect lowering exist.
@@ -2034,6 +2167,7 @@ public final class Parser {
                                        boolean enclosingAbstractClass) {
         CallableStructural structural = normalizeCallableStructural(annotations, mods.structural);
         annotations = structural.annotations();
+        Ast.TypeRef prefixReturnType = parseReturnFirstTypeIfPresent();
         String name = parseMethodName();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '(' after method name");
@@ -2113,7 +2247,9 @@ public final class Parser {
         // spelling and a contiguous '::' header/body boundary. Braced
         // methods continue accepting either return-type spelling.
         boolean arrowMethodBody = check(ARROW);
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = prefixReturnType == null
+                ? parseReturnType(annotations)
+                : validateReturnFirstType(prefixReturnType, annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
         // An abstract class may declare required slots as `name(args): Type;`.
         // Such signatures are abstract, but remain private unless explicitly pub.
@@ -2125,7 +2261,12 @@ public final class Parser {
                     + "' requires an abstract class or explicit 'abstract' modifier");
         }
         List<Ast.Stmt> body;
-        if (mods.isAbstract || implicitAbstract) {
+        if (prefixReturnType != null && (mods.isAbstract || implicitAbstract)) {
+            throw error(peek(), "return-first methods require an executable begin/end body");
+        }
+        if (prefixReturnType != null) {
+            body = parseBeginEndCallableBody();
+        } else if (mods.isAbstract || implicitAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else if (match(DOUBLE_COLON)) {
@@ -2388,6 +2529,19 @@ public final class Parser {
         boolean untrustedSeen = false;
 
         while (true) {
+            // The target critical-fnc contract is intentionally NOT enabled
+            // by this parser: no typed guard owner, FIFO admission or transitive
+            // no-suspend proof is wired for arbitrary methods. Reject the
+            // modifier explicitly rather than allowing a misleading
+            // fall-through parse error or a silently unsynchronized function.
+            // A method literally named critical(...) is left to the normal
+            // callable-name path during migration.
+            if (isContextualIdentifier("critical") && !checkNext(LPAREN)) {
+                if (suspends || checkNext(SUSPENDS)) {
+                    throw error(peek(), "E_CALLABLE_MODIFIERS: critical suspends callable is forbidden");
+                }
+                throw error(peek(), "E_CRITICAL_UNSUPPORTED: critical fnc requires an authenticated owned guard and verified no-suspend effects");
+            }
             // These spellings are recognized but deliberately unavailable
             // until typed RW admission / actor pipeline source lowering is
             // implemented. Never admit them as ordinary method names or
@@ -2571,14 +2725,14 @@ public final class Parser {
     // parameter-list terminator. The latter is followed by the slim arrow.
     // Preserve unrestricted unions in ordinary (...) parameter declarations.
     private Ast.TypeRef parsePipeParameterType() {
-        Ast.TypeRef first = parseTypeAtom();
+        Ast.TypeRef first = parsePostfixTypeAtom();
         if (!check(PIPE) || checkNext(ARROW)) return first;
 
         List<Ast.TypeRef> options = new ArrayList<>();
         options.add(first);
         do {
             consume(PIPE, "expected '|' between union parameter types");
-            options.add(parseTypeAtom());
+            options.add(parsePostfixTypeAtom());
         } while (check(PIPE) && !checkNext(ARROW));
         return Ast.TypeRef.union(options);
     }
@@ -2778,14 +2932,30 @@ public final class Parser {
         return List.copyOf(result);
     }
 
+    /** Postfix type '?' is Option<T> sugar and binds more tightly than union '|'. */
     private Ast.TypeRef parseTypeRef() {
-        Ast.TypeRef first = parseTypeAtom();
+        Ast.TypeRef first = parsePostfixTypeAtom();
         if (!match(PIPE)) return first;
 
         List<Ast.TypeRef> options = new ArrayList<>();
         options.add(first);
-        do options.add(parseTypeAtom()); while (match(PIPE));
+        do options.add(parsePostfixTypeAtom()); while (match(PIPE));
         return Ast.TypeRef.union(options);
+    }
+
+    /** Group a union explicitly before '?' to wrap the complete union. */
+    private Ast.TypeRef parsePostfixTypeAtom() {
+        Ast.TypeRef type = parseTypeAtom();
+        if (!match(QUESTION)) return type;
+        if (type.name().equals("void") || type.name().equals("null")
+                || type.inferArguments()) {
+            throw error(previous(), "type-level '?' requires a concrete value type");
+        }
+        type = new Ast.TypeRef("Option", List.of(type), false);
+        if (check(QUESTION)) {
+            throw error(peek(), "a type may have only one postfix '?' suffix; use Option<Option<T>> for nested Option");
+        }
+        return type;
     }
 
     private Ast.TypeRef parseTypeAtom() {
@@ -2905,7 +3075,10 @@ public final class Parser {
             throw error(peek(),
                     name + "<T> is not Oreslang source syntax; use explicit rt copy/share/take/borrow operations");
         }
-        if (match(LT)) {
+        // '<-' is a declaration marker, never the start of generic type
+        // arguments. Keep LT+MINUS as separate lexer tokens to preserve
+        // the old expression meaning of a<-b (a < -b).
+        if (!isAdjacentReturnFirstArrow() && match(LT)) {
             if (match(GT)) {
                 infer = true;
             } else if (name.equals("Fnc") || name.equals("Function")) {
@@ -3444,7 +3617,7 @@ public final class Parser {
             return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(GUARD)) return parseGuard();
-        if (match(IF)) return parseIf();
+        if (match(IF, IFNOT, UNLESS)) return parseIf(previous().type());
         if ((check(NB)
                 || (check(IDENT) && peek().lexeme().equals("task")))
                 && current + 2 < tokens.size()
@@ -4482,12 +4655,21 @@ public final class Parser {
         return false;
     }
 
-    private Ast.Stmt parseIf() {
+    private Ast.Stmt parseIf(Token.Type introducer) {
         List<Ast.IfBranch> branches = new ArrayList<>();
         List<Ast.BindingStmt> bindings = new ArrayList<>();
+        // Inverting a refutable pattern does not establish its captures in the
+        // then arm. Do not admit implicit narrowing without a scope proof.
+        if (introducer != IF && (check(LET) || (check(LPAREN) && checkNext(LET)))) {
+            throw error(peek(), "ifnot/unless do not support pattern bindings; use if");
+        }
         ConditionHead head = parseConditionHead(false);
+        if (introducer != IF && head.binding() != null) {
+            throw error(previous(), "ifnot/unless do not support condition bindings; use if");
+        }
         bindings.add(head.binding());
-        Ast.Expr condition = head.predicate();
+        Ast.Expr condition = introducer == IF
+                ? head.predicate() : new Ast.UnaryExpr("!", head.predicate());
 
         // '{' is the braced spelling of 'then'. Intermediate branches close
         // with '} elif/else'; fi closes the final branch and the whole chain.
@@ -4517,7 +4699,7 @@ public final class Parser {
         // - 'elseif' aliases canonical 'elif'.
         // - 'else if ... then' is accepted as a single-fi branch alias.
         match(SEMICOLON);
-        consumeConditionalThen("if");
+        consumeConditionalThen(introducer == IF ? "if" : introducer == IFNOT ? "ifnot" : "unless");
         List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
@@ -5101,13 +5283,27 @@ public final class Parser {
                 return parseTildeRecordPattern(true);
             }
             Ast.TypeRef target = parseTypeRef();
-            String binding = check(IDENT) && !peek().lexeme().equals("_")
-                    ? advance().lexeme()
-                    : null;
+            // Explicit 'as' is the canonical pattern binder. Preserve the
+            // historical positional binder for existing structural TypeName code.
+            String binding = match(AS)
+                    ? consume(IDENT, "expected structural match binding name after 'as'").lexeme()
+                    : check(IDENT) && !peek().lexeme().equals("_")
+                            ? advance().lexeme()
+                            : null;
             return new Ast.StructuralPattern(target, binding);
         }
 
         if (match(TILDE)) {
+            // '~ {field: Type, ...} as name' is the short spelling of
+            // 'structural {field: Type, ...} as name'. Do not reinterpret the
+            // established '~(field: Pattern)' or '~record(...)' pattern forms.
+            if (check(LBRACE)) {
+                Ast.TypeRef shape = parseTypeRef();
+                String binding = match(AS)
+                        ? consume(IDENT, "expected structural match binding name after 'as'").lexeme()
+                        : null;
+                return new Ast.StructuralPattern(shape, binding);
+            }
             if (isContextualIdentifier("record") && checkNext(LPAREN)) {
                 advance();
             }
@@ -5671,13 +5867,12 @@ public final class Parser {
         if (mutableBorrow) advance();
         String operation = advance().lexeme();
         consume(BANG, "expected '!' attached to ownership operation");
-        // Canonical mutable borrow is `mut borrow! value`, matching main's
-        // canonical `rt mut borrow value`; the trailing-mut word order is
-        // rejected exactly like legacy `rt borrow mut value`.
+        // Canonical borrow! mut and compatibility mut borrow! lower to the
+        // SAME checked &mut AST. 'mutfoo' remains an ordinary identifier.
+        // The qualifier is consumed only after the complete attached verb!.
         if (operation.equals("borrow") && match(MUT)) {
             if (mutableBorrow) throw error(previous(), "duplicate mutable borrow qualifier");
-            throw error(previous(),
-                    "legacy 'borrow! mut value' is not valid AttoLang; use 'mut borrow! value'");
+            mutableBorrow = true;
         }
         // Check explicitly before descending into the operand. Otherwise a
         // malformed borrow! mut mut item can fail as unrelated unary syntax
@@ -5985,9 +6180,15 @@ public final class Parser {
                             + "'; supported operations are cooperate, copy, take, borrow, share, and fail");
         }
 
+        // Both historical orders are compatibility spellings. They must
+        // produce the same checked &mut AST, without weakening the borrow
+        // checker or allowing a second mutable qualifier.
         if (name.equals("borrow") && match(MUT)) {
-            throw error(previous(),
-                    "legacy 'rt borrow mut value' is not valid Oreslang; use 'rt mut borrow value'");
+            if (mutableBorrow) throw error(previous(), "duplicate mutable borrow qualifier");
+            mutableBorrow = true;
+        }
+        if (mutableBorrow && check(MUT)) {
+            throw error(peek(), "duplicate mutable borrow qualifier");
         }
         Ast.Expr argument;
         if (match(LPAREN)) {
@@ -6323,21 +6524,42 @@ public final class Parser {
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after constructor arguments");
             if (type.name().equals("Proxy")) {
-                // Compile-time-only exact construction. Never infer a runtime
-                // target class or accept an arbitrary expression as a proxy.
+                // Compile-time-only, exact single-construction v1. In particular,
+                // no runtime reflection, arbitrary expression inference, actor
+                // reference transport or unqualified fallback is permitted.
                 if (!type.arguments().isEmpty() || type.inferArguments()
-                        || args.size() != 1
+                        || (args.size() != 1 && args.size() != 2)
                         || !(args.getFirst() instanceof Ast.NewExpr wrapped)
                         || !wrapped.type().arguments().isEmpty()
                         || wrapped.type().inferArguments()
                         || !wrapped.type().name().matches("[A-Za-z_][A-Za-z_0-9]*")) {
-                    throw error(previous(), "AOT_PROXY_UNSUPPORTED: expected new Proxy(new LocalClass(...)); "
+                    throw error(previous(), "AOT_PROXY_UNSUPPORTED: expected "
+                            + "new Proxy(new LocalClass(...)) or "
+                            + "new Proxy(new LocalClass(...), new LocalHooks(...)); "
                             + "runtime target inference is forbidden");
                 }
-                staticProxyTargets.add(wrapped.type().name());
+                if (args.size() == 1) {
+                    staticProxyTargets.add(wrapped.type().name());
+                    return new Ast.NewExpr(
+                            Ast.TypeRef.simple(wrapped.type().name() + "Proxy"),
+                            List.of(wrapped));
+                }
+                if (!(args.get(1) instanceof Ast.NewExpr interceptor)
+                        || !interceptor.type().arguments().isEmpty()
+                        || interceptor.type().inferArguments()
+                        || !interceptor.type().name().matches("[A-Za-z_][A-Za-z_0-9]*")) {
+                    throw error(previous(), "AOT_PROXY_UNSUPPORTED: interceptors require "
+                            + "a statically known new LocalHooks(...) constructor");
+                }
+                StaticProxySynthesis.InterceptorRequest request =
+                        new StaticProxySynthesis.InterceptorRequest(
+                                wrapped.type().name(), interceptor.type().name());
+                if (!staticProxyInterceptors.contains(request)) {
+                    staticProxyInterceptors.add(request);
+                }
                 return new Ast.NewExpr(
-                        Ast.TypeRef.simple(wrapped.type().name() + "Proxy"),
-                        List.of(wrapped));
+                        Ast.TypeRef.simple(request.generatedName()),
+                        List.of(wrapped, interceptor));
             }
             return new Ast.NewExpr(type, args);
         }
@@ -6705,12 +6927,34 @@ public final class Parser {
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
+        java.util.Set<String> seenLabels = new java.util.LinkedHashSet<>();
+        boolean namedStarted = false;
         do {
-            boolean spread = match(ELLIPSIS);
-            Ast.Expr argument = parseExpression();
-            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+            if (check(terminator)) throw error(peek(), "empty call argument");
+            if (match(ELLIPSIS)) {
+                if (namedStarted) {
+                    throw error(previous(),
+                            "positional spread arguments cannot follow named arguments");
+                }
+                args.add(new Ast.SpreadExpr(parseExpression()));
+                continue;
+            }
+            if (check(IDENT) && checkNext(COLON)) {
+                namedStarted = true;
+                String name = advance().lexeme();
+                consume(COLON, "expected ':' after named argument");
+                if (!seenLabels.add(name)) {
+                    throw error(previous(), "duplicate named argument '" + name + "'");
+                }
+                args.add(new Ast.NamedArgExpr(name, parseExpression()));
+                continue;
+            }
+            if (namedStarted) {
+                throw error(peek(), "positional arguments cannot follow named arguments");
+            }
+            args.add(parseExpression());
         } while (match(COMMA));
-        return args;
+        return List.copyOf(args);
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {

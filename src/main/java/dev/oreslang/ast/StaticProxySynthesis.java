@@ -21,12 +21,41 @@ import java.util.Set;
  */
 public final class StaticProxySynthesis {
     private static final String TARGET_FIELD = "__proxy_target";
+    private static final String HOOK_FIELD = "__proxy_hooks";
+
+    /** A statically known interceptor construction request. */
+    public record InterceptorRequest(String targetName, String interceptorName) {
+        public InterceptorRequest {
+            if (targetName == null || interceptorName == null
+                    || !targetName.matches("[A-Za-z_][A-Za-z_0-9]*")
+                    || !interceptorName.matches("[A-Za-z_][A-Za-z_0-9]*")) {
+                throw fail("interceptor target and type names must be plain identifiers");
+            }
+        }
+
+        public String generatedName() {
+            return targetName + "With" + interceptorName + "Proxy";
+        }
+    }
 
     private StaticProxySynthesis() { }
 
     public static Ast.Program expand(Ast.Program program, Set<String> requestedNames) {
-        if (requestedNames.isEmpty()) return program;
-        Set<String> requested = Set.copyOf(requestedNames);
+        return expand(program, requestedNames, List.of());
+    }
+
+    public static Ast.Program expand(Ast.Program program, Set<String> requestedNames,
+                                     List<InterceptorRequest> interceptorRequests) {
+        if (requestedNames.isEmpty() && interceptorRequests.isEmpty()) return program;
+        Set<String> requested = new HashSet<>(requestedNames);
+        // A single compilation unit can construct many proxy instances of
+        // the same target/hook type. One synthetic nominal class is shared
+        // across those call sites. Preserve source appearance order to give
+        // deterministic generated declaration order for exact-tree builds.
+        List<InterceptorRequest> uniqueRequests =
+                List.copyOf(new java.util.LinkedHashSet<>(interceptorRequests));
+        for (InterceptorRequest request : uniqueRequests) requested.add(request.targetName());
+        Map<String, Target> interceptors = new HashMap<>();
         Map<String, Target> found = new LinkedHashMap<>();
         Set<String> unresolvedTypeAliases = new HashSet<>();
         // Resolution of generated nominal types is not yet namespace-qualified.
@@ -49,21 +78,44 @@ public final class StaticProxySynthesis {
         if (occupiedNames.contains("Proxy")) {
             throw fail("an imported Proxy name conflicts with the compiler intrinsic");
         }
+        for (InterceptorRequest request : uniqueRequests) {
+            if (importedNames.contains(request.interceptorName())) {
+                throw fail("proxy interceptor '" + request.interceptorName()
+                        + "' collides with an imported name or namespace alias");
+            }
+        }
         for (String target : requested) {
             if (importedNames.contains(target)) {
                 throw fail("proxy target '" + target
                         + "' collides with an imported name or namespace alias");
             }
         }
+        // Newer main AST preserves explicit export metadata and protected
+        // declaration types. A generated nominal name must never shadow an
+        // exported or protected declaration.
+        for (Ast.ExportDecl export : program.exports()) {
+            occupiedNames.add(export.name());
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.ClassDecl klass) occupiedNames.add(klass.name());
+                if (declaration instanceof Ast.StateContainerDecl state) occupiedNames.add(state.name());
+                if (declaration instanceof Ast.VirtualActorDecl actor) occupiedNames.add(actor.name());
+                if (declaration instanceof Ast.GpuActorDecl gpu) occupiedNames.add(gpu.name());
+                if (declaration instanceof Ast.StandaloneActorDecl actor) occupiedNames.add(actor.name());
                 if (declaration instanceof Ast.FunctionDecl fn) occupiedNames.add(fn.name());
                 if (declaration instanceof Ast.FieldDecl field) occupiedNames.add(field.name());
                 if (declaration instanceof Ast.InterfaceDecl iface) occupiedNames.add(iface.name());
                 if (declaration instanceof Ast.TypeAliasDecl alias) {
                     occupiedNames.add(alias.name());
                     unresolvedTypeAliases.add(alias.name());
+                }
+                if (declaration instanceof Ast.ClassDecl klass
+                        && uniqueRequests.stream().anyMatch(r -> r.interceptorName().equals(klass.name()))) {
+                    if (interceptors.putIfAbsent(klass.name(), new Target(module.name(), klass)) != null) {
+                        throw fail("proxy interceptor class '" + klass.name()
+                                + "' is ambiguous across modules");
+                    }
                 }
                 if (declaration instanceof Ast.ClassDecl klass && requested.contains(klass.name())) {
                     if (found.putIfAbsent(klass.name(), new Target(module.name(), klass)) != null) {
@@ -82,23 +134,49 @@ public final class StaticProxySynthesis {
                         + "' must be an ordinary class declared in this compilation unit");
             }
         }
+        for (InterceptorRequest request : uniqueRequests) {
+            Target target = found.get(request.targetName());
+            Target hook = interceptors.get(request.interceptorName());
+            if (hook == null) {
+                throw fail("interceptor '" + request.interceptorName()
+                        + "' must be an ordinary class declared in this compilation unit");
+            }
+            if (!target.module().equals(hook.module())) {
+                throw fail("interceptor and target must be declared in the same module: "
+                        + request.targetName() + ", " + request.interceptorName());
+            }
+        }
         List<Ast.ModuleDecl> modules = new ArrayList<>(program.modules().size());
         for (Ast.ModuleDecl module : program.modules()) {
             List<Ast.Decl> output = new ArrayList<>(module.declarations());
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.ClassDecl klass)
                         || !requested.contains(klass.name())) continue;
-                String generatedName = klass.name() + "Proxy";
-                if (!occupiedNames.add(generatedName)) {
-                    throw fail("generated class '" + generatedName
-                            + "' collides with an existing or generated declaration");
+                if (requestedNames.contains(klass.name())) {
+                    String generatedName = klass.name() + "Proxy";
+                    if (!occupiedNames.add(generatedName)) {
+                        throw fail("generated class '" + generatedName
+                                + "' collides with an existing or generated declaration");
+                    }
+                    output.add(proxyClass(klass, generatedName, unresolvedTypeAliases));
                 }
-                output.add(proxyClass(klass, generatedName, unresolvedTypeAliases));
+                for (InterceptorRequest request : uniqueRequests) {
+                    if (!request.targetName().equals(klass.name())) continue;
+                    String generatedName = request.generatedName();
+                    if (!occupiedNames.add(generatedName)) {
+                        throw fail("generated class '" + generatedName
+                                + "' collides with an existing or generated declaration");
+                    }
+                    output.add(interceptorProxyClass(
+                            program, klass, interceptors.get(request.interceptorName()).klass(),
+                            generatedName, unresolvedTypeAliases));
+                }
             }
             modules.add(new Ast.ModuleDecl(
                     module.name(), module.annotations(), module.contracts(), output));
         }
-        // Never erase file-level export contracts during synthetic class expansion.
+        // Preserve current-main export declarations. The legacy three-arg
+        // constructor silently discards exports and is not safe for rewrites.
         return new Ast.Program(program.namespace(), program.imports(), modules, program.exports());
     }
 
@@ -108,6 +186,8 @@ public final class StaticProxySynthesis {
                                            Set<String> unresolvedTypeAliases) {
         if (target.actorKind() != Ast.ActorKind.NONE)
             throw fail("actors cannot be wrapped as ordinary class proxies: " + target.name());
+        if (!target.annotations().isEmpty())
+            throw fail("annotated target class requires checked proxy policy metadata: " + target.name());
         if (target.isAbstract() || !target.parents().isEmpty() || !target.interfaces().isEmpty())
             throw fail("abstract/inherited/implemented class surfaces need complete method resolution: " + target.name());
         if (!target.genericParameters().isEmpty())
@@ -136,7 +216,7 @@ public final class StaticProxySynthesis {
             // Class functions are not instance members. A later, explicit
             // class-facade feature may mirror static functions separately.
             if (method.isStatic() || method.visibility() != Ast.Visibility.PUBLIC) continue;
-            if (method.isAbstract() || method.async() || method.suspends()
+            if (method.isAbstract() || method.async() || method.suspends() || method.critical()
                     || method.structural() || method.explicitReceiverType() != null
                     || !method.genericParameters().isEmpty() || !method.effects().isEmpty()) {
                 throw fail("method '" + target.name() + "." + method.name() + "/"
@@ -200,50 +280,220 @@ public final class StaticProxySynthesis {
     }
 
     /**
+     * Typed, synchronous "before" interceptor slice. The ordinary method
+     * vtable dispatches the hook, without reflective method enumeration or
+     * a dynamically manufactured callable. A checked one-shot around/proceed
+     * continuation is deliberately NOT implemented here.
+     */
+    private static Ast.ClassDecl interceptorProxyClass(
+            Ast.Program program, Ast.ClassDecl target, Ast.ClassDecl interceptor, String generatedName,
+            Set<String> unresolvedTypeAliases) {
+        if (!interceptor.annotations().isEmpty()) {
+            throw fail("annotated interceptor class requires checked proxy policy metadata: "
+                    + interceptor.name());
+        }
+        if (interceptor.actorKind() != Ast.ActorKind.NONE || interceptor.isAbstract()
+                || !interceptor.parents().isEmpty() || !interceptor.interfaces().isEmpty()
+                || !interceptor.genericParameters().isEmpty()) {
+            throw fail("interceptor must be a concrete, nonactor, nongeneric local class: "
+                    + interceptor.name());
+        }
+        Ast.ClassDecl delegate = proxyClass(target, generatedName, unresolvedTypeAliases);
+        if (delegate.methods().isEmpty()) {
+            throw fail("interceptor target exposes no eligible public instance methods: "
+                    + target.name());
+        }
+        for (Ast.MethodDecl forwarded : delegate.methods()) {
+            if (forwarded.name().equals(HOOK_FIELD)) {
+                throw fail("proxy storage name collides with callable "
+                        + target.name() + "." + HOOK_FIELD);
+            }
+            for (Ast.Param parameter : forwarded.parameters()) {
+                if (HOOK_FIELD.equals(parameter.name())) {
+                    throw fail("proxy parameter shadows generated receiver/storage: "
+                            + target.name() + "." + forwarded.name());
+                }
+                // A before hook sees the argument and then the target sees it.
+                // Without affine continuation/loan lowering this is sound only
+                // for obviously copyable, immutable scalar values.
+                if (!parameter.type().arguments().isEmpty()
+                        || !Set.of("int", "float", "bool", "String", "string")
+                                .contains(parameter.type().name())) {
+                    throw fail("before interception requires copyable scalar arguments: "
+                            + target.name() + "." + forwarded.name());
+                }
+            }
+        }
+        Map<Ast.MethodArity, Ast.MethodDecl> hooks = new HashMap<>();
+        for (Ast.MethodDecl hook : interceptor.methods()) {
+            if (!hook.name().startsWith("before_")) continue;
+            if (hooks.putIfAbsent(hook.overloadIdentity(), hook) != null) {
+                throw fail("ambiguous interceptor slot: " + interceptor.name() + "."
+                        + hook.name() + "/" + hook.arity());
+            }
+        }
+
+        List<Ast.MethodDecl> methods = new ArrayList<>();
+        List<Ast.MethodDecl> verifiedHookRoots = new ArrayList<>();
+        Set<Ast.MethodArity> consumed = new HashSet<>();
+        for (Ast.MethodDecl method : delegate.methods()) {
+            Ast.MethodArity slot = new Ast.MethodArity("before_" + method.name(), method.arity());
+            Ast.MethodDecl hook = hooks.get(slot);
+            if (hook == null) {
+                throw fail("missing typed interceptor method " + interceptor.name() + "."
+                        + slot.name() + "/" + slot.arity());
+            }
+            consumed.add(slot);
+            if (hook.visibility() != Ast.Visibility.PUBLIC || hook.isStatic()
+                    || hook.isAbstract() || hook.async() || hook.suspends() || hook.critical()
+                    || hook.structural() || hook.explicitReceiverType() != null
+                    || !hook.genericParameters().isEmpty() || !hook.effects().isEmpty()
+                    || !hook.annotations().isEmpty()
+                    || !hook.returnType().equals(Ast.TypeRef.simple("void"))) {
+                throw fail("interceptor method must be public, synchronous, void and have no declared checked exceptional effects: "
+                        + interceptor.name() + "." + hook.name());
+            }
+            // The shared closed-world verifier below has an explicit AST
+            // node/depth budget. Do not recursively scan hook syntax here:
+            // that old prepass was unbounded and could overflow the Java stack
+            // before the bounded admission gate ran.
+            // Collect validated entrypoints before checking the shared
+            // call graph once. This avoids a separate full method-table
+            // allocation and repeated helper traversal for every public hook.
+            verifiedHookRoots.add(hook);
+            for (int i = 0; i < hook.parameters().size(); i++) {
+                Ast.Param provided = hook.parameters().get(i);
+                Ast.Param expected = method.parameters().get(i);
+                if (provided.structural() || provided.mutable()
+                        || !provided.type().equals(expected.type())
+                        || "self".equals(provided.name()) || TARGET_FIELD.equals(provided.name())
+                        || HOOK_FIELD.equals(provided.name())) {
+                    throw fail("interceptor parameter contract mismatch: "
+                            + interceptor.name() + "." + hook.name());
+                }
+            }
+            List<Ast.Expr> args = new ArrayList<>();
+            for (Ast.Param parameter : method.parameters()) {
+                args.add(new Ast.NameExpr(parameter.name()));
+            }
+            Ast.CallExpr hookCall = new Ast.CallExpr(
+                    new Ast.MemberExpr(
+                            new Ast.MemberExpr(new Ast.NameExpr("self"), HOOK_FIELD),
+                            hook.name()), args);
+            List<Ast.Stmt> body = new ArrayList<>();
+            body.add(new Ast.ExprStmt(hookCall));
+            body.addAll(method.body());
+            methods.add(new Ast.MethodDecl(
+                    method.name(), method.visibility(), method.isStatic(), method.isAbstract(),
+                    method.async(), method.suspends(), method.structural(),
+                    method.explicitReceiverType(), method.genericParameters(),
+                    method.parameters(), method.returnType(), method.annotations(), body,
+                    method.effects()));
+        }
+        for (Ast.MethodArity slot : hooks.keySet()) {
+            if (!consumed.contains(slot)) {
+                throw fail("interceptor method does not match any forwarded public method: "
+                        + interceptor.name() + "." + slot.name() + "/" + slot.arity());
+            }
+        }
+
+        // Check transitive effects after all hooks have been matched to
+        // target slots. Duplicate helper edges share one bounded proof.
+        StaticProxyHookEffectClosure.verifyAll(program, interceptor, verifiedHookRoots);
+
+        List<Ast.FieldDecl> fields = new ArrayList<>(delegate.fields());
+        fields.add(new Ast.FieldDecl(HOOK_FIELD, Ast.Visibility.PRIVATE,
+                Ast.BindingKind.VAL, Ast.TypeRef.simple(interceptor.name()),
+                List.of(), null, false));
+        List<Ast.Param> parameters = List.of(
+                new Ast.Param(Ast.TypeRef.simple(target.name()), "target"),
+                new Ast.Param(Ast.TypeRef.simple(interceptor.name()), "hooks"));
+        List<Ast.Stmt> constructorBody = new ArrayList<>(delegate.constructor().body());
+        constructorBody.add(new Ast.ExprStmt(new Ast.AssignExpr(
+                new Ast.MemberExpr(new Ast.NameExpr("self"), HOOK_FIELD),
+                new Ast.NameExpr("hooks"))));
+        Ast.ConstructorDecl constructor = new Ast.ConstructorDecl(
+                delegate.constructor().visibility(), parameters, List.of(), constructorBody);
+        return new Ast.ClassDecl(generatedName, target.visibility(), false,
+                Ast.ActorKind.NONE, List.of(), List.of(), List.of(), fields, constructor, methods);
+    }
+
+    /**
+     * Conservative syntax gate for the before-only slice. This is NOT a
+     * transitive call-graph proof: helper-method effects remain unverified and
+     * the draft must not be promoted until call targets are effect-checked.
+     * Unknown AST forms fail closed instead of accidentally discarding a
+     * suspension signal when the target method is invoked next.
+     */
+    /**
      * Avoid forwarding borrowed/callable/inferred values until the compiler
      * proves the target lifetime, alias rights and closure transport. Recurse
      * through nested generic arguments (e.g. Option<borrow Foo>) as well.
      */
-    private static boolean unsafeSignatureType(Ast.TypeRef type, Set<String> unresolvedTypeAliases) {
-        // An alias can hide the wrapped target, a mutable aggregate or a
-        // borrowed/callable signature. Do not forward until nominal resolution
-        // proves its definition and transitive ownership/effect requirements.
-        if (unresolvedTypeAliases.contains(type.name())
-                || type.isBorrow() || type.isStructType() || type.inferArguments()
-                || type.name().equals("Fnc") || type.name().equals("Function")
-                || type.name().equals("Routine")
-                || type.name().equals("$infer$")) return true;
-        for (Ast.TypeRef arg : type.arguments()) {
-            if (unsafeSignatureType(arg, unresolvedTypeAliases)) return true;
+    // Bound metadata traversal before type/ownership resolution. Direct
+    // AST producers can build nesting far deeper than the normal parser's
+    // accepted surface grammar; the previous three recursive walks risked
+    // StackOverflowError before issuing a compiler diagnostic.
+    private static final int MAX_SIGNATURE_NESTING = 64;
+    private static final int MAX_SIGNATURE_NODES = 4096;
+
+    private record SignatureNode(Ast.TypeRef type, int depth) { }
+
+    private static boolean anyNestedSignatureType(
+            Ast.TypeRef root, java.util.function.Predicate<Ast.TypeRef> unsafe) {
+        if (root == null) throw fail("proxy signature type is missing");
+        java.util.ArrayDeque<SignatureNode> pending = new java.util.ArrayDeque<>();
+        pending.push(new SignatureNode(root, 0));
+        int count = 0;
+        while (!pending.isEmpty()) {
+            SignatureNode node = pending.pop();
+            if (node.depth() > MAX_SIGNATURE_NESTING || ++count > MAX_SIGNATURE_NODES) {
+                throw fail("proxy signature type exceeds nesting/node budget");
+            }
+            Ast.TypeRef type = node.type();
+            if (type == null || type.name() == null) {
+                throw fail("proxy signature contains a missing type name");
+            }
+            if (unsafe.test(type)) return true;
+            List<Ast.TypeRef> args = type.arguments();
+            if (args.size() > MAX_SIGNATURE_NODES - count) {
+                throw fail("proxy signature type exceeds nesting/node budget");
+            }
+            // Reverse-push so the original argument order is deterministic.
+            for (int i = args.size() - 1; i >= 0; i--) {
+                Ast.TypeRef child = args.get(i);
+                if (child == null) throw fail("proxy signature contains a missing nested type");
+                pending.push(new SignatureNode(child, node.depth() + 1));
+            }
         }
         return false;
+    }
+
+    private static boolean unsafeSignatureType(Ast.TypeRef type, Set<String> unresolvedTypeAliases) {
+        // An alias can hide the wrapped target, mutable aggregates, or
+        // borrowed/callable types; reject until qualified resolution proves
+        // the complete transitive ownership/effect contract.
+        return anyNestedSignatureType(type, current ->
+                unresolvedTypeAliases.contains(current.name())
+                || current.isBorrow() || current.isStructType() || current.inferArguments()
+                || current.name().equals("Fnc") || current.name().equals("Function")
+                || current.name().equals("Routine")
+                || current.name().equals("$infer$"));
     }
 
     private static boolean exposesTargetType(Ast.TypeRef type, String targetName) {
-        if (type.name().equals(targetName) || type.name().equals("self")) return true;
-        for (Ast.TypeRef arg : type.arguments()) {
-            if (exposesTargetType(arg, targetName)) return true;
-        }
-        return false;
+        return anyNestedSignatureType(type, current ->
+                current.name().equals(targetName) || current.name().equals("self"));
     }
 
     /**
-     * A statically declared Foo return is already rejected above, but an opaque
-     * supertype or erased nested payload may hide Foo at runtime. Until the
-     * compiler proves an identity-preserving adapter, fail closed. Future
-     * qualified type resolution can replace this conservative name check.
+     * An opaque supertype or erased nested payload can conceal the wrapped
+     * target identity. Without an identity-preserving adapter, reject.
      */
     private static boolean erasesTargetIdentity(Ast.TypeRef type) {
-        String name = type.name();
-        if (name.equals("Any") || name.equals("any")
-                || name.equals("Object") || name.equals("object")
-                || name.equals("Unknown") || name.equals("unknown")
-                || name.equals("Dynamic") || name.equals("dynamic")
-                || name.equals("?")) return true;
-        for (Ast.TypeRef arg : type.arguments()) {
-            if (erasesTargetIdentity(arg)) return true;
-        }
-        return false;
+        return anyNestedSignatureType(type, current ->
+                Set.of("Any", "any", "Object", "object", "Unknown", "unknown",
+                        "Dynamic", "dynamic", "?").contains(current.name()));
     }
 
     private static IllegalArgumentException fail(String message) {

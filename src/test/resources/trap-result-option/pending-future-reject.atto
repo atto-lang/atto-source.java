@@ -1,0 +1,6 @@
+// A pending Future is not a settled ordinary result.
+async fnc later(): int { return 7; }
+fnc invalid(): void {
+  val Option<Future<int>> caught = trap later();
+  return;
+}

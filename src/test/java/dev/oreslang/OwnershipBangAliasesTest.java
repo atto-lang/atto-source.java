@@ -33,8 +33,13 @@ final class OwnershipBangAliasesTest {
         sameAst("rt borrow mutfoo", "borrow! mutfoo", "borrow!mutfoo");
         sameAst("rt share foo", "share! foo", "share!foo");
         sameAst("rt mut borrow foo", "mut borrow! foo", "mut borrow!foo");
+        sameAst("rt mut borrow foo", "borrow! mut foo", "borrow!mut foo");
+        sameAst("rt borrow mut foo", "borrow! mut foo", "borrow!mut foo");
         sameAst("rt mut borrow(foo)", "mut borrow! (foo)", "mut borrow!(foo)");
+        sameAst("rt mut borrow(foo)", "borrow! mut (foo)", "borrow!mut(foo)");
         sameAst("rt mut borrow foo.bar", "mut borrow! foo.bar", "mut borrow!foo.bar");
+        sameAst("rt mut borrow foo.bar", "borrow! mut foo.bar", "borrow!mut foo.bar");
+        sameAst("rt borrow mut foo.bar", "borrow! mut foo.bar", "borrow!mut foo.bar");
         assertThrows(RuntimeException.class, () -> source("mut borrow! mut foo"),
                 "two mutable borrow qualifiers must not be admitted");
         sameAst("rt copy(foo + 1)", "copy! (foo + 1)", "copy!(foo + 1)");
@@ -68,8 +73,12 @@ final class OwnershipBangAliasesTest {
     @Test
     void doubleMutableQualifiersReceiveTargetedDiagnostic() {
         for (String malformed : new String[]{
+                "borrow! mut mut foo",
+                "borrow!mut mut foo",
                 "mut borrow! mut foo",
-                "mut borrow!mut foo"}) {
+                "mut borrow!mut foo",
+                "rt mut borrow mut foo",
+                "rt borrow mut mut foo"}) {
             RuntimeException error = assertThrows(RuntimeException.class,
                     () -> source(malformed), malformed);
             assertTrue(error.getMessage().contains("duplicate mutable borrow qualifier"),
@@ -78,16 +87,21 @@ final class OwnershipBangAliasesTest {
     }
 
     @Test
-    void trailingMutWordOrderIsRejectedLikeMainsLegacyRtBorrowMut() {
-        // main rejects 'rt borrow mut value'; the bang alias follows the same
-        // canonical mutable-borrow word order ('mut borrow! value').
-        for (String legacy : new String[]{"borrow! mut foo", "borrow!mut foo",
-                "borrow! mut (foo)", "borrow! mut foo.bar", "borrow! mut mut foo"}) {
-            RuntimeException error = assertThrows(RuntimeException.class,
-                    () -> source(legacy), legacy);
-            assertTrue(error.getMessage().contains("use 'mut borrow! value'"),
-                    legacy + ": " + error.getMessage());
+    void canonicalMutableBorrowMatchesBothLegacyOrdersAndTheLeadingAlias() {
+        // The language spec prefers borrow! mut, while older source keeps
+        // both rt word orders and mut borrow! as equivalent checked borrows.
+        for (String operand : new String[]{"foo", "(foo)", "foo.bar"}) {
+            Ast.Program canonical = source("borrow! mut " + operand);
+            for (String spelling : new String[]{
+                    "borrow!mut " + operand,
+                    "mut borrow! " + operand,
+                    "rt mut borrow " + operand,
+                    "rt borrow mut " + operand}) {
+                assertEquals(canonical, source(spelling), spelling);
+            }
         }
+        // The standalone 'mut' keyword, not an identifier prefix, selects &mut.
+        assertEquals(source("rt borrow mutfoo"), source("borrow!mutfoo"));
     }
 
     @Test
@@ -237,8 +251,8 @@ final class OwnershipBangAliasesTest {
                 end
                 fnc read_it(): void {
                   let Item item = new Item();
-                  val borrow mut Item first = mut borrow! item;
-                  val borrow mut Item second = mut borrow! item;
+                  val borrow mut Item first = borrow! mut item;
+                  val borrow mut Item second = rt borrow mut item;
                   stdio.println(first.value);
                   stdio.println(second.value);
                   return;

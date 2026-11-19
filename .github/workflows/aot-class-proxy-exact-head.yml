@@ -4,8 +4,10 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/ast/StaticProxySynthesis.java'
+      - 'src/main/java/dev/oreslang/ast/StaticProxyHookEffectClosure.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/test/java/dev/oreslang/AotClassProxyLanguageTest.java'
+      - 'scripts/VerifyAotProxyReports.java'
       - '.github/workflows/aot-class-proxy-exact-head.yml'
   workflow_dispatch:
 
@@ -41,27 +43,9 @@ jobs:
       - name: Execute compiler-backed proxy guest and negative tests
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=AotClassProxyLanguageTest test
+          mvn -B -ntp -DfailIfNoTests=true -Dtest=AotClassProxyLanguageTest test
       - name: Require a nonempty Surefire receipt
         run: |
           set -euo pipefail
           test -s target/surefire-reports/TEST-dev.oreslang.AotClassProxyLanguageTest.xml
-          python3 - <<'PY'
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-
-          path = Path("target/surefire-reports/TEST-dev.oreslang.AotClassProxyLanguageTest.xml")
-          assert path.is_file() and path.stat().st_size > 0, "proxy Surefire XML missing"
-          root = ET.parse(path).getroot()
-          assert root.tag == "testsuite", "wrong XML root"
-          assert root.attrib.get("name") == "dev.oreslang.AotClassProxyLanguageTest", "wrong test class"
-          count = int(root.attrib.get("tests", "0"))
-          assert count >= 20, f"only {count} proxy tests executed"
-          for failure in ("failures", "errors", "skipped"):
-              assert int(root.attrib.get(failure, "0")) == 0, f"nonzero {failure}"
-          assert len(root.findall("testcase")) >= 20, "missing testcase evidence"
-          for element in ("failure", "error", "skipped"):
-              assert not root.findall(".//" + element), f"unexpected {element} node"
-          print(f"ATTO_PROXY_TEST_COUNT={count}")
-          print("ATTO_PROXY_GUEST_RECEIPT=present")
-          PY
+          java scripts/VerifyAotProxyReports.java

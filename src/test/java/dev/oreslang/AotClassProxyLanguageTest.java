@@ -45,26 +45,6 @@ final class AotClassProxyLanguageTest {
             """;
 
     @Test
-    void compilerSynthesizedProxiesPreserveFileLevelExports() {
-        String source = """
-                export pub Foo;
-                define pub class Foo as
-                  pub answer(): int { return 42; }
-                end
-                pub routine main(): void {
-                  val proxy = new Proxy(new Foo());
-                  return;
-                }
-                """;
-        Ast.Program parsed = Parser.parse(source);
-        assertEquals(1, parsed.exports().size(), "file-level exports must not disappear");
-        assertTrue(parsed.modules().stream()
-                .flatMap(module -> module.declarations().stream())
-                .anyMatch(decl -> decl instanceof Ast.ClassDecl klass
-                        && klass.name().equals("FooProxy")));
-    }
-
-    @Test
     void exactAotProxySyntaxExpandsBeforeTypeAndOwnershipChecking() {
         Ast.Program parsed = Parser.parse(SIMPLE);
         Ast.ClassDecl generated = parsed.modules().stream()
@@ -400,6 +380,829 @@ final class AotClassProxyLanguageTest {
             assertTrue(error.getMessage().contains("shadows generated receiver/storage"),
                     reserved + ": " + error.getMessage());
         }
+    }
+
+    private static final String BEFORE_HOOK_SOURCE = """
+            define class Foo as
+              pub do_work(int value): int {
+                return value + 1;
+              }
+            end
+            define class Hook as
+              pub before_do_work(int value): void {
+                stdio.stdout.write(7);
+                return;
+              }
+            end
+            pub routine main(): void {
+              val p = new Proxy(new Foo(), new Hook());
+              stdio.stdout.write(p.do_work(41));
+              return;
+            }
+            """;
+
+    @Test
+    void typedBeforeInterceptorExpandsIntoOrdinaryMethodsWithoutReflection() {
+        Ast.Program parsed = Parser.parse(BEFORE_HOOK_SOURCE);
+        Ast.ClassDecl generated = parsed.modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(d -> d instanceof Ast.ClassDecl klass
+                        && klass.name().equals("FooWithHookProxy"))
+                .map(d -> (Ast.ClassDecl) d).findFirst().orElseThrow();
+        assertEquals(2, generated.fields().size());
+        assertEquals(2, generated.constructor().arity());
+        assertEquals("Foo", generated.constructor().parameters().get(0).type().name());
+        assertEquals("Hook", generated.constructor().parameters().get(1).type().name());
+        Ast.MethodDecl method = generated.methods().stream()
+                .filter(m -> m.name().equals("do_work")).findFirst().orElseThrow();
+        assertEquals(2, method.body().size());
+        assertInstanceOf(Ast.ExprStmt.class, method.body().getFirst());
+        Ast.CallExpr hook = (Ast.CallExpr) ((Ast.ExprStmt) method.body().getFirst()).expression();
+        assertEquals("before_do_work", ((Ast.MemberExpr) hook.callee()).member());
+        assertInstanceOf(Ast.ReturnStmt.class, method.body().get(1));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(BEFORE_HOOK_SOURCE));
+    }
+
+    @Test
+    void typedBeforeInterceptorRunsBeforeExactlyOneTargetCall() throws Exception {
+        assertEquals("742", run(BEFORE_HOOK_SOURCE));
+    }
+
+    @Test
+    void beforeInterceptorConstructsOperandsOnceAndInSourceOrder() throws Exception {
+        String source = """
+                define class Foo as
+                  constructor() {
+                    stdio.stdout.write(1);
+                  }
+                  pub do_work(int value): int {
+                    stdio.stdout.write(4);
+                    return value + 1;
+                  }
+                end
+                define class Hook as
+                  constructor() {
+                    stdio.stdout.write(2);
+                  }
+                  pub before_do_work(int value): void {
+                    stdio.stdout.write(3);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  stdio.stdout.write(p.do_work(41));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        // 1 = target constructor, 2 = hook constructor,
+        // 3 = prehook, 4 = target invocation, 42 = returned value.
+        assertEquals("123442", run(source));
+    }
+
+    @Test
+    void beforeInterceptorsPreserveNameAndArityOverloadDispatch() throws Exception {
+        String source = """
+                define class Foo as
+                  pub add(int value): int {
+                    return value + 1;
+                  }
+                  pub add(int left, int right): int {
+                    return left + right;
+                  }
+                end
+                define class Hook as
+                  pub before_add(int value): void {
+                    stdio.stdout.write(1);
+                    return;
+                  }
+                  pub before_add(int left, int right): void {
+                    stdio.stdout.write(2);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  stdio.stdout.write(p.add(10));
+                  stdio.stdout.write(p.add(20, 21));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("111241", run(source));
+    }
+
+    @Test
+    void beforeInterceptorsHandleVoidTargetWithoutDuplicateForwarding() throws Exception {
+        String source = """
+                define class Foo as
+                  pub ping(): void {
+                    stdio.stdout.write(2);
+                    return;
+                  }
+                end
+                define class Hook as
+                  pub before_ping(): void {
+                    stdio.stdout.write(1);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  p.ping();
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("12", run(source));
+    }
+
+    @Test
+    void repeatedTypedProxyInstancesShareClassButNotInvocations() throws Exception {
+        String source = BEFORE_HOOK_SOURCE.replace(
+                "stdio.stdout.write(p.do_work(41));",
+                "stdio.stdout.write(p.do_work(41));\n"
+                        + "  val q = new Proxy(new Foo(), new Hook());\n"
+                        + "  stdio.stdout.write(q.do_work(42));");
+        assertNotEquals(BEFORE_HOOK_SOURCE, source);
+        Ast.Program program = Parser.parse(source);
+        long generated = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof Ast.ClassDecl klass
+                        && klass.name().equals("FooWithHookProxy")).count();
+        assertEquals(1, generated, "multiple instances share one emitted type");
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("742743", run(source), "each invocation runs its own before hook");
+    }
+
+    @Test
+    void rejectsMissingOrWrongArityBeforeHook() {
+        String src = BEFORE_HOOK_SOURCE.replace(
+                "before_do_work(int value)", "before_do_work()");
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(src));
+        assertTrue(error.getMessage().contains("missing typed interceptor method"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsPrivateOrWrongReturnBeforeHook() {
+        for (String bad : List.of(
+                "private before_do_work(int value): void",
+                "pub before_do_work(int value): int")) {
+            String src = BEFORE_HOOK_SOURCE.replace(
+                    "pub before_do_work(int value): void", bad);
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(src));
+            assertTrue(error.getMessage().contains("interceptor method must"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsBeforeHookParameterTypeMismatchAndExtraSlots() {
+        String mismatched = BEFORE_HOOK_SOURCE.replace(
+                "pub before_do_work(int value): void",
+                "pub before_do_work(String value): void");
+        IllegalArgumentException badSignature = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(mismatched));
+        assertTrue(badSignature.getMessage().contains("interceptor parameter contract mismatch"),
+                badSignature.getMessage());
+
+        String extra = BEFORE_HOOK_SOURCE.replace(
+                "pub before_do_work(int value): void {",
+                "pub before_other(int value): void { return; }\n"
+                        + "  pub before_do_work(int value): void {");
+        assertNotEquals(BEFORE_HOOK_SOURCE, extra,
+                "fixture must actually insert an extra before hook");
+        IllegalArgumentException unknownSlot = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(extra));
+        assertTrue(unknownSlot.getMessage().contains("does not match any forwarded public method"),
+                unknownSlot.getMessage());
+    }
+
+    @Test
+    void rejectsRuntimeInterceptorInferenceAndSyntheticNameCapture() {
+        String runtime = BEFORE_HOOK_SOURCE.replace(
+                "val p = new Proxy(new Foo(), new Hook());",
+                "val h = new Hook();\nval p = new Proxy(new Foo(), h);");
+        IllegalArgumentException inferred = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(runtime));
+        assertTrue(inferred.getMessage().contains("statically known"),
+                inferred.getMessage());
+        String collision = BEFORE_HOOK_SOURCE.replace(
+                "pub routine main(): void", "define class FooWithHookProxy as end\n"
+                        + "pub routine main(): void");
+        IllegalArgumentException capture = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(collision));
+        assertTrue(capture.getMessage().contains("collides"), capture.getMessage());
+    }
+
+    @Test
+    void rejectsBeforeHookReusingOwnedNominalArguments() {
+        String source = """
+                define class Payload as end
+                define class Foo as
+                  pub consume(Payload p): int { return 1; }
+                end
+                define class Hook as
+                  pub before_consume(Payload p): void { return; }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(error.getMessage().contains("requires copyable scalar arguments"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsUnprovenHookSuspensionInDirectAndNestedSourceForms() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        Ast.Stmt directAwait = new Ast.ExprStmt(
+                new Ast.AwaitExpr(new Ast.NameExpr("pending")));
+        Ast.Stmt nestedAwait = new Ast.IfStmt(
+                List.of(new Ast.IfBranch(new Ast.LiteralExpr(true),
+                        List.of(directAwait))), List.of());
+        Ast.Stmt taskScope = new Ast.TaskScopeStmt(List.of());
+        for (Ast.Stmt forbidden : List.of(directAwait, nestedAwait, taskScope)) {
+            Ast.MethodDecl hook = new Ast.MethodDecl("before_read",
+                    Ast.Visibility.PUBLIC, false, false, false, false, false,
+                    null, List.of(), List.of(new Ast.Param(integer, "value")),
+                    Ast.TypeRef.simple("void"), List.of(),
+                    List.of(forbidden, new Ast.ReturnStmt(null)));
+            Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(),
+                    List.of(), List.of(hook));
+            Ast.Program program = new Ast.Program(List.of(
+                    new Ast.ModuleDecl("first", List.of(target, hooks))));
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            program, Set.of(), List.of(
+                                    new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                                            "Foo", "Hooks"))));
+            assertTrue(error.getMessage().contains("unproven suspension"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void beforeHookTraversesKnownSynchronousLocalHelperChain() throws Exception {
+        String source = """
+                define class Foo as
+                  pub do_work(int value): int {
+                    return value + 1;
+                  }
+                end
+                define class Hook as
+                  private emit_value(int value): void {
+                    stdio.stdout.write(value);
+                    return;
+                  }
+                  private forward_value(int value): void {
+                    self.emit_value(value);
+                    return;
+                  }
+                  pub before_do_work(int value): void {
+                    self.forward_value(value);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  stdio.stdout.write(p.do_work(41));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("4142", run(source));
+    }
+
+    @Test
+    void rejectsSuspensionReachedThroughAnOtherwiseSynchronousHelper() {
+        String source = """
+                define class Foo as
+                  pub do_work(int value): int { return value + 1; }
+                end
+                define class Hook as
+                  private dangerous(int value): void {
+                    await value;
+                    return;
+                  }
+                  pub before_do_work(int value): void {
+                    self.dangerous(value);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(error.getMessage().contains("unverified") ||
+                error.getMessage().contains("unproven"), error.getMessage());
+    }
+
+    @Test
+    void rejectsRecursiveAndUnresolvedHelperDispatchBeforeTypeChecking() {
+        String source = """
+                define class Foo as
+                  pub do_work(int value): int { return value + 1; }
+                end
+                define class Hook as
+                  private helper(int value): void {
+                    self.helper(value);
+                    return;
+                  }
+                  pub before_do_work(int value): void {
+                    self.helper(value);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  return;
+                }
+                """;
+        IllegalArgumentException cycle = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(cycle.getMessage().contains("recursive interceptor helper dispatch"),
+                cycle.getMessage());
+        String missing = source.replace("self.helper(value);", "self.not_found(value);");
+        IllegalArgumentException unresolved = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(missing));
+        assertTrue(unresolved.getMessage().contains("unresolved local slot"),
+                unresolved.getMessage());
+        String freeCall = source.replace("self.helper(value);", "untrusted(value);");
+        IllegalArgumentException indirect = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(freeCall));
+        assertTrue(indirect.getMessage().contains("unresolved/indirect dispatch"),
+                indirect.getMessage());
+    }
+
+    @Test
+    void rejectsBeforeHookStdioNamespaceShadowing() {
+        String source = """
+                define class Foo as
+                  pub do_work(int value): int { return value + 1; }
+                end
+                define class Hook as
+                  val int stdio;
+                  pub before_do_work(int value): void {
+                    stdio.stdout.write(value);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val p = new Proxy(new Foo(), new Hook());
+                  return;
+                }
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(error.getMessage().contains("interceptor field conflicts"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsUnsafeOperatorsAndOpaqueLiteralPayloadInHookBody() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        for (Ast.Expr unverified : List.of(
+                new Ast.BinaryExpr("|>", new Ast.NameExpr("value"),
+                        new Ast.LiteralExpr(1)),
+                new Ast.UnaryExpr("take!", new Ast.NameExpr("value")),
+                new Ast.LiteralExpr(new Object()))) {
+            Ast.MethodDecl hook = new Ast.MethodDecl("before_read",
+                    Ast.Visibility.PUBLIC, false, false, false, false, false,
+                    null, List.of(), List.of(new Ast.Param(integer, "value")),
+                    Ast.TypeRef.simple("void"), List.of(),
+                    List.of(new Ast.ExprStmt(unverified), new Ast.ReturnStmt(null)));
+            Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(),
+                    List.of(), List.of(hook));
+            Ast.Program program = new Ast.Program(List.of(
+                    new Ast.ModuleDecl("first", List.of(target, hooks))));
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            program, Set.of(), List.of(
+                                    new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                                            "Foo", "Hooks"))));
+            assertTrue(error.getMessage().contains("unverified effects")
+                    || error.getMessage().contains("not a recognized scalar"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void repeatedIdenticalInterceptorRequestsReuseOneGeneratedClass() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        Ast.MethodDecl hook = new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(integer, "value")), Ast.TypeRef.simple("void"),
+                List.of(), List.of(new Ast.ReturnStmt(null)));
+        Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                List.of(hook));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks))));
+        var request = new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                "Foo", "Hooks");
+        Ast.Program expanded = assertDoesNotThrow(() ->
+                dev.oreslang.ast.StaticProxySynthesis.expand(
+                        program, Set.of(), List.of(request, request, request)));
+        long generated = expanded.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof Ast.ClassDecl klass
+                        && klass.name().equals("FooWithHooksProxy")).count();
+        assertEquals(1, generated, "identical proxy instances share the AOT class");
+    }
+
+    @Test
+    void rejectsNamespaceAndProtectedDeclarationSpoofingBuiltinStdio() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        Ast.MethodDecl hook = new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(integer, "value")), Ast.TypeRef.simple("void"),
+                List.of(), List.of(new Ast.ReturnStmt(null)));
+        Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                List.of(hook));
+        var request = new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                "Foo", "Hooks");
+        Ast.Program shadowedNamespace = new Ast.Program("stdio", List.of(), List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks))));
+        Ast.Program shadowedContainer = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks,
+                        new Ast.StateContainerDecl("stdio", Ast.Visibility.PRIVATE,
+                                List.of(), List.of())))));
+        Ast.Program shadowedVirtualActor = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks,
+                        new Ast.VirtualActorDecl("stdio", Ast.Visibility.PRIVATE,
+                                List.of(), List.of())))));
+        for (Ast.Program program : List.of(
+                shadowedNamespace, shadowedContainer, shadowedVirtualActor)) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            program, Set.of(), List.of(request)));
+            assertTrue(error.getMessage().contains("stdio")
+                    && error.getMessage().contains("shadowed"), error.getMessage());
+        }
+    }
+
+    @Test
+    void twoBeforeHooksCanShareOneStaticallyCheckedHelperDag() throws Exception {
+        String source = """
+                define class Foo as
+                  pub read(int value): int { return value + 1; }
+                  pub write(int value): int { return value + 2; }
+                end
+                define class Hooks as
+                  private trace(int value): void {
+                    stdio.stdout.write(value);
+                    return;
+                  }
+                  pub before_read(int value): void {
+                    self.trace(value);
+                    return;
+                  }
+                  pub before_write(int value): void {
+                    self.trace(value);
+                    return;
+                  }
+                end
+                pub routine main(): void {
+                  val proxy = new Proxy(new Foo(), new Hooks());
+                  stdio.stdout.write(proxy.read(40));
+                  stdio.stdout.write(proxy.write(40));
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(source);
+        Ast.ClassDecl generated = parsed.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof Ast.ClassDecl klass
+                        && klass.name().equals("FooWithHooksProxy"))
+                .map(decl -> (Ast.ClassDecl) decl)
+                .findFirst().orElseThrow();
+        assertEquals(2, generated.methods().size());
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("40414042", run(source));
+    }
+
+    @Test
+    void rejectsOversizedInterceptorHelperMethodTablesBeforeGraphTraversal() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        List<Ast.MethodDecl> methods = new java.util.ArrayList<>();
+        methods.add(new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(integer, "value")), Ast.TypeRef.simple("void"),
+                List.of(), List.of(new Ast.ReturnStmt(null))));
+        for (int i = 0; i < 4096; i++) {
+            methods.add(new Ast.MethodDecl("helper_" + i, Ast.Visibility.PRIVATE,
+                    false, false, false, false, false, null, List.of(),
+                    List.of(), Ast.TypeRef.simple("void"), List.of(),
+                    List.of(new Ast.ReturnStmt(null))));
+        }
+        Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                methods);
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks))));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () ->
+                        dev.oreslang.ast.StaticProxySynthesis.expand(
+                                program, Set.of(), List.of(
+                                        new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                                                "Foo", "Hooks"))));
+        assertTrue(error.getMessage().contains("method table exceeds slot budget"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsDeeplyNestedBeforeHookExpressionWithinBoundedVerifier() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        Ast.Expr nested = new Ast.NameExpr("value");
+        // The former prepass recursively visited all nested AST expressions
+        // before the bounded call-graph checker, risking StackOverflowError.
+        for (int depth = 0; depth < 96; depth++) {
+            nested = new Ast.UnaryExpr("+", nested);
+        }
+        Ast.MethodDecl hook = new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(integer, "value")), Ast.TypeRef.simple("void"),
+                List.of(), List.of(new Ast.ExprStmt(nested), new Ast.ReturnStmt(null)));
+        Ast.ClassDecl hooks = new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                List.of(hook));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target, hooks))));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        program, Set.of(), List.of(
+                                new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                                        "Foo", "Hooks"))));
+        assertTrue(error.getMessage().contains("depth/node budget"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsImplicitDivisionEffectsAndVoidHelperArguments() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer,
+                        List.of(new Ast.Param(integer, "value")), List.of())));
+        Ast.MethodDecl dividingHook = new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(integer, "value")), Ast.TypeRef.simple("void"),
+                List.of(), List.of(
+                        new Ast.ExprStmt(new Ast.BinaryExpr("/",
+                                new Ast.NameExpr("value"), new Ast.LiteralExpr(0))),
+                        new Ast.ReturnStmt(null)));
+        var request = new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                "Foo", "Hooks");
+        Ast.Program division = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target,
+                        new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                                List.of(dividingHook))))));
+        IllegalArgumentException divisionError = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        division, Set.of(), List.of(request)));
+        assertTrue(divisionError.getMessage().contains("unverified effects"),
+                divisionError.getMessage());
+
+        Ast.MethodDecl helper = new Ast.MethodDecl("helper", Ast.Visibility.PRIVATE,
+                false, false, false, false, false, null, List.of(),
+                List.of(new Ast.Param(Ast.TypeRef.simple("void"), "invalid")),
+                Ast.TypeRef.simple("void"), List.of(),
+                List.of(new Ast.ReturnStmt(null)));
+        Ast.MethodDecl callingHook = new Ast.MethodDecl("before_read",
+                Ast.Visibility.PUBLIC, false, false, false, false, false,
+                null, List.of(), List.of(new Ast.Param(integer, "value")),
+                Ast.TypeRef.simple("void"), List.of(), List.of(
+                        new Ast.ExprStmt(new Ast.CallExpr(
+                                new Ast.MemberExpr(new Ast.NameExpr("self"), "helper"),
+                                List.of(new Ast.NameExpr("value")))),
+                        new Ast.ReturnStmt(null)));
+        Ast.Program voidParam = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(target,
+                        new Ast.ClassDecl("Hooks", false, List.of(), List.of(),
+                                List.of(helper, callingHook))))));
+        IllegalArgumentException paramError = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        voidParam, Set.of(), List.of(request)));
+        assertTrue(paramError.getMessage().contains("unsafe parameter contract"),
+                paramError.getMessage());
+    }
+
+    @Test
+    void boundsDeepGenericSignatureScansWithoutCompilerStackOverflow() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.TypeRef nested = integer;
+        for (int depth = 0; depth < 96; depth++) {
+            nested = new Ast.TypeRef("Option", List.of(nested), false);
+        }
+        for (Ast.MethodDecl method : List.of(
+                proxySurfaceMethod(nested, List.of(), List.of()),
+                proxySurfaceMethod(integer, List.of(new Ast.Param(nested, "value")),
+                        List.of()))) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                            proxySurfaceProgram(List.of(method)), Set.of("Foo")));
+            assertTrue(error.getMessage().contains("signature type exceeds nesting/node budget"),
+                    error.getMessage());
+        }
+        Ast.TypeRef shallow = new Ast.TypeRef("Option", List.of(integer), false);
+        assertDoesNotThrow(() -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                proxySurfaceProgram(List.of(
+                        proxySurfaceMethod(shallow, List.of(), List.of()))),
+                Set.of("Foo")));
+    }
+
+    @Test
+    void compilerSynthesizedProxiesPreserveFileLevelExports() {
+        String source = """
+                export pub Foo;
+                define pub class Foo as
+                  pub answer(): int { return 42; }
+                end
+                pub routine main(): void {
+                  val proxy = new Proxy(new Foo());
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(source);
+        assertEquals(1, parsed.exports().size(), "file-level exports must not disappear");
+        assertTrue(parsed.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .anyMatch(decl -> decl instanceof Ast.ClassDecl klass
+                        && klass.name().equals("FooProxy")));
+    }
+
+
+    @Test
+    void currentMainProxySynthesisPreservesExplicitExports() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        // A publicly exported declaration must actually be public; use the
+        // same visibility contract admitted by current-main export validation.
+        Ast.ClassDecl foo = new Ast.ClassDecl("Foo", Ast.Visibility.PUBLIC,
+                false, Ast.ActorKind.NONE, List.of(), List.of(), List.of(),
+                List.of(), null,
+                List.of(proxySurfaceMethod(integer, List.of(), List.of())));
+        List<Ast.ExportDecl> exports = List.of(
+                new Ast.ExportDecl("Foo", Ast.ExportScope.PUBLIC, Ast.ExportKind.CLASS));
+        Ast.Program original = new Ast.Program("app", List.of(),
+                List.of(new Ast.ModuleDecl("first", List.of(foo))), exports);
+        Ast.Program expanded = dev.oreslang.ast.StaticProxySynthesis.expand(
+                original, Set.of("Foo"));
+        assertEquals(exports, expanded.exports(),
+                "synthetic proxy lowering must never discard current-main export authority");
+        assertEquals("app", expanded.namespace());
+        assertEquals(2, expanded.modules().getFirst().declarations().size());
+    }
+
+    @Test
+    void rejectsGeneratedNameCaptureByCurrentMainProtectedActorTypes() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl foo = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(proxySurfaceMethod(integer, List.of(), List.of())));
+        List<Ast.Decl> reservedTypes = List.of(
+                new Ast.StateContainerDecl("FooProxy", Ast.Visibility.PRIVATE,
+                        List.of(), List.of()),
+                new Ast.VirtualActorDecl("FooProxy", Ast.Visibility.PRIVATE,
+                        List.of(), List.of()),
+                new Ast.GpuActorDecl("FooProxy", Ast.Visibility.PRIVATE,
+                        List.of(), List.of()),
+                new Ast.StandaloneActorDecl("FooProxy", "receiver", Ast.Visibility.PRIVATE,
+                        Ast.ActorKind.PRIVATE));
+        for (Ast.Decl reserved : reservedTypes) {
+            Ast.Program input = new Ast.Program(List.of(
+                    new Ast.ModuleDecl("first", List.of(foo, reserved))));
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.ast.StaticProxySynthesis.expand(input, Set.of("Foo")));
+            assertTrue(error.getMessage().contains("collides"), error.getMessage());
+        }
+    }
+
+    @Test
+    void rejectsCurrentMainClassAnnotationsOnProxiedTarget() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.ClassDecl annotated = new Ast.ClassDecl("Foo", Ast.Visibility.PUBLIC,
+                false, Ast.ActorKind.NONE, List.of(), List.of(), List.of(),
+                List.of(), null,
+                List.of(proxySurfaceMethod(integer, List.of(), List.of())),
+                Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC),
+                List.of(),
+                List.of(new Ast.Annotation("RequiresPermission", List.of())));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(annotated))));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () ->
+                        dev.oreslang.ast.StaticProxySynthesis.expand(program, Set.of("Foo")));
+        assertTrue(error.getMessage().contains("annotated target class"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsCurrentMainCriticalMethodRatherThanErasingExclusion() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.MethodDecl critical = new Ast.MethodDecl("read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(), List.of(),
+                integer, List.of(), List.of(),
+                Ast.EffectSpec.none(), true);
+        Ast.ClassDecl foo = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(critical));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("first", List.of(foo))));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () ->
+                        dev.oreslang.ast.StaticProxySynthesis.expand(program, Set.of("Foo")));
+        assertTrue(error.getMessage().contains("unsupported proxy effects"),
+                error.getMessage());
+    }
+
+    @Test
+    void rejectsSharedHelperReachedAgainThroughDeeperCallPath() {
+        Ast.TypeRef integer = Ast.TypeRef.simple("int");
+        Ast.TypeRef voidType = Ast.TypeRef.simple("void");
+        Ast.Param argument = new Ast.Param(integer, "value");
+        Ast.MethodDecl read = proxySurfaceMethod(integer, List.of(argument), List.of());
+        Ast.MethodDecl write = new Ast.MethodDecl("write", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(argument), integer, List.of(), List.of());
+        Ast.ClassDecl target = new Ast.ClassDecl("Foo", false, List.of(), List.of(),
+                List.of(read, write));
+
+        // Each entrypoint is checked against the same helper class. "leaf"
+        // is safe when reached directly by before_read, but not at the depth
+        // reached by before_write -> stage_0 ... -> stage_5 -> leaf.
+        Ast.Expr deepExpression = new Ast.NameExpr("value");
+        for (int i = 0; i < 12; i++) {
+            deepExpression = new Ast.UnaryExpr("+", deepExpression);
+        }
+        List<Ast.MethodDecl> methods = new java.util.ArrayList<>();
+        methods.add(new Ast.MethodDecl("before_read", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(argument), voidType, List.of(), List.of(
+                        new Ast.ExprStmt(new Ast.CallExpr(
+                                new Ast.MemberExpr(new Ast.NameExpr("self"), "leaf"),
+                                List.of(new Ast.NameExpr("value")))),
+                        new Ast.ReturnStmt(null))));
+        methods.add(new Ast.MethodDecl("before_write", Ast.Visibility.PUBLIC,
+                false, false, false, false, false, null, List.of(),
+                List.of(argument), voidType, List.of(), List.of(
+                        new Ast.ExprStmt(new Ast.CallExpr(
+                                new Ast.MemberExpr(new Ast.NameExpr("self"), "stage_0"),
+                                List.of(new Ast.NameExpr("value")))),
+                        new Ast.ReturnStmt(null))));
+        methods.add(new Ast.MethodDecl("leaf", Ast.Visibility.PRIVATE,
+                false, false, false, false, false, null, List.of(),
+                List.of(argument), voidType, List.of(),
+                List.of(new Ast.ExprStmt(deepExpression), new Ast.ReturnStmt(null))));
+        for (int i = 0; i < 6; i++) {
+            String next = i == 5 ? "leaf" : "stage_" + (i + 1);
+            methods.add(new Ast.MethodDecl("stage_" + i, Ast.Visibility.PRIVATE,
+                    false, false, false, false, false, null, List.of(),
+                    List.of(argument), voidType, List.of(), List.of(
+                            new Ast.ExprStmt(new Ast.CallExpr(
+                                    new Ast.MemberExpr(new Ast.NameExpr("self"), next),
+                                    List.of(new Ast.NameExpr("value")))),
+                            new Ast.ReturnStmt(null))));
+        }
+        Ast.Program input = new Ast.Program(List.of(new Ast.ModuleDecl("first",
+                List.of(target, new Ast.ClassDecl("Hooks", false,
+                        List.of(), List.of(), methods)))));
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.ast.StaticProxySynthesis.expand(
+                        input, Set.of(), List.of(
+                                new dev.oreslang.ast.StaticProxySynthesis.InterceptorRequest(
+                                        "Foo", "Hooks"))));
+        assertTrue(exception.getMessage().contains("depth/node budget"),
+                exception.getMessage());
     }
 
     private static Ast.Program proxySurfaceProgram(List<Ast.MethodDecl> methods) {
