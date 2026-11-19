@@ -25,7 +25,8 @@ final class CheckedCallPlanCurrentMainTest {
         assertEquals(1, plan.omittedCount());
         assertTrue(plan.isOmitted(0));
         assertFalse(plan.isOmitted(1));
-        assertTrue(plan.isOmitted(2));
+        assertFalse(plan.isOmitted(2));
+        assertEquals(2, plan.parameterForSource(0));
         assertEquals(1, plan.parameterForSource(1));
         assertFalse(plan.isTriviallyPositional());
     }
