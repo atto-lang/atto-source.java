@@ -22,9 +22,9 @@ final class AttoPortableBoundsGuestTest {
     @TempDir Path temp;
 
     private String run(String fixture) throws Exception {
-        // Exercise the real top-level AttoLang standard-library source, not a
+        // Exercise the real standalone AttoLang index-bounds library source, not a
         // separately maintained Java copy or a host-only reference model.
-        Files.copy(Path.of("stdlib", "bounds.atto"), temp.resolve("bounds.atto"));
+        Files.copy(Path.of("stdlib", "index_bounds.atto"), temp.resolve("index_bounds.atto"));
         try (InputStream input = getClass().getResourceAsStream("/" + fixture)) {
             assertNotNull(input, "missing linked guest fixture " + fixture);
             Files.copy(input, temp.resolve("main.atto"));

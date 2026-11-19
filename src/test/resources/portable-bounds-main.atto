@@ -1,6 +1,6 @@
-import fnc valid_index from "./bounds.atto";
-import fnc valid_slice from "./bounds.atto";
-import fnc valid_strided_slice from "./bounds.atto";
+import fnc valid_index from "./index_bounds.atto";
+import fnc valid_slice from "./index_bounds.atto";
+import fnc valid_strided_slice from "./index_bounds.atto";
 
 pub fnc main(): void {
   if valid_index(-1, 5) || valid_index(5, 5) || valid_index(0, 0); do

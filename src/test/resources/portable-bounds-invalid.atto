@@ -1,4 +1,4 @@
-import fnc valid_slice from "./bounds.atto";
+import fnc valid_slice from "./index_bounds.atto";
 
 pub fnc main(): void {
   // String is not an int, even though the function merely checks a bound.

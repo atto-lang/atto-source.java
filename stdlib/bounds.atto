@@ -1,39 +1,35 @@
-// Portable, allocation-free index/slice preflight.
-// Does not authorize host memory access or replace owner/generation checks.
-// All signed-int arithmetic is ordered to avoid overflowing before validation.
+// Canonical AttoLang source: portable integer interval policy.
+// No host interop, OS access, scheduler operations, or implicit conversions.
+// Comparisons avoid endpoint arithmetic and remain safe at signed i64 extremes.
+define module bounds as
+  pub fnc valid_int_bounds(int lower, int upper): bool {
+    return lower <= upper;
+  }
 
-pub fnc valid_index(int index, int length): bool {
-  if index < 0 || length <= 0; do
-    return false;
-  fi
-  return index < length;
-}
+  pub fnc contains_int(int value, int lower, int upper): bool {
+    if lower > upper; do
+      return false;
+    fi
+    return value >= lower && value <= upper;
+  }
 
-pub fnc valid_slice(int offset, int count, int length): bool {
-  if offset < 0 || count < 0 || length < 0; do
-    return false;
-  fi
-  if offset > length; do
-    return false;
-  fi
-  // No offset + count: subtraction is safe after 0 <= offset <= length.
-  return count <= length - offset;
-}
+  pub fnc clamp_int(int value, int lower, int upper): Result<int, String> {
+    if lower > upper; do
+      return Err("inverted integer bounds");
+    fi
+    if value < lower; do
+      return Ok(lower);
+    fi
+    if value > upper; do
+      return Ok(upper);
+    fi
+    return Ok(value);
+  }
 
-pub fnc valid_strided_slice(int offset, int stride, int count, int length): bool {
-  if stride <= 0 || count < 0; do
-    return false;
-  fi
-  if !valid_slice(offset, 0, length); do
-    return false;
-  fi
-  if count == 0; do
-    return true;
-  fi
-  if offset >= length; do
-    return false;
-  fi
-  // Last selected index is offset + stride * (count - 1).
-  // Compare by division instead: all operands now nonnegative, no overflow.
-  return count - 1 <= (length - 1 - offset) / stride;
-}
+  pub fnc overlaps_int(int first_low, int first_high, int second_low, int second_high): bool {
+    if first_low > first_high || second_low > second_high; do
+      return false;
+    fi
+    return first_low <= second_high && second_low <= first_high;
+  }
+end
