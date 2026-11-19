@@ -247,7 +247,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
      */
     int executeOnLane(int lane, Runnable command) {
         Objects.requireNonNull(command);
-        return executeOnLane(lane, ignored -> command.run());
+        return executeOnLane(lane, ignored -> command.run(), command);
     }
 
     /**
@@ -258,6 +258,11 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
      * not by a submitting or completion thread. This is no ownership token.
      */
     int executeOnLane(int lane, IntConsumer command) {
+        return executeOnLane(lane, command, null);
+    }
+
+    /** Preserve the original Runnable for legacy shutdownNow() callers only. */
+    private int executeOnLane(int lane, IntConsumer command, Runnable legacyCommand) {
         Objects.requireNonNull(command);
         if (closed.get() || !queueSlots.tryAcquire()) throw new RejectedExecutionException("actor lane queue unavailable");
         // This is a dispatch-placement choice, not an ownership transfer:
@@ -269,7 +274,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             queueSlots.release();
             throw failure;
         }
-        QueuedTurn task = new QueuedTurn(command, target);
+        QueuedTurn task = new QueuedTurn(command, target, legacyCommand);
         // Sample busyness before this turn is counted, so it reflects only
         // work already ahead of it on the target lane.
         boolean behindOtherWork = stealGraceNanos >= 0
@@ -361,14 +366,16 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
 
     private final class QueuedTurn implements Runnable {
         private final IntConsumer command;
+        private final Runnable legacyCommand;
         private final int assignedLane;
         private final long queuedAtNanos = System.nanoTime();
         private final AtomicBoolean released = new AtomicBoolean();
         // 0=pending, 1=entered, 2=rejected. The task itself is the lock:
         // no additional per-dispatch claim allocation in the actor hot path.
         private int claim;
-        private QueuedTurn(IntConsumer command, int assignedLane) {
+        private QueuedTurn(IntConsumer command, int assignedLane, Runnable legacyCommand) {
             this.command = command;
+            this.legacyCommand = legacyCommand;
             this.assignedLane = assignedLane;
         }
         private synchronized boolean pending() {
@@ -431,7 +438,10 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
                     // A turn whose probe already ran it is not abandoned.
                     if (!task.pending()) continue;
                     task.rejectAdmission();
-                    abandoned.add(task.command);
+                    // Lane-aware callbacks must never escape for execution on a
+                    // foreign shutdown caller. The already rejected QueuedTurn
+                    // is inert on replay; legacy Runnable return remains intact.
+                    abandoned.add(task.legacyCommand != null ? task.legacyCommand : task);
                 }
             }
             return List.copyOf(abandoned);

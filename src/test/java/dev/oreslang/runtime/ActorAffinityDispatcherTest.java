@@ -39,6 +39,38 @@ final class ActorAffinityDispatcherTest {
     }
 
     @Test
+    void rejectedLaneAwareCallbackCannotBeReplayedAfterShutdown() throws Exception {
+        var dispatcher = new ActorAffinityDispatcher(1, 2, new int[0],
+                i -> Executors.newSingleThreadExecutor(), false, -1L);
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        AtomicInteger callbackRuns = new AtomicInteger();
+        try {
+            dispatcher.executeOnLane(0, () -> {
+                entered.countDown();
+                while (release.getCount() != 0) {
+                    try { release.await(); } catch (InterruptedException ignored) {
+                        // Keep the carrier occupied until shutdown has reclaimed
+                        // the rejected queued callback, even if interrupted.
+                    }
+                }
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            dispatcher.executeOnLane(0, (int observedLane) -> callbackRuns.incrementAndGet());
+            List<Runnable> abandoned = dispatcher.shutdownNow();
+            assertEquals(1, abandoned.size());
+            assertEquals(0, callbackRuns.get());
+            // The returned task is already rejected and must stay inert.
+            abandoned.get(0).run();
+            assertEquals(0, callbackRuns.get());
+            assertEquals(2, dispatcher.availableQueueSlots());
+        } finally {
+            release.countDown();
+            dispatcher.shutdownNow();
+            assertTrue(dispatcher.awaitTermination(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void defaultRuntimeReportsLaneAffinityWithoutClaimingCpuBinding() throws Exception {
         try (var runtime = new ActorRuntime()) {
             var actor = runtime.spawnShared(() -> (message, context) -> {});
