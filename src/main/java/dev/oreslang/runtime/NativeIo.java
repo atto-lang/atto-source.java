@@ -50,9 +50,11 @@ public final class NativeIo {
                     "fs.read_text_bounded_async max_bytes must be in 0..16777216");
         }
         Path lexical = lexicalPath(rawPath);
-        // Walk the lexical path before the lexical scope check: permission
-        // normalization canonicalizes existing prefixes and would otherwise
-        // follow (probe behind) a symlinked ancestor first.
+        // The lexical preflight below must precede any symlink metadata read.
+        // The later canonical permission check is still independently required.
+        // Scope check without Files.exists/toRealPath before the first metadata probe.
+        context.requireLexicalFilesystemPermission(
+                RuntimePermissions.Permission.READ, lexical.toString(), "fs.read_text_bounded_async");
         rejectSymlinkComponents(context, RuntimePermissions.Permission.READ, lexical, "fs.read_text_bounded_async");
         context.requirePermission(RuntimePermissions.Permission.READ,
                 lexical.toString(), "fs.read_text_bounded_async");
@@ -123,9 +125,11 @@ public final class NativeIo {
         // Validate the caller's lexical scope BEFORE probing file existence,
         // symlinks or canonical paths. An out-of-scope missing path must
         // report permission denial, not leak its filesystem state.
-        // Walk the lexical path before the lexical scope check: permission
-        // normalization canonicalizes existing prefixes and would otherwise
-        // follow (probe behind) a symlinked ancestor first.
+        // The lexical preflight below must precede any symlink metadata read.
+        // The later canonical permission check is still independently required.
+        // Scope check without Files.exists/toRealPath before the first metadata probe.
+        context.requireLexicalFilesystemPermission(
+                RuntimePermissions.Permission.READ, lexical.toString(), "fs.file_size");
         rejectSymlinkComponents(context, RuntimePermissions.Permission.READ, lexical, "fs.file_size");
         context.requirePermission(RuntimePermissions.Permission.READ,
                 lexical.toString(), "fs.file_size");
@@ -225,9 +229,11 @@ public final class NativeIo {
         // Reject out-of-scope destinations before any existence, symlink, or
         // parent-resolution probe. This must hold even when the parent path
         // does not exist or its metadata would otherwise reveal its state.
-        // Walk the lexical path before the lexical scope check: permission
-        // normalization canonicalizes existing prefixes and would otherwise
-        // follow (probe behind) a symlinked ancestor first.
+        // The lexical preflight below must precede any symlink metadata read.
+        // The later canonical permission check is still independently required.
+        // Scope check without Files.exists/toRealPath before the first metadata probe.
+        context.requireLexicalFilesystemPermission(
+                RuntimePermissions.Permission.WRITE, lexical.toString(), "fs.write_text_atomic");
         rejectSymlinkComponents(context, RuntimePermissions.Permission.WRITE, lexical, "fs.write_text_atomic");
         context.requirePermission(RuntimePermissions.Permission.WRITE,
                 lexical.toString(), "fs.write_text_atomic");
