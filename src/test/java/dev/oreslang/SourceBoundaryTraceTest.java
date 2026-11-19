@@ -16,7 +16,7 @@ final class SourceBoundaryTraceTest {
                     async fnc leaf(): int {
                       rt cooperate;
                       val int zero = 0; // Integer remainder by zero raises during resumed evaluation.
-                      return 1 % zero;
+                      return Integer.rem(1, zero);
                     }
                     async fnc middle(): int {
                       val int result = await leaf();
@@ -37,7 +37,7 @@ final class SourceBoundaryTraceTest {
     }
 
     @Test
-    void actorFailureKeepsReceiveAndAwaitingSupervisorFrames() {
+    void awaitingAnActorFailureKeepsOwnFramesButNotTheFailedActorsInternals() {
         for (String kind : new String[] {"actor", "isoactor"}) {
             try (var context = Context.newBuilder("ores").allowAllAccess(true).build()) {
                 var error = assertThrows(PolyglotException.class, () -> context.eval("ores", """
@@ -59,8 +59,11 @@ final class SourceBoundaryTraceTest {
                         """.formatted(kind)));
                 var text = new StringWriter();
                 error.printStackTrace(new PrintWriter(text));
-                assertTrue(text.toString().contains("source task receive"), text.toString());
+                // #1223: the awaiting task sees the failure snapshot with its own
+                // frames; the failed actor's receive frames stay with that actor.
                 assertTrue(text.toString().contains("source task main"), text.toString());
+                assertTrue(text.toString().contains("terminated: FAILURE"), text.toString());
+                assertFalse(text.toString().contains("source task receive"), text.toString());
             }
         }
     }

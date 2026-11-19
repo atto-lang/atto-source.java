@@ -1,0 +1,10 @@
+define module m as
+  define class C as
+    pub compute(int value): int {
+      return value + 1;
+    }
+    pub shadow(int compute): int {
+      return compute(3);
+    }
+  end
+end

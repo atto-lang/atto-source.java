@@ -120,6 +120,10 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
         };
     }
 
+    /**
+     * Store a transient unsigned row index. This does not capture generation
+     * or table identity; use a DenseIndexTable handle at durable boundaries.
+     */
     public void writeIndex(int row, int field, long logicalIndex) {
         requireOwner();
         putEncoded(offset(row, field), ManagedReferencePolicy.encodeDenseIndex32(logicalIndex));
@@ -130,6 +134,10 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
         putEncoded(offset(row, field), 0);
     }
 
+    /**
+     * Read a transient unsigned row index. The returned number alone is not a
+     * stable entity identity and must not outlive the relevant table epoch.
+     */
     public OptionalLong readIndex(int row, int field) {
         return ManagedReferencePolicy.decodeDenseIndex32(readEncodedWord(row, field));
     }
@@ -139,9 +147,51 @@ public final class ActorDenseIndexColumns extends ActorShardBacking implements A
         return getEncoded(offset(row, field));
     }
 
+    /**
+     * Store raw physical bits for trusted layout/ABI plumbing. This bypasses
+     * logical range encoding and never creates a generation/table proof.
+     */
     public void writeEncodedWord(int row, int field, int encodedWord) {
         requireOwner();
         putEncoded(offset(row, field), encodedWord);
+    }
+
+    /**
+     * Store a compact word only after its table identity, epoch and generation
+     * have been validated. The four-byte column still stores only the word;
+     * callers must retain the typed handle for later boundary validation.
+     */
+    public <TTag> void writeHandle(
+            int row, int field, DenseIndex32<TTag> handle, DenseIndexTable<TTag> table) {
+        requireOwner();
+        Objects.requireNonNull(table, "table");
+        ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+        ActorRuntime.ActorId actor = ActorRuntime.currentActorId().orElseThrow(() ->
+                new SecurityException("typed dense index access requires an executing actor"));
+        if (!table.ownedBy(runtime, actor)) {
+            throw new SecurityException("dense index table belongs to a different actor");
+        }
+        int word = table.checkedStorageWord(handle).orElseThrow(() ->
+                new IllegalStateException("foreign, stale or retired dense index handle"));
+        putEncoded(offset(row, field), word);
+    }
+
+    /**
+     * Check that a stored row word still denotes the supplied live table
+     * identity. A matching integer without a live typed handle is insufficient.
+     */
+    public <TTag> boolean matchesHandle(
+            int row, int field, DenseIndex32<TTag> handle, DenseIndexTable<TTag> table) {
+        requireOwner();
+        Objects.requireNonNull(table, "table");
+        ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+        ActorRuntime.ActorId actor = ActorRuntime.currentActorId().orElseThrow(() ->
+                new SecurityException("typed dense index access requires an executing actor"));
+        if (!table.ownedBy(runtime, actor)) {
+            throw new SecurityException("dense index table belongs to a different actor");
+        }
+        var checked = table.checkedStorageWord(handle);
+        return checked.isPresent() && getEncoded(offset(row, field)) == checked.getAsInt();
     }
 
     /** Copy encoded 32-bit words without allocating per-index wrapper objects. */

@@ -56,7 +56,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD:src/main/java/dev/oreslang/parser/Lexer.java)" = bba9e091c0ad1c9b75e0c61e9dd173fcc18a236a ||
+          test "$(git rev-parse HEAD:src/main/java/dev/oreslang/parser/Lexer.java)" = a01f4cd90fecee17139a952a1325ceb16b11dac5 ||
             { echo "::error::Compiler Lexer.java changed; review editor contract and fixtures"; exit 1; }
-          test "$(git rev-parse HEAD:docs/grammar.ebnf)" = 7ecfe82817945a1972cf9ac47df3466efab1822b ||
+          test "$(git rev-parse HEAD:docs/grammar.ebnf)" = 71b3411d868917250a2dd84eb5b8ec0fc044c061 ||
             { echo "::error::Compiler EBNF changed; review editor contract and fixtures"; exit 1; }

@@ -1,6 +1,6 @@
 # Oreslang pinned compiler syntax matrix v1
-# authority: ores-truffle-oreslang/oreslang-source.java @ 241bd67c39443cc2ef18df7e4ed456454af378c7
-# blob (lexer): bba9e091c0ad1c9b75e0c61e9dd173fcc18a236a
+# authority: ores-truffle-oreslang/oreslang-source.java @ ea43452cc563f5af463ba1a11fcbdd1cce7646ef
+# blob (lexer): a01f4cd90fecee17139a952a1325ceb16b11dac5
 # fields: id TAB utf8-hex(source) TAB comma-separated lexer Token.Type names (or !error-fragment or blank) TAB parser P|N|S TAB note
 # Lexical success is not parser or typechecker or runnable guest evidence.
 reserved-define	646566696e65	DEFINE	S	reserved lexer token

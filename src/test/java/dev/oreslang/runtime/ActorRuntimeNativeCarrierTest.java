@@ -31,6 +31,8 @@ final class ActorRuntimeNativeCarrierTest {
 
                 var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
                     assertTrue(NativeCarrierExecutor.isNativeCarrierThread());
+                    assertTrue(RuntimeBlockingGuard.actorCarrierMarked(),
+                            "actor carrier must mark blocking-operation guard");
                     assertFalse(Thread.currentThread().isVirtual());
                     long pthread = NativeCarrierExecutor.currentNativeThreadId();
                     assertNotEquals(0L, pthread);
