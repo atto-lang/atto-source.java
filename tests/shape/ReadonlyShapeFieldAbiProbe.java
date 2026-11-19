@@ -50,6 +50,11 @@ public final class ReadonlyShapeFieldAbiProbe {
         rejects("E_STATE_BORROW", () -> with_int(new Layout("Actor", List.of(field("foo", Scalar.INT, 0)), true), "foo", dog_bytes, dog, x -> x));
         rejects("E_BOUNDS", () -> with_int(layout(field("foo", Scalar.INT, 16)), "foo", dog_bytes, dog, x -> x));
         rejects("duplicate", () -> layout(field("foo", Scalar.INT, 0), field("foo", Scalar.INT, 8)));
+        rejects("overlapping", () -> layout(field("foo", Scalar.INT, 0), field("bar", Scalar.INT, 0)));
+        rejects("overlapping", () -> layout(field("foo", Scalar.INT, 8), field("bar", Scalar.BOOL, 8)));
+        check(with_int(layout(field("foo", Scalar.INT, 8), field("bar", Scalar.INT, 0)),
+                       "foo", cat_bytes, cat, x -> x) == 42,
+              "disjoint reordered field offsets remain valid");
         rejects("invalid compiled", () -> layout(new Field("foo", Scalar.INT, 1, true, false, true)));
         dog.mark_moved();
         rejects("E_MOVED", () -> with_int(first, "foo", dog_bytes, dog, x -> x));

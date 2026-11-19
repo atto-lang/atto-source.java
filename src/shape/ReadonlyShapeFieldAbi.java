@@ -39,6 +39,11 @@ public final class ReadonlyShapeFieldAbi {
                     if (fields.get(i).name().equals(fields.get(j).name())) {
                         throw new IllegalArgumentException("duplicate compiled member");
                     }
+                    // A structural witness has independent, non-overlapping
+                    // scalar storage; two visible names cannot alias one slot.
+                    if (fields.get(i).offset() == fields.get(j).offset()) {
+                        throw new IllegalArgumentException("overlapping compiled field offsets");
+                    }
                 }
             }
         }
