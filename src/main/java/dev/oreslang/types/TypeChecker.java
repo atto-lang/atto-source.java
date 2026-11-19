@@ -3082,6 +3082,10 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.NamedArgExpr) {
+            throw new IllegalArgumentException(
+                    "NAMED_ARGUMENT_OUTSIDE_CALL: a named argument must remain attached to its call site");
+        }
         if (expr instanceof Ast.WithExpr update) {
             if (withReceiverMaySuspend(update.source())) {
                 throw new IllegalArgumentException(
@@ -3695,6 +3699,12 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.arguments().stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
+                throw new IllegalArgumentException(
+                        "NAMED_CALL_BINDING_UNSUPPORTED: named arguments are parsed and preserved, "
+                                + "but cannot execute until checked call plans are consumed by type, "
+                                + "ownership, synchronous and suspendable runtime lowering");
+            }
             // A host/compiler-side type_of query table exists, but the guest
             // intrinsic has no typed HIR or AOT machine-code lowering yet.
             // Fail closed rather than resolving a user-defined generic
@@ -5655,6 +5665,11 @@ public final class TypeChecker {
                     "indexing requires an array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.arguments().stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
+                throw new IllegalArgumentException(
+                        "NAMED_CONSTRUCTOR_BINDING_UNSUPPORTED: named constructor arguments require "
+                                + "the checked call-plan ABI and constructor runtime lowering");
+            }
             if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                 if (created.type().inferArguments() || !created.type().arguments().isEmpty()
                         || created.arguments().size() > 1) {
@@ -9279,6 +9294,8 @@ public final class TypeChecker {
             return hasSuspendingSumCallbackSyntax(cast.value());
         if (expr instanceof Ast.SpreadExpr spread)
             return hasSuspendingSumCallbackSyntax(spread.expression());
+        if (expr instanceof Ast.NamedArgExpr named)
+            return hasSuspendingSumCallbackSyntax(named.value());
         if (expr instanceof Ast.CallExpr call)
             return hasSuspendingSumCallbackSyntax(call.callee())
                     || call.arguments().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);

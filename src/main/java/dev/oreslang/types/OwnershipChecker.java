@@ -1628,6 +1628,9 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.SpreadExpr spread) {
             return checkExpr(spread.expression(), scope, consuming);
         }
+        if (expr instanceof Ast.NamedArgExpr) {
+            throw error("named arguments are only valid as checked call-plan inputs");
+        }
         if (expr instanceof Ast.CallExpr call) {
             return checkCall(call, scope);
         }
