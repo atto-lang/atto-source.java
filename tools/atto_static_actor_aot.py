@@ -19,7 +19,8 @@ TOKEN = re.compile(r"\s+|//[^\n]*|-?[0-9]+|[A-Za-z_][A-Za-z_0-9]*|[{}():;.=+]", 
 NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z", re.ASCII)
 MAX_SOURCE = 32768
 MAX_ACTORS = 16
-MAX_SENDS = 10000
+MAX_ACTOR_INSTANCES = 64  # Prevent an unbounded number of per-actor native arenas.
+MAX_SENDS = 1024  # Reachable below 32 KiB source / 50k-token caps; bounds native work.
 
 
 class CompileError(ValueError):
@@ -128,6 +129,7 @@ class Parser:
         seen = set()
         actions = []
         sends = 0
+        instances = 0
         guards = 0
         while True:
             token = self.peek()
@@ -144,6 +146,9 @@ class Parser:
                 self.take(";")
                 if variable in seen:
                     raise CompileError("actor handle redeclared: " + variable)
+                instances += 1
+                if instances > MAX_ACTOR_INSTANCES:
+                    raise CompileError("actor instance budget exceeded")
                 if actor_name not in kinds:
                     raise CompileError("unknown actor type: " + actor_name)
                 seen.add(variable)
@@ -232,9 +237,13 @@ JAVA_ACTOR = """    private static final class CLASS implements AutoCloseable {
             if (closed) throw new IllegalStateException("send after retirement");
             long current = state.get(java.lang.foreign.ValueLayout.JAVA_LONG, 0);
             long next = Math.addExact(current, value);
+            // Preflight *all* fallible arithmetic before writing actor state.
+            // A failed send must not partially mutate state/counters.
+            long nextDigest = Math.addExact(Math.multiplyExact(actorStateDigest, 31L), next);
+            long nextCount = Math.addExact(sentMessages, 1L);
             state.set(java.lang.foreign.ValueLayout.JAVA_LONG, 0, next);
-            sentMessages++;
-            actorStateDigest = Math.addExact(Math.multiplyExact(actorStateDigest, 31L), next);
+            sentMessages = nextCount;
+            actorStateDigest = nextDigest;
             return next;
         }
         @Override public void close() {
@@ -403,6 +412,7 @@ def main(argv=None):
             "generated_java_sha256": hashlib.sha256(java.encode()).hexdigest(),
             "actor_kinds": len(kinds),
             "actor_sends": sends,
+            "actor_instances": sum(1 for kind, _, _ in actions if kind == "spawn"),
             "closed_world": closed_world,
             "expected_guest_result": expected_result,
             "status": "GENERATED_SOURCE_NOT_YET_EXECUTED",
