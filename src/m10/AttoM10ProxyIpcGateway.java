@@ -57,6 +57,9 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
     private final AttoM6Runtime.ActorRef target;
     private final Path socketPath;
     private final long tenant;
+    // Fresh server-issued actor association incarnation, not an OS PID or
+    // per-runtime generation counter (which may restart at one).
+    private final long incarnation;
     private final byte[] key;
     private final Selector selector;
     private final ServerSocketChannel listener;
@@ -69,8 +72,10 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
     private volatile boolean overload;
 
     public AttoM10ProxyIpcGateway(AttoM6Runtime runtime, AttoM6Runtime.ActorRef target,
-                                   Path socketPath, long tenant, byte[] key) throws IOException {
-        if (runtime == null || target == null || socketPath == null || tenant <= 0)
+                                   Path socketPath, long tenant, long incarnation,
+                                   byte[] key) throws IOException {
+        if (runtime == null || target == null || socketPath == null ||
+            tenant <= 0 || incarnation <= 0)
             throw new IllegalArgumentException("invalid authorized gateway");
         validate_secret(key);
         if (!socketPath.isAbsolute() || Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
@@ -84,6 +89,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
         this.target = target;
         this.socketPath = socketPath;
         this.tenant = tenant;
+        this.incarnation = incarnation;
         this.key = key.clone();
         this.selector = Selector.open();
         try {
@@ -203,7 +209,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
             }
         }
         void accept_frame(Frame f) throws IOException {
-            if (f.tenant() != tenant || f.generation() != target.generation() ||
+            if (f.tenant() != tenant || f.generation() != incarnation ||
                 f.message_id() <= 0 || f.attempt() <= 0) {
                 phase = 3;
                 enqueue(new Frame(REJECTED, f.tenant(), f.generation(),
@@ -213,13 +219,13 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
             if (phase == 0 && f.kind() == HELLO) {
                 hello = f;
                 phase = 1;
-                enqueue(new Frame(HELLO_OK, tenant, target.generation(),
+                enqueue(new Frame(HELLO_OK, tenant, incarnation,
                                   f.message_id(), f.attempt(), ProcessHandle.current().pid()));
             } else if (phase == 1 && f.kind() == SEND && same_request(hello, f)) {
                 RequestKey request = new RequestKey(f.message_id(), f.attempt());
                 if (seen.contains(request) || seen.size() >= MAX_REQUEST_IDENTITIES) {
                     phase = 3;
-                    enqueue(new Frame(REJECTED, tenant, target.generation(),
+                    enqueue(new Frame(REJECTED, tenant, incarnation,
                                       f.message_id(), f.attempt(), 4));
                     return;
                 }
@@ -229,7 +235,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
                     runtime.try_send_tracked(target, f.value(), completion);
                 if (outcome != AttoM6Runtime.Admission.ACCEPTED) {
                     phase = 3;
-                    enqueue(new Frame(REJECTED, tenant, target.generation(),
+                    enqueue(new Frame(REJECTED, tenant, incarnation,
                         f.message_id(), f.attempt(),
                         outcome == AttoM6Runtime.Admission.FULL ? 1 : 2));
                     return;
@@ -237,7 +243,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
                 // Only the actual destination mailbox can make this true.
                 seen.add(request);
                 phase = 2;
-                enqueue(new Frame(ADMITTED, tenant, target.generation(),
+                enqueue(new Frame(ADMITTED, tenant, incarnation,
                                   f.message_id(), f.attempt(), 0));
                 completion.whenCompleteAsync((turn, err) -> {
                     boolean scheduled = commands.offer(() -> {
@@ -250,7 +256,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
                                     FAILED : ABANDONED;
                             long result = kind == PROCESSED ? turn.reply() : 0;
                             phase = 3;
-                            enqueue(new Frame(kind, tenant, target.generation(),
+                            enqueue(new Frame(kind, tenant, incarnation,
                                               f.message_id(), f.attempt(), result));
                         } catch (IOException io) { close(); }
                     });
@@ -259,7 +265,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
                 });
             } else {
                 phase = 3;
-                enqueue(new Frame(REJECTED, tenant, target.generation(),
+                enqueue(new Frame(REJECTED, tenant, incarnation,
                                   f.message_id(), f.attempt(), 5));
             }
         }
