@@ -1,0 +1,14 @@
+fnc check(int value): int {
+  return value;
+}
+
+define module m as
+  define class C as
+    pub check(int value): int {
+      return value + 1;
+    }
+    pub run(): int {
+      return check(3);
+    }
+  end
+end

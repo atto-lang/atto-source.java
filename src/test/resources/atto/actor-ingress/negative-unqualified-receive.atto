@@ -1,0 +1,6 @@
+define actor Worker as
+  receive(ActorMail<String> mail): void {
+    receive(mail);
+    return;
+  }
+end
