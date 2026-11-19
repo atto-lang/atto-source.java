@@ -1,0 +1,29 @@
+name: Java proxy ACK trusted-host receipt model
+on:
+  pull_request:
+    paths: [ 'src/ipc/**', 'tests/ipc/**', '.github/workflows/proxy-receipt-host-gate.yml' ]
+  push:
+    paths: [ 'src/ipc/**', 'tests/ipc/**', '.github/workflows/proxy-receipt-host-gate.yml' ]
+permissions:
+  contents: read
+jobs:
+  host-only:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Exact PR head
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED"
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '25'
+      - run: |
+          mkdir -p build/proxy
+          javac -Xlint:all -Werror -d build/proxy src/ipc/ProxyReceiptGateV1.java tests/ipc/ProxyReceiptGateV1Probe.java
+          java -cp build/proxy ProxyReceiptGateV1Probe
+      - run: echo 'HOST_MODEL_ONLY; no compiled .atto guest or cross-process mailbox proof'
