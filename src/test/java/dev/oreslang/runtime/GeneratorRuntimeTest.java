@@ -154,10 +154,13 @@ final class GeneratorRuntimeTest {
             java.util.concurrent.FutureTask<Void> closing = new java.util.concurrent.FutureTask<>(
                     () -> { generator.close(); return null; });
             Thread closer = Thread.ofVirtual().start(closing);
+            var outstanding = new java.util.concurrent.atomic.AtomicReference<
+                    OresFuture<GeneratorRuntime.Step<Integer>>>();
             try {
                 assertTrue(leaving.await(2, TimeUnit.SECONDS));
                 var pull = assertTimeoutPreemptively(java.time.Duration.ofMillis(500),
                         generator::nextStep);
+                outstanding.set(pull);
                 assertEquals(OresFuture.class, pull.getClass());
                 assertThrows(java.util.concurrent.TimeoutException.class,
                         () -> pull.get(80, TimeUnit.MILLISECONDS));
@@ -166,6 +169,16 @@ final class GeneratorRuntimeTest {
             }
             closing.get(2, TimeUnit.SECONDS);
             closer.join();
+            // Single-flight contract: await the outstanding pull before the
+            // next one. close() does not wait for an in-flight pull's
+            // completion callback, so pulling again without this races it
+            // (the overlap is rejected by design). The pull must still settle
+            // promptly once the producer exits; either outcome is valid here.
+            try {
+                outstanding.get().get(2, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException settledByClose) {
+                // closed while pending
+            }
             assertTrue(generator.nextStep().get(2, TimeUnit.SECONDS).done());
         } finally {
             // Release before closing even if the first pull/assertion fails.

@@ -15,18 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Require exact source head before compilation
-        env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          git diff --exit-code HEAD --
-          echo "Oreslang Java source head: $EXPECTED_HEAD"
-          echo "Oreslang Java source tree: $(git rev-parse 'HEAD^{tree}')"
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Verify exact source head
         shell: bash
