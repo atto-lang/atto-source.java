@@ -268,7 +268,7 @@ continue_stmt   = "continue" stmt_terminator ;
 loop_stmt       = "loop" block ;
 while_stmt      = "while" ( "(" condition_head ")" | condition_head ) [ ";" ] loop_body ;
 
-if_stmt         = "if" condition_head
+if_stmt         = ( "if" | "ifnot" | "unless" ) condition_head
                   ( braced_if_tail
                   | [ ";" ] ( "then" | deprecated_if_do ) { statement }
                     { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement } }
@@ -679,6 +679,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      break exits and continue advances the nearest enclosing loop/for; return
      still exits the enclosing callable. Loop control never crosses a callable
      boundary.
+   - ifnot/unless negate the first boolean condition exactly once; later elif predicates are positive.
+     Else, braced branches, and fi have their usual meaning. Negated heads with binding
+     patterns or as-let conditional captures are rejected until narrowing is checked.
    - Every if statement closes with "fi". Braces delimit branch bodies but never
      replace the structural terminator. "then" is the canonical keyword-delimited
      branch introducer; deprecated "do" remains accepted for migration and may
