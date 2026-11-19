@@ -1,0 +1,3 @@
+fnc complement(): int {
+    return ~(1);
+}

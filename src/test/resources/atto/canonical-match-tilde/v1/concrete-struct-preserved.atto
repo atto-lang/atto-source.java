@@ -1,0 +1,1 @@
+pub fnc main(): int { const p = infer struct{x: 40, y: 2}; return p.x + p.y; }
