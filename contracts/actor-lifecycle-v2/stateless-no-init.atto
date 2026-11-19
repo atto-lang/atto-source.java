@@ -1,0 +1,20 @@
+// SOURCE CANDIDATE. No guest execution or parity is claimed.
+namespace standalone;
+
+declare actor Worker;
+
+define external mtd (Worker w) receive(ActorMail<String> mail): void {
+  self.send(mail.value);
+  self.end();
+  return;
+}
+
+pub async routine main(): void {
+  val worker = spawn Worker();
+  await worker.get_ready();
+  worker.send("delivered");
+  val output = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(output.value);
+  await worker.get_done();
+  return;
+}
