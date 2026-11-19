@@ -189,4 +189,34 @@ final class ActorAffinitySoftSpillTest {
             assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+
+    @Test
+    void preferredWorkerLaneIsReusedWhenUncontendedWithoutCpuIdentityPromise() throws Exception {
+        ActorAffinityDispatcher dispatcher = new ActorAffinityDispatcher(
+                2, 4, new int[0], index -> Executors.newSingleThreadExecutor());
+        AtomicReference<Thread> first = new AtomicReference<>();
+        AtomicReference<Thread> resumed = new AtomicReference<>();
+        CountDownLatch firstDone = new CountDownLatch(1);
+        CountDownLatch secondDone = new CountDownLatch(1);
+        try {
+            dispatcher.executeOnLane(0, () -> {
+                first.set(Thread.currentThread());
+                firstDone.countDown();
+            });
+            assertTrue(firstDone.await(5, TimeUnit.SECONDS));
+            dispatcher.executeOnLane(0, () -> {
+                resumed.set(Thread.currentThread());
+                secondDone.countDown();
+            });
+            assertTrue(secondDone.await(5, TimeUnit.SECONDS));
+            assertSame(first.get(), resumed.get(),
+                    "uncontended preferred lane should reuse its carrier worker");
+            assertEquals(0, dispatcher.softSpills());
+            // This asserts a worker-lane preference, NOT that the OS kept a CPU core.
+        } finally {
+            dispatcher.shutdown();
+            assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
