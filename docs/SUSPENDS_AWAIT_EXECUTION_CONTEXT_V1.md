@@ -32,6 +32,54 @@ mvn -B -ntp -Dtest=SuspendsAwaitExecutionContextGuestTest,SuspendsAwaitExecution
 
 **Execution at authoring: NOT EXECUTED.** Tests and fixture presence are not pass evidence, nor do these checks establish native AOT or five-backend parity.
 
+
+## Execution-owned timer suspension / reactor coexistence (runtime candidate)
+
+The **new runtime-only** \`OresScheduler.sleepNanos(OresTimers, delayNanos)\`
+returns a compiler-lowered \`Sleep<T>\` Step. It must only be emitted by
+\`susp\`/legacy \`suspends\` lowering, with no active non-suspendable
+borrow/critical lease. A source \`sleep_blocking(duration)\` inside such a
+frame is **synchronous-looking source syntax**, NOT a host synchronous
+\`Thread.sleep\`. Its compiler lowering stores a continuation PC and produces
+the Sleep step; on resume it returns void. Non-suspending callers and
+standalone synchronous roots must fail closed unless a separately verified
+parkable-fiber implementation exists.
+
+The timer registration is **owned by the existing TaskRunner**, unlike an
+NIO readiness/selector \`OresFuture\` supplied by another producer. A timer
+completion merely makes its owning execution eligible to resume; it must
+not run the guest on its clock thread. The TaskRunner's scheduler handles
+the completion exactly like I/O await:
+
+- Keep the same \`ExecutionContext\` and immutable causal ancestry across
+  sleep, NIO await and subsequent nested suspend calls.
+- Every wake is a **new dispatch ID** on the owning scheduler; host NIO and
+  timer producer callbacks observe no active execution authority or borrowed
+  task-local state. \`TraceContext\` is restored from the task and never
+  ambiently inherited from a reactor/clock worker.
+- Scheduler close, task cancellation and resource failure revoke **only**
+  the owned pending sleep registration. A shared NIO Future is observer-only
+  and must not be cancelled by the waiter. \`CleanupAwareTask\` can still
+  re-enter its scheduler-authenticated defer/guard cleanup lane after
+  cancelling a sleeping execution.
+- Sleep creates no new source Task, child execution identity or actor
+  mailbox message. The clock may settle a Future but cannot grant an
+  actor physical turn, reactor dispatch, actor-state lease, or continuation
+  heap reclamation.
+- For serial actors, retained *logical* continuation ownership and
+  generation checks remain mandatory before guest resume; this host
+  scheduler foundation does not yet install those claims at the actual
+  actor/Truffle guest boundary.
+- Existing \`OresTimers\` currently uses shared host clock threads for
+  registration callbacks; it is NOT yet unified with a VM-shared NIO
+  reactor/timer wheel. This branch makes wait/resume interoperable but
+  does not claim no extra timer threads across the complete host runtime.
+
+Host-only proof target:
+\`ExecutionAffineSleepRuntimeTest\`, requiring actual stepful JDK 25 CI.
+Typed Duration/source parser adoption and true native LLVM/.NET timer wake
+continuations are still separate tasks; see atto-spec #47.
+
 ## Follow-up gates
 
 - Java/Graal: nested guest call suspension and cancellation/cleanup; carrier migration; then Native Image.

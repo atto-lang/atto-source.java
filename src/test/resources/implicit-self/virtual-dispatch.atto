@@ -1,0 +1,22 @@
+define module m as
+  define class Base as
+    pub answer(int value): int {
+      return value + 1;
+    }
+    pub via_implicit_self(int value): int {
+      return answer(value);
+    }
+  end
+
+  define class Child extends Base as
+    pub answer(int value): int {
+      return value + 2;
+    }
+  end
+end
+
+pub routine main(): void {
+  val child = new m.Child();
+  stdio.stdout.write(child.via_implicit_self(40));
+  return;
+}
