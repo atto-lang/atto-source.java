@@ -35,8 +35,18 @@ public final class M10RemoteActorProcessProbe {
             try (var gateway = new AttoM10ProxyIpcGateway(runtime, target,
                                                          socket, 7, incarnation, key)) {
                 Arrays.fill(key, (byte) 0);
-                require(gateway.is_live() || Files.exists(socket), "gateway never bound");
-                require("stop".equals(stdin.readLine()), "server did not receive stop command");
+                long readyDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!gateway.is_live() && System.nanoTime() < readyDeadline)
+                    Thread.sleep(1);
+                require(gateway.is_live(), "gateway reactor never became ready");
+                Path ready = Path.of(socket.toString() + ".ready");
+                Files.writeString(ready, Long.toString(ProcessHandle.current().pid()));
+                try {
+                    require("stop".equals(stdin.readLine()),
+                            "server did not receive stop command");
+                } finally {
+                    Files.deleteIfExists(ready);
+                }
             }
             require(runtime.request_stop(target) && runtime.await_terminal(target, 5_000),
                     "server actor failed to retire");
@@ -61,16 +71,20 @@ public final class M10RemoteActorProcessProbe {
             process.getOutputStream().write(
                 (HexFormat.of().formatHex(key) + "\n").getBytes(StandardCharsets.UTF_8));
             process.getOutputStream().flush();
+            Path ready = Path.of(socket.toString() + ".ready");
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(7);
-            while (!Files.exists(socket)) {
+            while (!Files.exists(ready)) {
                 if (!process.isAlive() || System.nanoTime() >= deadline)
-                    throw new AssertionError("second JVM failed to bind its UDS");
+                    throw new AssertionError("second JVM failed to start its gateway reactor");
                 try { Thread.sleep(5); }
                 catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new IOException("interrupted waiting for server", e);
                 }
             }
+            require(Files.exists(socket) &&
+                    Long.toString(process.pid()).equals(Files.readString(ready)),
+                    "untrusted or stale gateway readiness file");
         }
         @Override public void close() throws Exception {
             try {
@@ -173,6 +187,7 @@ public final class M10RemoteActorProcessProbe {
         } finally {
             Arrays.fill(key, (byte) 0);
             Files.deleteIfExists(directory.resolve("actor.sock"));
+            Files.deleteIfExists(directory.resolve("actor.sock.ready"));
             Files.deleteIfExists(directory);
         }
         System.out.println("M10_TWO_REAL_JVM_PROCESSES_UDS_IPC=PASS");
