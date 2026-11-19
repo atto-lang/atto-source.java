@@ -229,4 +229,5 @@ final class EffectContractsReconciliationTest {
         assertEquals(Set.of(Effect.UNKNOWN_CALL),
                 graph.inferInvocation("library::second", Map.of()));
     }
+
 }

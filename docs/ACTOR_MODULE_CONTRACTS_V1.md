@@ -42,6 +42,47 @@ end
   defined receiver methods. The existing class-like actor declaration remains
   the executable definition.
 
+## Implemented in stacked Java stage two (draft / unexecuted)
+
+The static module contract may also require a method on its named actor:
+
+```atto
+define contract CartModule as
+  actor Cart;
+  pub mtd get_count(Cart cart)(): int;
+end
+
+define module carts conforms CartModule as
+  pub define actor Cart as
+    pub get_count(): int { return 1; }
+  end
+end
+```
+
+The first parenthesis names a **non-generic nominal actor**, not a value
+argument or a transferable receiver token. The second parenthesis contains
+method parameters. The checker requires an existing method declared within
+the matching public non-generic actor, an exact name+arity slot, matching
+argument/return types, and public visibility when specified. Duplicate
+contract receiver slots of the same actor/name/arity are rejected (argument
+types cannot overload the same slot). Inherited contract actor requirements
+are usable without repeating `actor Cart;`. This does **not** mint an
+`ActorContext<Cart>` or any state-loan authority and does not let module
+functions invoke actor methods without the mailbox. Stage two rejects
+unproven generic contract substitution, borrowed receiver types,
+structural method arguments, and checked actor effects.
+
+Runtime-only lifecycle/control names such as `tear_down`,
+`on_panic`, `on_restart`, and compiler-owned `handle_state` cannot be
+declared as ordinary receiver-method requirements. The module must not
+turn a supervisor/control operation into a user-invokable mailbox API.
+Likewise, an ordinary module `fnc` with the same name does not satisfy
+a receiver requirement.
+
+The Java frontend and linked/export ABI paths are changed; the corpus in
+`contracts/actor-receiver-v1/` and JUnit source tests are **UNEXECUTED**.
+Backend support, real guest execution, and parity remain unverified.
+
 ## Proposed next stage: standalone actors and receiver methods
 
 The intended surface grammar is:
@@ -156,3 +197,155 @@ emulation may be reported as guest parity.
 
 The source repository remains `oreslang-source.java`; AttoLang naming
 and `.atto` examples are canonical while legacy `.ores` remains supported.
+
+## Stage 3 (draft): mailbox hook conformance is actor-local
+
+The compiler's existing actor `receive` entry point is a scheduler-owned hook,
+not an ordinary public receiver method. Module contracts may require its
+existence with the precise hook shape, but **may not export it as public**:
+
+```atto
+define contract WorkerMailbox as
+  actor Worker;
+  mtd receive(Worker worker)(ActorMail<int> mail): void;
+end
+```
+
+The requirement is checked against the actor's existing instance method. The
+contract does not create mailbox delivery logic, another receive overload,
+actor-state authority, or a runtime witness. The checker rejects `pub receive`,
+zero/multiple arguments, non-`ActorMail<T>` arguments, and non-`void` returns.
+This is a syntax/typechecking hardening only; **no execution evidence exists**
+for this stage. Future typed-message dispatch must introduce a separate,
+explicitly versioned contract and must not inherit this legacy hook ABI by
+accident.
+
+## Stage 4 (draft): mandatory actor-local lifecycle hook contracts
+
+Module contracts can now statically require the **already supported**
+`on_start` and `tear_down` hooks without granting actor-local lifecycle
+entry points to ordinary callers:
+
+```atto
+define contract Lifecycle as
+  actor Worker;
+  mtd on_start(Worker worker)(): void;
+  mtd tear_down(Worker worker)(): void;
+end
+```
+
+An implementing actor must declare both nonstatic instance hooks with their
+existing runtime-compatible bodies; an ordinary module `fnc` never satisfies
+them. Requirements must be **private, zero-argument, void**. `pub mtd`,
+additional parameters and non-`void` results are rejected at typecheck time.
+`on_panic`, `on_raise`, `on_throw`, `on_stop` and `on_restart` stay
+reserved until their control-plane semantics and backend lowering are proved.
+A panic is never interceptable by its actor.
+
+This changes **static conformance only**. It does not expose lifecycle hooks,
+introduce external executable receiver bodies, or establish any guest-run or
+NativeAOT test result. The nine added JUnit cases have not been executed.
+
+## Stage 5 (draft): standalone actor syntax has a preserved AST, not a runtime actor
+
+```atto
+define module workers as
+  pub define actor Worker as worker;
+end
+```
+
+The parser retains the nominal `Worker` type, local `worker` binding,
+visibility and generic-actor kind in an explicit `StandaloneActorDecl`. This
+**does not desugar to an empty `ClassDecl`** because doing so would silently
+lose the receiver binding and could make a dormant syntax executable without
+an actor execution permit. Current admission is restricted to a plain
+nongeneric actor without transport or inheritance modifiers. The checker
+fails closed with `STANDALONE_ACTOR_LOWERING_UNSUPPORTED` until source actor
+state, supervisor/control semantics and generation-fenced mailbox dispatch
+are implemented.
+
+Existing `define actor Worker as ... end` remains executable through its
+original `ClassDecl` AST and is unaffected. Parser acceptance is **not**
+compiler/typecheck/guest execution acceptance, and the seven new JUnit tests
+have not been executed. External `define mtd` bodies remain unsupported.
+
+## Stage 6 (draft): external actor receiver method is distinct from a free function
+
+```atto
+define pub mtd receive(Worker worker)(int value): void {
+  // This is an actor receiver body, not a free function.
+}
+define pub fnc bar(Worker worker): void {
+  // This is a normal function accepting an actor reference.
+}
+```
+
+The parser records external `mtd` definitions in an explicit
+`ExternalActorMethodDecl` with nominal actor type, receiver binding, value
+parameters, return type, visibility and parsed body. A `fnc` accepting the
+same actor type remains `FunctionDecl`. Structural or generic receiver types,
+receiver-name shadowing and fake `on_panic` / compiler-owned hooks are
+rejected early. No free-function adapter is synthesized.
+
+The compiler intentionally rejects execution with
+`EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED`: **the body cannot yet run**,
+and neither actor-state loans nor actor execution permits exist for external
+methods. Future lowering must prove module-local actor binding, static
+contract satisfaction, no capability escape, actor-turn nonreentrancy,
+generation-fenced invocation and cross-backend guest parity. This stage's
+seven added JUnit tests are authored but **not executed**.
+
+## Stage 7 (draft): static nominal binding and coherence of external `mtd`
+
+`ActorReceiverBinder` resolves each `ExternalActorMethodDecl` to exactly one
+**local nominal actor declaration** in the same named module, regardless of
+source-order. The actor may use the class-like spelling or the new
+`define actor Worker as worker;` syntax. The matching key is
+`(module, actor, method name, arity)`; parameter and return types do not
+create additional overload slots.
+
+The binder rejects missing or foreign-module actors, ordinary-class impostors,
+duplicate type identities, duplicate receiver aliases, duplicate external
+method slots, collisions with existing in-class actor methods, and generic
+class actor targets without a generic static witness. The runtime-owned
+`receive` and current lifecycle hooks retain their restricted signatures.
+An `fnc` with an actor argument does not enter the binder or grant state
+authority. The binder returns immutable, static-only metadata.
+
+**Execution remains blocked:** `TypeChecker` calls the binder before it
+issues `STANDALONE_ACTOR_LOWERING_UNSUPPORTED` or
+`EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED`. No executable methods,
+trusted actor-state loans, mailbox dispatch, `ActorContext` capability,
+restart generation permit, or native witness is emitted.
+
+**Multi-file limitation:** current `IncrementalCompiler` compiles source
+files as separate units. A later linker stage must validate common package
+and module ownership through authenticated compilation-unit metadata before
+binding methods across files; equal textual module names must never imply
+authority across files, packages, symlinks, or imported actors. Stage 7
+validates module-local declarations in one compilation unit only.
+
+Tests: 25 new Java JUnit methods, six portable .atto fixtures, plus two
+updated predecessor tests. **Not executed** until an exact-head, stepful
+source-local or independently authorized private CI run exists.
+
+## Stage 7 audit hardening — inherited dispatch and mailbox ownership
+
+The local nominal binder now **rejects external methods on actor classes
+with parents** until a separate hierarchy-aware coherence checker can prove
+that no inherited instance slot is overridden or shadowed. It also refuses
+borrowed and closed-structural `ActorMail<T>` payload shapes at the static
+hook layer; full sendability checks remain required in executable lowering.
+New negative `.atto` fixtures cover each case.
+
+A targeted source-local exact-head workflow,
+`.github/workflows/atto-actor-receiver-binder-exact-head.yml`, requests
+real JUnit suites and verifies nonempty Surefire reports. A `runner_id=0`
+or zero-step failure is an admission failure, **not** a Java test outcome.
+
+Cross-organization testing must not sidestep source protection or approved
+carrier plans. The current `.github/private-ci-carrier-contracts.json`
+does not authorize this PR on an alternate carrier, and source `main`
+was observed unprotected at audit time. A synthetic runner-only Java test
+cannot establish source-code compilation. No private source was exported
+as part of this hardening stage.
