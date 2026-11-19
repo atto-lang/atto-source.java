@@ -73,6 +73,35 @@ final class TelemetrySpanScopeTest {
     }
 
     @Test
+    void disablingRecordingLeavesAnOpenSpanValidAndStopsNewRecordings() {
+        TelemetrySpanScope.disableExistingSites();
+        TraceContext previous = TraceContext.install(PARENT);
+        long starts = TelemetrySpanScope.startedCount();
+        long ends = TelemetrySpanScope.endedCount();
+        try {
+            TelemetrySpanScope.enableExistingSites(100, 10_000, "switch.");
+            try (TelemetrySpanScope active = TelemetrySpanScope.open("switch.ongoing")) {
+                TraceContext within = TraceContext.current();
+                assertTrue(active.recording(), "in-flight scope records at admission");
+                TelemetrySpanScope.disableExistingSites();
+                assertSame(within, TraceContext.current(), "operator OFF does not interrupt active code");
+                try (TelemetrySpanScope later = TelemetrySpanScope.open("switch.later")) {
+                    assertFalse(later.recording(), "OFF gates subsequent scope creation");
+                    assertSame(within, TraceContext.current(), "disabled scope preserves parent context");
+                }
+                active.attribute("step", 1);
+                assertEquals("1", active.attributesSnapshot().get("step"));
+            }
+            assertSame(PARENT, TraceContext.current(), "open span still closes exactly once");
+            assertEquals(starts + 1, TelemetrySpanScope.startedCount());
+            assertEquals(ends + 1, TelemetrySpanScope.endedCount());
+        } finally {
+            TraceContext.install(previous);
+            TelemetrySpanScope.disableExistingSites();
+        }
+    }
+
+    @Test
     void rejectsWrongTaskEndAndSensitiveAttributes() throws Exception {
         TelemetrySpanScope.enableExistingSites(100, 10_000, "");
         TraceContext previous = TraceContext.install(null);
