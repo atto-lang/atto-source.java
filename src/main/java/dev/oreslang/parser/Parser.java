@@ -2705,14 +2705,14 @@ public final class Parser {
     // parameter-list terminator. The latter is followed by the slim arrow.
     // Preserve unrestricted unions in ordinary (...) parameter declarations.
     private Ast.TypeRef parsePipeParameterType() {
-        Ast.TypeRef first = parseTypeAtom();
+        Ast.TypeRef first = parsePostfixTypeAtom();
         if (!check(PIPE) || checkNext(ARROW)) return first;
 
         List<Ast.TypeRef> options = new ArrayList<>();
         options.add(first);
         do {
             consume(PIPE, "expected '|' between union parameter types");
-            options.add(parseTypeAtom());
+            options.add(parsePostfixTypeAtom());
         } while (check(PIPE) && !checkNext(ARROW));
         return Ast.TypeRef.union(options);
     }
@@ -2912,14 +2912,30 @@ public final class Parser {
         return List.copyOf(result);
     }
 
+    /** Postfix type '?' is Option<T> sugar and binds more tightly than union '|'. */
     private Ast.TypeRef parseTypeRef() {
-        Ast.TypeRef first = parseTypeAtom();
+        Ast.TypeRef first = parsePostfixTypeAtom();
         if (!match(PIPE)) return first;
 
         List<Ast.TypeRef> options = new ArrayList<>();
         options.add(first);
-        do options.add(parseTypeAtom()); while (match(PIPE));
+        do options.add(parsePostfixTypeAtom()); while (match(PIPE));
         return Ast.TypeRef.union(options);
+    }
+
+    /** Group a union explicitly before '?' to wrap the complete union. */
+    private Ast.TypeRef parsePostfixTypeAtom() {
+        Ast.TypeRef type = parseTypeAtom();
+        if (!match(QUESTION)) return type;
+        if (type.name().equals("void") || type.name().equals("null")
+                || type.inferArguments()) {
+            throw error(previous(), "type-level '?' requires a concrete value type");
+        }
+        type = new Ast.TypeRef("Option", List.of(type), false);
+        if (check(QUESTION)) {
+            throw error(peek(), "a type may have only one postfix '?' suffix; use Option<Option<T>> for nested Option");
+        }
+        return type;
     }
 
     private Ast.TypeRef parseTypeAtom() {
@@ -6825,12 +6841,34 @@ public final class Parser {
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
+        java.util.Set<String> seenLabels = new java.util.LinkedHashSet<>();
+        boolean namedStarted = false;
         do {
-            boolean spread = match(ELLIPSIS);
-            Ast.Expr argument = parseExpression();
-            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+            if (check(terminator)) throw error(peek(), "empty call argument");
+            if (match(ELLIPSIS)) {
+                if (namedStarted) {
+                    throw error(previous(),
+                            "positional spread arguments cannot follow named arguments");
+                }
+                args.add(new Ast.SpreadExpr(parseExpression()));
+                continue;
+            }
+            if (check(IDENT) && checkNext(COLON)) {
+                namedStarted = true;
+                String name = advance().lexeme();
+                consume(COLON, "expected ':' after named argument");
+                if (!seenLabels.add(name)) {
+                    throw error(previous(), "duplicate named argument '" + name + "'");
+                }
+                args.add(new Ast.NamedArgExpr(name, parseExpression()));
+                continue;
+            }
+            if (namedStarted) {
+                throw error(peek(), "positional arguments cannot follow named arguments");
+            }
+            args.add(parseExpression());
         } while (match(COMMA));
-        return args;
+        return List.copyOf(args);
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
