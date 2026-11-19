@@ -45,24 +45,29 @@ final class AdaptiveTraceCodeV1<T> {
         private final long epoch;
         private final long sequence;
         private final int probeMask;
+        private final long policyVersion;
         private boolean consumed;
 
-        private Ticket(AdaptiveTraceCodeV1<?> owner, long epoch, long sequence, int mask) {
+        private Ticket(AdaptiveTraceCodeV1<?> owner, long epoch, long sequence,
+                int mask, long policyVersion) {
             this.owner = owner;
             this.epoch = epoch;
             this.sequence = sequence;
             this.probeMask = mask;
+            this.policyVersion = policyVersion;
         }
     }
 
     private static final class Generation<T> {
         private final long id;
         private final int probeMask;
+        private final long policyVersion;
         private final T executable;
         private int pins;
-        private Generation(long id, int probeMask, T executable) {
+        private Generation(long id, int probeMask, long policyVersion, T executable) {
             this.id = id;
             this.probeMask = probeMask;
+            this.policyVersion = policyVersion;
             this.executable = executable;
         }
     }
@@ -76,7 +81,10 @@ final class AdaptiveTraceCodeV1<T> {
             this.owner = owner;
             this.generation = generation;
         }
-        T executable() { return generation.executable; }
+        T executable() {
+            if (closed.get()) throw new IllegalStateException("invocation already released");
+            return generation.executable;
+        }
         long generation() { return generation.id; }
         int compiledMask() { return generation.probeMask; }
         @Override public void close() {
@@ -90,6 +98,7 @@ final class AdaptiveTraceCodeV1<T> {
     private final int recompileBudget;
     private final int maxLiveGenerations;
     private final ArrayList<Generation<T>> generations = new ArrayList<>();
+    private final Generation<T> baseline;
     private Generation<T> active;
     private Ticket pending;
     private long sequence;
@@ -108,15 +117,21 @@ final class AdaptiveTraceCodeV1<T> {
         this.supervisorEpoch = supervisorEpoch;
         this.recompileBudget = recompileBudget;
         this.maxLiveGenerations = maxLiveGenerations;
-        active = new Generation<>(0, 0, initialExecutable);
-        generations.add(active);
+        baseline = new Generation<>(0, 0, -1, initialExecutable);
+        active = baseline;
+        generations.add(baseline);
     }
 
     synchronized Invocation<T> pin() {
         if (retired) throw new IllegalStateException("trace code owner retired");
-        if (active.pins == Integer.MAX_VALUE) throw new IllegalStateException("too many invocation pins");
-        active.pins++;
-        return new Invocation<>(this, active);
+        Generation<T> selected = active;
+        // Revocation must affect new entries even if an older frame remains pinned.
+        if (selected != baseline && !policy.permitsAtVersion(selected.probeMask, selected.policyVersion)) {
+            selected = baseline;
+        }
+        if (selected.pins == Integer.MAX_VALUE) throw new IllegalStateException("too many invocation pins");
+        selected.pins++;
+        return new Invocation<>(this, selected);
     }
 
     /** Reserve bounded compile authority; no compiler runs while lock held. */
@@ -126,16 +141,16 @@ final class AdaptiveTraceCodeV1<T> {
                 || sequence == Long.MAX_VALUE) {
             throw new IllegalStateException("JIT authorization, epoch or quota denied");
         }
-        if (probeMask == 0 || (probeMask & ~TraceInstrumentationControlV1.ALL) != 0
-                || (probeMask & ~policy.activeMask()) != 0) {
+        long policyVersion = policy.version();
+        if (!policy.permitsAtVersion(probeMask, policyVersion)) {
             throw new IllegalArgumentException("probes not authorized by current policy");
         }
         prune();
-        if (generations.size() >= maxLiveGenerations) {
+        if (!hasCapacityForReplacement()) {
             throw new IllegalStateException("live code-generation quota exceeded");
         }
         requestedCompilations++; // Includes failed/aborted compiles to prevent DoS.
-        pending = new Ticket(this, epoch, ++sequence, probeMask);
+        pending = new Ticket(this, epoch, ++sequence, probeMask, policyVersion);
         return pending;
     }
 
@@ -144,16 +159,20 @@ final class AdaptiveTraceCodeV1<T> {
         verifyTicket(ticket);
         Objects.requireNonNull(artifact, "compiled artifact");
         if (!identity.equals(artifact.identity) || ticket.probeMask != artifact.probeMask
-                || (ticket.probeMask & ~policy.activeMask()) != 0) {
+                || !policy.permitsAtVersion(ticket.probeMask, ticket.policyVersion)) {
             throw new SecurityException("changed IR, ABI, effects, ownership or trace policy");
         }
         prune();
-        if (generations.size() >= maxLiveGenerations) {
+        if (!hasCapacityForReplacement()) {
             throw new IllegalStateException("live code-generation quota exceeded");
         }
-        // Publication changes only the next invocation's dispatch target.
+        // After verification, evict only an unpinned superseded target.
+        // The baseline and any in-flight code generation remain owned.
+        if (active != baseline && active.pins == 0) {
+            generations.remove(active);
+        }
         Generation<T> replacement = new Generation<>(ticket.sequence, ticket.probeMask,
-                artifact.executable);
+                ticket.policyVersion, artifact.executable);
         generations.add(replacement);
         active = replacement;
         ticket.consumed = true;
@@ -195,8 +214,18 @@ final class AdaptiveTraceCodeV1<T> {
         prune();
     }
 
+    private boolean hasCapacityForReplacement() {
+        // Replacing an unpinned active JIT generation reuses its bounded slot.
+        int count = generations.size() - (active != baseline && active.pins == 0 ? 1 : 0);
+        return count < maxLiveGenerations;
+    }
+
     private void prune() {
-        generations.removeIf(gen -> gen != active && gen.pins == 0);
+        if (active != baseline && active.pins == 0
+                && !policy.permitsAtVersion(active.probeMask, active.policyVersion)) {
+            active = baseline;
+        }
+        generations.removeIf(gen -> gen != baseline && gen != active && gen.pins == 0);
     }
 
     synchronized int retainedGenerations() { return generations.size(); }
