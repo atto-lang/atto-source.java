@@ -1,3 +1,5 @@
+Critical: New repo is in the github.com/atto-lang org in atto-lang/atto-source.java
+
 > **AI agent instructions (organization-wide):** Before working on code, issues, or pull requests, read and follow the [organization `AGENTS.md`](https://github.com/ores-truffle-oreslang/.github/blob/main/AGENTS.md), including its **merge-first stealth-development policy**. Honor any repository-local `AGENTS.md`, explicit holds, and GitHub-enforced rules.
 
 # AttoLang Java/GraalVM reference backend
