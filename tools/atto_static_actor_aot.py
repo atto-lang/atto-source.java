@@ -18,7 +18,7 @@ import os
 import subprocess
 import tempfile
 
-TOKEN = re.compile(r"\s+|//[^\n]*|-?[0-9]+|[A-Za-z_][A-Za-z_0-9]*|[{}():;.=+]", re.ASCII)
+TOKEN = re.compile(r"\s+|//[^\n]*|-?[0-9]+|[A-Za-z_][A-Za-z_0-9]*|[{}():;.=+^]", re.ASCII)
 NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z", re.ASCII)
 MAX_SOURCE = 32768
 MAX_ACTORS = 16
@@ -81,6 +81,13 @@ class Parser:
             raise CompileError("integer exceeds the AttoLang native i64 range")
         return result
 
+    def return_marker(self):
+        # ^ is a lexical return statement, never an arithmetic operator.
+        marker = self.take()
+        if marker not in ("return", "^"):
+            raise CompileError("expected 'return' or '^'")
+        return marker
+
     def actor(self):
         self.take("define")
         self.take("actor")
@@ -110,7 +117,7 @@ class Parser:
         self.take("+")
         self.take(parameter)
         self.take(";")
-        self.take("return")
+        self.return_marker()
         self.take(field)
         self.take(";")
         self.take("}")
@@ -179,13 +186,16 @@ class Parser:
                 if condition not in ("true", "false"):
                     raise CompileError("guard condition must be a bool literal in the NativeAOT pilot")
                 self.take("{")
-                self.take("return")
+                self.return_marker()
                 early_value = self.integer()
                 self.take(";")
                 self.take("}")
+                if self.peek() == "else":
+                    raise CompileError(
+                        "E_GUARD_ELSE_NOT_REQUIRED: Atto guard has no else arm")
                 actions.append(("guard", condition == "true", early_value))
-            elif token == "return":
-                self.take("return")
+            elif token in ("return", "^"):
+                self.return_marker()
                 result = self.integer()
                 self.take(";")
                 self.take("}")
