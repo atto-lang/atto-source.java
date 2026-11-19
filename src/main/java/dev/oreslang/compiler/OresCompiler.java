@@ -25,6 +25,19 @@ public final class OresCompiler {
         return analyze(Parser.parse(source));
     }
 
+    /**
+     * Explicit, opt-in stateless declared-actor prototype.
+     *
+     * <p>Not the default compilation path: the general `declare actor`
+     * grammar remains fail-closed until state ownership, package linking and
+     * generation-scoped out-of-line lowering are proven. This method requires
+     * a canonical same-unit declaration, inert init and private typed receive,
+     * then runs the unchanged type and ownership checks on its executable AST.</p>
+     */
+    public static Ast.Program parseAndTypeCheckStatelessDeclaredActors(String source) {
+        return analyze(StatelessDeclaredActorLowerer.lower(Parser.parse(source)));
+    }
+
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);

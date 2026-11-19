@@ -168,7 +168,11 @@ public final class IncrementalCompiler {
         LinkedHashMap<String, Map<String, Ast.TypeAliasDecl>> aliases = new LinkedHashMap<>();
         LinkedHashMap<String, Ast.ClassDecl> ownershipClasses = new LinkedHashMap<>();
         for (Ast.ImportDecl imported : importer.imports()) {
+            // ACTOR is a nominal method/protocol import, not a free function
+            // import. Preserve its linked class so receive ingress checks run
+            // on the resolved actor rather than an unknown-member fallback.
             if (imported.wildcard() || (imported.kind() != Ast.ImportKind.CLASS
+                    && imported.kind() != Ast.ImportKind.ACTOR
                     && imported.kind() != Ast.ImportKind.MODULE)) continue;
             String sourceId = ImportGraph.resolveImportUnitId(
                     unitId, imported, parsed.keySet(), importResolutions);

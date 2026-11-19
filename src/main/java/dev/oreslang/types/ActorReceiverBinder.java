@@ -225,13 +225,24 @@ public final class ActorReceiverBinder {
                 || (!sourceId.endsWith(".atto") && !sourceId.endsWith(".ores"))) {
             return false;
         }
+        // Keep source-unit identities portable and unambiguous on Windows,
+        // POSIX and filesystem-based package resolvers. ':' also denotes
+        // drive letters and NTFS alternate data streams. Bidi/format control
+        // code points can visually impersonate trusted package paths.
+        if (sourceId.indexOf(':') >= 0) return false;
         for (String segment : sourceId.split("/", -1)) {
             if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
                 return false;
             }
         }
-        for (int i = 0; i < sourceId.length(); i++) {
-            if (Character.isISOControl(sourceId.charAt(i))) return false;
+        for (int i = 0; i < sourceId.length(); ) {
+            int codePoint = sourceId.codePointAt(i);
+            if (Character.isISOControl(codePoint)
+                    || Character.getType(codePoint) == Character.FORMAT
+                    || codePoint == 0x2028 || codePoint == 0x2029) {
+                return false;
+            }
+            i += Character.charCount(codePoint);
         }
         return true;
     }
@@ -251,7 +262,10 @@ public final class ActorReceiverBinder {
             if (declaration instanceof Ast.StandaloneActorDecl actor) {
                 typeName = actor.name();
                 category = "standalone actor";
-                if (!receiverAliases.add(actor.receiverName())) {
+                // Canonical 'declare actor A;' has no class-level alias.
+                // The (Actor receiver) name belongs to each mtd declaration.
+                if (actor.receiverName() != null
+                        && !receiverAliases.add(actor.receiverName())) {
                     throw new IllegalArgumentException(
                             "duplicate standalone actor receiver binding '"
                                     + module.name() + "." + actor.receiverName() + "'");
@@ -295,6 +309,35 @@ public final class ActorReceiverBinder {
             }
         }
 
+        // Resolve bootstrap conflicts over the ENTIRE namespace before
+        // binding any method. Init and on_start are mutually exclusive even
+        // when one is in-class and the other is attached from another file.
+        // This pass is order independent and never grants runtime authority.
+        Map<String, Set<String>> startupRoles = new LinkedHashMap<>();
+        for (Ast.Decl declaration : module.declarations()) {
+            if (declaration instanceof Ast.ClassDecl klass
+                    && klass.actorKind() != Ast.ActorKind.NONE) {
+                for (Ast.MethodDecl owned : klass.methods()) {
+                    if (owned.name().equals("init") || owned.name().equals("on_start")) {
+                        startupRoles.computeIfAbsent(klass.name(),
+                                ignored -> new LinkedHashSet<>()).add(owned.name());
+                    }
+                }
+            } else if (declaration instanceof Ast.ExternalActorMethodDecl attached
+                    && nominalActors.containsKey(attached.actorName())
+                    && (attached.name().equals("init") || attached.name().equals("on_start"))) {
+                startupRoles.computeIfAbsent(attached.actorName(),
+                        ignored -> new LinkedHashSet<>()).add(attached.name());
+            }
+        }
+        for (Map.Entry<String, Set<String>> entry : startupRoles.entrySet()) {
+            if (entry.getValue().contains("init") && entry.getValue().contains("on_start")) {
+                throw new IllegalArgumentException(
+                        "ACTOR_INIT_ON_START_CONFLICT: actor '" + entry.getKey()
+                                + "' may not register both init and legacy on_start");
+            }
+        }
+
         for (Ast.Decl declaration : module.declarations()) {
             if (!(declaration instanceof Ast.ExternalActorMethodDecl method)) continue;
             Ast.Decl target = nominalActors.get(method.actorName());
@@ -305,6 +348,28 @@ public final class ActorReceiverBinder {
                                 + "' declared in the same module; imported actors and "
                                 + "actors in other modules cannot grant receiver authority");
             }
+            // A fresh canonical declaration does not inherit the pre-v1
+            // on_start adapter; mixing spellings must never double-start.
+            if (target instanceof Ast.StandaloneActorDecl standalone
+                    && standalone.receiverName() == null
+                    && method.name().equals("on_start")) {
+                throw new IllegalArgumentException(
+                        "ACTOR_LEGACY_START_UNSUPPORTED: declare actor requires "
+                                + "external init, not legacy on_start");
+            }
+            // Canonical declarations use the strict runtime ingress ABI.
+            // Legacy 'define actor A as a;' and inline class actors retain
+            // their existing unmarked method compatibility until migration.
+            if (target instanceof Ast.StandaloneActorDecl standalone
+                    && standalone.receiverName() == null
+                    && (method.name().equals("init") || method.name().equals("receive"))
+                    && !method.runtimeEntrypoint()) {
+                throw new IllegalArgumentException(
+                        "ACTOR_EXTERNAL_REQUIRED: declared actor lifecycle method '"
+                                + method.name() + "' must use 'define external mtd'");
+            }
+            // Lifecycle-public denial takes precedence over actor export visibility.
+            validateHookShape(method);
             Ast.Visibility actorVisibility =
                     target instanceof Ast.StandaloneActorDecl standalone
                             ? standalone.visibility()
@@ -332,7 +397,24 @@ public final class ActorReceiverBinder {
                                     + "' conflicts with an in-class actor method");
                 }
             }
-            validateHookShape(method);
+            // Runtime lifecycle slots are nominal roles, not overloadable by
+            // argument count. Preserve the old name/arity rule for ordinary mtd.
+            if (method.name().equals("init") || method.name().equals("receive")) {
+                for (Slot existing : bindings.keySet()) {
+                    if (existing.module().equals(module.name())
+                            && existing.actor().equals(method.actorName())
+                            && existing.name().equals(method.name())) {
+                        throw new IllegalArgumentException(
+                                "ACTOR_DUPLICATE_" + method.name().toUpperCase(java.util.Locale.ROOT)
+                                        + ": duplicate lifecycle entrypoint role");
+                    }
+                }
+                if (method.runtimeEntrypoint() && target instanceof Ast.ClassDecl classActor
+                        && classActor.methods().stream().anyMatch(m -> m.name().equals(method.name()))) {
+                    throw new IllegalArgumentException(
+                            "external actor lifecycle role conflicts with inline actor method");
+                }
+            }
             Slot key = new Slot(
                     module.name(), method.actorName(), method.name(),
                     method.parameters().size());
@@ -355,6 +437,34 @@ public final class ActorReceiverBinder {
 
     private static void validateHookShape(Ast.ExternalActorMethodDecl method) {
         String name = method.name();
+        if (method.runtimeEntrypoint()) {
+            if (!name.equals("init") && !name.equals("receive")) {
+                throw new IllegalArgumentException(
+                        "ACTOR_EXTERNAL_ROLE_UNSUPPORTED: 'external' marks only "
+                                + "init/receive runtime entrypoint roles in v1");
+            }
+            if (method.visibility() != Ast.Visibility.PRIVATE) {
+                throw new IllegalArgumentException(
+                        "ACTOR_EXTERNAL_LIFECYCLE_PRIVATE: runtime entrypoints "
+                                + "cannot be public guest methods");
+            }
+            if (name.equals("init")) {
+                if (method.returnType().name().equals(method.actorName())) {
+                    throw new IllegalArgumentException(
+                            "ACTOR_INIT_OWNER_ESCAPE: init must not return raw actor self");
+                }
+                // A user-defined nominal type called 'state' is NOT proof of
+                // a compiler-issued sealed state builder/capability. Until
+                // builder provenance and ownership are checked in typed IR,
+                // accept only the non-escaping void bootstrap ABI.
+                if (!isVoid(method.returnType())) {
+                    throw new IllegalArgumentException(
+                            "ACTOR_INIT_STATE_BUILDER_UNVERIFIED: external init "
+                                    + "must return void until compiler-owned state builders "
+                                    + "have verified provenance and ownership lowering");
+                }
+            }
+        }
         if (Set.of("on_panic", "on_throw", "on_throws", "on_raise",
                 "on_recover", "handle_state", "on_stop", "on_restart").contains(name)) {
             throw new IllegalArgumentException(
