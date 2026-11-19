@@ -18,6 +18,10 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorSourceTearDownTest {
     private static final class State implements ActorRuntime.ActorOwnedGuestState {
         final ActorRuntime.ActorId owner;
+        final AtomicInteger ownerLookups = new AtomicInteger();
+        volatile CountDownLatch ownerLookupEntered;
+        volatile CountDownLatch releaseOwnerLookup;
+        volatile AtomicBoolean injectedTeardownOwnerFailure;
 
         State(ActorRuntime.ActorId owner) {
             this.owner = owner;
@@ -25,6 +29,25 @@ final class ActorSourceTearDownTest {
 
         @Override
         public ActorRuntime.ActorId ownerActorId() {
+            if (injectedTeardownOwnerFailure != null
+                    && injectedTeardownOwnerFailure.get()) {
+                throw new IllegalStateException(
+                        "injected source teardown owner lookup failure");
+            }
+            if (ownerLookups.incrementAndGet() == 2 && ownerLookupEntered != null) {
+                ownerLookupEntered.countDown();
+                try {
+                    if (releaseOwnerLookup == null
+                            || !releaseOwnerLookup.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "test did not release actor state owner lookup");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "actor state owner lookup interrupted", interrupted);
+                }
+            }
             return owner;
         }
     }
@@ -35,12 +58,17 @@ final class ActorSourceTearDownTest {
         private final AtomicInteger teardowns = new AtomicInteger();
         private final AtomicInteger finalCleanups = new AtomicInteger();
         private final AtomicInteger teardownOutputsAccepted = new AtomicInteger();
+        private final AtomicBoolean teardownOwnerLookupFails = new AtomicBoolean();
         private final boolean teardownFails;
         private boolean teardownEmitsOutput;
         private volatile CountDownLatch teardownEntered;
         private volatile CountDownLatch releaseTeardown;
         private volatile CountDownLatch receiveEntered;
         private volatile CountDownLatch releaseReceive;
+        private volatile CountDownLatch startupEntered;
+        private volatile CountDownLatch releaseStartup;
+        private volatile CountDownLatch ownerLookupEntered;
+        private volatile CountDownLatch releaseOwnerLookup;
 
         Executor(SharedCodeImageStore.CodeImage image, boolean teardownFails) {
             this.image = image;
@@ -54,9 +82,21 @@ final class ActorSourceTearDownTest {
 
         @Override
         public ActorRuntime.ActorOwnedGuestState initializeActor(
-                String actorName, ActorRuntime.ActorContext<Object> context) {
+                String actorName, ActorRuntime.ActorContext<Object> context)
+                throws Exception {
             assertEquals("Worker", actorName);
-            return new State(context.self().id());
+            if (startupEntered != null) {
+                startupEntered.countDown();
+                if (releaseStartup == null
+                        || !releaseStartup.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test never released source initializer");
+                }
+            }
+            State state = new State(context.self().id());
+            state.ownerLookupEntered = ownerLookupEntered;
+            state.releaseOwnerLookup = releaseOwnerLookup;
+            state.injectedTeardownOwnerFailure = teardownOwnerLookupFails;
+            return state;
         }
 
         @Override
@@ -114,6 +154,136 @@ final class ActorSourceTearDownTest {
     private static SharedCodeImageStore.CodeImage image(SharedCodeImageStore store) {
         Ast.Program program = Parser.parse("pub routine main(): void { return; }");
         return store.publish("teardown/source.ores", program);
+    }
+
+    @Test
+    void failedTeardownOwnershipAdmissionDoesNotStrandActorFinalization()
+            throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().get(3, TimeUnit.SECONDS);
+            // The only injected failure occurs inside beginTeardown(), before
+            // the guest callback claims the lifecycle lane. This previously
+            // left the source gate STOPPING_GRACEFUL forever, even after the
+            // runtime reported the failure, and host stop() timed out.
+            executor.teardownOwnerLookupFails.set(true);
+            AtomicReference<Throwable> hostStopFailure = new AtomicReference<>();
+            Thread stopper = Thread.ofVirtual().start(() -> {
+                try {
+                    ref.stop();
+                } catch (Throwable failure) {
+                    hostStopFailure.set(failure);
+                }
+            });
+            stopper.join(5_000);
+            assertFalse(stopper.isAlive(),
+                    "failed beginTeardown stranded physical finalization");
+            assertNull(hostStopFailure.get(),
+                    () -> "host stop failed: " + hostStopFailure.get());
+            CompletionException doneFailure = assertThrows(
+                    CompletionException.class, () -> ref.done().join());
+            assertEquals("injected source teardown owner lookup failure",
+                    doneFailure.getCause().getMessage());
+            assertEquals(0, executor.teardowns.get(),
+                    "guest hook must not run after failed ownership admission");
+            assertFalse(ref.isAlive());
+        }
+    }
+
+    @Test
+    void stopSealsWhileSourceReceiveOwnerLookupIsBlocked() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            executor.ownerLookupEntered = new CountDownLatch(1);
+            executor.releaseOwnerLookup = new CountDownLatch(1);
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            ref.ready().get(3, TimeUnit.SECONDS);
+            ref.send("blocked-lookup");
+            assertTrue(executor.ownerLookupEntered.await(3, TimeUnit.SECONDS),
+                    "source receive did not begin ownership check");
+            AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+            Thread stopper = Thread.ofVirtual().start(() -> {
+                try {
+                    ref.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
+            boolean sealedBeforeLookupReleased = false;
+            try {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (System.nanoTime() < deadline) {
+                    if (!ref.isAlive()) {
+                        sealedBeforeLookupReleased = true;
+                        break;
+                    }
+                    Thread.yield();
+                }
+            } finally {
+                executor.releaseOwnerLookup.countDown();
+            }
+            stopper.join(5_000);
+            assertTrue(sealedBeforeLookupReleased,
+                    "host STOP blocked behind executor owner lookup");
+            assertFalse(stopper.isAlive(), "STOP did not physically complete");
+            assertNull(stopFailure.get(), () -> "host STOP failure: " + stopFailure.get());
+            ref.done().get(5, TimeUnit.SECONDS);
+            assertTrue(ref.failure().isEmpty(), "normal STOP became guest failure");
+            assertEquals(0, executor.receives.get(),
+                    "STOP must reject a receive whose owner lookup was not admitted");
+            assertEquals(1, executor.teardowns.get());
+        }
+    }
+
+    @Test
+    void stopDuringSourceInitializationIsExpectedCancellationNotGuestFailure()
+            throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            Executor executor = new Executor(image(store), false);
+            executor.startupEntered = new CountDownLatch(1);
+            executor.releaseStartup = new CountDownLatch(1);
+            var ref = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.SHARED, executor, "Worker");
+            assertTrue(executor.startupEntered.await(3, TimeUnit.SECONDS),
+                    "initializer never entered");
+            // The public host stop() is a synchronous finalization barrier.
+            // Never call it on the thread that must release the initializer:
+            // that would make the test deadlock independently of the runtime.
+            AtomicReference<Throwable> stopFailure = new AtomicReference<>();
+            Thread stopper = Thread.ofVirtual().start(() -> {
+                try {
+                    ref.stop();
+                } catch (Throwable failure) {
+                    stopFailure.set(failure);
+                }
+            });
+            try {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (ref.isAlive() && System.nanoTime() < deadline) {
+                    Thread.yield();
+                }
+                assertFalse(ref.isAlive(), "host STOP must seal initialization");
+            } finally {
+                executor.releaseStartup.countDown();
+            }
+            stopper.join(5_000);
+            assertFalse(stopper.isAlive(), "stopper must finish physical finalization");
+            assertNull(stopFailure.get(), () -> "host stop failed: " + stopFailure.get());
+            ref.done().get(5, TimeUnit.SECONDS);
+            assertThrows(CompletionException.class, () -> ref.ready().join());
+            assertTrue(ref.failure().isEmpty(),
+                    "normal stop during initialization must not poison actor DONE");
+            assertEquals(0, executor.receives.get());
+            assertEquals(0, executor.teardowns.get(),
+                    "an actor stopped before READY has no guest teardown authority");
+            assertFalse(ref.isAlive());
+        }
     }
 
     @Test
@@ -382,6 +552,35 @@ final class ActorSourceTearDownTest {
             assertEquals("teardown failure", failure.getCause().getMessage());
             assertFalse(ref.isAlive());
             assertEquals(1, executor.teardowns.get());
+        }
+    }
+
+    @Test
+    void stopRacingSourceMailboxDispatchIsNotAReceiveAdmissionFailure()
+            throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            SharedCodeImageStore.CodeImage codeImage = image(store);
+            // Host scheduling deliberately varies from round to round.
+            // Whatever the outcome, STOP must not turn a not-yet-admitted
+            // receive into an actor failure when the runtime wins the race.
+            for (int round = 0; round < 24; round++) {
+                Executor executor = new Executor(codeImage, false);
+                var ref = runtime.spawnCodeActor(
+                        ActorRuntime.ActorKind.SHARED, executor, "Worker");
+                ref.ready().get(2, TimeUnit.SECONDS);
+                for (int message = 0; message < 4; message++) {
+                    ref.send("ordinary-" + message);
+                }
+                Thread stopper = Thread.ofVirtual().start(ref::stop);
+                stopper.join(2_000);
+                assertFalse(stopper.isAlive(), "STOP must not strand the carrier");
+                ref.done().get(2, TimeUnit.SECONDS);
+                assertTrue(ref.failure().isEmpty(),
+                        "a normal STOP racing receive admission must not poison DONE");
+                assertEquals(1, executor.teardowns.get(),
+                        "graceful teardown is exactly once in round " + round);
+            }
         }
     }
 }

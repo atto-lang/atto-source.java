@@ -8398,8 +8398,12 @@ public final class ActorRuntime implements AutoCloseable {
         private final String codeActorType;
         /** One trusted lifecycle gate per physical source actor incarnation. */
         private final ActorSourceLifecycleGate sourceLifecycleGate;
-        /** Mutable source actor state, created on this actor's dispatcher. */
-        private ActorOwnedGuestState codeActorState;
+        /** Actor-owned source state is installed on the dispatcher, but
+         * host STOP and teardown admission inspect its identity on another
+         * carrier. Publish the reference with a volatile happens-before
+         * relationship; this does NOT grant cross-actor mutable state access.
+         */
+        private volatile ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
@@ -8955,15 +8959,37 @@ public final class ActorRuntime implements AutoCloseable {
                 state = codeActorState;
             }
             try {
-                if (state != null && codeExecutor != null) {
-                    @SuppressWarnings("unchecked")
-                    ActorContext<Object> sourceContext =
-                            (ActorContext<Object>) (ActorContext<?>) context;
-                    // Teardown is a terminal once-only actor-owned turn,
-                    // never a callable guest method or a new mailbox receive.
-                    sourceLifecycleGate.beginTeardown(ref.id(), codeActorType, state);
-                    codeExecutor.tearDownActor(codeActorType, state, sourceContext);
+                if (state == null || codeExecutor == null) {
+                    // A reserved lifecycle lane with no owner state is an
+                    // invariant failure, not a successful omitted teardown.
+                    // Leaving the source gate STOPPING_GRACEFUL would strand
+                    // physical finalization indefinitely.
+                    throw new IllegalStateException(
+                            "graceful source teardown reserved without initialized state");
                 }
+                @SuppressWarnings("unchecked")
+                ActorContext<Object> sourceContext =
+                        (ActorContext<Object>) (ActorContext<?>) context;
+                // Teardown is a terminal once-only actor-owned turn,
+                // never a callable guest method or a new mailbox receive.
+                sourceLifecycleGate.beginTeardown(ref.id(), codeActorType, state);
+                try {
+                    codeExecutor.tearDownActor(codeActorType, state, sourceContext);
+                } finally {
+                    // Physical actor memory remains pinned even when STOP,
+                    // cancellation or a guest exception races teardown.
+                    sourceLifecycleGate.finishTeardown(ref.id(), codeActorType);
+                }
+            } catch (Exception | Error teardownFailure) {
+                // beginTeardown() itself can throw (foreign state, blocked
+                // accessor, or an invariant failure) BEFORE claiming the
+                // single-flight lane. That leaves the gate STOPPING_GRACEFUL
+                // with no eligible hook left to run. Explicitly revoke the
+                // unconsumed graceful permit, while preserving the original
+                // failure for actor DONE/supervisor diagnostics. If the hook
+                // already began, its TEARING_DOWN receipt remains immutable.
+                sourceLifecycleGate.sealStop(false);
+                throw teardownFailure;
             } finally {
                 synchronized (lifecycleLock) {
                     gracefulTeardownActive = false;
@@ -9051,6 +9077,12 @@ public final class ActorRuntime implements AutoCloseable {
                     || pendingChildStopDispatches != 0
                     || pendingCleanupFutures != 0
                     || activeTurns != 0
+                    // The source incarnation cannot retire while any actual
+                    // guest receive still owns its admission lease. This
+                    // independently protects future concurrent lowering;
+                    // source-scheduler pins remain a separate required gate.
+                    || (sourceLifecycleGate != null
+                            && !sourceLifecycleGate.readyForRetirement())
                     || scheduled.get()
                     || carrierActive
                     || activeAsyncSendAdmissions != 0
@@ -9543,17 +9575,29 @@ public final class ActorRuntime implements AutoCloseable {
                         @SuppressWarnings("unchecked")
                         ActorContext<Object> sourceContext =
                                 (ActorContext<Object>) (ActorContext<?>) context;
-                        sourceLifecycleGate.beginInit(ref.id(), codeActorType);
                         ActorOwnedGuestState created;
                         try {
+                            // Admission and commit both use the same typed
+                            // STOP result. The initial !stopped check above
+                            // is not atomic with beginInit(): STOP can seal
+                            // after it but before this runtime reservation.
+                            sourceLifecycleGate.beginInit(ref.id(), codeActorType);
                             created = Objects.requireNonNull(
                                     codeExecutor.initializeActor(
                                             codeActorType,
                                             sourceContext),
                                     "source actor executor returned null state");
-                            // The source image is executable shared code;
-                            // state ownership is minted only on this actor turn.
+                            // The shared code image never owns actor state.
+                            // STOP is allowed to reject a late commit, but
+                            // invalid guest state must still fail closed.
                             sourceLifecycleGate.commitInit(created);
+                        } catch (ActorSourceLifecycleGate.InitializationStopped stoppedInit) {
+                            // Release the physical initializer pin even if
+                            // STOP arrived after callback entry but before
+                            // its state could be published.
+                            sourceLifecycleGate.failInit();
+                            throw new ActorCancellationSignal(
+                                    "source actor initialization stopped before READY");
                         } catch (Exception | Error startupFailure) {
                             sourceLifecycleGate.failInit();
                             throw startupFailure;
@@ -9643,11 +9687,12 @@ public final class ActorRuntime implements AutoCloseable {
                             activeMail = mail;
                             try {
                                 if (codeExecutor != null) {
-                                    if (codeActorState == null
-                                            || !codeActorState.ownerActorId().equals(ref.id())) {
-                                        throw new SecurityException(
-                                                "source actor state lost actor ownership before mailbox dispatch");
-                                    }
+                                    // The STOP-linearized gate below checks
+                                    // this actor's state owner against mailbox
+                                    // recipient exactly once. Calling the
+                                    // executor-defined accessor twice creates
+                                    // a TOCTOU window and may run arbitrary
+                                    // host callbacks unnecessarily.
                                     @SuppressWarnings("unchecked")
                                     ActorInboxMail<Object> sourceMail =
                                             (ActorInboxMail<Object>) (ActorInboxMail<?>) mail;
@@ -9657,14 +9702,42 @@ public final class ActorRuntime implements AutoCloseable {
                                     // Defense in depth: actor-owned state and
                                     // recipient must belong to this live actor
                                     // incarnation before entering guest code.
-                                    sourceLifecycleGate.requireReceive(
-                                            ref.id(), codeActorType,
-                                            codeActorState, sourceMail);
-                                    codeExecutor.receiveActor(
-                                            codeActorType,
-                                            codeActorState,
-                                            sourceMail,
-                                            sourceContext);
+                                    // The ActorOwnedGuestState accessor is
+                                    // host/executor-defined code. Snapshot it
+                                    // OUTSIDE lifecycleLock: STOP must never
+                                    // wait for it while trying to seal the
+                                    // actor's mailbox and receive gate.
+                                    ActorId observedStateOwner =
+                                            codeActorState == null
+                                                    ? null : codeActorState.ownerActorId();
+                                    ActorId observedRecipient = sourceMail.recipient();
+                                    ActorSourceLifecycleGate.ReceiveLease receiveLease;
+                                    synchronized (lifecycleLock) {
+                                        // The earlier STOP check only covered
+                                        // dequeue, not source callback admission.
+                                        // Only captured immutable identities
+                                        // enter this STOP-linearized section.
+                                        if (stopped.get() || finalized || forceKillFenced) {
+                                            // The envelope still closes in its
+                                            // outer try-with-resources. No
+                                            // callback or new lease was admitted.
+                                            continue;
+                                        }
+                                        receiveLease = sourceLifecycleGate.enterReceiveOwners(
+                                                ref.id(), codeActorType,
+                                                observedStateOwner, observedRecipient);
+                                    }
+                                    try {
+                                        codeExecutor.receiveActor(
+                                                codeActorType,
+                                                codeActorState,
+                                                sourceMail,
+                                                sourceContext);
+                                    } finally {
+                                        // Always return the receive lifetime pin, including
+                                        // guest throw, raise, cancellation and panic unwind.
+                                        receiveLease.close();
+                                    }
                                 } else {
                                     behavior.onMessage(mail.value(), context);
                                 }

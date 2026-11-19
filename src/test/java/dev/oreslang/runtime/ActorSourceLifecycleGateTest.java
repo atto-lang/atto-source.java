@@ -138,11 +138,17 @@ final class ActorSourceLifecycleGateTest {
     }
 
     @Test
-    void closingBeforeInitializationIsTerminal() {
+    void closingBeforeInitializationRequiresStopSeal() {
         var owner = ActorRuntime.ActorId.create();
         var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        assertThrows(IllegalStateException.class, gate::close,
+                "physical reclamation requires STOP even when no guest work ran");
+        gate.sealStop(false);
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class,
+                () -> gate.beginInit(owner, TYPE));
         gate.close();
-        assertThrows(IllegalStateException.class, () -> gate.beginInit(owner, TYPE));
+        assertThrows(IllegalStateException.class,
+                () -> gate.beginInit(owner, TYPE));
     }
 
     @Test
@@ -150,8 +156,13 @@ final class ActorSourceLifecycleGateTest {
         var owner = ActorRuntime.ActorId.create();
         var gate = new ActorSourceLifecycleGate(owner, TYPE);
         gate.beginInit(owner, TYPE);
-        gate.close();
+        gate.sealStop(false);
+        assertTrue(gate.initializationActive());
+        assertThrows(IllegalStateException.class, gate::close,
+                "STOP cannot retire an initializer still physically executing");
         gate.failInit();
+        assertFalse(gate.initializationActive());
+        gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
         assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
     }
@@ -162,6 +173,8 @@ final class ActorSourceLifecycleGateTest {
         var gate = new ActorSourceLifecycleGate(owner, TYPE);
         gate.beginInit(owner, TYPE);
         gate.commitInit(state(owner));
+        assertThrows(IllegalStateException.class, gate::close);
+        gate.sealStop(false);
         gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
         assertThrows(IllegalStateException.class,
@@ -183,6 +196,11 @@ final class ActorSourceLifecycleGateTest {
                 () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
         assertThrows(IllegalStateException.class,
                 () -> gate.beginTeardown(owner, TYPE, state(owner)));
+        assertThrows(IllegalStateException.class, gate::close,
+                "active tear_down must pin physical retirement");
+        gate.finishTeardown(owner, TYPE);
+        assertThrows(IllegalStateException.class,
+                () -> gate.finishTeardown(owner, TYPE));
         gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
     }
@@ -220,8 +238,11 @@ final class ActorSourceLifecycleGateTest {
         gate.beginInit(owner, TYPE);
         gate.sealStop(false);
         assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
-        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        assertTrue(gate.initializationActive());
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
+        assertThrows(IllegalStateException.class, gate::close);
         gate.failInit();
+        assertFalse(gate.initializationActive());
         assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
         assertThrows(IllegalStateException.class,
                 () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
@@ -237,7 +258,7 @@ final class ActorSourceLifecycleGateTest {
         gate.sealStop(true); // graceful cannot initialize a never-started actor
         assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
         assertThrows(IllegalStateException.class, () -> gate.beginInit(owner, TYPE));
-        assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class, () -> gate.commitInit(state(owner)));
         gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
     }
@@ -249,12 +270,19 @@ final class ActorSourceLifecycleGateTest {
         gate.beginInit(owner, TYPE);
         gate.commitInit(state(owner));
         gate.sealStop(true);
+        assertThrows(IllegalStateException.class, gate::close,
+                "graceful STOP must run the approved teardown before closing the gate");
         assertThrows(IllegalStateException.class,
                 () -> gate.requireReceive(owner, TYPE, state(owner), mail(owner)));
         assertThrows(IllegalStateException.class, () -> gate.commitInit(state(owner)));
         gate.beginTeardown(owner, TYPE, state(owner));
         assertThrows(IllegalStateException.class,
                 () -> gate.beginTeardown(owner, TYPE, state(owner)));
+        assertThrows(IllegalStateException.class, gate::close,
+                "active tear_down must pin physical retirement");
+        gate.finishTeardown(owner, TYPE);
+        assertThrows(IllegalStateException.class,
+                () -> gate.finishTeardown(owner, TYPE));
         gate.close();
         assertEquals(ActorSourceLifecycleGate.Phase.CLOSED, gate.phase());
     }
@@ -319,6 +347,215 @@ final class ActorSourceLifecycleGateTest {
         assertFalse(worker.isAlive(), "initializer must terminate");
         assertNull(workerFailure.get(), () -> "unexpected worker failure: " + workerFailure.get());
         assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
+    }
+
+
+    @Test
+    void unexpectedGuestStateAccessorFailureIsNotAStopReceipt() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        ActorRuntime.ActorOwnedGuestState malformed = () -> {
+            throw new IllegalStateException("broken state owner accessor");
+        };
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class, () -> gate.commitInit(malformed));
+        assertEquals("broken state owner accessor", failure.getMessage());
+        assertFalse(failure instanceof ActorSourceLifecycleGate.InitializationStopped,
+                "an arbitrary guest failure must never masquerade as STOP");
+        gate.failInit();
+        assertEquals(ActorSourceLifecycleGate.Phase.FAILED, gate.phase());
+    }
+
+    @Test
+    void normalGracefulStopAfterReadyIsNotAStoppedInitializer() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        gate.sealStop(true);
+        IllegalStateException duplicateCommit = assertThrows(
+                IllegalStateException.class, () -> gate.commitInit(state(owner)));
+        assertFalse(duplicateCommit instanceof ActorSourceLifecycleGate.InitializationStopped,
+                "duplicate READY commit is not an init-stop control signal");
+    }
+
+
+    @Test
+    void readyForRetirementRequiresStopInitQuiescenceAndFinishedTeardown() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        assertFalse(gate.readyForRetirement(), "NEW is not stopped");
+        gate.beginInit(owner, TYPE);
+        assertFalse(gate.readyForRetirement(), "initializer is still running");
+        gate.commitInit(state(owner));
+        assertFalse(gate.readyForRetirement(), "READY is still live");
+        gate.sealStop(true);
+        assertFalse(gate.readyForRetirement(),
+                "a graceful STOP must not skip tear_down");
+        gate.beginTeardown(owner, TYPE, state(owner));
+        assertFalse(gate.readyForRetirement(),
+                "a running tear_down is an actor-memory user");
+        gate.finishTeardown(owner, TYPE);
+        assertTrue(gate.readyForRetirement());
+        gate.close();
+    }
+
+    @Test
+    void stopWinningBeforeBeginInitMintsOnlyTypedCancellation() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.sealStop(false);
+        assertThrows(ActorSourceLifecycleGate.InitializationStopped.class,
+                () -> gate.beginInit(owner, TYPE));
+        assertFalse(gate.initializationActive(),
+                "failed admission may not pin an initializer that never ran");
+        assertTrue(gate.readyForRetirement());
+        gate.close();
+    }
+
+    @Test
+    void failedInitializationWithoutStopStillPinsLiveLifecycle() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.failInit();
+        assertFalse(gate.readyForRetirement(),
+                "failed initialization is not a substitute for STOP");
+        assertThrows(IllegalStateException.class, gate::close);
+        gate.sealStop(false);
+        assertTrue(gate.readyForRetirement());
+        gate.close();
+    }
+
+    @Test
+    void blockedInitializationOwnerAccessorCannotHoldStopMonitor() throws Exception {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        var accessorEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseAccessor = new java.util.concurrent.CountDownLatch(1);
+        var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        gate.beginInit(owner, TYPE);
+        Thread worker = Thread.ofVirtual().start(() -> {
+            try {
+                ActorRuntime.ActorOwnedGuestState blocked = () -> {
+                    accessorEntered.countDown();
+                    try {
+                        if (!releaseAccessor.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("state accessor never released");
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("state accessor interrupted", e);
+                    }
+                    return owner;
+                };
+                assertThrows(ActorSourceLifecycleGate.InitializationStopped.class,
+                        () -> gate.commitInit(blocked));
+            } catch (Throwable unexpected) {
+                workerFailure.set(unexpected);
+            } finally {
+                gate.failInit();
+            }
+        });
+        Thread stopper = null;
+        boolean sealedWithoutAccessorRelease = false;
+        try {
+            assertTrue(accessorEntered.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            stopper = Thread.ofVirtual().start(() -> gate.sealStop(false));
+            stopper.join(1_500);
+            sealedWithoutAccessorRelease = !stopper.isAlive();
+        } finally {
+            releaseAccessor.countDown();
+        }
+        if (stopper != null) stopper.join(5_000);
+        worker.join(5_000);
+        assertTrue(sealedWithoutAccessorRelease,
+                "STOP blocked behind host state accessor under lifecycle gate monitor");
+        assertFalse(worker.isAlive(), "initializer must release physical receipt");
+        assertNull(workerFailure.get(), () -> "unexpected initializer: " + workerFailure.get());
+        assertFalse(gate.initializationActive());
+        assertTrue(gate.readyForRetirement());
+        gate.close();
+    }
+
+    @Test
+    void blockedReceiveOwnerAccessorCannotHoldStopMonitor() throws Exception {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        var accessorEntered = new java.util.concurrent.CountDownLatch(1);
+        var releaseAccessor = new java.util.concurrent.CountDownLatch(1);
+        var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        ActorRuntime.ActorOwnedGuestState blocked = () -> {
+            accessorEntered.countDown();
+            try {
+                if (!releaseAccessor.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("receive accessor never released");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("receive accessor interrupted", e);
+            }
+            return owner;
+        };
+        Thread worker = Thread.ofVirtual().start(() -> {
+            try {
+                assertThrows(IllegalStateException.class,
+                        () -> gate.enterReceive(owner, TYPE, blocked, mail(owner)));
+            } catch (Throwable unexpected) {
+                workerFailure.set(unexpected);
+            }
+        });
+        Thread stopper = null;
+        boolean sealedWithoutAccessorRelease = false;
+        try {
+            assertTrue(accessorEntered.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            stopper = Thread.ofVirtual().start(() -> gate.sealStop(false));
+            stopper.join(1_500);
+            sealedWithoutAccessorRelease = !stopper.isAlive();
+        } finally {
+            releaseAccessor.countDown();
+        }
+        if (stopper != null) stopper.join(5_000);
+        worker.join(5_000);
+        assertTrue(sealedWithoutAccessorRelease,
+                "STOP blocked behind host receive owner accessor");
+        assertFalse(worker.isAlive());
+        assertNull(workerFailure.get(), () -> "unexpected receiver: " + workerFailure.get());
+        assertEquals(0, gate.activeReceives(), "failed late receive leaked a pin");
+        assertTrue(gate.readyForRetirement());
+        gate.close();
+    }
+
+    @Test
+    void failedTeardownOwnerCheckCanRevokeUnusedGracefulPermit() {
+        var owner = ActorRuntime.ActorId.create();
+        var gate = new ActorSourceLifecycleGate(owner, TYPE);
+        gate.beginInit(owner, TYPE);
+        gate.commitInit(state(owner));
+        gate.sealStop(true);
+
+        ActorRuntime.ActorOwnedGuestState broken = () -> {
+            throw new IllegalStateException("teardown owner lookup failed");
+        };
+        IllegalStateException failedAdmission = assertThrows(
+                IllegalStateException.class,
+                () -> gate.beginTeardown(owner, TYPE, broken));
+        assertEquals("teardown owner lookup failed",
+                failedAdmission.getMessage());
+        assertFalse(gate.teardownActive());
+        assertFalse(gate.readyForRetirement(),
+                "failed hook admission must not silently skip a graceful hook");
+
+        // ActorRuntime's error path records the original exception in DONE,
+        // then revokes the never-claimed hook, permitting physical cleanup.
+        gate.sealStop(false);
+        assertEquals(ActorSourceLifecycleGate.Phase.STOPPING_TERMINAL, gate.phase());
+        assertTrue(gate.readyForRetirement(),
+                "revoked unused teardown must release terminal lifecycle pin");
+        gate.close();
     }
 
     @Test
