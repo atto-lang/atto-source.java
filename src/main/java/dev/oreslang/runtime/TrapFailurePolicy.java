@@ -50,6 +50,11 @@ public final class TrapFailurePolicy {
             if (visited.size() >= MAX_FAILURE_NODES) return false;
             Throwable current = pending.removeFirst();
             if (visited.put(current, Boolean.TRUE) != null) return false;
+            // Only a directly thrown typed guest signal can preserve its
+            // original Error identity at a synchronous catch/trap boundary.
+            // A host/async wrapper around it is not an authentic typed
+            // source throw and must not be converted to a sanitized Err.
+            if (current instanceof GuestOrdinaryThrow && current != failure) return false;
             // These are JVM/engine implementation faults, not typed Atto
             // `throw Error(...)` values. Never turn them into a guest Err,
             // even if an async wrapper or cleanup suppression hides the cause.
