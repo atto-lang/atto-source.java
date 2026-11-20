@@ -4,6 +4,8 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/runtime/TrapFailurePolicy.java'
       - 'src/test/java/dev/oreslang/runtime/TrapFailurePolicyTest.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/test/java/dev/oreslang/AttoStrictTrapSourceAdmissionTest.java'
       - '.github/workflows/trap-jvm-fault-exact-head.yml'
 permissions:
   contents: read
@@ -39,9 +41,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=TrapFailurePolicyTest,TrapResultSemanticsTest,CanonicalCallerTrapParityV1Test -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=TrapFailurePolicyTest,TrapResultSemanticsTest,CanonicalCallerTrapParityV1Test,AttoStrictTrapSourceAdmissionTest -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
           echo ATTO_TRAP_JAVA_EXACT_HEAD_TESTS=EXECUTED
       - name: Do not certify source throw or Native Image
         run: |
           echo ATTO_SOURCE_THROW_ERROR=NOT_IMPLEMENTED
+          echo ATTO_STRICT_TRAP_SOURCE=FAIL_CLOSED_NOT_IMPLEMENTED
           echo ATTO_JAVA_NATIVE_IMAGE_GUEST=NOT_EXECUTED
