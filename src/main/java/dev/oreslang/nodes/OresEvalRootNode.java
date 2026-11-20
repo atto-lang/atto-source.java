@@ -3063,7 +3063,8 @@ public final class OresEvalRootNode extends RootNode {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
-                                            flow.failure(),
+                                            flow.failure() instanceof dev.oreslang.runtime.GuestOrdinaryThrow guest
+                                                    ? guest.error() : flow.failure(),
                                             Ast.BindingKind.VAL);
                                     runBlock(
                                             t,
@@ -7099,7 +7100,10 @@ public final class OresEvalRootNode extends RootNode {
                         // errors, but must never consume panic or scheduler control.
                         if (!tried.hasCatch() || !isGuestCatchableFailure(failure)) throw failure;
                         Env catchEnv = new Env(env);
-                        catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                        catchEnv.define(tried.errorName(),
+                                failure instanceof dev.oreslang.runtime.GuestOrdinaryThrow guest
+                                        ? guest.error() : failure,
+                                Ast.BindingKind.VAL);
                         executeBlock(tried.catchBody(), catchEnv, true);
                     }
                 } catch (RuntimeException | Error failure) {
@@ -13216,8 +13220,14 @@ public final class OresEvalRootNode extends RootNode {
     private static Object trapOk(Object value) {
         return value instanceof ResultValue result ? result : new ResultValue(true, value);
     }
-    /** `trap` failure: Err(Error) with a sanitized payload. */
+    /** A typed ordinary guest throw preserves the original Error identity;
+     *  legacy host failures retain the separately documented sanitizer path.
+     *  Strict source admission remains closed until typed throw lowering.
+     */
     private static ResultValue trapErr(Throwable failure) {
+        if (failure instanceof dev.oreslang.runtime.GuestOrdinaryThrow guest) {
+            return new ResultValue(false, guest.error());
+        }
         return new ResultValue(false, TrapError.of(failure));
     }
     private record OptionUnwrapError(String reason) {
