@@ -43,6 +43,7 @@ grep -Fx 'M6_TICKET_PANIC_ABANDON_CONTROL_REINCARNATION=PASS' "$work/tickets.log
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10RestrictedSenderCompilerProbe \
   fixtures/m10/remote_adder_sender.atto | tee "$work/sender.log"
 grep -Fx 'M10_COMPILED_RESTRICTED_ATTO_SENDER_BROKER_AND_NEGATIVES=PASS' "$work/sender.log" >/dev/null
+grep -Fx 'M10_SOURCE_SYMLINK_AND_OUTPUT_NOFOLLOW=PASS' "$work/sender.log" >/dev/null
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10MailboxTurnProbe | tee "$work/mailbox.log"
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10RemoteActorProcessProbe | tee "$work/process.log"
 for marker in \
