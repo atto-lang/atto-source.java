@@ -120,7 +120,15 @@ public final class AttoFunctionalPipelineCompiler {
                 left = expr(0, depth + 1, "");
                 take(")");
             } else if (eat("-")) {
-                left = new Binary("-", new Num(0), expr(30, depth + 1, direction));
+                // -2^63 is a valid signed i64 literal, while its positive
+                // magnitude cannot be parsed by Long.parseLong(). Preserve
+                // the exact signed minimum without overflow or BigInteger.
+                if (peek().equals("9223372036854775808")) {
+                    index++;
+                    left = new Num(Long.MIN_VALUE);
+                } else {
+                    left = new Binary("-", new Num(0), expr(30, depth + 1, direction));
+                }
             } else if (NUMBER.matcher(peek()).matches()) {
                 try { left = new Num(Long.parseLong(peek())); }
                 catch (NumberFormatException e) { throw reject("E_LITERAL", "i64 overflow"); }
@@ -276,7 +284,8 @@ public final class AttoFunctionalPipelineCompiler {
     }
 
     private static String emitExpr(Expr expr, Function fn) {
-        if (expr instanceof Num n) return n.value() + "L";
+        if (expr instanceof Num n)
+            return n.value() == Long.MIN_VALUE ? "Long.MIN_VALUE" : n.value() + "L";
         if (expr instanceof Ref r) {
             return fn.params().contains(r.name()) ? "p_" + r.name() : "v_" + r.name();
         }
