@@ -9,6 +9,7 @@ final class OwnedBytesV1 implements AutoCloseable {
     enum Order { LE, BE }
     enum Fault { OWNER, BOUNDS, VALUE, QUOTA, RETIRED }
     static final class Failure extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
         final Fault kind;
         Failure(Fault kind) { super(kind.name()); this.kind = kind; }
     }
