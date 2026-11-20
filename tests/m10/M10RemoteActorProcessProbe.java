@@ -14,6 +14,9 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class M10RemoteActorProcessProbe {
     private static void require(boolean condition, String reason) {
@@ -172,6 +175,47 @@ public final class M10RemoteActorProcessProbe {
                 var next = send(socket, 711, 106, 10, key);
                 require(next.processed_result() == 20,
                         "second message was not processed by real remote actor");
+                // Twelve independent M10 selector sessions overlap on the
+                // same destination actor. Each result belongs to its OWN
+                // runtime-issued ticket. Explicit FULL is safe rejection;
+                // a lost/ambiguous connection may never be interpreted as FULL.
+                final int concurrent = 12;
+                var ready = new CountDownLatch(concurrent);
+                var go = new CountDownLatch(1);
+                var succeeded = new AtomicInteger();
+                var full = new AtomicInteger();
+                var unexpected = new ConcurrentLinkedQueue<Throwable>();
+                Thread[] threads = new Thread[concurrent];
+                for (int i = 0; i < concurrent; ++i) {
+                    final int n = i;
+                    threads[i] = Thread.ofPlatform().name("m10-sender-" + i).start(() -> {
+                        try {
+                            ready.countDown();
+                            require(go.await(5, TimeUnit.SECONDS),
+                                "concurrent client start timed out");
+                            var result = send(socket, 711, 600L + n, n + 10L, key);
+                            require(result.processed_result() == n + 20L,
+                                "another message's M6 turn acknowledged this caller");
+                            succeeded.incrementAndGet();
+                        } catch (AttoM10ProxyIpcGateway.RemoteRejected rejected) {
+                            if (rejected.reason == 1) full.incrementAndGet();
+                            else unexpected.add(rejected);
+                        } catch (Throwable err) { unexpected.add(err); }
+                    });
+                }
+                require(ready.await(5, TimeUnit.SECONDS), "sender threads not ready");
+                go.countDown();
+                for (Thread thread : threads) thread.join(10_000);
+                require(java.util.Arrays.stream(threads).noneMatch(Thread::isAlive),
+                    "concurrent sender did not quiesce");
+                require(unexpected.isEmpty() &&
+                    succeeded.get() > 0 &&
+                    succeeded.get() + full.get() == concurrent,
+                    "ambiguous/misattributed concurrent M10 result: passed=" +
+                    succeeded.get() + " full=" + full.get() +
+                    " unexpected=" + unexpected);
+                System.out.println(
+                    "M10_12_CONCURRENT_PER_MAIL_SCOPED_RESULTS_OR_VERIFIED_FULL=PASS");
                 rejects(() -> send(socket, 711, 105, 32, key), 4);
                 fails(() -> send(socket, 711, 107, Long.MAX_VALUE, key),
                       "overflowing source-derived guest handler must fail");
