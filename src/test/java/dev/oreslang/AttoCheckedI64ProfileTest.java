@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.runtime.AttoCheckedI64Profile;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
+import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
@@ -118,6 +119,48 @@ final class AttoCheckedI64ProfileTest {
                     guest("sum(9223372036854775807,1)", false));
             assertEquals(Long.MIN_VALUE, result.asLong(),
                     "legacy wrapping remains separate from explicit checked profile");
+        }
+    }
+
+    @Test
+    void canonicalAttoSourceDefaultsToCheckedI64AndLegacyOresStillWraps() throws Exception {
+        String overflow = guest("sum(9223372036854775807,1)", false);
+        String safe = guest("sum(40,2)", false);
+        assertTrue(AttoCheckedI64Profile.select(safe, "/project/main.atto"));
+        assertFalse(AttoCheckedI64Profile.select(safe, "/project/main.ores"));
+        assertFalse(AttoCheckedI64Profile.select(safe, "/project/main.atto/other.ores"));
+        assertFalse(AttoCheckedI64Profile.select(safe, "main.ATTO"));
+        assertTrue(AttoCheckedI64Profile.select(HEADER + safe, "main.ores"));
+
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            Source canonical = Source.newBuilder("ores", overflow, "checked-default.atto").build();
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    () -> context.eval(canonical));
+            assertTrue(failure.getMessage().contains("ORES_I64_OVERFLOW"),
+                    () -> "canonical .atto must not silently wrap: " + failure.getMessage());
+        }
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            Source canonical = Source.newBuilder("ores", safe, "checked-safe.atto").build();
+            assertEquals(42L, context.eval(canonical).asLong());
+        }
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            Source historical = Source.newBuilder("ores", overflow, "legacy-wrapping.ores").build();
+            assertEquals(Long.MIN_VALUE, context.eval(historical).asLong(),
+                    "legacy .ores remains wrapping without an explicit checked directive");
+        }
+    }
+
+    @Test
+    void canonicalAttoImportGraphFailsClosedBeforeGuestEvaluation() throws Exception {
+        String source = "import * as imported from \"./unchecked\";\\n"
+                + FUNCTIONS + "pub fnc main(): int {return 42;}\\n";
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            Source canonical = Source.newBuilder("ores", source, "import-guard.atto").build();
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    () -> context.eval(canonical));
+            assertTrue(failure.getMessage().contains("ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED"),
+                    () -> "canonical checked importer must not mix unchecked units: "
+                            + failure.getMessage());
         }
     }
 
