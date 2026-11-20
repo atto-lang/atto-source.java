@@ -64,6 +64,10 @@ public final class Parser {
      * a method of the same name and arity. A default reachable from two
      * implemented traits is ambiguous and must be overridden explicitly.
      */
+    /** Declared `external fnc` symbols and every direct `name(...)` call site. */
+    private final java.util.LinkedHashMap<String, Token> externalFunctions = new java.util.LinkedHashMap<>();
+    private final List<java.util.Map.Entry<String, Token>> directCallSites = new ArrayList<>();
+
     /** Out-of-line `mtd (self: Owner)` methods by owner class, in source order. */
     private final java.util.LinkedHashMap<String, List<Ast.MethodDecl>> outOfLineMethods =
             new java.util.LinkedHashMap<>();
@@ -442,6 +446,21 @@ public final class Parser {
                 throw error(previous(), "expected module, class, enum, interface, trait, type, fnc, or routine after 'define'");
             }
 
+            if (isContextualIdentifier("external") && checkNext(FNC)) {
+                // `external fnc name(params): T;` declares a foreign host symbol.
+                // No host FFI binding/capability exists in this backend, so the
+                // declaration is accepted but any call is rejected at compile time.
+                advance(); // contextual external
+                advance(); // fnc
+                Token nameToken = consume(IDENT, "expected external function name");
+                consume(LPAREN, "expected '(' after external function name");
+                parseParametersUntil(RPAREN);
+                consume(RPAREN, "expected ')' after external function parameters");
+                parseReturnType(annotations);
+                consume(SEMICOLON, "external function declaration must end with ';' and has no body");
+                externalFunctions.putIfAbsent(nameToken.lexeme(), nameToken);
+                continue;
+            }
             if (isContextualIdentifier("mtd") && checkNext(LPAREN)) {
                 // Out-of-line receiver method: `mtd (self: Owner) name(...) ...`
                 // attaches an ordinary instance method to the nominal class Owner.
@@ -473,6 +492,12 @@ public final class Parser {
             List<Ast.ModuleDecl> withDefaults = new ArrayList<>(modules.size());
             for (Ast.ModuleDecl module : modules) withDefaults.add(applyTraitDefaults(module));
             modules = withDefaults;
+        }
+        for (java.util.Map.Entry<String, Token> call : directCallSites) {
+            if (externalFunctions.containsKey(call.getKey())) {
+                throw error(call.getValue(), "E_FFI_UNBOUND: external function '" + call.getKey()
+                        + "' has no approved host binding or FFI capability in this backend");
+            }
         }
         for (java.util.Map.Entry<String, Token> unresolved : outOfLineHeads.entrySet()) {
             if (!attachedOutOfLineOwners.contains(unresolved.getKey())) {
@@ -2205,7 +2230,7 @@ public final class Parser {
             type = parseTypeRef();
             name = consume(IDENT, "expected field name").lexeme();
         }
-        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        Ast.Expr initializer = (match(EQUAL) || (type != null && match(COLON))) ? parseExpression() : null;
         if (type == null && initializer == null) {
             throw error(previous(), "inferred field '" + name + "' requires an initializer");
         }
@@ -2778,6 +2803,22 @@ public final class Parser {
                 visibilitySeen = true;
                 visibility = Ast.Visibility.PUBLIC;
             } else if (match(PRIVATE)) {
+                if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
+                visibilitySeen = true;
+                visibility = Ast.Visibility.PRIVATE;
+            } else if ((isContextualIdentifier("protected") || isContextualIdentifier("internal"))
+                    && current + 1 < tokens.size()
+                    && tokens.get(current + 1).type() != LPAREN
+                    && tokens.get(current + 1).type() != DOT
+                    && tokens.get(current + 1).type() != EQUAL
+                    && tokens.get(current + 1).type() != COLON
+                    && tokens.get(current + 1).type() != SEMICOLON
+                    && tokens.get(current + 1).type() != COMMA) {
+                // `protected` (class + subclasses) and `internal` (this
+                // module/file) are both closed to outside callers. This
+                // backend has two visibilities, so both map fail-closed to
+                // PRIVATE; subclass access to protected members is not modelled.
+                advance();
                 if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
                 visibilitySeen = true;
                 visibility = Ast.Visibility.PRIVATE;
@@ -6600,6 +6641,9 @@ public final class Parser {
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
                 rejectUnsupportedActorFactory(expr);
+                if (expr instanceof Ast.NameExpr calleeName) {
+                    directCallSites.add(java.util.Map.entry(calleeName.name(), previous()));
+                }
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
