@@ -98,6 +98,118 @@ public final class Parser {
     /** Root `pure fnc` / `pure routine` declarations, verified after parsing. */
     private final List<Ast.FunctionDecl> pureFunctionDecls = new ArrayList<>();
 
+    /** Token index ranges [start, end) of lowered `define state container` bodies. */
+    private final List<int[]> stateContainerRanges = new ArrayList<>();
+
+    /**
+     * `define state container X as state { fields } members end` becomes the
+     * ordinary class `define class X as fields members end`. A class instance
+     * is owned by one actor (classes are not Send-shared), so ownership gives
+     * handle_state its exclusive/read-only access without a runtime lock.
+     */
+    private static List<Token> lowerStateContainers(List<Token> in, List<int[]> ranges) {
+        List<Token> out = new ArrayList<>(in.size());
+        int i = 0;
+        while (i < in.size()) {
+            Token t = in.get(i);
+            boolean head = t.type() == DEFINE && i + 2 < in.size()
+                    && in.get(i + 1).type() == IDENT && in.get(i + 1).lexeme().equals("state")
+                    && in.get(i + 2).type() == IDENT && in.get(i + 2).lexeme().equals("container");
+            if (!head) {
+                out.add(t);
+                i++;
+                continue;
+            }
+            out.add(t);
+            Token stateWord = in.get(i + 1);
+            out.add(new Token(CLASS, "class", stateWord.line(), stateWord.column()));
+            i += 3;
+            int start = out.size();
+            while (i < in.size() && in.get(i).type() != AS) out.add(in.get(i++));
+            if (i < in.size()) out.add(in.get(i++)); // as
+            if (i + 1 < in.size() && in.get(i).type() == IDENT && in.get(i).lexeme().equals("state")
+                    && in.get(i + 1).type() == LBRACE) {
+                i += 2;
+                int depth = 1;
+                while (i < in.size()) {
+                    Token field = in.get(i++);
+                    if (field.type() == LBRACE) depth++;
+                    if (field.type() == RBRACE && --depth == 0) break;
+                    out.add(field);
+                }
+            }
+            // The container runs through its own top-level `end` (column 1).
+            while (i < in.size()) {
+                Token member = in.get(i++);
+                out.add(member);
+                if (member.type() == END && member.column() == 1) break;
+            }
+            ranges.add(new int[] {start, out.size()});
+        }
+        return out;
+    }
+
+    private boolean insideStateContainer() {
+        for (int[] range : stateContainerRanges) {
+            if (current >= range[0] && current < range[1]) return true;
+        }
+        return false;
+    }
+
+    /** Lambda parameter name currently standing for `self` inside handle_state. */
+    private String handleStateAlias;
+
+    /**
+     * `handle_state(critical|critical-read|critical-write |s| -> body)` inside
+     * a state container: the body runs in place with `s` meaning `self`.
+     * Returns a BlockStmt for a braced body (statement position) or the
+     * expression for an expression body.
+     */
+    private Object parseHandleState(boolean statementPosition) {
+        Token start = advance(); // handle_state
+        consume(LPAREN, "expected '(' after handle_state");
+        if (!matchContextualIdentifier("critical")) {
+            throw error(peek(), "handle_state requires critical, critical-read or critical-write");
+        }
+        boolean readOnly = false;
+        if (check(MINUS) && checkNext(IDENT)) {
+            advance();
+            String mode = advance().lexeme();
+            if (!mode.equals("read") && !mode.equals("write")) {
+                throw error(previous(), "unknown handle_state mode critical-" + mode);
+            }
+            readOnly = mode.equals("read");
+        }
+        consume(PIPE, "expected '|' before handle_state parameter");
+        String alias = consume(IDENT, "expected handle_state parameter name").lexeme();
+        consume(PIPE, "expected '|' after handle_state parameter");
+        consume(ARROW, "expected '->' in handle_state callback");
+        String previousAlias = handleStateAlias;
+        handleStateAlias = alias;
+        try {
+            if (check(LBRACE)) {
+                if (!statementPosition) {
+                    throw error(peek(), "a braced handle_state body is a statement; use an expression body to yield a value");
+                }
+                List<Ast.Stmt> body = parseBlock();
+                if (readOnly && body.stream().anyMatch(stmt -> stmt instanceof Ast.ExprStmt e
+                        && e.expression() instanceof Ast.AssignExpr)) {
+                    throw error(start, "critical-read handle_state cannot assign state");
+                }
+                consume(RPAREN, "expected ')' after handle_state callback");
+                return new Ast.BlockStmt(body);
+            }
+            Ast.Expr value = parseExpression();
+            if (readOnly && value instanceof Ast.AssignExpr) {
+                throw error(start, "critical-read handle_state cannot assign state");
+            }
+            consume(RPAREN, "expected ')' after handle_state callback");
+            return value;
+        } finally {
+            handleStateAlias = previousAlias;
+        }
+    }
+
     /** Declared `external fnc` symbols and every direct `name(...)` call site. */
     private final java.util.LinkedHashMap<String, Token> externalFunctions = new java.util.LinkedHashMap<>();
     private final List<java.util.Map.Entry<String, Token>> directCallSites = new ArrayList<>();
@@ -170,7 +282,7 @@ public final class Parser {
 
     private Parser(List<Token> tokens, AttoCallableVersion version) {
         this.attoCallableVersion = version;
-        this.tokens = List.copyOf(tokens);
+        this.tokens = List.copyOf(lowerStateContainers(tokens, stateContainerRanges));
         // A public parser must not trust an externally supplied Token stream to
         // have come from Lexer. In particular, a synthesized IDENT("unsafe")
         // must not bypass the same G0 admission gate as ordinary source text.
@@ -3784,6 +3896,11 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        if (insideStateContainer() && isContextualIdentifier("handle_state") && checkNext(LPAREN)) {
+            Object lowered = parseHandleState(true);
+            match(SEMICOLON);
+            return lowered instanceof Ast.Stmt statement ? statement : new Ast.ExprStmt((Ast.Expr) lowered);
+        }
         if (attoCallableVersion != null && match(CARET)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary()
                     ? null : parseExpression();
@@ -7037,6 +7154,13 @@ public final class Parser {
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
+        if (handleStateAlias != null && check(IDENT) && peek().lexeme().equals(handleStateAlias)) {
+            advance();
+            return new Ast.NameExpr("self");
+        }
+        if (insideStateContainer() && isContextualIdentifier("handle_state") && checkNext(LPAREN)) {
+            return (Ast.Expr) parseHandleState(false);
+        }
         if (match(SELF)) return new Ast.NameExpr("self");
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).

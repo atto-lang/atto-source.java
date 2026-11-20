@@ -440,7 +440,11 @@ public final class OwnershipChecker {
                                         receiverKind,
                                         Origin.PARAM));
                     } else {
+                        // The receiver's mutability is inferred from the method
+                        // body (implicit-argument-borrow-v1): a method that
+                        // assigns self.field holds an exclusive self loan.
                         ValueKind receiverKind = AnnotationExpander.isGeneratedFromJsonSetter(method)
+                                        || assignsSelfField(method.body())
                                 ? ValueKind.MUT_BORROW
                                 : ValueKind.IMM_BORROW;
                         scope.define(
@@ -503,6 +507,33 @@ public final class OwnershipChecker {
      * types, generics, structural and already-borrowed parameters keep their
      * declared ownership.
      */
+    /** True when any statement/expression in {@code node} assigns `self.<field>`. */
+    static boolean assignsSelfField(Object node) {
+        if (node instanceof Ast.AssignExpr assign
+                && assign.target() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr receiver
+                && receiver.name().equals("self")) {
+            return true;
+        }
+        if (node instanceof Ast.LambdaExpr) return false; // closures are checked on their own
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (assignsSelfField(item)) return true;
+            return false;
+        }
+        if (node instanceof Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (assignsSelfField(component.getAccessor().invoke(record))) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true; // unknown shape: fail closed toward the stricter exclusive loan
+                }
+            }
+        }
+        return false;
+    }
+
     private Ast.Param effectiveParam(Ast.Param param) {
         Ast.TypeRef type = param.type();
         if (type == null || type.isBorrow() || param.structural() || param.mutable()) return param;
