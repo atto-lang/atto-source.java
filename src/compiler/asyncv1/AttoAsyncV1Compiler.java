@@ -1,10 +1,15 @@
 package atto.compiler.asyncv1;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.OpenOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -290,6 +295,26 @@ public final class AttoAsyncV1Compiler {
             + "  }\n"
             + "}\n";
     }
+    // Validate the same opened file handle used to consume the guest source.
+    // In particular a replaced symbolic-link source cannot bypass NOFOLLOW.
+    private static String readSourceNoFollow(Path input) throws IOException {
+        try (SeekableByteChannel channel = Files.newByteChannel(input,
+                Set.<OpenOption>of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            if (channel.size() > 8192) throw new Reject("E_ASYNC_SOURCE_SIZE");
+            ByteBuffer bytes = ByteBuffer.allocate(8193);
+            for (;;) {
+                int n = channel.read(bytes);
+                if (n < 0) break;
+                if (!bytes.hasRemaining()) throw new Reject("E_ASYNC_SOURCE_SIZE");
+                if (n == 0) throw new Reject("E_ASYNC_SOURCE_IO_STALL");
+            }
+            bytes.flip();
+            return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(bytes).toString();
+        }
+    }
     public static void main(String[] args) throws IOException {
         if (args.length != 2) throw new Reject("E_ASYNC_CLI_ARGUMENTS");
         Path input = Path.of(args[0]).toAbsolutePath().normalize();
@@ -298,7 +323,7 @@ public final class AttoAsyncV1Compiler {
             !Files.isRegularFile(input, LinkOption.NOFOLLOW_LINKS) ||
             Files.size(input) > 8192 || Files.exists(output, LinkOption.NOFOLLOW_LINKS))
             throw new Reject("E_ASYNC_SOURCE_OR_OUTPUT_ADMISSION");
-        String generated = compile(Files.readString(input, StandardCharsets.UTF_8));
+        String generated = compile(readSourceNoFollow(input));
         Path temp = Files.createTempFile(output.getParent(), ".atto-async-v1-", ".tmp");
         try {
             Files.writeString(temp, generated, StandardCharsets.UTF_8);
