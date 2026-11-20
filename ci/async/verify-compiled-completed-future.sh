@@ -11,6 +11,8 @@ bash ci/admission/exact-tree.sh \
   fixtures/async_v1/sync_inline_int.atto \
   fixtures/async_v1/sync_inline_empty.atto \
   fixtures/async_v1/sync_inline_do_nonvoid.atto \
+  fixtures/async_v1/sync_inline_bare_without_do.atto \
+  fixtures/async_v1/sync_inline_bare_typed_void.atto \
   ci/async/verify-compiled-completed-future.sh
 test -x "$JAVA_HOME/bin/javac" && test -x "$JAVA_HOME/bin/native-image" || exit 2
 work="$(mktemp -d)"
@@ -21,7 +23,7 @@ mkdir -p "$work/classes"
   tests/compiler/AttoAsyncV1CompilerProbe.java \
   tests/compiler/AttoAsyncV1GeneratedIdentifierProbe.java
 "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1CompilerProbe | tee "$work/probe"
-grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=95" "$work/probe"
+grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=97" "$work/probe"
 "$JAVA_HOME/bin/java" -cp "$work/classes" \
   atto.compiler.asyncv1.AttoAsyncV1GeneratedIdentifierProbe | tee "$work/identifiers"
 grep -Fx "ATTO_ASYNC_V1_GENERATED_NAMES_PASS accepted=19 rejected=4" "$work/identifiers"
@@ -133,3 +135,20 @@ test "$status" -ne 0
 grep -F 'E_TASK_RETURN_TYPE' "$work/do-sync-negative/err"
 test ! -e "$work/do-sync-negative/AttoAsyncV1Guest.java"
 echo 'ATTO_DO_SYNC_VOID_ONLY_NO_ARTIFACT=PASS'
+
+# Bare sync task expressions are forbidden as standalone statements. Both
+# invalid syntax forms must emit E_SYNTAX and no Java guest source artifact.
+for case in sync_inline_bare_without_do sync_inline_bare_typed_void; do
+  target="$work/$case/AttoAsyncV1Guest.java"
+  mkdir -p "$work/$case"
+  set +e
+  "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1Compiler \
+    "fixtures/async_v1/$case.atto" "$target" \
+    >"$work/$case/out" 2>"$work/$case/err"
+  status=$?
+  set -e
+  test "$status" -ne 0
+  grep -F 'E_SYNTAX' "$work/$case/err"
+  test ! -e "$target" || { echo "ATTO_BARE_SYNC_GUEST_ARTIFACT_LEAK=$case"; exit 1; }
+done
+echo 'ATTO_SYNC_STANDALONE_REQUIRES_DO_NO_ARTIFACT=PASS'
