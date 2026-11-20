@@ -75,7 +75,7 @@ public final class AttoAsyncV1CliSecurityProbe {
             Path large = dir.resolve("oversized.atto");
             Files.write(large, new byte[8193]);
             rejects(large, dir.resolve("large.java"), "E_ASYNC_SOURCE_OR_OUTPUT_ADMISSION");
-            check(Files.readString(output, StandardCharsets.UTF_8).contains("return 42;"));
+            check(Files.readString(output, StandardCharsets.UTF_8).contains("return 42L;"));
             System.out.println("ATTO_ASYNC_V1_CLI_SECURITY_PASS checks=" + checks);
         } finally {
             try (var stream = Files.walk(dir)) {
