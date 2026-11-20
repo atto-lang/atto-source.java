@@ -1,4 +1,4 @@
 pub fnc main(): int {
-    sync task {};
+    do sync task {};
     return 42;
 }
