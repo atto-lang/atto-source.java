@@ -43,7 +43,7 @@ public final class AttoM10RestrictedActorCompiler {
                 public static long on_message(long value) {
                     return Math.addExact(value, %dL);
                 }
-                public static AttoM6Runtime.ReceiveReply new_handler() {
+                public static AttoM6Runtime.ReceiveWithResult new_handler() {
                     return M10GeneratedActor::on_message;
                 }
             }
