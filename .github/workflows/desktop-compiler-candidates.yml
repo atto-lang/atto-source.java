@@ -1,0 +1,214 @@
+name: Private desktop compiler candidates
+
+# Candidate binaries remain attached only to this private repository's Actions
+# run. Promotion to public release requires an independently approved release.
+on:
+  push:
+    branches:
+      - 'feat/desktop-compiler-release-candidates-*'
+    paths:
+      - '.github/workflows/desktop-compiler-candidates.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-compiler:
+    if: github.repository == 'ores-truffle-oreslang/oreslang-source.java'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-arm64
+            binary: ores-aot
+          - os: macos-15-intel
+            platform: macos-x86_64
+            binary: ores-aot
+          - os: windows-latest
+            platform: windows-x86_64
+            binary: ores-aot.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    env:
+      ATTO_CLI_SHA: fd0dd0d1118854ae4058a850e1c63afaaf08f398
+    steps:
+      - name: Checkout exact source commit, without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify source checkout matches the immutable workflow commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ github.sha }}"
+          actual="$(git rev-parse --verify HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Refusing desktop candidate build on a mismatched checkout: $actual != $expected" >&2
+            exit 65
+          fi
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            echo "Refusing desktop candidate build from a dirty source checkout" >&2
+            exit 65
+          fi
+          printf 'candidate_source_sha=%s\ncandidate_tree_sha=%s\n' "$actual" "$(git rev-parse 'HEAD^{tree}')"
+      - name: Setup GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: 'graalvm'
+          github-token: ${{ github.token }}
+          cache: maven
+      - name: Run compiler CLI regression test
+        shell: bash
+        run: mvn -B -ntp -Dtest=MainExitStatusTest,CompilerCheckModeTest,MixedSourceInteropTest,OresProjectConfigTest test
+      - name: Build standalone native compiler
+        shell: bash
+        run: mvn -B -ntp -DskipTests -Pnative-aot package
+      - name: Test native compiler with actual Oreslang source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "target/${{ matrix.binary }}"
+          if [ "${{ runner.os }}" != Windows ]; then
+            chmod +x "target/${{ matrix.binary }}"
+          fi
+          "./target/${{ matrix.binary }}" --check examples/callables.ores
+      - name: Checkout pinned public CLI frontend without persistent credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ores-truffle-oreslang/oreslang-cli
+          ref: ${{ env.ATTO_CLI_SHA }}
+          path: cli
+          persist-credentials: false
+      - name: Verify exact pinned public CLI commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C cli rev-parse HEAD)"
+          if [ "$actual" != "${{ env.ATTO_CLI_SHA }}" ]; then
+            echo "Pinned AttoLang CLI source SHA mismatch" >&2
+            exit 65
+          fi
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          toolchain: 1.78.0
+      - name: Test and build public CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked --manifest-path cli/Cargo.toml
+          cargo build --release --locked --manifest-path cli/Cargo.toml --bins
+      - name: Package private compiler candidate with source identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path stage | Out-Null
+          $suffix = if ("${{ runner.os }}" -eq "Windows") { ".exe" } else { "" }
+          $compiler = "oreslang-compiler$suffix"
+          Copy-Item "target/${{ matrix.binary }}" "stage/$compiler"
+          $cliBinary = if ("${{ runner.os }}" -eq "Windows") { "oreslang.exe" } else { "oreslang" }
+          $attoBinary = if ("${{ runner.os }}" -eq "Windows") { "atto.exe" } else { "atto" }
+          Copy-Item "cli/target/release/$cliBinary" "stage/$cliBinary"
+          Copy-Item "cli/target/release/$attoBinary" "stage/$attoBinary"
+          if ("${{ runner.os }}" -ne "Windows") {
+            chmod +x "stage/$compiler" "stage/$cliBinary" "stage/$attoBinary"
+          }
+          $canonical = Join-Path $env:RUNNER_TEMP 'callables.atto'
+          Copy-Item "examples/callables.ores" $canonical
+          foreach ($launcher in @($attoBinary, $cliBinary)) {
+            & "stage/$launcher" doctor
+            if ($LASTEXITCODE -ne 0) { throw "Bundled $launcher doctor failed" }
+            & "stage/$launcher" check $canonical
+            if ($LASTEXITCODE -ne 0) { throw "Bundled $launcher canonical .atto guest check failed" }
+            & "stage/$launcher" check "examples/callables.ores"
+            if ($LASTEXITCODE -ne 0) { throw "Bundled $launcher legacy .ores guest check failed" }
+          }
+          $hash = (Get-FileHash "stage/$compiler" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $record = @{
+            status = "PRIVATE_CANDIDATE_NOT_APPROVED_FOR_PUBLICATION"
+            source_repository = "${{ github.repository }}"
+            source_commit = "${{ github.sha }}"
+            platform = "${{ matrix.platform }}"
+            binary = $compiler
+            frontend_binary = $cliBinary
+            atto_binary = $attoBinary
+            atto_sha256 = (Get-FileHash "stage/$attoBinary" -Algorithm SHA256).Hash.ToLowerInvariant()
+            frontend_commit = "${{ env.ATTO_CLI_SHA }}"
+            frontend_sha256 = (Get-FileHash "stage/$cliBinary" -Algorithm SHA256).Hash.ToLowerInvariant()
+            binary_sha256 = $hash
+          } | ConvertTo-Json
+          Set-Content -Path stage/provenance.json -Value $record -Encoding utf8
+          if ("${{ runner.os }}" -eq "Windows") {
+            Compress-Archive -Path stage/* -DestinationPath "oreslang-compiler-${{ matrix.platform }}.zip"
+          } else {
+            tar -C stage -czf "oreslang-compiler-${{ matrix.platform }}.tar.gz" .
+          }
+      - name: Build and smoke-test per-user Windows installer (PRIVATE)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
+          $iscc = Join-Path "${env:ProgramFiles(x86)}" 'Inno Setup 6/ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) { throw 'Inno Setup compiler not found' }
+          $env:ORESLANG_INSTALLER_VERSION = '0.1.0.0'
+          & $iscc 'packaging/windows/Oreslang.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Windows installer build failed' }
+          $setup = 'artifacts/installer/oreslang-windows-x86_64-setup.exe'
+          if (-not (Test-Path -LiteralPath $setup)) { throw 'Installer artifact not created' }
+          $p = Start-Process -FilePath (Resolve-Path $setup) -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Windows installer failed with code $($p.ExitCode)" }
+          $installed = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang/oreslang.exe'
+          $installedAtto = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang/atto.exe'
+          $installedCompiler = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang/oreslang-compiler.exe'
+          $uninstall = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang/unins000.exe'
+          foreach ($binary in @($installed, $installedAtto, $installedCompiler)) {
+            if (-not (Test-Path -LiteralPath $binary)) { throw "Windows installer omitted $binary" }
+          }
+          $canonical = Join-Path $env:RUNNER_TEMP 'callables-installed.atto'
+          Copy-Item "examples/callables.ores" $canonical
+          foreach ($launcher in @($installedAtto, $installed)) {
+            & $launcher doctor
+            if ($LASTEXITCODE -ne 0) { throw "Installed $launcher doctor failed" }
+            & $launcher check $canonical
+            if ($LASTEXITCODE -ne 0) { throw "Installed $launcher canonical compiler check failed" }
+            & $launcher check "examples/callables.ores"
+            if ($LASTEXITCODE -ne 0) { throw "Installed $launcher legacy compiler check failed" }
+          }
+          $p = Start-Process -FilePath $uninstall -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Windows uninstaller failed with code $($p.ExitCode)" }
+          # Regression: a user-owned PATH entry must survive a later setup/uninstall.
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs/Oreslang'
+          $originalPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          $entries = "$originalPath".Split(';', [StringSplitOptions]::RemoveEmptyEntries)
+          if ($entries -contains $installDir) {
+            throw 'Cannot test preexisting PATH ownership: installation path already present'
+          }
+          $seededPath = if ([string]::IsNullOrEmpty($originalPath)) { $installDir } else { "$originalPath;$installDir" }
+          try {
+            [Environment]::SetEnvironmentVariable('Path', $seededPath, 'User')
+            $p = Start-Process -FilePath (Resolve-Path $setup) -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+            if ($p.ExitCode -ne 0) { throw 'Second Windows setup failed' }
+            $p = Start-Process -FilePath $uninstall -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+            if ($p.ExitCode -ne 0) { throw 'Second Windows uninstall failed' }
+            $actualPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            if ($actualPath -cne $seededPath) {
+              throw "Uninstall changed a preexisting user PATH: expected '$seededPath', got '$actualPath'"
+            }
+          } finally {
+            [Environment]::SetEnvironmentVariable('Path', $originalPath, 'User')
+          }
+      - name: Upload PRIVATE candidate, never a public release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: compiler-candidate-${{ matrix.platform }}
+          path: |
+            oreslang-compiler-${{ matrix.platform }}.*
+            artifacts/installer/oreslang-windows-x86_64-setup.exe
+          retention-days: 7
+          if-no-files-found: error
