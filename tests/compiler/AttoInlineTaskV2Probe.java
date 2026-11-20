@@ -151,7 +151,9 @@ public final class AttoInlineTaskV2Probe {
             if (!keyword.matches("[a-z_][a-z_0-9]*")) continue;
             reject(main("val " + keyword
                 + " = sync task<int> { return 42; }; return 42;"),
-                keyword.equals("sync") ? "E_RESERVED_SYNC" : "E_RESERVED_IDENTIFIER");
+                keyword.equals("sync") ? "E_RESERVED_SYNC"
+                : keyword.equals("int") ? "E_ASYNC_INVALID_IDENTIFIER"
+                : "E_RESERVED_IDENTIFIER");
         }
         // Malformed keyword boundaries must not be accepted as source.
         reject(main("val n = sync/**/task<int> { return 42; }; return n;"),
