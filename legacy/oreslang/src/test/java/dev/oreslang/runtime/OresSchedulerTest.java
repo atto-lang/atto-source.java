@@ -1,0 +1,648 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class OresSchedulerTest {
+
+    @Test
+    void rejectedGuestContextAdmissionSettlesTheOwningTask() throws Exception {
+        IllegalStateException failure = new IllegalStateException("guest context entry rejected");
+        try (OresScheduler scheduler = OresScheduler.managed(1, runnable -> { throw failure; })) {
+            OresFuture<Integer> task = scheduler.start(resume -> OresScheduler.done(42));
+            var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertSame(failure, observed.getCause());
+        }
+    }
+
+    @Test
+    void mixedLinkageScopeSurvivesResumeWithoutLeakingToOtherTasks() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> gate = new OresFuture<>();
+            AtomicInteger state = new AtomicInteger();
+            OresFuture<Object> task;
+            try (var scope = dev.oreslang.interop.MixedInteropBridge.open(java.util.Map.of(
+                    "unit", (name, args) -> 42))) {
+                task = scheduler.start(resume -> {
+                    if (state.getAndIncrement() == 0) return OresScheduler.await(gate);
+                    return OresScheduler.done(dev.oreslang.interop.MixedInteropBridge.invoke("unit", "answer"));
+                });
+            }
+            gate.completeFromRuntime(1);
+            assertEquals(42, task.get(5, TimeUnit.SECONDS));
+            assertTrue(dev.oreslang.interop.MixedInteropBridge.capture().isEmpty());
+            assertTrue(scheduler.start(resume -> OresScheduler.done(
+                    dev.oreslang.interop.MixedInteropBridge.capture().isEmpty())).get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void awaitResumesOnlyOnOwningSchedulerNotProducerThread() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            AtomicReference<Thread> producer = new AtomicReference<>();
+            AtomicInteger state = new AtomicInteger();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int pc = state.getAndIncrement();
+                assertSame(scheduler, OresScheduler.current());
+
+                if (pc == 0) {
+                    assertTrue(resume.initial());
+                    return OresScheduler.await(source);
+                }
+
+                assertFalse(resume.initial());
+                assertNull(resume.failure());
+                assertEquals(41, resume.value());
+                assertNotSame(producer.get(), Thread.currentThread(),
+                        "producer/completion thread must never execute guest continuation");
+                return OresScheduler.done(42);
+            });
+
+            Thread completionThread = Thread.ofPlatform().start(() -> {
+                producer.set(Thread.currentThread());
+                source.completeFromRuntime(41);
+            });
+            completionThread.join();
+
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, state.get());
+        }
+    }
+
+    @Test
+    void alreadyCompletedFutureStillCreatesLaterSchedulerTurn() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> completed = OresFuture.completed(7);
+            AtomicInteger state = new AtomicInteger();
+            AtomicBoolean insideFirstResume = new AtomicBoolean();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int pc = state.getAndIncrement();
+                if (pc == 0) {
+                    insideFirstResume.set(true);
+                    try {
+                        return OresScheduler.await(completed);
+                    } finally {
+                        insideFirstResume.set(false);
+                    }
+                }
+
+                assertFalse(insideFirstResume.get(),
+                        "await continuation must not resume inline in the suspending turn");
+                assertEquals(7, resume.value());
+                return OresScheduler.done(8);
+            });
+
+            assertEquals(8, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, state.get());
+            assertEquals(
+                    0,
+                    completed.pendingRuntimeWaiterCount(),
+                    "awaiting an already-settled Future must not retain a claimed continuation waiter");
+        }
+    }
+
+    @Test
+    void completedAwaitMayReuseSameCarrierButAlwaysGetsFreshDispatch() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> completed = OresFuture.completed(7);
+            AtomicInteger pc = new AtomicInteger();
+            AtomicReference<Thread> firstCarrier = new AtomicReference<>();
+            AtomicReference<Long> firstDispatch = new AtomicReference<>();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                if (pc.getAndIncrement() == 0) {
+                    firstCarrier.set(Thread.currentThread());
+                    firstDispatch.set(OresScheduler.currentDispatchId());
+                    assertNotEquals(0L, firstDispatch.get().longValue());
+                    return OresScheduler.await(completed);
+                }
+
+                // A one-thread pool guarantees physical carrier reuse. The
+                // logical scheduler dispatch must nevertheless be new.
+                assertSame(firstCarrier.get(), Thread.currentThread());
+                assertNotEquals(
+                        firstDispatch.get().longValue(),
+                        OresScheduler.currentDispatchId(),
+                        "await must unwind and re-enter through a fresh scheduler dispatch");
+                assertEquals(7, resume.value());
+                return OresScheduler.done(8);
+            });
+
+            assertEquals(8, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, pc.get());
+        }
+    }
+
+    @Test
+    void manyCompletedAwaitsStayStacklessAndRequireFreshDispatches() throws Exception {
+        final int awaits = 512;
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger state = new AtomicInteger();
+            AtomicLong previousDispatch = new AtomicLong();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                long dispatch = OresScheduler.currentDispatchId();
+                assertNotEquals(0L, dispatch);
+                long prior = previousDispatch.getAndSet(dispatch);
+                if (prior != 0L) {
+                    assertNotEquals(
+                            prior,
+                            dispatch,
+                            "every await must re-enter through a fresh scheduler dispatch");
+                }
+
+                int step = state.getAndIncrement();
+                if (step < awaits) {
+                    OresFuture<Integer> completed = OresFuture.completed(step);
+                    assertEquals(0, completed.pendingRuntimeWaiterCount());
+                    return OresScheduler.await(completed);
+                }
+
+                assertEquals(awaits - 1, resume.value());
+                return OresScheduler.done(step);
+            });
+
+            assertEquals(awaits, result.get(10, TimeUnit.SECONDS));
+            assertEquals(awaits + 1, state.get());
+        }
+    }
+
+    @Test
+    void cooperateAlwaysCreatesFreshDispatchWithoutAllocatingFuture() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger pc = new AtomicInteger();
+            AtomicReference<Thread> firstCarrier = new AtomicReference<>();
+            AtomicLong firstDispatch = new AtomicLong();
+            AtomicReference<Object> firstTaskDomain = new AtomicReference<>();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int step = pc.getAndIncrement();
+                if (step == 0) {
+                    assertTrue(resume.initial());
+                    firstCarrier.set(Thread.currentThread());
+                    firstDispatch.set(OresScheduler.currentDispatchId());
+                    firstTaskDomain.set(OresScheduler.currentTaskDomain());
+                    return OresScheduler.cooperate();
+                }
+
+                assertFalse(resume.initial());
+                assertNull(resume.value());
+                assertNull(resume.failure());
+                assertSame(firstCarrier.get(), Thread.currentThread(),
+                        "one-carrier scheduler may reuse the same physical carrier");
+                assertNotEquals(firstDispatch.get(), OresScheduler.currentDispatchId(),
+                        "cooperate must resume through a fresh logical dispatch");
+                assertSame(firstTaskDomain.get(), OresScheduler.currentTaskDomain(),
+                        "cooperate must preserve logical task identity");
+                return OresScheduler.done(42);
+            });
+
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, pc.get());
+        }
+    }
+
+    @Test
+    void manyCooperatesRemainStacklessAndMakeProgress() throws Exception {
+        final int cooperates = 1024;
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicInteger pc = new AtomicInteger();
+            AtomicLong previousDispatch = new AtomicLong();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                long dispatch = OresScheduler.currentDispatchId();
+                long prior = previousDispatch.getAndSet(dispatch);
+                if (prior != 0L) {
+                    assertNotEquals(prior, dispatch,
+                            "every cooperate must establish a fresh dispatch");
+                }
+
+                int step = pc.getAndIncrement();
+                if (step < cooperates) return OresScheduler.cooperate();
+                return OresScheduler.done(step);
+            });
+
+            assertEquals(cooperates, result.get(10, TimeUnit.SECONDS));
+            assertEquals(cooperates + 1, pc.get());
+        }
+    }
+
+    @Test
+    void defaultCooperateQueuesBehindAlreadyRunnablePeerWork() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            java.util.List<String> order =
+                    java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+            CountDownLatch firstTurnEntered = new CountDownLatch(1);
+            CountDownLatch peerQueued = new CountDownLatch(1);
+            AtomicInteger aPc = new AtomicInteger();
+
+            OresFuture<Void> a = scheduler.start(resume -> {
+                if (aPc.getAndIncrement() == 0) {
+                    order.add("a1");
+                    firstTurnEntered.countDown();
+                    assertTrue(peerQueued.await(5, TimeUnit.SECONDS));
+                    return OresScheduler.cooperate();
+                }
+                order.add("a2");
+                return OresScheduler.done(null);
+            });
+
+            assertTrue(firstTurnEntered.await(5, TimeUnit.SECONDS));
+            OresFuture<Void> b = scheduler.start(resume -> {
+                order.add("b");
+                return OresScheduler.done(null);
+            });
+            peerQueued.countDown();
+
+            a.get(5, TimeUnit.SECONDS);
+            b.get(5, TimeUnit.SECONDS);
+            assertEquals(java.util.List.of("a1", "b", "a2"), order,
+                    "default cooperate must requeue behind already-runnable work");
+        }
+    }
+
+    @Test
+    void cooperateCannotResumeUntilPriorGuestTurnFullyUnwinds() throws Exception {
+        ExecutorService carriers = Executors.newFixedThreadPool(2);
+        CountDownLatch firstTurnBodyReturned = new CountDownLatch(1);
+        CountDownLatch allowFirstGuestExit = new CountDownLatch(1);
+        AtomicInteger guestAdmissions = new AtomicInteger();
+        AtomicInteger resumes = new AtomicInteger();
+
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "cooperate-unwind-proof",
+                2,
+                carriers,
+                turn -> {
+                    int admission = guestAdmissions.incrementAndGet();
+                    turn.run();
+                    if (admission == 1) {
+                        firstTurnBodyReturned.countDown();
+                        try {
+                            if (!allowFirstGuestExit.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("timed out holding first guest turn open");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                    }
+                })) {
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int pc = resumes.getAndIncrement();
+                if (pc == 0) return OresScheduler.cooperate();
+                return OresScheduler.done(42);
+            });
+
+            assertTrue(firstTurnBodyReturned.await(5, TimeUnit.SECONDS));
+            Thread.sleep(100);
+            assertEquals(1, resumes.get(),
+                    "cooperate must not admit the continuation while the old guest turn is unwinding");
+            assertEquals(1, guestAdmissions.get());
+
+            allowFirstGuestExit.countDown();
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, resumes.get());
+            assertEquals(2, guestAdmissions.get());
+        } finally {
+            allowFirstGuestExit.countDown();
+            carriers.shutdownNow();
+            assertTrue(carriers.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void runtimeOwnedCompletionPublishesOnlyAfterGuestTurnAdmissionExits() throws Exception {
+        ExecutorService carrier = Executors.newSingleThreadExecutor();
+        AtomicBoolean insideGuestTurn = new AtomicBoolean();
+        CountDownLatch completionObserved = new CountDownLatch(1);
+        AtomicBoolean completionPublishedInsideGuestTurn = new AtomicBoolean();
+
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "test-runtime-owned",
+                1,
+                carrier,
+                turn -> {
+                    assertFalse(
+                            insideGuestTurn.get(),
+                            "runtime scheduler guest turns must not nest context admission");
+                    insideGuestTurn.set(true);
+                    try {
+                        turn.run();
+                    } finally {
+                        insideGuestTurn.set(false);
+                    }
+                })) {
+            OresFuture<Integer> result =
+                    scheduler.start(resume -> OresScheduler.done(42));
+
+            result.whenCompleteRuntime((value, failure) -> {
+                completionPublishedInsideGuestTurn.set(insideGuestTurn.get());
+                completionObserved.countDown();
+            });
+
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertTrue(completionObserved.await(5, TimeUnit.SECONDS));
+            assertFalse(
+                    completionPublishedInsideGuestTurn.get(),
+                    "terminal Future publication must happen only after guest/context exit");
+        } finally {
+            carrier.shutdownNow();
+            assertTrue(carrier.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void oneFutureMayResumeWaitersOnDifferentSchedulers() throws Exception {
+        try (OresScheduler left = new OresScheduler(1);
+             OresScheduler right = new OresScheduler(1)) {
+
+            OresFuture<Integer> shared = new OresFuture<>();
+            AtomicInteger leftPc = new AtomicInteger();
+            AtomicInteger rightPc = new AtomicInteger();
+
+            OresFuture<String> leftResult = left.start(resume -> {
+                if (leftPc.getAndIncrement() == 0) {
+                    assertSame(left, OresScheduler.current());
+                    return OresScheduler.await(shared);
+                }
+                assertSame(left, OresScheduler.current());
+                return OresScheduler.done("left:" + resume.value());
+            });
+
+            OresFuture<String> rightResult = right.start(resume -> {
+                if (rightPc.getAndIncrement() == 0) {
+                    assertSame(right, OresScheduler.current());
+                    return OresScheduler.await(shared);
+                }
+                assertSame(right, OresScheduler.current());
+                return OresScheduler.done("right:" + resume.value());
+            });
+
+            shared.completeFromRuntime(9);
+
+            assertEquals("left:9", leftResult.get(5, TimeUnit.SECONDS));
+            assertEquals("right:9", rightResult.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void awaitFailureIsDeliveredBackToOwningTask() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source =
+                    OresFuture.failed(new IllegalStateException("boom"));
+            AtomicInteger pc = new AtomicInteger();
+
+            OresFuture<String> result = scheduler.start(resume -> {
+                if (pc.getAndIncrement() == 0) {
+                    return OresScheduler.await(source);
+                }
+                assertInstanceOf(IllegalStateException.class, resume.failure());
+                assertEquals("boom", resume.failure().getMessage());
+                return OresScheduler.done("handled");
+            });
+
+            assertEquals("handled", result.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void synchronousTaskIsStillSchedulerBound() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Boolean> result =
+                    scheduler.startSync(() -> OresScheduler.current() == scheduler);
+            assertTrue(result.get(5, TimeUnit.SECONDS));
+        }
+    }
+    @Test
+    void logicalExecutionContextSurvivesAwaitAndIsNotAHeapOrDispatch() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> gate = new OresFuture<>();
+            AtomicReference<ExecutionContext> firstContext = new AtomicReference<>();
+            AtomicReference<ExecutionContext> resumedContext = new AtomicReference<>();
+            AtomicReference<ExecutionContext> secondContext = new AtomicReference<>();
+            AtomicLong firstDispatch = new AtomicLong();
+            AtomicLong resumedDispatch = new AtomicLong();
+            AtomicInteger firstPc = new AtomicInteger();
+
+            OresFuture<Integer> first = scheduler.start(resume -> {
+                ExecutionContext current = OresScheduler.currentExecutionContext();
+                assertNotNull(current);
+                assertSame(current, OresScheduler.currentTaskDomain(),
+                        "legacy task-domain token must be the stable execution context");
+                assertEquals(ExecutionContext.AllocationKind.NONE,
+                        current.allocationDomain().kind(),
+                        "ordinary scheduler tasks must not be assigned a fake heap");
+                if (firstPc.getAndIncrement() == 0) {
+                    firstContext.set(current);
+                    firstDispatch.set(OresScheduler.currentDispatchId());
+                    return OresScheduler.await(gate);
+                }
+                resumedContext.set(current);
+                resumedDispatch.set(OresScheduler.currentDispatchId());
+                return OresScheduler.done(1);
+            });
+
+            OresFuture<Integer> second = scheduler.start(resume -> {
+                secondContext.set(OresScheduler.currentExecutionContext());
+                return OresScheduler.done(2);
+            });
+
+            assertEquals(2, second.get(5, TimeUnit.SECONDS));
+            gate.completeFromRuntime(0);
+            assertEquals(1, first.get(5, TimeUnit.SECONDS));
+
+            assertSame(firstContext.get(), resumedContext.get(),
+                    "await/resume must preserve one logical execution context");
+            assertNotEquals(firstDispatch.get(), resumedDispatch.get(),
+                    "physical scheduler dispatch identity must change across await");
+            assertNotSame(firstContext.get(), secondContext.get(),
+                    "two tasks on one scheduler must have distinct execution contexts");
+            assertEquals(firstContext.get().id().runtimeDomain(),
+                    secondContext.get().id().runtimeDomain(),
+                    "tasks share a scheduler domain without sharing execution identity");
+            assertNotEquals(firstContext.get().id().execution(),
+                    secondContext.get().id().execution());
+            assertFalse(firstContext.get().allocationDomain().isBound());
+            assertEquals(0L, firstContext.get().parentExecution());
+            assertEquals(0L, firstContext.get().continuation());
+        }
+    }
+
+    @Test
+    void logicalExecutionSurvivesTwoAwaitsAndFailureOnSeparateDispatches() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> gateOne = new OresFuture<>();
+            OresFuture<Integer> gateTwo = new OresFuture<>();
+            java.util.List<ExecutionContext> contexts =
+                    new java.util.concurrent.CopyOnWriteArrayList<>();
+            java.util.List<Long> dispatches =
+                    new java.util.concurrent.CopyOnWriteArrayList<>();
+            AtomicInteger phase = new AtomicInteger();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                ExecutionContext current = OresScheduler.currentExecutionContext();
+                assertNotNull(current);
+                contexts.add(current);
+                dispatches.add(OresScheduler.currentDispatchId());
+                int step = phase.getAndIncrement();
+                if (step == 0) return OresScheduler.await(gateOne);
+                if (step == 1) return OresScheduler.await(gateTwo);
+                if (step == 2) throw new IllegalStateException("two-await-trace-marker");
+                throw new AssertionError("task must never resume after failure");
+            });
+
+            gateOne.completeFromRuntime(1);
+            gateTwo.completeFromRuntime(2);
+            java.util.concurrent.ExecutionException failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof IllegalStateException);
+            assertEquals("two-await-trace-marker", failure.getCause().getMessage());
+            assertEquals(3, contexts.size());
+            assertEquals(3, dispatches.size());
+            assertSame(contexts.get(0), contexts.get(1));
+            assertSame(contexts.get(1), contexts.get(2));
+            assertNotEquals(dispatches.get(0), dispatches.get(1));
+            assertNotEquals(dispatches.get(1), dispatches.get(2));
+            assertEquals(ExecutionContext.AllocationKind.NONE,
+                    contexts.get(2).allocationDomain().kind());
+        }
+    }
+
+    @Test
+    void actorAllocationDomainPermitsZeroBasedOwnerWithoutBecomingExecutionIdentity() {
+        ExecutionContext context = ExecutionContext.actor(
+                11, 22, 11, 0, 3, 0, 0);
+
+        assertEquals(11L, context.id().runtimeDomain());
+        assertEquals(22L, context.id().execution());
+        assertEquals(ExecutionContext.AllocationKind.ACTOR,
+                context.allocationDomain().kind());
+        assertEquals(0L, context.allocationDomain().owner());
+        assertEquals(3L, context.allocationDomain().generation());
+        assertNotEquals(context.id().execution(), context.allocationDomain().owner(),
+                "execution and allocation-owner identities must never be conflated");
+    }
+
+    @Test
+    void schedulerCannotCloseItselfFromOwnTaskTurn() throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        try {
+            OresFuture<Boolean> result = scheduler.startSync(() -> {
+                IllegalStateException failure =
+                        assertThrows(IllegalStateException.class, scheduler::close);
+                return failure.getMessage().contains("outside/root");
+            });
+
+            assertTrue(result.get(5, TimeUnit.SECONDS));
+            assertFalse(scheduler.isClosed(),
+                    "failed self-close must leave scheduler usable");
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
+    void closingSchedulerDetachesSuspendedWaiterWithoutCancellingSharedFuture() throws Exception {
+        OresFuture<Integer> shared = new OresFuture<>();
+        OresScheduler scheduler = new OresScheduler(1);
+        AtomicInteger pc = new AtomicInteger();
+
+        OresFuture<Integer> task = scheduler.start(resume -> {
+            if (pc.getAndIncrement() == 0) {
+                return OresScheduler.await(shared);
+            }
+            return OresScheduler.done((Integer) resume.value());
+        });
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (shared.pendingRuntimeWaiterCount() != 1
+                && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(1, shared.pendingRuntimeWaiterCount());
+
+        scheduler.close();
+
+        assertTrue(task.isCancelled());
+        assertEquals(0, shared.pendingRuntimeWaiterCount(),
+                "closing the scheduler must detach its continuation waiter");
+        assertFalse(shared.isDone(),
+                "detaching a waiter must not cancel the shared producer Future");
+
+        assertTrue(shared.completeFromRuntime(9));
+        assertEquals(1, pc.get(),
+                "detached continuation must never resume after producer completion");
+    }
+
+    @Test
+    void unresolvedAwaitReleasesSingleCarrierForUnrelatedTaskThenResumes() throws Exception {
+        // Exercise the actual scheduler state machine, not a placement model.
+        // An unresolved Future must free the sole worker before its producer
+        // reports readiness; completion must never execute guest code inline.
+        try (OresScheduler scheduler = new OresScheduler(1, 16)) {
+            OresFuture<Integer> pending = new OresFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            AtomicInteger resumes = new AtomicInteger();
+            AtomicReference<Thread> before = new AtomicReference<>();
+            AtomicReference<Thread> after = new AtomicReference<>();
+            AtomicLong initialDispatch = new AtomicLong();
+            OresFuture<Integer> first = scheduler.start(resume -> {
+                int turn = resumes.getAndIncrement();
+                if (turn == 0) {
+                    assertTrue(resume.initial());
+                    before.set(Thread.currentThread());
+                    initialDispatch.set(OresScheduler.currentDispatchId());
+                    suspended.countDown();
+                    return OresScheduler.await(pending);
+                }
+                assertEquals(1, turn, "continuation may resume only once");
+                assertFalse(resume.initial());
+                assertEquals(41, resume.value());
+                assertNull(resume.failure());
+                after.set(Thread.currentThread());
+                assertNotEquals(initialDispatch.get(), OresScheduler.currentDispatchId());
+                return OresScheduler.done(42);
+            });
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            CountDownLatch peerProgress = new CountDownLatch(1);
+            OresFuture<Integer> peer = scheduler.start(resume -> {
+                assertTrue(resume.initial());
+                peerProgress.countDown();
+                return OresScheduler.done(7);
+            });
+            assertTrue(peerProgress.await(5, TimeUnit.SECONDS),
+                    "unresolved await must release the only carrier");
+            assertEquals(7, peer.get(5, TimeUnit.SECONDS));
+            assertFalse(first.isDone(), "unresolved producer must not complete the task");
+            AtomicReference<Thread> publisher = new AtomicReference<>();
+            Thread completionThread = Thread.ofPlatform().start(() -> {
+                publisher.set(Thread.currentThread());
+                pending.completeFromRuntime(41);
+            });
+            completionThread.join();
+            assertEquals(42, first.get(5, TimeUnit.SECONDS));
+            assertEquals(2, resumes.get());
+            assertSame(before.get(), after.get(),
+                    "one-worker scheduler reuses a worker, not necessarily a CPU core");
+            assertNotSame(publisher.get(), after.get(),
+                    "completion publisher must not run the resumed guest turn");
+        }
+    }
+
+}

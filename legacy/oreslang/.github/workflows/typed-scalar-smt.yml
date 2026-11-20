@@ -1,0 +1,154 @@
+name: Typed Oreslang AST to SMT core proof
+on:
+  pull_request:
+    paths:
+      - 'stdlib/core.atto'
+      - 'src/main/java/dev/oreslang/compiler/TypedScalarSmt.java'
+      - 'src/test/java/dev/oreslang/compiler/TypedScalarSmtTest.java'
+      - 'scripts/check_core_math_guest.mjs'
+      - 'tests/core_math_guest_validator.test.mjs'
+      - 'examples/native-core-math-24.ores'
+      - 'formal/typed-scalar/**'
+      - '.github/workflows/typed-scalar-smt.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  typed-ast-core-smt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Enforce exact head and reviewed source identity
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          test "$(git hash-object stdlib/core.atto)" = "d2cd9b8e0cd3e3bb3ee6a5f9cebf9ab3312c44f4"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Install solver and record provenance
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends z3
+          z3 -version
+          sha256sum "$(command -v z3)"
+      - name: Record exact proof provenance
+        run: |
+          set -euo pipefail
+          mkdir -p target/formal-typed-scalar
+          git rev-parse HEAD > target/formal-typed-scalar/commit-sha.txt
+          git hash-object stdlib/core.atto > target/formal-typed-scalar/source-git-blob.txt
+          java -version 2> target/formal-typed-scalar/java-version.txt
+          z3 -version > target/formal-typed-scalar/z3-version.txt
+          sha256sum "$(command -v z3)" > target/formal-typed-scalar/z3-binary-sha256.txt
+      - name: Execute checked Oreslang AST -> SMT and negative source mutations
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=TypedScalarSmtTest -DfailIfNoTests=true test | tee target/formal-typed-scalar/maven-test.log
+      - name: Enforce complete proof transcript
+        run: |
+          set -euo pipefail
+          test -s target/formal-typed-scalar/checked-min_int.smt2
+          test -s target/formal-typed-scalar/checked-max_int.smt2
+          test -s target/formal-typed-scalar/checked-clamp_int.smt2
+          test -s target/formal-typed-scalar/mutated-min_int.smt2
+          test -s target/formal-typed-scalar/mutated-clamp_int.smt2
+          # Exact SHA-256 of bytes `unsat\nsat\n` and `sat\nsat\n`.
+          # This rejects extra lines, comments, CRLF, missing data and suffixes.
+          for fn in min_int max_int clamp_int; do
+            actual="$(sha256sum "target/formal-typed-scalar/checked-${fn}.z3.out" | cut -d' ' -f1)"
+            test "$actual" = "c2af3da181f0cb683d48aba3b47c40b7f3814d13fa817ae57f7f098acb636fca"
+          done
+          for fn in min_int clamp_int; do
+            actual="$(sha256sum "target/formal-typed-scalar/mutated-${fn}.z3.out" | cut -d' ' -f1)"
+            test "$actual" = "d2f733b85518b2ef01097ad8856647c19731ca558ee45faebb65260de667c989"
+          done
+      - name: Require separate checked-AST proof/mutant query transcripts
+        run: |
+          set -euo pipefail
+          for fn in min_int max_int clamp_int; do
+            test -s "target/formal-typed-scalar/checked-${fn}-implementation.smt2"
+            test -s "target/formal-typed-scalar/checked-${fn}-negative-control.smt2"
+            test "$(cat "target/formal-typed-scalar/checked-${fn}-implementation.z3.out")" = "unsat"
+            test "$(cat "target/formal-typed-scalar/checked-${fn}-negative-control.z3.out")" = "sat"
+            sha256sum "target/formal-typed-scalar/checked-${fn}-implementation.smt2"
+            sha256sum "target/formal-typed-scalar/checked-${fn}-negative-control.smt2"
+          done
+          for fn in min_int clamp_int; do
+            test -s "target/formal-typed-scalar/mutated-${fn}-implementation.smt2"
+            test "$(cat "target/formal-typed-scalar/mutated-${fn}-implementation.z3.out")" = "sat"
+            test "$(cat "target/formal-typed-scalar/mutated-${fn}-negative-control.z3.out")" = "sat"
+          done
+      - name: Upload proof inputs, solver outputs, and provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: typed-ast-smt-evidence
+          path: target/formal-typed-scalar/
+          if-no-files-found: warn
+          retention-days: 14
+  graal-guest-core-math:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require exact reviewed source and contract snapshots
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          test "$(git hash-object stdlib/core.atto)" = "d2cd9b8e0cd3e3bb3ee6a5f9cebf9ab3312c44f4"
+          test "$(git hash-object formal/typed-scalar/core-math-i64-v1.json)" = "58d2b64a137ede4700593f855e1f0504ff744f90"
+          test "$(git hash-object examples/native-core-math-24.ores)" = "2d12b8632ad77c8dee34235ecfacfca6a0fa553f"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Test fail-closed transcript parser (synthetic input, not runtime)
+        run: |
+          set -euo pipefail
+          node --test tests/core_math_guest_validator.test.mjs
+      - name: Run all 24 real Oreslang guest cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/formal-typed-scalar/guest
+          mvn -B -ntp -DskipTests compile
+          mvn -B -ntp exec:java \
+            -Dexec.args="examples/native-core-math-24.ores" \
+            | tee target/formal-typed-scalar/guest/guest-raw-stdout.log
+          node scripts/check_core_math_guest.mjs \
+            target/formal-typed-scalar/guest/guest-raw-stdout.log \
+            formal/typed-scalar/core-math-i64-v1.json \
+            examples/native-core-math-24.ores \
+            target/formal-typed-scalar/guest/observed-results.json
+      - name: Record execution source and Java identity
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p target/formal-typed-scalar/guest
+          git rev-parse HEAD > target/formal-typed-scalar/guest/head-sha.txt
+          git hash-object examples/native-core-math-24.ores > target/formal-typed-scalar/guest/guest-source-blob.txt
+          java -version 2> target/formal-typed-scalar/guest/java-version.txt
+      - name: Archive guest output and comparison evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: graal-core-math-guest-evidence
+          path: target/formal-typed-scalar/guest/
+          if-no-files-found: warn
+          retention-days: 14
