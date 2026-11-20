@@ -50,8 +50,19 @@ public final class TrapFailurePolicy {
             if (visited.size() >= MAX_FAILURE_NODES) return false;
             Throwable current = pending.removeFirst();
             if (visited.put(current, Boolean.TRUE) != null) return false;
+            // These are JVM/engine implementation faults, not typed Atto
+            // `throw Error(...)` values. Never turn them into a guest Err,
+            // even if an async wrapper or cleanup suppression hides the cause.
+            // Checked integer overflow is terminal, not an ordinary throw.
             if (panicType.isInstance(current)
                     || current instanceof Error
+                    || current instanceof NullPointerException
+                    || current instanceof ClassCastException
+                    || current instanceof IndexOutOfBoundsException
+                    || current instanceof ArrayStoreException
+                    || current instanceof NegativeArraySizeException
+                    || current instanceof ArithmeticException
+                    || current instanceof IllegalMonitorStateException
                     || current instanceof LogicalStackOverflowException
                     || current instanceof CancellationException
                     || current instanceof InterruptedException
