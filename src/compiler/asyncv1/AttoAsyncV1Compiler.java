@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
  */
 public final class AttoAsyncV1Compiler {
     private static final Pattern TOKENS = Pattern.compile(
-        "\\s+|\\|>|>>|->|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[{}():;^+=|]");
+        "\\s+|\\|>|>>|->|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[{}():;^+=|<>]");
     private AttoAsyncV1Compiler() {}
 
     public static final class Reject extends IllegalArgumentException {
@@ -55,6 +55,8 @@ public final class AttoAsyncV1Compiler {
             String value = next();
             if (!value.matches("[A-Za-z_][A-Za-z_0-9]*"))
                 throw new Reject("E_ASYNC_INVALID_IDENTIFIER");
+            if (value.equals("sync"))
+                throw new Reject("E_RESERVED_SYNC");
             return value;
         }
         int smallInt() {
@@ -64,6 +66,9 @@ public final class AttoAsyncV1Compiler {
             return Integer.parseInt(value);
         }
         boolean done() { return index == tokens.size(); }
+        boolean peekIs(String token) {
+            return index < tokens.size() && tokens.get(index).equals(token);
+        }
     }
     public static String compile(String source) {
         Parser p = new Parser(source);
@@ -78,7 +83,16 @@ public final class AttoAsyncV1Compiler {
         p.expect("pub"); p.expect("susp"); p.expect("fnc"); p.expect("main");
         p.expect("("); p.expect(")"); p.expect(":"); p.expect("int");
         p.expect("{"); p.expect("val"); String future = p.ident();
-        p.expect("="); p.expect("task"); p.expect("{"); p.expect("^");
+        p.expect("="); p.expect("task");
+        // The payload parameter is int, NOT Future<int>: task<int>
+        // produces a Future<int>. Unparameterized legacy task remains
+        // admitted only by this closed-world completed-Future profile.
+        if (p.peekIs("<")) {
+            p.expect("<"); p.expect("int"); p.expect(">");
+        }
+        p.expect("{");
+        if (p.peekIs("return")) p.expect("return");
+        else p.expect("^");
         int value = p.smallInt();
         p.expect(";"); p.expect("}"); p.expect(";");
         p.expect("^"); p.expect(future); p.expect("|>");
