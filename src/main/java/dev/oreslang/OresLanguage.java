@@ -184,6 +184,13 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
         }
+        // No mixed-profile call graph: an unchecked imported callee could wrap
+        // inside a checked caller until the linker proves transitive profile
+        // compatibility over every source unit and pinned compiled interface.
+        if (checkedI64 && !program.imports().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED: imports require profile-checked linking");
+        }
         RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId, checkedI64)
                 .getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
