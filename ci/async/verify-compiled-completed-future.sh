@@ -16,7 +16,7 @@ mkdir -p "$work/classes"
   src/compiler/asyncv1/AttoAsyncV1Compiler.java \
   tests/compiler/AttoAsyncV1CompilerProbe.java
 "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1CompilerProbe | tee "$work/probe"
-grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=30" "$work/probe"
+grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=44" "$work/probe"
 "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1Compiler \
   fixtures/async_v1/completed_future.atto "$work/AttoAsyncV1Guest.java"
 "$JAVA_HOME/bin/javac" -Xlint:all -Werror -d "$work/classes" "$work/AttoAsyncV1Guest.java"
