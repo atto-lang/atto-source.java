@@ -1068,6 +1068,18 @@ public final class Parser {
             Modifiers modifiers,
             Ast.CallableKind kind,
             Ast.ActorKind actorKind) {
+        // Canonical generator head `fnc *gen name(...)`, equivalent to `gen* fnc name`.
+        if (check(STAR) && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("gen")) {
+            if (modifiers.generator) throw error(peek(), "duplicate generator modifier");
+            advance();
+            advance();
+            Modifiers m = modifiers;
+            modifiers = new Modifiers(m.visibility(), m.visibilitySeen(), m.async(), m.suspends(),
+                    true, true, m.structural(), m.nonLexical(), m.trapped(), m.isStatic(),
+                    m.isAbstract(), m.shared(), m.untrusted());
+        }
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         if (modifiers.trapped && (modifiers.async || modifiers.suspends)) {
@@ -1112,6 +1124,18 @@ public final class Parser {
                 ? parseReturnType(annotations)
                 : validateReturnFirstType(prefixReturnType, annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
+        if (!modifiers.generator && returnType != null && returnType.arguments().size() == 1
+                && (returnType.name().equals("Generator") || returnType.name().equals("AsyncGenerator"))
+                && bodyAheadYields()) {
+            // Canonical `fnc f(): Generator<T>` / `suspends fnc f(): AsyncGenerator<T>`
+            // with `yield` in its body is a generator (no separate *gen marker).
+            Modifiers m = modifiers;
+            boolean asyncGenerator = returnType.name().equals("AsyncGenerator");
+            modifiers = new Modifiers(m.visibility(), m.visibilitySeen(),
+                    m.async() || (asyncGenerator && m.suspends()), asyncGenerator ? false : m.suspends(),
+                    true, true, m.structural(), m.nonLexical(), m.trapped(), m.isStatic(),
+                    m.isAbstract(), m.shared(), m.untrusted());
+        }
         List<Ast.Stmt> body = prefixReturnType != null
                 ? parseBeginEndCallableBody()
                 : parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
@@ -1280,6 +1304,19 @@ public final class Parser {
             throw error(peek(), "end-delimited callable needs a newline or '::' after its return type");
         }
         return parseEndDelimitedCallableBody("callable");
+    }
+
+    /** True when the brace body starting at the cursor contains its own `yield`. */
+    private boolean bodyAheadYields() {
+        if (!check(LBRACE)) return false;
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LBRACE) depth++;
+            else if (type == RBRACE && --depth == 0) return false;
+            else if (type == YIELD) return true;
+        }
+        return false;
     }
 
     /** While true, ',' also terminates a statement (canonical comma bodies). */
@@ -4355,6 +4392,17 @@ public final class Parser {
     }
 
     private Ast.Stmt parseFor(boolean asyncIteration) {
+        // Canonical `for x in iterable do ... done` / `for await x in ...`:
+        // an implicit fixed `val` binding, the same loop as `for val x of iterable`.
+        if (check(IDENT) && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("in")) {
+            String name = advance().lexeme();
+            advance(); // contextual in
+            Ast.Expr iterable = parseExpression();
+            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, asyncIteration,
+                    parseLoopBody(), true);
+        }
         if (!match(LPAREN)) {
             if (looksLikeUnparenthesizedForOf()) {
                 if (!isBindingKind(peek().type())) {
