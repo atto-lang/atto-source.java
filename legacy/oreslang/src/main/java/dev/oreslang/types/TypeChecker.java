@@ -5893,6 +5893,26 @@ public final class TypeChecker {
             // A value-producing task needs contextual Future<T> information so
             // every return path can be checked without guessing a result type.
             // A no-value task is unambiguously Future<void>.
+            if (taskHasValueReturn(task.body())
+                    && task.body().size() == 1
+                    && task.body().getFirst() instanceof Ast.ReturnStmt only
+                    && only.value() != null) {
+                // Canonical `task { return expr; }` infers Future<typeof expr>,
+                // typed in the task's own suspendable scope.
+                boolean previousMaySuspend = currentMaySuspend;
+                Type inferred;
+                try {
+                    currentMaySuspend = true;
+                    inferred = typeOf(only.value(), new Env(env, env.descendantsNonLexical(), true),
+                            generics, self);
+                } finally {
+                    currentMaySuspend = previousMaySuspend;
+                }
+                if (inferred != Unknown.INSTANCE) {
+                    Type result = inferred == Primitive.VOID ? Primitive.VOID : inferred;
+                    return checkTaskExpression(task, result, env, generics, self);
+                }
+            }
             if (taskHasValueReturn(task.body())) {
                 throw new IllegalArgumentException(
                         "value-producing task blocks require a contextual Future<T> type; "
@@ -5927,6 +5947,12 @@ public final class TypeChecker {
                 // barrier. The expression retains its ActorRef<T> type.
                 actorClassForRef(actorRef);
                 return actorRef;
+            }
+            if (!awaited.coreAdapter() && currentMaySuspend
+                    && awaited.expression() instanceof Ast.CallExpr) {
+                // Canonical explicit `await f()` of a suspends callable: the call
+                // already completes in this suspendable scope, so await is identity.
+                return awaitedType;
             }
             throw new IllegalArgumentException(
                     "await requires Future<T> or ActorRef<T>; got " + awaitedType);

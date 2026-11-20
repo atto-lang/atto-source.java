@@ -1825,7 +1825,8 @@ public final class OwnershipChecker {
                 throw error("constructed object type cannot contain borrowed generic arguments "
                         + "without an explicit scoped lifetime");
             }
-            return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(constructedType,
+                    isCopyType(constructedType) ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.TaskExpr task) {
             if (task.domain() == Ast.ExecutionDomain.GPU) {
@@ -6438,6 +6439,11 @@ public final class OwnershipChecker {
         if (type.isUnion()) return !type.arguments().isEmpty()
                 && type.arguments().stream().allMatch(this::isCopyType);
         if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        // A Channel<T> value is a handle to one runtime-synchronized channel
+        // (like ActorRef): copying the handle aliases the same channel and
+        // never copies or moves buffered payloads.
+        if (type.name().equals("Channel") && type.arguments().size() == 1
+                && findClass("Channel") == null) return true;
         if (type.arguments().isEmpty()) {
             NominalEnumRegistry.EnumType enumeration =
                     nominalEnums.enums().get(type.name());
