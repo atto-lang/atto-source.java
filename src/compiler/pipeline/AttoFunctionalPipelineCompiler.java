@@ -37,7 +37,13 @@ public final class AttoFunctionalPipelineCompiler {
     private static final Pattern NAME = Pattern.compile("[a-z_][a-z_0-9]*");
     private static final Pattern NUMBER = Pattern.compile("[0-9]+");
     private static final Set<String> RESERVED =
-        Set.of("fnc", "pub", "int", "return", "val", "bool", "true", "false");
+        Set.of("fnc", "pub", "int", "return", "val", "let", "bool",
+            "true", "false", "actor", "unsafe", "await", "async", "susp",
+            "suspends", "sync", "critical", "trap", "panic", "raise", "throw",
+            "borrow", "take", "share", "copy", "drop", "pin", "rt",
+            "io", "stdio", "process", "spawn", "select", "import", "module",
+            "define", "namespace", "use", "pipe", "rpipe", "task",
+            "constructor", "prototype", "__proto__");
 
     private AttoFunctionalPipelineCompiler() {}
 
