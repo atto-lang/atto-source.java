@@ -1,6 +1,6 @@
 # M6 / M10 proxy IPC consolidation — experimental host runtime
 
-**Status: DRAFT. The consolidated source has not yet had an executed exact-head CI run.**
+**Status: DRAFT. The combined restricted-source M6/M10 sender/receiver pilot and scheduler regressions have passed a JDK 25 execution on an exact-Git-tree private carrier. This is not canonical Atto compiled-guest support or production TenantVM isolation. See the current PR body for the passing source commit/tree and workflow run.**
 
 Source: [atto-source.java PR #44](https://github.com/atto-lang/atto-source.java/pull/44).
 Overlap: [Java #45](https://github.com/atto-lang/atto-source.java/pull/45).
@@ -31,6 +31,38 @@ Governance: [atto-spec #40](https://github.com/atto-lang/atto-spec/pull/40);
 * **No second reply/correlation registry.** This ticket is not the existing
   Atto typed unary application reply registry; that integration is still
   required by Rust #250/#254.
+
+## Full-Git-tree alternate runner evidence and scope
+
+An authorized private `opto-sync/atto-ci` Actions carrier (not the source
+organization) received the **entire original source Git tree**, including
+file modes and 126 source blobs, in a temporary private branch through
+GitHub's Git tree API. No cross-organization `GITHUB_TOKEN`, installation
+token or secret was supplied. The CI workflow verified that the carrier's
+nested mirror tree SHA **equaled the original Git tree SHA**, then initialized
+a local source Git repository on those exact files and ran the original
+`ci/m10/verify-remote-actor-ipc-jvm.sh` under Temurin JDK 25.
+
+The executable suite includes the M6 NIO/supervisor regressions,
+128 per-message mailbox receipt correlation stress, source-compiled
+sender and receiver, negative UTF-8/TOCTOU/symlink/overwrite tests,
+same-user kernel UDS peer principal checks, M10 bounded mailbox
+commit/failure/abandon tests, two independent JVM processes,
+12 concurrent clients, replay/incarnation rejection and checked arithmetic.
+
+**Additional signed-rejection hardening:** clients validate the entire
+authenticated request correlation (tenant, server incarnation, message ID
+and attempt) **before** promoting a `REJECTED` response into a confirmed
+remote refusal. A signed but wrong-route rejection is treated as
+unverified I/O failure, not a completed refusal. The dedicated test
+`M10ResponseCorrelationProbe` covers both HELLO and SEND negative paths.
+
+This run proves the named **restricted source-compiled + trusted host bridge
+profile only**. It does not demonstrate canonical Atto `susp` lowering,
+`ActorRegistry.connect_async`, native `ProxyActor<T>` type safety,
+TenantVM capability enforcement, the application unary reply sidecar,
+durable processing, independent native AOT, or compiler parity.
+Full 24-case compiled guest conformance remains NOT_EXECUTED.
 
 ## Security boundary
 
@@ -84,8 +116,8 @@ of restricted source compilation, not canonical compiled proxy interoperability.
 The stand-alone restricted sender compiler, interface and fixture passed
 a local JDK21 source -> bytecode -> injected callback smoke with negative
 grammar cases. All three original Git blobs match the local tested source.
-This does NOT prove the complete M6/M10 IPC integration, whose combined
-exact-head JDK25 CI still has no executed runner steps.
+The earlier local source-only test is separate from the now executed
+full-Git-tree JDK25 M6/M10 integration described above.
 
 ## Tests and evidence gate
 
