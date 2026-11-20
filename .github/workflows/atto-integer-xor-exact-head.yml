@@ -1,0 +1,99 @@
+name: Atto Java canonical integer XOR exact-head guest conformance
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/LogicalPunctuationOperatorTest.java'
+      - 'src/test/java/dev/oreslang/ReservedOperatorTest.java'
+      - 'contracts/logical-punctuation-v1/scalar-parity.atto'
+      - '.github/workflows/atto-integer-xor-exact-head.yml'
+  push:
+    branches:
+      - 'feat/java-canonical-integer-xor-20261120'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  canonical-xor-jvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact PR head (no credential persistence)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact source HEAD and root Git tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          git diff --cached --quiet --exit-code HEAD --
+          test "$(git write-tree)" = "$(git rev-parse 'HEAD^{tree}')"
+          test -z "$(git ls-files --others --exclude-standard)"
+          test -z "$(git ls-files --others --ignored --exclude-standard)"
+          echo "EXACT_JAVA_HEAD=$(git rev-parse HEAD)"
+          echo "EXACT_JAVA_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'maven'
+      - name: Run real Java parser, type checker, and Graal/Truffle guest suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          javac -version
+          test "$(javac -version 2>&1 | awk '{print $2}' | cut -d. -f1)" = 25
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=LogicalPunctuationOperatorTest,ReservedOperatorTest,AttoCallableVersionParserTest,AttoCallableVersionGuestTest,GenericsAndOperatorsHardeningTest \
+            clean test
+      - name: Attest executed JUnit cases, no failures or skips
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          required={
+              "LogicalPunctuationOperatorTest": {
+                  "integerXorIsTypedAndExecutesAsSignedI64BitPatterns",
+                  "integerXorRhsFailurePreservesLeftToRightEffectsAndDoesNotProduceResult",
+                  "rhsShortCircuitButXorEvaluatesBothLeftToRight",
+                  "fullTruthTablesAndPrecedenceCompileAndExecute",
+              },
+              "ReservedOperatorTest": {"percentAndSingleCaretAreRejected"},
+              "AttoCallableVersionParserTest": {"actualParserBuildsCheckedReturnAstForBothVersions"},
+              "AttoCallableVersionGuestTest": {"actualTruffleGuestExecutesV2StatementReturns"},
+              "GenericsAndOperatorsHardeningTest": set(),
+          }
+          total=0
+          for suite_name, required_cases in required.items():
+              path=Path("target/surefire-reports") / f"TEST-dev.oreslang.{suite_name}.xml"
+              if not path.is_file() or path.is_symlink():
+                  raise SystemExit(f"MISSING_REAL_JUNIT_REPORT: {path}")
+              root=ET.parse(path).getroot()
+              count=int(root.get("tests","0"))
+              failures=int(root.get("failures","0"))
+              errors=int(root.get("errors","0"))
+              skipped=int(root.get("skipped","0"))
+              if count<1 or failures or errors or skipped:
+                  raise SystemExit(f"INVALID_JUNIT_SUITE: {suite_name} tests={count} failures={failures} errors={errors} skipped={skipped}")
+              methods={x.get("name") for x in root.findall(".//testcase")}
+              if not required_cases.issubset(methods):
+                  raise SystemExit(f"UNEXECUTED_REQUIRED_METHODS: {suite_name} {sorted(required_cases-methods)}")
+              total+=count
+              print(f"EXECUTED_JAVA_SUITE={suite_name} tests={count} fail=0 error=0 skip=0")
+          print(f"JAVA_JUNIT_REAL_TEST_CASES={total}")
+          print("NATIVE_IMAGE_BINARY_EXECUTION=NOT_EXECUTED_BY_THIS_WORKFLOW")
+          PY
