@@ -1,0 +1,7 @@
+# Oreslang library-layer dependency proposal v1. Not yet enforced by compilers.
+# layer<TAB>direct_import_layers<TAB>provider_requirement<TAB>portable_without_os<TAB>heap_mandatory
+layer	direct_import_layers	provider_requirement	portable_without_os	heap_mandatory
+core	-	scalar-intrinsics	yes	no
+alloc	core	explicit-allocator	yes	yes
+actor	core|alloc	explicit-executor	yes	no
+std	core|alloc|actor	capability-checked-platform-adapter	no	conditional

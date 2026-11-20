@@ -1,0 +1,51 @@
+name: fast-ci
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Verify read-only Actions triage unit tests
+        run: python3 -m unittest discover -s tests -p 'test_ci_run_triage.py' -v
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Verify collection sharing and scoped READ rules
+        run: bash scripts/test_collection_sharing.sh
+      - name: Verify compiler/runtime tests
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Run examples
+        run: |
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/modules-namespaces-callables.ores"
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/async-await.ores" | tee /tmp/oreslang-async-await.out
+          grep -F "144" /tmp/oreslang-async-await.out
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/callables.ores" | tee /tmp/oreslang-callables.out
+          grep -F "120:9:13" /tmp/oreslang-callables.out
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing.ores" | tee /tmp/oreslang-native-testing.out
+          grep -F "ORES_TEST|SUMMARY|total=4|passed=3|failed=0|skipped=1|filtered=0" /tmp/oreslang-native-testing.out
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/native-testing-semantics.ores" | tee /tmp/oreslang-native-testing-semantics.out
+          grep -F "ORES_TEST|SUMMARY|total=1|passed=1|failed=0|skipped=0|filtered=2" /tmp/oreslang-native-testing-semantics.out
+          grep -F "ORES_TEST|SUMMARY|total=2|passed=1|failed=1|skipped=0|filtered=0" /tmp/oreslang-native-testing-semantics.out
+
