@@ -30,11 +30,33 @@ integration must select canonical Atto explicitly.
 - Legacy `constructor`/new `initialize` grammar is out of scope.
 - Parser/checker unit evidence is not Java/GraalVM guest execution evidence.
 
+## Shared conformance fixtures and unimplemented package visibility
+
+This PR now pins the four **exact Git blobs** from merged
+`atto-platform-conformance#84` under `tests/parity/class-fields-v2/`.
+Each blob is independently verified against its upstream SHA in source
+readback, JUnit and CI. The positive fixture includes `pub[pkg]`; Java's
+current `Ast.Visibility` represents only PUBLIC/PRIVATE, so accepting the
+positive fixture as public would improperly widen access. The parser
+therefore rejects any `pub[pkg]` member declaration with
+`E_PKG_VISIBILITY_UNSUPPORTED` until authenticated package scope is
+implemented, and the matching fixture is tested as an **intentional
+fail-closed conformance gap**, not a completed positive execution.
+
+The other three fixture tests require failure of implicit-`val`
+constructor reassignment, outside-class private access and a runtime-only
+initializer on `const`. Exact `E_IMMUTABLE`, `E_PRIVATE`, `E_CONST`
+diagnostic agreement remains to be separately established on a real
+runner; merely rejecting source is not full conformance. The current
+Java AST also does not distinguish a dedicated `final` field binding
+variant from `val`; deferred exactly-once `final` semantics remain
+a separate backend parity gap, not covered by the default change.
+
 ## Required verification
 
 ```sh
 mvn -B -ntp '-P!native-thread-unix' \
-  -Dtest=AttoCanonicalImplicitValClassFieldTest \
+  -Dtest=AttoCanonicalImplicitValClassFieldTest,AttoClassFieldV2ConformanceSourceTest \
   -Dsurefire.failIfNoSpecifiedTests=true clean test
 ```
 
