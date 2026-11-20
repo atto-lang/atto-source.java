@@ -60,6 +60,19 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(typed.replace("task<int>", "task<int> /* cancel lock */"));
         check(AttoAsyncV1Compiler.compile(ok.replace("41", "40"))
             .contains("completedFuture(40)"));
+        // Reject both Atto control words and Java keywords before writing
+        // generated code, not only when javac later refuses that code.
+        for (String name : new String[] {
+            "task", "sync", "await", "class", "new", "record",
+            "sealed", "yield", "return", "static"
+        }) {
+            rejects(ok.replace("plus_one", name));
+        }
+        rejects(ok.replace("val pending", "val class"));
+        rejects(ok.replace("val pending", "val task"));
+        rejects(ok.replace("susp |f|", "susp |return|"));
+        check(AttoAsyncV1Compiler.compile(ok.replace("pending", "sync_data"))
+            .contains("CompletableFuture<Integer> sync_data"));
         System.out.println("ATTO_ASYNC_V1_ADMISSION_PASS checks=" + checks);
     }
 }
