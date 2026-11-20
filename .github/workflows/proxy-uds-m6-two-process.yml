@@ -41,10 +41,12 @@ jobs:
             src/m6/AttoM6Runtime.java \
             src/ipc/AttoM6ProxyUdsV1.java \
             tests/ipc/AttoM6ProxyUdsV1Probe.java \
-            src/compiler/proxyv1/AttoM6ProxyActorSubsetCompiler.java
+            src/compiler/proxyv1/AttoM6ProxyActorSubsetCompiler.java \
+            tests/compiler/AttoM6ProxyActorSubsetCompilerProbe.java
           timeout 90 java -cp build/proxy-uds AttoM6ProxyUdsV1Probe | tee build/proxy-uds/output.txt
           grep -Fx 'ATTO_PROXY_UDS_TWO_OS_PROCESSES=PASS' build/proxy-uds/output.txt
           grep -Fx 'ATTO_PROXY_UDS_SCOPE=EXPERIMENTAL_HOST_M6_NO_COMPILED_ATTO_GUEST' build/proxy-uds/output.txt
+          java -cp build/proxy-uds AttoM6ProxyActorSubsetCompilerProbe fixtures/proxy_v1/counter.atto
           sha="$(sha256sum fixtures/proxy_v1/counter.atto | cut -d' ' -f1)"
           java -cp build/proxy-uds AttoM6ProxyActorSubsetCompiler \
             fixtures/proxy_v1/counter.atto --source-sha256 "$sha" \
