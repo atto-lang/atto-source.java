@@ -180,7 +180,7 @@ public final class AttoM6ProxyUdsV1 {
             var id = req.identity();
             String replay = id.callerIncarnation() + ":" + id.messageId() + ":" + id.attempt();
             boolean allowed = id.equals(expected) && id.targetIncarnation() == target.generation()
-                && !alreadySeen.contains(replay);
+                && !alreadySeen.contains(replay) && alreadySeen.size() < 256;
             if (!allowed) {
                 write_frame(channel, encode_receipt(session, id,
                     new Turn(ProxyReceiptGateV1.Event.REJECTED, 0)));
@@ -281,7 +281,7 @@ public final class AttoM6ProxyUdsV1 {
     }
     // A caller must unlink only the inode it created; never delete a replaced path.
     public static void unlink_owned(Path path, Object pinnedFileKey) throws IOException {
-        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)
+        if (pinnedFileKey != null && Files.exists(path, LinkOption.NOFOLLOW_LINKS)
             && !Files.isSymbolicLink(path)
             && Objects.equals(Files.readAttributes(path,
                 java.nio.file.attribute.BasicFileAttributes.class,
