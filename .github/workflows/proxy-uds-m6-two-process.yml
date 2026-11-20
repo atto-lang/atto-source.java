@@ -40,8 +40,19 @@ jobs:
             src/ipc/ProxyReceiptGateV1.java \
             src/m6/AttoM6Runtime.java \
             src/ipc/AttoM6ProxyUdsV1.java \
-            tests/ipc/AttoM6ProxyUdsV1Probe.java
+            tests/ipc/AttoM6ProxyUdsV1Probe.java \
+            src/compiler/proxyv1/AttoM6ProxyActorSubsetCompiler.java
           timeout 90 java -cp build/proxy-uds AttoM6ProxyUdsV1Probe | tee build/proxy-uds/output.txt
           grep -Fx 'ATTO_PROXY_UDS_TWO_OS_PROCESSES=PASS' build/proxy-uds/output.txt
           grep -Fx 'ATTO_PROXY_UDS_SCOPE=EXPERIMENTAL_HOST_M6_NO_COMPILED_ATTO_GUEST' build/proxy-uds/output.txt
-      - run: echo 'JDK25 HOST+M6 UDS TWO-PROCESS ONLY; no compiled .atto guest, standard wire, async reactor, Graal Native Image, or backend parity.'
+          sha="$(sha256sum fixtures/proxy_v1/counter.atto | cut -d' ' -f1)"
+          java -cp build/proxy-uds AttoM6ProxyActorSubsetCompiler \
+            fixtures/proxy_v1/counter.atto --source-sha256 "$sha" \
+            --out build/proxy-uds/AttoM6ProxyGuestCounter.java
+          javac -Xlint:all,-try -Werror -cp build/proxy-uds -d build/proxy-uds \
+            build/proxy-uds/AttoM6ProxyGuestCounter.java
+          timeout 90 java -Datto.proxy.compiled_guest=true -cp build/proxy-uds \
+            AttoM6ProxyUdsV1Probe | tee build/proxy-uds/guest-output.txt
+          grep -Fx 'ATTO_PROXY_UDS_COMPILED_ATTO_PROCESS_B=PASS' build/proxy-uds/guest-output.txt
+          grep -Fx 'ATTO_PROXY_UDS_SCOPE=RESTRICTED_COMPILED_ATTO_RECEIVER_HOST_SENDER_ONLY' build/proxy-uds/guest-output.txt
+      - run: echo 'JDK25 RESTRICTED COMPILED ATTO RECEIVER + HOST SENDER; no canonical proxy frontend, standard wire, async reactor, Graal Native Image, or backend parity.'
