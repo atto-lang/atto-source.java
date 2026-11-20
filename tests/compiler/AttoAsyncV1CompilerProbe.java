@@ -40,6 +40,24 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(ok.replace(">> val answer", ">> val f"));
         rejects(ok + " class Other {}");
         rejects(ok + "\u0000");
+        // Canonical payload typing: task<int> returns Future<int>, not int.
+        String typed = ok.replace("task { ^ 41; }", "task<int> { return 41; }");
+        String typedGenerated = AttoAsyncV1Compiler.compile(typed);
+        check(typedGenerated.contains("CompletableFuture<Integer> pending"));
+        check(typedGenerated.contains("CompletableFuture.completedFuture(41)"));
+        check(typedGenerated.equals(AttoAsyncV1Compiler.compile(
+            ok.replace("task { ^ 41; }", "task<int> { ^ 41; }"))));
+        // Exactly one Future layer; this tiny source compiler has neither
+        // nested Future result types nor a cancellable TaskScope runtime.
+        rejects(typed.replace("task<int>", "task<Future<int>>"));
+        rejects(typed.replace("task<int>", "task<void>"));
+        rejects(typed.replace("task<int>", "sync task<int>"));
+        rejects(typed.replace("task<int>", "await task<int>"));
+        rejects(typed.replace("val pending", "val sync"));
+        rejects(typed.replace("task<int>", "do sync task<int>"));
+        rejects(typed.replace("task<int>", "do task<int>"));
+        rejects(typed.replace("return 41;", "return 41; pending.cancel();"));
+        rejects(typed.replace("task<int>", "task<int> /* cancel lock */"));
         check(AttoAsyncV1Compiler.compile(ok.replace("41", "40"))
             .contains("completedFuture(40)"));
         System.out.println("ATTO_ASYNC_V1_ADMISSION_PASS checks=" + checks);
