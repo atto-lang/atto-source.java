@@ -144,6 +144,18 @@ public final class CheckCanonicalXorReportsSelfTest {
             Files.move(report,target);
             Files.createSymbolicLink(report,target);
         }));
-        System.out.println("SELFTEST_VERIFIER_POLICY_ONLY cases=15 passed=15 guest_executed=0");
+        run("symlink-report-directory",false,mutation(c -> {
+            Path dir = c.root.resolve("target/surefire-reports");
+            Path relocated = c.root.resolve("forged-reports");
+            Files.move(dir, relocated);
+            Files.createSymbolicLink(dir, relocated);
+        }));
+        run("symlink-target-directory",false,mutation(c -> {
+            Path dir = c.root.resolve("target");
+            Path relocated = c.root.resolve("forged-target");
+            Files.move(dir, relocated);
+            Files.createSymbolicLink(dir, relocated);
+        }));
+        System.out.println("SELFTEST_VERIFIER_POLICY_ONLY cases=17 passed=17 guest_executed=0");
     }
 }

@@ -64,6 +64,11 @@ public final class CheckCanonicalXorReports {
     }
 
     private static void check(String suite, Set<String> expected) throws Exception {
+        // A final-file nofollow check is insufficient if a parent directory is a
+        // symlink: refuse all report-path symlink ancestors too.
+        if (!Files.isDirectory(Path.of("target"), LinkOption.NOFOLLOW_LINKS)
+                || !Files.isDirectory(Path.of("target", "surefire-reports"), LinkOption.NOFOLLOW_LINKS))
+            throw new IllegalStateException("Missing or symlinked JUnit report directory");
         Path report = Path.of("target", "surefire-reports", "TEST-" + PACKAGE + suite + ".xml");
         if (!Files.isRegularFile(report, LinkOption.NOFOLLOW_LINKS))
             throw new IllegalStateException("Missing or symlinked JUnit report: " + report);
