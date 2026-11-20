@@ -44,7 +44,7 @@ final class AttoAffineMapOwnershipV1Test {
         OresKeyedMap<String, Long> map = OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
         map.put("answer", 42L);
         assertThrows(IllegalArgumentException.class, () -> map.put("answer", (Long) null));
-        assertThrows(IllegalArgumentException.class, () -> map.put("different", -1L == 0 ? 1L : null));
+        assertThrows(IllegalArgumentException.class, () -> map.put("different", null));
         assertEquals(42L, map.getRequired("answer"));
         assertEquals(1, map.size());
     }
@@ -93,6 +93,20 @@ final class AttoAffineMapOwnershipV1Test {
                   return m;
                 }
                 """);
+    }
+
+    @Test
+    void scopedImmutableBorrowCanReadAnOwnedMap() throws Exception {
+        assertEquals(42, execute("""
+                fnc read(borrow Map<string,int> view): int {
+                  return view["answer"];
+                }
+                pub fnc main(): int {
+                  let Map<string,int> m = ~map<string,int>();
+                  m.put("answer",42);
+                  return read(rt borrow m);
+                }
+                """));
     }
 
     @Test

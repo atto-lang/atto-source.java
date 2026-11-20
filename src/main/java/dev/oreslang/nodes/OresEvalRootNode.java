@@ -5647,6 +5647,15 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
+                            if (receiver instanceof OresKeyedMap<?, ?> map
+                                    && Set.of("put", "set", "delete").contains(member.member())) {
+                                try {
+                                    env.requireLiveMapOwner(member.receiver(), map);
+                                } catch (RuntimeException | Error invalid) {
+                                    continuation.accept(t, null, invalid);
+                                    return;
+                                }
+                            }
                             evalSuspendableArguments(
                                     t,
                                     call.arguments(),
@@ -12423,6 +12432,17 @@ public final class OresEvalRootNode extends RootNode {
             slot.value = MOVED_MAP;
         }
         private void requireLiveMapOwner(Ast.Expr receiver, OresKeyedMap<?, ?> map) {
+            if (receiver instanceof Ast.MemberExpr field
+                    && field.receiver() instanceof Ast.NameExpr actorSelf
+                    && actorSelf.name().equals("self")) {
+                Object current = lookup("self");
+                if (current instanceof OresObject actor
+                        && actor.klass.actorKind() != Ast.ActorKind.NONE
+                        && actor.fields.get(field.member()) == map) {
+                    return; // Actor-owned field within the authenticated turn.
+                }
+                throw new IllegalStateException("foreign or stale actor Map field denied");
+            }
             if (!(receiver instanceof Ast.NameExpr name)) {
                 throw new IllegalStateException(
                         "Map mutation requires a direct compiler-checked owner or loan");

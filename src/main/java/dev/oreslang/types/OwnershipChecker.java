@@ -2726,7 +2726,7 @@ public final class OwnershipChecker {
                     throw error("Map." + member.member() + " requires " + expected + " argument(s)");
                 }
                 if (mutating) {
-                    ensureMutableReceiver(member.receiver(), scope, "Map indexed/put mutation");
+                    ensureMapMutationReceiver(member.receiver(), scope);
                 }
                 for (Ast.Expr argument : call.arguments()) {
                     ValueInfo checked = checkExpr(argument, scope, true);
@@ -3611,11 +3611,39 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.IndexExpr indexed) {
-            ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
+            Ast.TypeRef receiver = receiverType(indexed.receiver(), scope);
+            if (receiver != null && receiver.name().equals("Map")
+                    && receiver.arguments().size() == 2
+                    && findClass("Map") == null) {
+                ensureMapMutationReceiver(indexed.receiver(), scope);
+            } else {
+                ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
+            }
             checkExpr(indexed.index(), scope, false);
             return;
         }
         throw error("unsupported assignment target");
+    }
+
+    /** Actor-owned Map fields are mutable within their own mailbox turn,
+     * but never become actor-sendable or freely mutable projected aliases.
+     * Local owners and scoped exclusive loans use ordinary borrow admission. */
+    private void ensureMapMutationReceiver(Ast.Expr receiver, Scope scope) {
+        if (receiver instanceof Ast.MemberExpr field
+                && field.receiver() instanceof Ast.NameExpr owner
+                && owner.name().equals("self")) {
+            Ast.ClassDecl klass = classOfReceiver(field.receiver(), scope);
+            if (klass != null && klass.actorKind() != Ast.ActorKind.NONE) {
+                Ast.FieldDecl target = findField(
+                        klass, field.member(), new LinkedHashSet<>());
+                if (target == null || target.bindingKind() != Ast.BindingKind.LET) {
+                    throw error("actor Map field mutation needs an owned writable let field");
+                }
+                checkExpr(field.receiver(), scope, false);
+                return;
+            }
+        }
+        ensureMutableReceiver(receiver, scope, "Map indexed/put mutation");
     }
 
     private void ensureMutableReceiver(Ast.Expr receiver, Scope scope, String what) {

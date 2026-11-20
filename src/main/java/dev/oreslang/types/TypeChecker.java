@@ -9779,8 +9779,8 @@ public final class TypeChecker {
         }
         throw new IllegalArgumentException(
                 "Map." + operation + " requires a directly owned writable let binding "
-                        + "or a writable actor self field; mutable Map receiver "
-                        + "loans, const/val and captured method values are not admitted");
+                        + "or a proven exclusive Map loan or writable actor self field; "
+                        + "const/readonly owners and captured method values are denied");
     }
 
     private Type builtinCollectionMember(Type receiver, String member) {
