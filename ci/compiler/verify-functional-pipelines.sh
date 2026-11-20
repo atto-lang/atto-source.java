@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 fixture_count="$(find fixtures/pipelines -type f -name '*.atto' | wc -l)"
-test "$fixture_count" -eq 14 || { echo 'ATTO_PIPELINE_FIXTURE_COUNT_MISMATCH' >&2; exit 2; }
+test "$fixture_count" -eq 16 || { echo 'ATTO_PIPELINE_FIXTURE_COUNT_MISMATCH' >&2; exit 2; }
 find fixtures/pipelines -type f -name '*.atto' -print0 | sort -z | \
   xargs -0 bash ci/admission/exact-tree.sh \
     src/compiler/pipeline/AttoFunctionalPipelineCompiler.java \
@@ -69,11 +69,35 @@ for spec in \
     test -x "$work/$name/atto-functional-pipeline"
     execute_expected "$name-native-image" "$expected" \
       "$work/$name/aot.stdout" "$work/$name/aot.stderr" \
-      "$work/$name/atto-functional-pipeline
+      "$work/$name/atto-functional-pipeline"
     test ! -s "$work/$name/aot.stdout"
     test ! -s "$work/$name/aot.stderr"
   fi
 done
+
+# Positive source-level i64::MIN is executable as a real compiled JVM
+# callable; the adapter only observes the value and does not evaluate it.
+mkdir -p "$work/signed-int64-min"
+"$JAVA_HOME/bin/java" -cp "$work/compiler" atto.compiler.pipeline.AttoFunctionalPipelineCompiler \
+  fixtures/pipelines/signed-int64-min.atto \
+  "$work/signed-int64-min/AttoFunctionalPipelineGuest.java" >"$work/min-compiler.stdout"
+"$JAVA_HOME/bin/javac" -Xlint:all -Werror -d "$work/signed-int64-min" \
+  "$work/signed-int64-min/AttoFunctionalPipelineGuest.java"
+cat >"$work/signed-int64-min/AttoMinObserver.java" <<'JAVA'
+public final class AttoMinObserver {
+  public static void main(String[] args) {
+    System.out.println(AttoFunctionalPipelineGuest.f_main());
+  }
+}
+JAVA
+"$JAVA_HOME/bin/javac" -Xlint:all -Werror -cp "$work/signed-int64-min" \
+  -d "$work/signed-int64-min" "$work/signed-int64-min/AttoMinObserver.java"
+observed="$("$JAVA_HOME/bin/java" -cp "$work/signed-int64-min" AttoMinObserver)"
+test "$observed" = "-9223372036854775808" || {
+  echo "ATTO_JAVA_I64_MIN_NATIVE_JVM_CALL_MISMATCH observed=$observed" >&2
+  exit 1
+}
+echo 'ATTO_JAVA_I64_MIN_NATIVE_JVM_CALL=EXECUTED'
 
 for spec in \
   mixed-forward-reverse:E_PARSE \
@@ -85,7 +109,8 @@ for spec in \
   bad-callee:E_PARSE \
   forward-local:E_SYMBOL \
   duplicate-local:E_DUP_LOCAL \
-  arrow-brace-no-return:E_PARSE; do
+  arrow-brace-no-return:E_PARSE \
+  signed-int64-underflow:E_LITERAL; do
   name="$(printf '%s' "$spec" | cut -d: -f1)"
   diagnostic="$(printf '%s' "$spec" | cut -d: -f2)"
   mkdir -p "$work/negative-$name"
@@ -105,4 +130,4 @@ for spec in \
   test ! -e "$output" || { echo "ATTO_JAVA_NEGATIVE_ARTIFACT_LEAK=$name" >&2; exit 1; }
 done
 
-echo 'ATTO_JAVA_PIPELINE_GUEST_MATRIX=EXECUTED jvm=4 native_image=2 negative=10'
+echo 'ATTO_JAVA_PIPELINE_GUEST_MATRIX=EXECUTED jvm=5 native_image=2 negative=11'
