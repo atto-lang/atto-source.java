@@ -1,6 +1,15 @@
 name: Atto explicit callable-result Java admission
 
 on:
+  push:
+    branches:
+      - fix/atto-explicit-callable-returns-20261120
+    paths:
+      - '.github/workflows/atto-canonical-return-annotations.yml'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/test/java/dev/oreslang/**'
+      - 'tests/parity/class-fields-v2/**'
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
