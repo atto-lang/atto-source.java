@@ -326,6 +326,10 @@ public final class AttoInlineTaskV2Compiler {
     }
 
     public static Plan compilePlan(String source) {
+        // Apply source-size admission *before* profile routing. This preserves
+        // the stable diagnostic and avoids scanning oversize untrusted input.
+        if (source == null || source.length() > MAX_SOURCE)
+            throw reject("E_ASYNC_SOURCE_SIZE");
         if (!candidate(source)) throw reject("E_UNSUPPORTED_INLINE_PROFILE");
         return new Lower().finish(new Parser(source).main());
     }
