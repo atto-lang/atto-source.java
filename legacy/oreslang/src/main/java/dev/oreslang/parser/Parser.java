@@ -92,6 +92,11 @@ public final class Parser {
                         self.value = value;
                       }
                     end
+                    """,
+            "Error", """
+                    define class Error as
+                      pub let string message;
+                    end
                     """);
     private final java.util.Set<String> usedPreludeProducts = new java.util.LinkedHashSet<>();
 
@@ -3968,9 +3973,15 @@ public final class Parser {
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
         // not yet been lowered in the Java/Graal production compiler.
-        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
-            throw error(peek(), "typed exceptional effect '" + peek().lexeme()
-                    + "' requires checked exception and supervision lowering; source effect is not yet enabled");
+        if (match(THROW, RAISE, PANIC, RECOVER)) {
+            // Source exceptional effects (atto-spec defer-recover-unwind-v1):
+            // throw/raise/panic E and `recover handler;` lower to checked
+            // runtime operations with distinct catch/trap/recover behaviour.
+            String effect = previous().lexeme();
+            Ast.Expr operand = parseExpression();
+            consumeExpressionStatementTerminator(operand, effect + " statement should end with ';'");
+            usedPreludeProducts.add("Error");
+            return new Ast.ExprStmt(new Ast.RuntimeCallExpr(effect, List.of(operand)));
         }
         // The value-producing static select expression is not lowered yet.
         // Preserve historical statement sources until expression migration
@@ -6018,6 +6029,9 @@ public final class Parser {
         }
         consume(CATCH, "expected catch after try block");
         consume(LPAREN, "expected '(' after catch");
+        // Canonical `catch (Error e)`: every guest throw carries an Error payload,
+        // so the optional type annotation does not narrow the handler.
+        if (check(IDENT) && checkNext(IDENT)) parseTypeRef();
         String error = consume(IDENT, "expected catch binding").lexeme();
         consume(RPAREN, "expected ')' after catch binding");
         List<Ast.Stmt> catchBody = parseBlock();
@@ -6911,7 +6925,8 @@ public final class Parser {
                         List<Ast.Expr> productArgs = parseCallArgumentsUntil(RPAREN);
                         consume(RPAREN, "expected ')' after arguments");
                         usedPreludeProducts.add(calleeName.name());
-                        expr = new Ast.NewExpr(new Ast.TypeRef(calleeName.name(), List.of(), true), productArgs);
+                        expr = new Ast.NewExpr(new Ast.TypeRef(calleeName.name(), List.of(),
+                                !calleeName.name().equals("Error")), productArgs);
                         continue;
                     }
                 }
@@ -7254,6 +7269,7 @@ public final class Parser {
                         Ast.TypeRef.simple(request.generatedName()),
                         List.of(wrapped, interceptor));
             }
+            if (PRELUDE_PRODUCTS.containsKey(type.name())) usedPreludeProducts.add(type.name());
             return new Ast.NewExpr(type, args);
         }
         if (match(OBJ)) {

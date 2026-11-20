@@ -1592,6 +1592,16 @@ public final class OwnershipChecker {
                     }
                     yield source;
                 }
+                case "throw", "raise", "panic" -> {
+                    // The Error payload moves into the failure; it is not borrowed.
+                    checkExpr(argument, scope, true);
+                    yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
+                case "recover" -> {
+                    // The handler closure's captures are checked like any closure.
+                    checkExpr(argument, scope, false);
+                    yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
                 default -> throw error("unknown runtime operation 'rt " + runtime.operation() + "'");
             };
         }

@@ -216,11 +216,9 @@ public final class TypeChecker {
                                     + "' but requires checked actor context, mailbox dispatch, "
                                     + "state ownership and generation-fenced runtime lowering");
                 }
-                if (declaration instanceof Ast.FunctionDecl fn && !fn.effects().isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "checked exceptional effect on function '" + fn.name()
-                                    + "' is parsed but not yet enabled for type checking");
-                }
+                // Function throws(...)/raises(...)/panics(...) clauses are
+                // admitted as declarations (v1: not yet a checked upper bound);
+                // throw/raise/panic/recover statements carry the semantics.
                 if (declaration instanceof Ast.StateContainerDecl state) {
                     throw new IllegalArgumentException(
                             "STATE_CONTAINER_MIR_UNSUPPORTED: '" + state.name()
@@ -255,25 +253,12 @@ public final class TypeChecker {
     }
 
     private static void rejectUnloweredCheckedClassEffects(Ast.ClassDecl klass) {
-        for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.effects().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "checked exceptional effect on method '" + klass.name() + "."
-                                + method.name()
-                                + "' is parsed but not yet enabled for type checking");
-            }
-        }
+        // Method throws/raises/panics clauses are admitted as declarations (v1),
+        // like function clauses; the statements carry the semantics.
     }
 
     private static void rejectUnloweredCheckedInterfaceEffects(Ast.InterfaceDecl iface) {
-        for (Ast.InterfaceMember member : iface.members()) {
-            if (member instanceof Ast.InterfaceFunctionDecl fn && !fn.effects().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "checked exceptional effect on interface method '" + iface.name()
-                                + "." + fn.name()
-                                + "' is parsed but not yet enabled for type checking");
-            }
-        }
+        // Interface method effect clauses are admitted as declarations (v1).
     }
 
     /**
@@ -3702,6 +3687,26 @@ public final class TypeChecker {
                 if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
                     throw new IllegalArgumentException(
                             "rt cooperate is not enabled for untrusted actors until continuation quotas preserve fuel/deadline state across scheduler handoffs");
+                }
+                return Primitive.VOID;
+            }
+            if (isExceptionalEffect(runtime) || runtime.operation().equals("recover")) {
+                if (runtime.arguments().size() != 1) {
+                    throw new IllegalArgumentException(runtime.operation() + " expects exactly one operand");
+                }
+                Type payload = typeOf(runtime.arguments().getFirst(), env, generics, self);
+                if (runtime.operation().equals("recover")) {
+                    // `recover handler;` takes a two-parameter (err, cursor) callback.
+                    if (!(payload instanceof Function handler) || handler.parameters().size() != 2) {
+                        throw new IllegalArgumentException(
+                                "recover requires a |err, cursor| -> { ... } handler");
+                    }
+                    return Primitive.VOID;
+                }
+                // throw/raise/panic operands must be a statically validated Error.
+                if (!isErrorType(payload)) {
+                    throw new IllegalArgumentException(runtime.operation()
+                            + " requires an Error value; got " + payload);
                 }
                 return Primitive.VOID;
             }
@@ -13308,9 +13313,32 @@ public final class TypeChecker {
         return false;
     }
 
+    static boolean isExceptionalEffect(Ast.RuntimeCallExpr runtime) {
+        String op = runtime.operation();
+        return op.equals("throw") || op.equals("raise") || op.equals("panic");
+    }
+
+    /** The built-in or prelude Error, or a class that extends it. */
+    private boolean isErrorType(Type type) {
+        if (!(type instanceof Named named) || !named.arguments().isEmpty()) return false;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        String name = named.name();
+        while (name != null && seen.add(name)) {
+            if (name.equals("Error")) return true;
+            Ast.ClassDecl klass = findClass(name);
+            if (klass == null) return false;
+            name = klass.parents().isEmpty() ? null : klass.parents().getFirst().name();
+        }
+        return false;
+    }
+
     private boolean definitelyReturns(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
+            // throw/raise/panic never complete normally.
+            if (stmt instanceof Ast.ExprStmt effect
+                    && effect.expression() instanceof Ast.RuntimeCallExpr runtime
+                    && isExceptionalEffect(runtime)) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
             if (stmt instanceof Ast.UsingTelemetrySpanStmt scope

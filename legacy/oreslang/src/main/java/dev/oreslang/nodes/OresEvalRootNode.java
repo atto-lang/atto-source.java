@@ -234,6 +234,8 @@ public final class OresEvalRootNode extends RootNode {
         private StartupPhase startupPhase = StartupPhase.CREATED;
         private final ThreadLocal<GeneratorRuntime.Emitter<Object>> activeGeneratorEmitter = new ThreadLocal<>();
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
+        /** Active guest catch/trap boundaries on this thread (two-phase recover search). */
+        private final ThreadLocal<int[]> activeCatchers = ThreadLocal.withInitial(() -> new int[1]);
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
         private static final Object UNINITIALIZED_FIELD = new Object();
 
@@ -3066,7 +3068,7 @@ public final class OresEvalRootNode extends RootNode {
                                     Env caught = new Env(env);
                                     caught.define(
                                             attempted.errorName(),
-                                            flow.failure(),
+                                            guestErrorValue(flow.failure()),
                                             Ast.BindingKind.VAL);
                                     runBlock(
                                             t,
@@ -6686,7 +6688,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
-            return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
+            return !(failure instanceof GuestRaise) && dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
         }
 
@@ -6705,7 +6707,8 @@ public final class OresEvalRootNode extends RootNode {
         // may handle a denied operation without weakening its authority.
         // Fatal panic and scheduler cancellation remain uncatchable.
         private boolean isGuestCatchableFailure(Throwable failure) {
-            return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
+            return !(failure instanceof GuestRaise) && !(failure instanceof RecoveryCursorNext)
+                    && dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
                     failure, OresPanic.class);
         }
 
@@ -6722,11 +6725,15 @@ public final class OresEvalRootNode extends RootNode {
 
             Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
             bindCallableArguments(env, fn.parameters(), args, "function " + fn.name());
+            boolean recovering = registersRecover(fn.body());
+            List<Object> recoverHandlers = recovering ? new ArrayList<>() : null;
+            if (recovering) env.define(RECOVER_SLOT, recoverHandlers, Ast.BindingKind.VAL);
             try {
                 // A trap boundary must survive tail-call lowering. Treat it as a
                 // tail barrier so a callee failure cannot escape by replacing
-                // this function's dynamic boundary.
-                executeBlock(fn.body(), env, fn.trapped());
+                // this function's dynamic boundary. A recover registration is
+                // a boundary in the same way.
+                executeBlock(fn.body(), env, fn.trapped() || recovering);
                 return null;
             } catch (TailCallSignal signal) {
                 return new TailCall(signal.invocation);
@@ -6738,8 +6745,65 @@ public final class OresEvalRootNode extends RootNode {
             } catch (BreakSignal | ContinueSignal signal) {
                 throw new IllegalStateException("loop control cannot cross a function boundary", signal);
             } catch (RuntimeException failure) {
+                if (recovering && !recoverHandlers.isEmpty() && recoverEligible(failure)) {
+                    // finally blocks and defers have already run (unwind order);
+                    // the handler's result becomes this function's result.
+                    return shapeReturnedValue(fn.returnType(),
+                            runRecoverHandlers(recoverHandlers, failure), "function " + fn.name());
+                }
                 throw dev.oreslang.runtime.SourceBoundaryTrace.record(failure, codeUnitId, fn.name(), "function");
             }
+        }
+
+        private static final String RECOVER_SLOT = "$recover$";
+
+        private static boolean registersRecover(List<Ast.Stmt> body) {
+            for (Ast.Stmt stmt : body) {
+                if (stmt instanceof Ast.ExprStmt statement
+                        && statement.expression() instanceof Ast.RuntimeCallExpr runtime
+                        && runtime.operation().equals("recover")) return true;
+            }
+            return false;
+        }
+
+        @SuppressWarnings("unchecked")
+        private void registerRecoverHandler(Object handler, Env env) {
+            if (!(handler instanceof Invokable)) {
+                throw new IllegalArgumentException("recover requires a |err, cursor| -> { ... } handler");
+            }
+            Object slot = env.lookup(RECOVER_SLOT);
+            if (!(slot instanceof List<?> handlers)) {
+                throw new IllegalStateException(
+                        "recover is admitted only at the top level of a synchronous fnc body");
+            }
+            ((List<Object>) handlers).add(handler);
+        }
+
+        /**
+         * Two-phase dispatch (defer-recover-unwind-v1): a raise always reaches
+         * recover; an ordinary throw only when no catch or trap boundary is
+         * active anywhere up the dynamic call chain; panic never.
+         */
+        private boolean recoverEligible(RuntimeException failure) {
+            if (failure instanceof GuestRaise) return true;
+            return failure instanceof GuestThrow && activeCatchers.get()[0] == 0;
+        }
+
+        /** Run handlers newest-first; `cursor.next()` delegates to the next older one. */
+        private Object runRecoverHandlers(List<Object> handlers, RuntimeException failure) {
+            Object errorView = guestErrorValue(failure);
+            for (int i = handlers.size() - 1; i >= 0; i--) {
+                Invokable handler = (Invokable) handlers.get(i);
+                Map<String, Object> cursorFields = new LinkedHashMap<>();
+                cursorFields.put("next", (Invokable) ignored -> { throw new RecoveryCursorNext(); });
+                Object cursor = new ReadonlyRecordValue(cursorFields);
+                try {
+                    return invoke(invokableInvocation(handler, List.of(errorView, cursor)));
+                } catch (RecoveryCursorNext delegated) {
+                    // Terminal delegation: try the next older registration.
+                }
+            }
+            throw failure;
         }
 
         private boolean methodContainsPotentialSuspension(
@@ -7152,16 +7216,23 @@ public final class OresEvalRootNode extends RootNode {
                 // earlier explicit exit with a different one.
                 Throwable pendingTryFailure = null;
                 try {
-                    try { executeBlock(tried.body(), env, true); }
+                    // An active catch is visible to the two-phase recover search:
+                    // a callee's recover handler must not preempt this catch.
+                    boolean countsAsCatcher = tried.hasCatch();
+                    try {
+                        if (countsAsCatcher) activeCatchers.get()[0]++;
+                        try { executeBlock(tried.body(), env, true); }
+                        finally { if (countsAsCatcher) activeCatchers.get()[0]--; }
+                    }
                     catch (TailCallSignal signal) { throw signal; }
                     catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                     catch (OresPanic panic) { throw panic; }
                     catch (RuntimeException failure) {
                         // Guest catch may recover explicit denials and other ordinary
-                        // errors, but must never consume panic or scheduler control.
+                        // errors, but must never consume panic, raise or scheduler control.
                         if (!tried.hasCatch() || !isGuestCatchableFailure(failure)) throw failure;
                         Env catchEnv = new Env(env);
-                        catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                        catchEnv.define(tried.errorName(), guestErrorValue(failure), Ast.BindingKind.VAL);
                         executeBlock(tried.catchBody(), catchEnv, true);
                     }
                 } catch (RuntimeException | Error failure) {
@@ -8238,6 +8309,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
+                case "throw" -> throw new GuestThrow(value);
+                case "raise" -> throw new GuestRaise(value);
+                case "panic" -> throw new OresPanic(guestErrorMessage(value));
                 case "fail" -> {
                     if (!(value instanceof String message)) {
                         throw new IllegalArgumentException("rt fail message must be a String");
@@ -8523,7 +8597,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 try {
-                    return trapOk(eval(trapped.expression(), env));
+                    activeCatchers.get()[0]++;
+                    try {
+                        return trapOk(eval(trapped.expression(), env));
+                    } finally {
+                        activeCatchers.get()[0]--;
+                    }
                 } catch (RuntimeException failure) {
                     if (!isTrappableFailure(failure)) throw failure;
                     return trapErr(failure);
@@ -8649,6 +8728,10 @@ public final class OresEvalRootNode extends RootNode {
                 Object value = eval(runtime.arguments().getFirst(), env);
                 if (runtime.operation().equals("workflow_request")) {
                     return submitWorkflowGuestIntrinsic(value, env);
+                }
+                if (runtime.operation().equals("recover")) {
+                    registerRecoverHandler(value, env);
+                    return null;
                 }
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
@@ -13493,6 +13576,8 @@ public final class OresEvalRootNode extends RootNode {
     }
     /** `trap` failure: Err(Error) with a sanitized payload. */
     private static ResultValue trapErr(Throwable failure) {
+        // A trapped source throw yields its original Error (trap-result-v1).
+        if (failure instanceof GuestThrow thrown) return new ResultValue(false, thrown.payload);
         return new ResultValue(false, TrapError.of(failure));
     }
     private record OptionUnwrapError(String reason) {
@@ -13501,6 +13586,45 @@ public final class OresEvalRootNode extends RootNode {
     private static final class OresPanic extends RuntimeException
             implements dev.oreslang.runtime.UntrappableTaskFailure {
         private OresPanic(String message) { super(message, null, true, false); }
+    }
+
+    /** The message of a guest Error payload (its `message` field), for diagnostics. */
+    private static String guestErrorMessage(Object payload) {
+        if (payload instanceof OresObject object && object.fields.get("message") instanceof String text) {
+            return text;
+        }
+        return String.valueOf(payload);
+    }
+
+    /** Ordinary source `throw`: visits catch and trap boundaries; carries its Error. */
+    private static final class GuestThrow extends RuntimeException {
+        private final Object payload;
+        private GuestThrow(Object payload) {
+            super(guestErrorMessage(payload), null, true, false);
+            this.payload = payload;
+        }
+    }
+
+    /** Source `raise`: bypasses catch and trap; only a registered `recover` handles it. */
+    private static final class GuestRaise extends RuntimeException
+            implements dev.oreslang.runtime.UntrappableTaskFailure {
+        private final Object payload;
+        private GuestRaise(Object payload) {
+            super(guestErrorMessage(payload), null, true, false);
+            this.payload = payload;
+        }
+    }
+
+    /** `cursor.next()` inside a recover handler: delegate to the next older handler. */
+    private static final class RecoveryCursorNext extends RuntimeException {
+        private RecoveryCursorNext() { super("recover cursor.next()", null, false, false); }
+    }
+
+    /** The guest value bound by `catch (e)` / returned by trap for a failure. */
+    private static Object guestErrorValue(Throwable failure) {
+        if (failure instanceof GuestThrow thrown) return thrown.payload;
+        if (failure instanceof GuestRaise raised) return raised.payload;
+        return failure;
     }
     private static final class OresCastError extends RuntimeException {
         private OresCastError(String message) { super(message, null, false, false); }

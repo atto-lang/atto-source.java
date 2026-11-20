@@ -442,7 +442,8 @@ public final class CapabilityChecker {
                 for (Ast.Expr argument : runtime.arguments()) checkExpr(argument, policy);
                 return;
             }
-            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail").contains(runtime.operation())) {
+            if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail",
+                    "throw", "raise", "panic", "recover").contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
             }
