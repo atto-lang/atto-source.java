@@ -74,6 +74,8 @@ public final class AttoAsyncV1Compiler {
             String value = next();
             if (!value.matches("[A-Za-z_][A-Za-z_0-9]*"))
                 throw new Reject("E_ASYNC_INVALID_IDENTIFIER");
+            if (value.equals("sync"))
+                throw new Reject("E_RESERVED_SYNC");
             if (FORBIDDEN_IDENTIFIERS.contains(value))
                 throw new Reject("E_RESERVED_IDENTIFIER_" + value);
             return value;
