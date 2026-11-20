@@ -3558,11 +3558,24 @@ public final class TypeChecker {
             Type right = typeOf(binary.right(), env, generics, self);
             return switch (binary.operator()) {
                 case "^^" -> {
+                    if (strictAttoEquality) {
+                        // Canonical operator-spelling v1: integer XOR only.
+                        // Do not let macro-generated ASTs reinterpret it as
+                        // historical bool XOR or erase source-level types.
+                        requireInteger(left, "canonical ^^ left operand");
+                        requireInteger(right, "canonical ^^ right operand");
+                        yield Primitive.INT;
+                    }
+                    // Historical unversioned .ores remains bool XOR.
                     requireAssignable(left, Primitive.BOOL, "logical operand");
                     requireAssignable(right, Primitive.BOOL, "logical operand");
                     yield Primitive.BOOL;
                 }
-                case "&", "|", "^", "<<", ">>", ">>>" -> {
+                case "^", "&", "|", "<<", ">>", ">>>" -> {
+                    if (strictAttoEquality && binary.operator().equals("^")) {
+                        throw new IllegalArgumentException(
+                                "E_OPERATOR_CARET: infix '^' is forbidden in canonical AttoLang");
+                    }
                     requireInteger(left, "bitwise left operand");
                     requireInteger(right, "bitwise right operand");
                     yield Primitive.INT;
@@ -10045,6 +10058,7 @@ public final class TypeChecker {
                     case "+" -> Math.addExact(a, b);
                     case "-" -> Math.subtractExact(a, b);
                     case "*" -> Math.multiplyExact(a, b);
+                    case "^^" -> a ^ b;
                     case "eq", "==" -> a.longValue() == b.longValue();
                     case "neq", "!=" -> a.longValue() != b.longValue();
                     case "<" -> a < b;
