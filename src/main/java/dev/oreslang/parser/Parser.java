@@ -863,7 +863,7 @@ public final class Parser {
 
         if (match(EQUAL)) {
             if (prefixReturnType != null) {
-                throw error(previous(), "return-first declarations require a parameter list and begin/end body");
+                throw error(previous(), "return-first declarations require a parameter list and callable body");
             }
             consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
             List<Ast.Param> params = parseDeclaredPipeParameters();
@@ -888,7 +888,7 @@ public final class Parser {
                 : validateReturnFirstType(prefixReturnType, annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
         List<Ast.Stmt> body = prefixReturnType != null
-                ? parseBeginEndCallableBody()
+                ? parseReturnFirstCallableBody()
                 : parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
@@ -971,26 +971,22 @@ public final class Parser {
         return type;
     }
 
-    /** The explicit begin owns exactly one end (optionally followed by . or ;). */
-    private List<Ast.Stmt> parseBeginEndCallableBody() {
-        Token headerEnd = previous();
-        if (!matchContextualKeyword("begin")) {
-            throw error(peek(), "return-first callable requires 'begin' after its signature");
-        }
-        Token begin = previous();
-        if (begin.line() == headerEnd.line()) {
-            throw error(begin, "'begin' must start on the line after a return-first signature");
-        }
-        // No executable token may trail the opener: otherwise a compact
-        // 'begin return ... end' body would disagree with the formatter's
-        // standalone begin/end frame and permit boundary confusion.
-        if (peek().line() == begin.line()) {
-            throw error(peek(), "'begin' must be the only code on its line");
-        }
+    /**
+     * Return-first headers preserve the ordinary callable body families.
+     * Braces are a complete block; contextual begin/end and bare statements/end
+     * are both explicit end-terminated bodies with ordinary (non-tail-return)
+     * statement semantics. Neither marker, '<-' nor U+2022 BULLET, changes
+     * lexical scope, effects or the callable's declared return type.
+     */
+    private List<Ast.Stmt> parseReturnFirstCallableBody() {
+        if (check(LBRACE)) return parseBlock();
+        // The begin keyword is an optional unambiguous body delimiter. Keeping
+        // it contextual preserves use of identifiers named begin elsewhere.
+        matchContextualKeyword("begin");
         localTypeScopes.push(new java.util.HashSet<>());
         try {
             List<Ast.Stmt> body = parseUntil(END);
-            consume(END, "expected 'end' after begin callable body");
+            consume(END, "expected 'end' after return-first callable body");
             match(DOT, SEMICOLON);
             return body;
         } finally {
@@ -2262,10 +2258,10 @@ public final class Parser {
         }
         List<Ast.Stmt> body;
         if (prefixReturnType != null && (mods.isAbstract || implicitAbstract)) {
-            throw error(peek(), "return-first methods require an executable begin/end body");
+            throw error(peek(), "return-first methods require an executable callable body");
         }
         if (prefixReturnType != null) {
-            body = parseBeginEndCallableBody();
+            body = parseReturnFirstCallableBody();
         } else if (mods.isAbstract || implicitAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
