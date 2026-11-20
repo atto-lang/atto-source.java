@@ -5,6 +5,8 @@
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -66,11 +68,14 @@ public final class AttoM10RestrictedSenderCompiler {
         Path output = Path.of(args[1]);
         if (Files.isSymbolicLink(source) || !Files.isRegularFile(source))
             throw new IOException("untrusted sender source path");
-        if (Files.exists(output))
-            throw new IOException("refuse to overwrite source artifact");
-        Files.writeString(output,
-            compile_source(Files.readString(source, StandardCharsets.UTF_8)),
-            StandardCharsets.UTF_8);
+        // CREATE_NEW is atomic even if an attacker supplies a dangling link;
+        // NOFOLLOW also rejects symlinks at the final output component.
+        String generated = compile_source(Files.readString(source, StandardCharsets.UTF_8));
+        try (var writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
+                LinkOption.NOFOLLOW_LINKS)) {
+            writer.write(generated);
+        }
         System.out.println("M10_RESTRICTED_ATTO_SENDER_SOURCE_TRANSLATED=PASS");
     }
 }
