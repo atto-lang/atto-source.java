@@ -326,7 +326,7 @@ public final class AttoM6Runtime implements AutoCloseable {
         try {
             while (true) {
                 Actor actor;
-                long mail;
+                Mail mail;
                 synchronized (gate) {
                     while (true) {
                         if (stopping && ready.isEmpty() && controls.isEmpty()) return;
@@ -337,6 +337,7 @@ public final class AttoM6Runtime implements AutoCloseable {
                         if (actor.retired || actor.fenced || actor.running || actor.inbox.isEmpty())
                             continue;
                         mail = actor.inbox.removeFirst();
+                        if (mail.ticket() != null) mail.ticket().state = TicketState.STARTED;
                         actor.running = true;
                         actor.turnStartedNanos = System.nanoTime();
                         actor.currentTurnNotified = false;
@@ -347,8 +348,12 @@ public final class AttoM6Runtime implements AutoCloseable {
                 }
                 wake_reactor(); // Capacity became available; rearm paused NIO.
                 Throwable error = null;
-                try { actor.handler.receive(mail); }
-                catch (Throwable e) { error = e; }
+                long returned = 0;
+                boolean hasResult = actor.resultHandler != null;
+                try {
+                    if (hasResult) returned = actor.resultHandler.receive(mail.value());
+                    else actor.handler.receive(mail.value());
+                } catch (Throwable e) { error = e; }
                 synchronized (gate) {
                     long elapsed = System.nanoTime() - actor.turnStartedNanos;
                     if (elapsed > actor.maxTurnNanos) actor.maxTurnNanos = elapsed;
@@ -357,9 +362,16 @@ public final class AttoM6Runtime implements AutoCloseable {
                         totalOverBudgetTurns++;
                     }
                     actor.running = false;
-                    if (error == null) actor.completed++;
-                    else {
+                    if (error == null) {
+                        actor.completed++;
+                        if (mail.ticket() != null) {
+                            mail.ticket().result = returned;
+                            mail.ticket().hasResult = hasResult;
+                            mail.ticket().state = TicketState.PROCESSED;
+                        }
+                    } else {
                         actor.failed++;
+                        if (mail.ticket() != null) mail.ticket().state = TicketState.FAILED;
                         actor.failureType = error.getClass().getSimpleName();
                         // Fence immediately; supervisor notice delivery is separate.
                         actor.fenced = true;
