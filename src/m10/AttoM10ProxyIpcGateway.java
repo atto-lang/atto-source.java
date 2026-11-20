@@ -16,6 +16,8 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Objects;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
@@ -57,6 +59,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
     private final AttoM6Runtime runtime;
     private final AttoM6Runtime.ActorRef target;
     private final Path socketPath;
+    private final Object socketFileKey;
     private final long tenant;
     // Fresh server-issued actor association incarnation, not an OS PID or
     // per-runtime generation counter (which may restart at one).
@@ -81,8 +84,9 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
             throw new IllegalArgumentException("socket path not absolute or already occupied");
         Path parent = socketPath.getParent();
         if (parent == null || Files.isSymbolicLink(parent) || !Files.isDirectory(parent) ||
-            Files.getPosixFilePermissions(parent).contains(PosixFilePermission.OTHERS_WRITE) ||
-            Files.getPosixFilePermissions(parent).contains(PosixFilePermission.GROUP_WRITE))
+            !Files.getPosixFilePermissions(parent).equals(Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE)))
             throw new IllegalArgumentException("socket parent must be private and non-symlink");
         this.runtime = runtime;
         this.target = target;
@@ -97,6 +101,10 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
             this.listener.bind(UnixDomainSocketAddress.of(socketPath));
             Files.setPosixFilePermissions(socketPath, Set.of(
                 PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+            this.socketFileKey = Files.readAttributes(socketPath, BasicFileAttributes.class,
+                LinkOption.NOFOLLOW_LINKS).fileKey();
+            if (this.socketFileKey == null)
+                throw new IOException("platform cannot pin listener socket inode");
             this.listener.register(selector, SelectionKey.OP_ACCEPT);
         } catch (IOException | RuntimeException failure) {
             try { selector.close(); } catch (IOException ignored) { }
@@ -380,7 +388,15 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
             try { listener.close(); } catch (IOException ignored) { }
             try { selector.close(); } catch (IOException ignored) { }
             Arrays.fill(key, (byte) 0);
-            try { Files.deleteIfExists(socketPath); } catch (IOException ignored) { }
+            try {
+                // Never unlink another user's path substituted during shutdown.
+                if (Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS) &&
+                    !Files.isSymbolicLink(socketPath) &&
+                    Objects.equals(socketFileKey,
+                        Files.readAttributes(socketPath, BasicFileAttributes.class,
+                            LinkOption.NOFOLLOW_LINKS).fileKey()))
+                    Files.delete(socketPath);
+            } catch (IOException ignored) { }
             live = false;
         }
     }
@@ -410,6 +426,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
                 channel.register(wait, SelectionKey.OP_CONNECT);
                 channel.connect(UnixDomainSocketAddress.of(socket));
                 while (!channel.finishConnect()) wait_ready(wait, SelectionKey.OP_CONNECT, deadline);
+                peer_same_user(channel);
                 Frame hello = new Frame(HELLO, tenant, generation, messageId, attempt, 0);
                 write_exact(channel, wait, encode(hello, secret, actor), deadline);
                 Frame welcome = read_exact(channel, wait, secret, actor, deadline);
