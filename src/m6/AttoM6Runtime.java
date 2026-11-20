@@ -196,7 +196,19 @@ public final class AttoM6Runtime implements AutoCloseable {
     }
 
     public Admission try_send(ActorRef ref, long value) {
-        synchronized (gate) { return enqueue(ref, value, null).admission(); }
+        // Legacy local/NIO sends require no reply ticket, but share the same
+        // linearizable M6 bounded admission semantics and actor fences.
+        synchronized (gate) {
+            Actor actor = resolve(ref);
+            if (actor == null) return Admission.STALE;
+            if (!actor.accepting || actor.fenced || stopping || closing)
+                return Admission.CLOSED;
+            if (actor.inbox.size() >= actor.capacity) return Admission.FULL;
+            actor.inbox.addLast(new Mail(value, null));
+            actor.accepted++;
+            schedule(actor);
+            return Admission.ACCEPTED;
+        }
     }
     // Only a trusted host gateway can supply a prevalidated route, and only
     // this mailbox may issue the opaque ticket for that route after admission.
@@ -212,11 +224,8 @@ public final class AttoM6Runtime implements AutoCloseable {
             return new TicketAdmission(Admission.CLOSED, null);
         if (actor.inbox.size() >= actor.capacity)
             return new TicketAdmission(Admission.FULL, null);
-        Ticket ticket = null;
-        if (route != null) {
-            actor.nextTicketSequence = Math.addExact(actor.nextTicketSequence, 1L);
-            ticket = new Ticket(this, actor.ref, route, actor.nextTicketSequence);
-        }
+        actor.nextTicketSequence = Math.addExact(actor.nextTicketSequence, 1L);
+        Ticket ticket = new Ticket(this, actor.ref, route, actor.nextTicketSequence);
         actor.inbox.addLast(new Mail(value, ticket));
         actor.accepted++;
         schedule(actor);
