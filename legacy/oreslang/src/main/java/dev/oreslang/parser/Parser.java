@@ -64,15 +64,36 @@ public final class Parser {
      * a method of the same name and arity. A default reachable from two
      * implemented traits is ambiguous and must be overridden explicitly.
      */
+    /** Out-of-line `mtd (self: Owner)` methods by owner class, in source order. */
+    private final java.util.LinkedHashMap<String, List<Ast.MethodDecl>> outOfLineMethods =
+            new java.util.LinkedHashMap<>();
+    private final java.util.LinkedHashMap<String, Token> outOfLineHeads = new java.util.LinkedHashMap<>();
+    private final java.util.Set<String> attachedOutOfLineOwners = new java.util.HashSet<>();
+
     private Ast.ModuleDecl applyTraitDefaults(Ast.ModuleDecl module) {
         List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
         boolean changed = false;
         for (Ast.Decl declaration : module.declarations()) {
-            if (!(declaration instanceof Ast.ClassDecl klass) || klass.interfaces().isEmpty()) {
+            List<Ast.MethodDecl> outOfLine = declaration instanceof Ast.ClassDecl owner
+                    && owner.actorKind() == Ast.ActorKind.NONE
+                    ? outOfLineMethods.getOrDefault(owner.name(), List.of()) : List.of();
+            if (!(declaration instanceof Ast.ClassDecl klass)
+                    || (klass.interfaces().isEmpty() && outOfLine.isEmpty())) {
                 declarations.add(declaration);
                 continue;
             }
             List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
+            for (Ast.MethodDecl attached : outOfLine) {
+                boolean duplicate = methods.stream().anyMatch(own ->
+                        own.name().equals(attached.name())
+                                && own.parameters().size() == attached.parameters().size());
+                if (duplicate) {
+                    throw new IllegalArgumentException("out-of-line method '" + attached.name()
+                            + "' duplicates a method already declared in class " + klass.name());
+                }
+                methods.add(attached);
+            }
+            if (!outOfLine.isEmpty()) attachedOutOfLineOwners.add(klass.name());
             java.util.Map<String, String> inheritedFrom = new java.util.HashMap<>();
             for (Ast.TypeRef implemented : klass.interfaces()) {
                 for (Ast.MethodDecl fallback : traitDefaults.getOrDefault(implemented.name(), List.of())) {
@@ -421,6 +442,22 @@ public final class Parser {
                 throw error(previous(), "expected module, class, enum, interface, trait, type, fnc, or routine after 'define'");
             }
 
+            if (isContextualIdentifier("mtd") && checkNext(LPAREN)) {
+                // Out-of-line receiver method: `mtd (self: Owner) name(...) ...`
+                // attaches an ordinary instance method to the nominal class Owner.
+                Token head = advance(); // contextual mtd
+                consume(LPAREN, "expected '(' before out-of-line method receiver");
+                if (!match(SELF)) {
+                    throw error(peek(), "out-of-line method receiver must be named 'self'");
+                }
+                consume(COLON, "expected ':' after receiver name");
+                String owner = consumeTypeDeclarationName("expected receiver class name");
+                consume(RPAREN, "expected ')' after out-of-line method receiver");
+                Ast.MethodDecl method = parseMethod(annotations, modifiers);
+                outOfLineMethods.computeIfAbsent(owner, ignored -> new ArrayList<>()).add(method);
+                outOfLineHeads.putIfAbsent(owner, head);
+                continue;
+            }
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
             if (declaration == null) throw error(peek(), "expected module or top-level declaration");
             rootDeclarations.add(declaration);
@@ -432,10 +469,16 @@ public final class Parser {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
-        if (!traitDefaults.isEmpty()) {
+        if (!traitDefaults.isEmpty() || !outOfLineMethods.isEmpty()) {
             List<Ast.ModuleDecl> withDefaults = new ArrayList<>(modules.size());
             for (Ast.ModuleDecl module : modules) withDefaults.add(applyTraitDefaults(module));
             modules = withDefaults;
+        }
+        for (java.util.Map.Entry<String, Token> unresolved : outOfLineHeads.entrySet()) {
+            if (!attachedOutOfLineOwners.contains(unresolved.getKey())) {
+                throw error(unresolved.getValue(), "out-of-line method receiver '"
+                        + unresolved.getKey() + "' does not name a class declared in this file");
+            }
         }
         return StaticProxySynthesis.expand(
                 new Ast.Program(namespace, imports, modules, exports),
@@ -1114,12 +1157,33 @@ public final class Parser {
         if (!explicit && attoCallableVersion == null && !isImplicitNewlineTerminator()) {
             throw error(peek(), "end-delimited callable needs a newline or '::' after its return type");
         }
+        return parseEndDelimitedCallableBody("callable");
+    }
+
+    /** While true, ',' also terminates a statement (canonical comma bodies). */
+    private boolean commaBodyMode;
+
+    /**
+     * Canonical end-delimited callable body: items are statements separated
+     * by ';', newlines or ','; a final expression item is the callable's
+     * result, e.g. `fnc f() -> int  let int x = 3, x + 2  end`.
+     */
+    private List<Ast.Stmt> parseEndDelimitedCallableBody(String what) {
         localTypeScopes.push(new java.util.HashSet<>());
+        boolean outerCommaBody = commaBodyMode;
+        commaBodyMode = true;
         try {
-            List<Ast.Stmt> body = parseUntil(END);
-            consume(END, "expected 'end' after callable body");
+            List<Ast.Stmt> body = new ArrayList<>(parseUntil(END));
+            consume(END, "expected 'end' after " + what + " body");
+            if (!body.isEmpty() && body.getLast() instanceof Ast.ExprStmt last
+                    && !(last.expression() instanceof Ast.AssignExpr)
+                    && !(last.expression() instanceof Ast.CallExpr)
+                    && !(last.expression() instanceof Ast.ChannelOpExpr)) {
+                body.set(body.size() - 1, new Ast.ReturnStmt(last.expression()));
+            }
             return body;
         } finally {
+            commaBodyMode = outerCommaBody;
             localTypeScopes.pop();
         }
     }
@@ -2360,10 +2424,10 @@ public final class Parser {
             if (attoCallableVersion != null) {
                 body = parseVersionedCommaTailBody();
             } else {
-                body = new ArrayList<>();
-                while (!check(END) && !check(EOF)) body.add(parseStatement());
-                consume(END, "expected 'end' to close method '" + name + "'");
+                body = parseEndDelimitedCallableBody("method '" + name + "'");
             }
+        } else if (attoCallableVersion == null && arrowMethodBody && !check(LBRACE)) {
+            body = parseEndDelimitedCallableBody("method '" + name + "'");
         } else if (attoCallableVersion == AttoCallableVersion.V1
                 && arrowMethodBody && !check(LBRACE)) {
             body = parseVersionedCommaTailBody();
@@ -2868,6 +2932,8 @@ public final class Parser {
         Ast.TypeRef declared = null;
         if (match(COLON) || match(ARROW)) {
             declared = parseTypeRef();
+            // Canonical `: T -> { ... }`: the arrow before a brace body is redundant.
+            if (check(ARROW) && checkNext(LBRACE)) advance();
         }
         if (annotated != null && declared != null && !sameType(annotated, declared)) {
             throw error(previous(), "@Ret type and declared return type disagree");
@@ -3457,12 +3523,15 @@ public final class Parser {
     private List<Ast.Stmt> parseBlock() {
         consume(LBRACE, "expected '{'");
         localTypeScopes.push(new java.util.HashSet<>());
+        boolean outerCommaBody = commaBodyMode;
+        commaBodyMode = false; // braces restore ordinary statement terminators
         try {
             List<Ast.Stmt> body = new ArrayList<>();
             while (!check(RBRACE) && !check(EOF)) body.add(parseStatement());
             consume(RBRACE, "expected '}'");
             return body;
         } finally {
+            commaBodyMode = outerCommaBody;
             localTypeScopes.pop();
         }
     }
@@ -7504,6 +7573,7 @@ public final class Parser {
     }
 
     private void consumeStatementTerminator(String message) {
+        if (commaBodyMode && match(COMMA)) return;
         if (match(SEMICOLON) || isSafeStatementBoundary() || isImplicitNewlineTerminator()) return;
         throw error(peek(), message);
     }
