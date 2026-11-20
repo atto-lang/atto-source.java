@@ -439,12 +439,22 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
                 Frame hello = new Frame(HELLO, tenant, generation, messageId, attempt, 0);
                 write_exact(channel, wait, encode(hello, secret, actor), deadline);
                 Frame welcome = read_exact(channel, wait, secret, actor, deadline);
-                if (welcome.kind() == REJECTED) throw new RemoteRejected(welcome.value());
+                if (welcome.kind() == REJECTED) {
+                    // Authenticated bytes alone do not authorize a terminal
+                    // decision for another request in this connection.
+                    require_reply(welcome, hello, REJECTED);
+                    throw new RemoteRejected(welcome.value());
+                }
                 require_reply(welcome, hello, HELLO_OK);
                 Frame send = new Frame(SEND, tenant, generation, messageId, attempt, value);
                 write_exact(channel, wait, encode(send, secret, actor), deadline);
                 Frame admitted = read_exact(channel, wait, secret, actor, deadline);
-                if (admitted.kind() == REJECTED) throw new RemoteRejected(admitted.value());
+                if (admitted.kind() == REJECTED) {
+                    // A wrong-route signed rejection is *not* a verified
+                    // destination refusal. Preserve ambiguous failure.
+                    require_reply(admitted, send, REJECTED);
+                    throw new RemoteRejected(admitted.value());
+                }
                 require_reply(admitted, send, ADMITTED);
                 Frame finished = read_exact(channel, wait, secret, actor, deadline);
                 require_reply(finished, send, finished.kind());
@@ -454,7 +464,9 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
             }
         }
     }
-    private static void require_reply(Frame actual, Frame expected, byte kind)
+    // Package-scope for an isolated negative-correlator test; this is only
+    // an identity validator, never a capability or authentication primitive.
+    static void require_reply(Frame actual, Frame expected, byte kind)
             throws IOException {
         if (actual.kind() != kind || !same_request(actual, expected))
             throw new IOException("wrong stage or forged/crossed correlation");
