@@ -6209,6 +6209,14 @@ public final class TypeChecker {
                         Type inferredReturn = typeOf(returned.value(), lambdaEnv, generics, self);
                         checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, inferredReturn, self);
                         result = inferredReturn;
+                    } else if (lambda.blockBody().size() == 1
+                            && lambda.blockBody().getFirst() instanceof Ast.ReturnStmt bareReturn
+                            && bareReturn.value() == null) {
+                        // Bare return is a known void result, not Unknown. In
+                        // particular this must agree with |...| -> void { }
+                        // and |...| : void -> { } for the same signature.
+                        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
+                        result = Primitive.VOID;
                     } else {
                         checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
                         result = Unknown.INSTANCE;
