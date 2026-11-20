@@ -10,6 +10,7 @@ on:
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/test/java/dev/oreslang/AttoCanonicalIntegerXorParityTest.java'
       - 'ci/compiler/CheckCanonicalXorReports.java'
+      - 'ci/compiler/CheckCanonicalXorReportsSelfTest.java'
       - '.github/workflows/atto-canonical-int-xor.yml'
   pull_request:
     paths:
@@ -18,6 +19,7 @@ on:
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/test/java/dev/oreslang/AttoCanonicalIntegerXorParityTest.java'
       - 'ci/compiler/CheckCanonicalXorReports.java'
+      - 'ci/compiler/CheckCanonicalXorReportsSelfTest.java'
       - '.github/workflows/atto-canonical-int-xor.yml'
   workflow_dispatch:
 
@@ -51,6 +53,15 @@ jobs:
           java-version: '25'
           distribution: graalvm
           cache: maven
+      - name: Verify JUnit XML gate rejects 14 adversarial synthetic reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          javac -d "$RUNNER_TEMP/atto-xor-report-verifier" \
+            ci/compiler/CheckCanonicalXorReports.java \
+            ci/compiler/CheckCanonicalXorReportsSelfTest.java
+          java -cp "$RUNNER_TEMP/atto-xor-report-verifier" CheckCanonicalXorReportsSelfTest
+          echo "SYNTHETIC_ONLY_NO_GUEST_EXECUTION"
       - name: Execute strict frontend and real Truffle guest regressions
         run: >-
           mvn -B -ntp '-P!native-thread-unix'
