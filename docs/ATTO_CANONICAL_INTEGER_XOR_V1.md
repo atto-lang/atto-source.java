@@ -49,3 +49,37 @@ Privacy and merge governance: `atto-source.java#65` denies private
 source transfer until a reviewed V3 carrier contract is authorized.
 Do not export private source to an alternate org without approval;
 do not merge without independent review and executed exact-head CI.
+
+## Competing Java implementation reconciliation (2026-11-20)
+
+Overlapping Java [#70](https://github.com/atto-lang/atto-source.java/pull/70)
+and this PR both modify the parser, typechecker, and suspendable Truffle binary
+evaluation. This branch is the proposed integration target because it retains
+the explicit historical Boolean-`^^` profile, while strict AttoLang requires
+integer-`^^`. A final compatibility review must confirm the legacy behavior
+is still authorized by the canonical spec and migration policy; no broad
+unversioned-language support is claimed here.
+
+Ported the unique #70 continuation safety fix: guest binary operator
+evaluation is inside a narrow catch, while the downstream continuation is
+invoked after the catch. Otherwise, if a continuation throws after observing
+the result, a broad catch would invoke the same continuation again with
+that failure. The original `^^`-specific dispatch already used this separation;
+the generic binary path now does too.
+
+Added `canonicalIntegerXorRhsFailureExecutesEffectsOnlyOnce` to the strict
+guest test and made the exact-head CI gate require its JUnit receipt. This
+tests failed RHS side effects and no result publication; the generic
+continuation-once proof still requires additional direct callback fault
+injection and complete JVM/GraalVM guest execution.
+
+Do **not** merge #70 or #72 independently without reconciling the overlapping
+parser/typechecker/runtime edits, preserving unique tests and resolving the
+historical profile policy. #70's workflow also includes a Python-based XML
+checker, which violates the organization's no-Python tooling policy; do not
+copy that workflow into AttoLang.
+
+**Current verification:** these additions are authored and GitHub-blob
+committed, not material exact-head JDK25/GraalVM/JUnit or Native Image
+execution. No cross-org private-source transfer was made. Source CI remains
+governed by security issue #65 and the approved-destination policy.
