@@ -43,7 +43,7 @@ public final class AttoFunctionalPipelineCompiler {
             "borrow", "take", "share", "copy", "drop", "pin", "rt",
             "io", "stdio", "process", "spawn", "select", "import", "module",
             "define", "namespace", "use", "pipe", "rpipe", "task",
-            "constructor", "prototype", "__proto__");
+            "yield", "constructor", "prototype", "__proto__");
 
     private AttoFunctionalPipelineCompiler() {}
 
