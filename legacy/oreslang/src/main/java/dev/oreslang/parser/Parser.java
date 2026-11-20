@@ -5592,7 +5592,25 @@ public final class Parser {
             }
             return new Ast.AssignExpr(expr, parseAssignment());
         }
+        if (compoundAssignmentAhead()) {
+            // `x op= e` is `x = x op e` for a side-effect-free local or field target.
+            Token op = advance();
+            advance(); // '='
+            if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr)) {
+                throw error(op, "compound assignment target must be a local or field");
+            }
+            return new Ast.AssignExpr(expr, new Ast.BinaryExpr(op.lexeme(), expr, parseAssignment()));
+        }
         return expr;
+    }
+
+    /** `+=`, `-=`, `*=`, `/=` with no space between the operator and '='. */
+    private boolean compoundAssignmentAhead() {
+        if (current + 1 >= tokens.size()) return false;
+        Token op = tokens.get(current);
+        Token eq = tokens.get(current + 1);
+        return (op.type() == PLUS || op.type() == MINUS || op.type() == STAR || op.type() == SLASH)
+                && eq.type() == EQUAL && adjacent(op, eq);
     }
 
     /**
@@ -5922,7 +5940,7 @@ public final class Parser {
 
     private Ast.Expr parseAdditive() {
         Ast.Expr expr = parseMultiplicative();
-        while (match(PLUS, MINUS)) {
+        while (!compoundAssignmentAhead() && match(PLUS, MINUS)) {
             String op = previous().lexeme();
             expr = new Ast.BinaryExpr(op, expr, parseMultiplicative());
         }
@@ -5931,7 +5949,7 @@ public final class Parser {
 
     private Ast.Expr parseMultiplicative() {
         Ast.Expr expr = parseWithUpdate();
-        while (match(STAR, SLASH, PERCENT)) {
+        while (!compoundAssignmentAhead() && match(STAR, SLASH, PERCENT)) {
             if (previous().type() == PERCENT) throw error(previous(),
                     "'%' is reserved and is not AttoLang source syntax; use Integer.rem(a, b) or Integer.mod(a, b)");
             String op = previous().lexeme();
@@ -6576,6 +6594,29 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // Canonical channel factories: Channel<T>.bounded(n) / Channel<T>.unbounded().
+        if (check(IDENT) && peek().lexeme().equals("Channel") && checkNext(LT)) {
+            int start = current;
+            try {
+                Ast.TypeRef channelType = parseTypeRef();
+                if (match(DOT) && check(IDENT)
+                        && (peek().lexeme().equals("bounded") || peek().lexeme().equals("unbounded"))
+                        && checkNext(LPAREN)) {
+                    boolean bounded = advance().lexeme().equals("bounded");
+                    consume(LPAREN, "expected '(' after channel factory");
+                    Ast.Expr capacity = bounded
+                            ? parseExpression()
+                            : new Ast.LiteralExpr((long) Integer.MAX_VALUE);
+                    consume(RPAREN, bounded
+                            ? "Channel<T>.bounded(capacity) takes one argument"
+                            : "Channel<T>.unbounded() takes no arguments");
+                    return new Ast.NewExpr(channelType, List.of(capacity));
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Not a channel factory; reparse as an ordinary expression.
+            }
+            current = start;
+        }
         // One semantic constructor path: reuse the old array/tuple AST.
         // Explicit typed value constructors and other aggregate families
         // remain unavailable until their runtime/type-witness reviews.
