@@ -82,6 +82,33 @@ final class AttoCanonicalIntegerXorParityTest {
     }
 
     @Test
+    void canonicalIntegerXorRhsFailureExecutesEffectsOnlyOnce() throws Exception {
+        String source = """
+                fnc lhs(): int { stdio.println("left"); return 6; }
+                fnc rhs(): int { stdio.println("right"); return [1][99]; }
+                pub fnc main(): void {
+                    stdio.println(lhs() ^^ rhs());
+                    return;
+                }
+                """;
+        var checked = OresCompiler.parseAndTypeCheckStrictAtto(source);
+        String name = "canonical-xor-rhs-failure.atto";
+        var guestSource = Source.newBuilder(OresLanguage.ID, source, name)
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            try (var lease = OresLanguage.openPrecheckedProgram(name, source, checked)) {
+                assertThrows(org.graalvm.polyglot.PolyglotException.class,
+                        () -> context.eval(guestSource));
+            }
+        }
+        assertEquals("left\nright\n",
+                output.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"),
+                "failed eager XOR must not reevaluate either operand or publish a result");
+    }
+
+    @Test
     void legacyParserAndTypecheckerRetainEagerBooleanXor() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
                 pub fnc main(): bool {
