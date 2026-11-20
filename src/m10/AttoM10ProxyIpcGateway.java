@@ -5,6 +5,8 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
+import java.net.UnixDomainPrincipal;
+import jdk.net.ExtendedSocketOptions;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
@@ -24,8 +26,6 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -66,10 +66,8 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
     private final Thread reactor;
     private final Map<SocketChannel, Session> sessions = new HashMap<>();
     private final Set<RequestKey> seen = new HashSet<>();
-    private final ArrayBlockingQueue<Runnable> commands = new ArrayBlockingQueue<>(128);
     private volatile boolean stopping;
     private volatile boolean live;
-    private volatile boolean overload;
 
     public AttoM10ProxyIpcGateway(AttoM6Runtime runtime, AttoM6Runtime.ActorRef target,
                                    Path socketPath, long tenant, long incarnation,
@@ -170,6 +168,8 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
         final ArrayDeque<ByteBuffer> output = new ArrayDeque<>();
         final long deadline = System.nanoTime() + SESSION_LIFETIME_NANOS;
         Frame hello;
+        Frame pendingRequest;
+        AttoM6Runtime.Ticket pendingTicket;
         int phase; // 0 HELLO, 1 SEND, 2 waiting for actor turn, 3 closing
         boolean closed;
         Session(SocketChannel socket) throws IOException {
@@ -229,45 +229,74 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
                                       f.message_id(), f.attempt(), 4));
                     return;
                 }
-                CompletableFuture<AttoM6Runtime.TurnResult> completion =
-                    new CompletableFuture<>();
-                AttoM6Runtime.Admission outcome =
-                    runtime.try_send_tracked(target, f.value(), completion);
-                if (outcome != AttoM6Runtime.Admission.ACCEPTED) {
+                // M10's 84-byte experimental frame does NOT contain a complete
+                // canonical Atto capability/route. The gateway has already
+                // authenticated the HMAC, tenant and server-issued incarnation.
+                // Fill the missing fields from HOST-OWNED configuration only;
+                // these are correlation bindings, NEVER authorization tokens.
+                var route = new AttoM6Runtime.ReceiptRoute(
+                    1, tenant, incarnation,
+                    Integer.toUnsignedLong(target.name().hashCode()) + 1L,
+                    target.generation(), incarnation, incarnation,
+                    f.message_id(), f.attempt());
+                var admitted = runtime.try_send_ticket(target, f.value(), route);
+                if (admitted.admission() != AttoM6Runtime.Admission.ACCEPTED) {
                     phase = 3;
                     enqueue(new Frame(REJECTED, tenant, incarnation,
                         f.message_id(), f.attempt(),
-                        outcome == AttoM6Runtime.Admission.FULL ? 1 : 2));
+                        admitted.admission() == AttoM6Runtime.Admission.FULL ? 1 : 2));
                     return;
                 }
-                // Only the actual destination mailbox can make this true.
+                // Only the destination's atomic mailbox admission mints a
+                // private per-MAIL ticket. Neither a callback nor actor-wide
+                // completed/failed counters can authorize a terminal response.
+                if (!runtime.ticket_route(admitted.ticket()).equals(route))
+                    throw new IOException("destination-scoped ticket route mismatch");
                 seen.add(request);
+                pendingRequest = f;
+                pendingTicket = admitted.ticket();
                 phase = 2;
                 enqueue(new Frame(ADMITTED, tenant, incarnation,
                                   f.message_id(), f.attempt(), 0));
-                completion.whenCompleteAsync((turn, err) -> {
-                    boolean scheduled = commands.offer(() -> {
-                        if (closed) return;
-                        try {
-                            byte kind = err != null ? FAILED :
-                                turn.outcome() == AttoM6Runtime.TurnOutcome.PROCESSED ?
-                                    PROCESSED :
-                                turn.outcome() == AttoM6Runtime.TurnOutcome.FAILED ?
-                                    FAILED : ABANDONED;
-                            long result = kind == PROCESSED ? turn.reply() : 0;
-                            phase = 3;
-                            enqueue(new Frame(kind, tenant, incarnation,
-                                              f.message_id(), f.attempt(), result));
-                        } catch (IOException io) { close(); }
-                    });
-                    if (!scheduled) overload = true; // fail closed at next reactor wake
-                    selector.wakeup();
-                });
             } else {
                 phase = 3;
                 enqueue(new Frame(REJECTED, tenant, incarnation,
                                   f.message_id(), f.attempt(), 5));
             }
+        }
+        // This runs on the single NIO selector thread, with NO waiting
+        // for a carrier or executor callback. A bounded 64-session scan
+        // observes the exact runtime-issued mailbox ticket. The client
+        // deadline stays authoritative if the actor is slow or disconnected.
+        void poll_ticket() throws IOException {
+            if (closed || phase != 2 || pendingTicket == null || !output.isEmpty())
+                return;
+            var outcome = runtime.ticket_snapshot(pendingTicket);
+            byte kind;
+            long result = 0;
+            switch (outcome.state()) {
+            case ADMITTED, STARTED -> { return; }
+            case PROCESSED -> {
+                if (!outcome.hasResult())
+                    throw new IOException("destination handler returned no typed result");
+                kind = PROCESSED;
+                result = outcome.result();
+            }
+            case FAILED -> kind = FAILED;
+            case ABANDONED -> kind = ABANDONED;
+            default -> throw new IOException("unknown destination mailbox terminal state");
+            }
+            // Refuse to emit a terminal ACK whose correlation is no longer
+            // equal to the original host-authenticated SEND frame.
+            if (pendingRequest == null ||
+                runtime.ticket_route(pendingTicket).messageId() != pendingRequest.message_id() ||
+                runtime.ticket_route(pendingTicket).attempt() != pendingRequest.attempt())
+                throw new IOException("terminal receipt correlation mismatch");
+            phase = 3;
+            enqueue(new Frame(kind, tenant, incarnation,
+                pendingRequest.message_id(), pendingRequest.attempt(), result));
+            pendingTicket = null;
+            pendingRequest = null;
         }
         void write() throws IOException {
             while (!output.isEmpty()) {
@@ -281,12 +310,26 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
         }
     }
 
+    // Host-only same-UID UDS fence, independent of the test HMAC. A
+    // production TenantVM gateway still needs explicit per-tenant caps.
+    private static void peer_same_user(SocketChannel channel) throws IOException {
+        try {
+            UnixDomainPrincipal principal = channel.getOption(ExtendedSocketOptions.SO_PEERCRED);
+            if (principal == null ||
+                !principal.user().getName().equals(System.getProperty("user.name")))
+                throw new IOException("untrusted UDS peer principal");
+        } catch (UnsupportedOperationException unavailable) {
+            throw new IOException("UDS peer credentials unavailable: fail closed", unavailable);
+        }
+    }
+
     private void accept() throws IOException {
         for (int i = 0; i < 16; i++) {
             SocketChannel next = listener.accept();
             if (next == null) return;
             if (sessions.size() >= MAX_SESSIONS) { next.close(); continue; }
             try {
+                peer_same_user(next);
                 Session s = new Session(next);
                 sessions.put(next, s);
             } catch (IOException | RuntimeException err) {
@@ -298,14 +341,9 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
         live = true;
         try {
             while (!stopping) {
-                Runnable task;
-                while ((task = commands.poll()) != null) task.run();
-                if (overload) {
-                    // Never promise success if the completion queue cannot retain it.
-                    for (Session s : java.util.List.copyOf(sessions.values())) s.close();
-                    overload = false;
-                }
-                selector.select(100);
+                // A short SELECT timeout keeps ticket settlement asynchronous
+                // and bounded even if no socket becomes readable/writable.
+                selector.select(20);
                 Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
                 int budget = 64;
                 while (keys.hasNext() && budget-- > 0) {
@@ -322,8 +360,16 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
                         if (item.attachment() instanceof Session s) s.close();
                     }
                 }
-                for (Session s : java.util.List.copyOf(sessions.values()))
-                    if (System.nanoTime() - s.deadline >= 0) s.close();
+                for (Session s : java.util.List.copyOf(sessions.values())) {
+                    try {
+                        if (System.nanoTime() - s.deadline >= 0) s.close();
+                        else s.poll_ticket();
+                    } catch (IOException | RuntimeException failed) {
+                        // Lost connection AFTER admission is indeterminate for
+                        // sender; never change the issued M6 ticket to REJECTED.
+                        s.close();
+                    }
+                }
             }
         } catch (IOException fatal) {
             // Test-only reactor fail-closed. Never synthesize destination success.
