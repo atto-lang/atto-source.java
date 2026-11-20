@@ -120,6 +120,22 @@ class EvidenceGateTests(unittest.TestCase):
                 evidence["jobs"][0][key] = value
                 self.rejects(evidence)
 
+    def test_step_numbers_are_unique_and_strictly_increasing(self):
+        # Names alone are not proof of distinct GitHub step records.
+        for first, second in ((1, 1), (2, 1), (3, 2), (1, 0),
+                              (1, -1), (1, True), (1, "2"), (1, None)):
+            with self.subTest(first=first, second=second):
+                evidence = valid_evidence()
+                evidence["jobs"][0]["steps"][0]["number"] = first
+                evidence["jobs"][0]["steps"][1]["number"] = second
+                self.rejects(evidence)
+
+    def test_step_number_gaps_are_valid_git_hub_evidence(self):
+        evidence = valid_evidence()
+        evidence["jobs"][0]["steps"][0]["number"] = 2
+        evidence["jobs"][0]["steps"][1]["number"] = 9
+        self.assertTrue(self.check(evidence))
+
     def test_zero_steps_is_not_success(self):
         evidence = valid_evidence()
         evidence["jobs"][0]["steps"] = []
