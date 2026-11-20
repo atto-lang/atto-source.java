@@ -5497,7 +5497,7 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     runtime.operation().equals("workflow_request")
                                             ? submitWorkflowGuestIntrinsic(value, env)
-                                            : applyRuntimeOwnership(runtime.operation(), value),
+                                            : applyScopedMapOwnership(runtime, value, env),
                                     null);
                         } catch (RuntimeException | Error ownershipFailure) {
                             continuation.accept(t, null, ownershipFailure);
@@ -6149,6 +6149,15 @@ public final class OresEvalRootNode extends RootNode {
                 struct.put(fieldName, value);
                 return value;
             }
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                // Both mutation spellings use the same checked storage preflight
+                // (key/value domain, quotas, reentrancy and atomic publication).
+                env.requireLiveMapOwner(receiverExpression, map);
+                @SuppressWarnings("unchecked")
+                OresKeyedMap<Object, Object> typed = (OresKeyedMap<Object, Object>) map;
+                typed.put(key, value);
+                return value;
+            }
             if (receiver instanceof List<?> raw) {
                 @SuppressWarnings("unchecked")
                 List<Object> list = (List<Object>) raw;
@@ -6156,7 +6165,7 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             throw new IllegalArgumentException(
-                    "indexed assignment requires mutable class/struct state or a mutable sequence");
+                    "indexed assignment requires mutable class/struct state, typed Map, or mutable sequence");
         }
 
         private Object unaryValue(String operator, Object value) {
@@ -7747,6 +7756,12 @@ public final class OresEvalRootNode extends RootNode {
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
+                if (receiver instanceof OresKeyedMap<?, ?> map
+                        && Set.of("put", "set", "delete").contains(methodCall.member())) {
+                    // Resolve exact live lexical owner before evaluating any
+                    // potentially side-effecting key/value expressions.
+                    env.requireLiveMapOwner(methodCall.receiver(), map);
+                }
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OptionValue option
@@ -8135,6 +8150,24 @@ public final class OresEvalRootNode extends RootNode {
                 fields.put(field.name(), value);
             }
             return fields;
+        }
+
+        private Object applyScopedMapOwnership(
+                Ast.RuntimeCallExpr runtime, Object value, Env env) {
+            if (value instanceof OresKeyedMap<?, ?> map) {
+                if (runtime.operation().equals("copy") || runtime.operation().equals("share")) {
+                    throw new IllegalStateException(
+                            "affine Map<K,V> cannot be copied or shared");
+                }
+                if (runtime.operation().equals("take")
+                        && runtime.arguments().size() == 1
+                        && runtime.arguments().getFirst() instanceof Ast.NameExpr name) {
+                    // Poison only the exact source slot. Neither a second
+                    // guest alias nor a stale moved binding may retake it.
+                    env.moveOwnedMap(name.name(), map);
+                }
+            }
+            return applyRuntimeOwnership(runtime.operation(), value);
         }
 
         private Object applyRuntimeOwnership(String operation, Object value) {
@@ -8551,7 +8584,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (runtime.operation().equals("workflow_request")) {
                     return submitWorkflowGuestIntrinsic(value, env);
                 }
-                return applyRuntimeOwnership(runtime.operation(), value);
+                return applyScopedMapOwnership(runtime, value, env);
             }
             if (expr instanceof Ast.CallExpr call) {
                 rejectUnloweredNamedArguments(call.arguments(), "synchronous call");
@@ -10214,18 +10247,20 @@ public final class OresEvalRootNode extends RootNode {
                 // host Map, iterator, transport lease or mutable backing view.
                 return switch (name) {
                     case "size" -> (long) guestMap.size();
-                    case "set" -> (Invokable) args -> {
+                    case "set", "put" -> (Invokable) args -> {
                         if (args.size() != 2) {
                             throw new IllegalArgumentException(
-                                    "Map.set expects exactly 2 arguments");
+                                    "Map." + name + " expects exactly 2 arguments");
                         }
                         @SuppressWarnings("unchecked")
                         OresKeyedMap<Object, Object> typed =
                                 (OresKeyedMap<Object, Object>) guestMap;
-                        // Runtime checks key/value domain, quota, and nested
-                        // mutation before changing the canonical map.
-                        typed.put(args.get(0), args.get(1));
-                        return null;
+                        // Exactly the same synchronized, fail-atomic storage
+                        // mutation used by Map indexed assignment.
+                        Object previous = typed.put(args.get(0), args.get(1));
+                        return name.equals("put")
+                                ? new OptionValue(previous != null, previous)
+                                : null;
                     };
                     case "delete" -> (Invokable) args -> {
                         requireOne(args, "Map.delete");
@@ -12259,6 +12294,7 @@ public final class OresEvalRootNode extends RootNode {
     private static final class Env {
         private static final Object MISSING = new Object();
         private static final Object MOVED_TASK_CAPTURE = new Object();
+        private static final Object MOVED_MAP = new Object();
         private static final AtomicLong NEXT_SCOPE_EPOCH = new AtomicLong();
         private final long scopeEpoch;
         private final Env parent;
@@ -12379,6 +12415,24 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             return slot != null ? slot : parent == null ? null : parent.lookupSlot(name);
         }
+        private void moveOwnedMap(String name, OresKeyedMap<?, ?> map) {
+            Slot slot = lookupSlot(name);
+            if (slot == null || slot.value != map) {
+                throw new IllegalStateException("Map rt take requires one live exact source owner");
+            }
+            slot.value = MOVED_MAP;
+        }
+        private void requireLiveMapOwner(Ast.Expr receiver, OresKeyedMap<?, ?> map) {
+            if (!(receiver instanceof Ast.NameExpr name)) {
+                throw new IllegalStateException(
+                        "Map mutation requires a direct compiler-checked owner or loan");
+            }
+            Slot slot = lookupSlot(name.name());
+            if (slot == null || slot.value != map) {
+                throw new IllegalStateException(
+                        "Map mutation through stale, moved, or foreign owner denied");
+            }
+        }
         private Ast.ClassDecl lookupStaticClassView(String name) {
             Slot slot = lookupSlot(name);
             return slot == null ? null : slot.staticClassView;
@@ -12386,9 +12440,9 @@ public final class OresEvalRootNode extends RootNode {
         private Object lookup(String name) {
             Slot slot = slots.get(name);
             if (slot != null) {
-                if (slot.value == MOVED_TASK_CAPTURE) {
+                if (slot.value == MOVED_TASK_CAPTURE || slot.value == MOVED_MAP) {
                     throw new IllegalStateException(
-                            "binding '" + name + "' was moved into an eager Task");
+                            "binding '" + name + "' was moved from this lexical scope");
                 }
                 return slot.value;
             }

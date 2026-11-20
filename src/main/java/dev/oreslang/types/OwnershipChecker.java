@@ -646,6 +646,11 @@ public final class OwnershipChecker {
                         && scope.lookup(named.name()) == null) {
                     borrowMirAudit.unsupported("return refers to an untracked global or module");
                 }
+                if (returnType != null && returnType.name().equals("Map")
+                        && returnType.arguments().size() == 2
+                        && ret.value() instanceof Ast.NameExpr) {
+                    throw error("returning a named affine Map<K,V> requires explicit rt take");
+                }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
@@ -1076,6 +1081,14 @@ public final class OwnershipChecker {
             scope.define(binding.name(), placeholder);
         }
 
+        if (binding.initializer() instanceof Ast.NameExpr sourceName) {
+            VarState source = scope.lookup(sourceName.name());
+            if (source != null && source.type != null
+                    && !source.type.isBorrow() && source.type.name().equals("Map")
+                    && source.type.arguments().size() == 2) {
+                throw error("affine Map<K,V> aliases require explicit rt take");
+            }
+        }
         ValueInfo value;
         if (binding.initializer() instanceof Ast.RuntimeCallExpr runtime
                 && runtime.operation().equals("borrow")) {
@@ -2699,24 +2712,35 @@ public final class OwnershipChecker {
                                 Ast.TypeRef.simple("NioReader"), Ast.TypeRef.simple("NioWriter"))),
                         ValueKind.MOVE_ONLY, null);
             }
-            // Typed Map lookups only READ their key: a move-only Bytes key is
-            // borrowed, never consumed. Map.set still moves key and value in.
+            // Direct guest Map methods share indexed-assignment's exclusive
+            // receiver proof. Never fall through to an unchecked Java method.
             if (concreteReceiver != null
                     && concreteReceiver.name().equals("Map")
                     && concreteReceiver.arguments().size() == 2
                     && findClass("Map") == null
-                    && call.arguments().size() == 1
-                    && (member.member().equals("get_optional")
-                            || member.member().equals("delete"))) {
-                checkExpr(call.arguments().getFirst(), scope, false);
-                if (member.member().equals("delete")) {
-                    return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
-                }
+                    && Set.of("get_optional", "delete", "put", "set").contains(member.member())) {
                 Ast.TypeRef mapValue = concreteReceiver.arguments().get(1);
-                return new ValueInfo(
-                        new Ast.TypeRef("Option", List.of(mapValue), false),
-                        isCopyType(mapValue) ? ValueKind.COPY : ValueKind.MOVE_ONLY,
-                        null);
+                boolean mutating = !member.member().equals("get_optional");
+                int expected = member.member().equals("put") || member.member().equals("set") ? 2 : 1;
+                if (call.arguments().size() != expected) {
+                    throw error("Map." + member.member() + " requires " + expected + " argument(s)");
+                }
+                if (mutating) {
+                    ensureMutableReceiver(member.receiver(), scope, "Map indexed/put mutation");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    ValueInfo checked = checkExpr(argument, scope, true);
+                    if (isBorrowValue(checked) || containsBorrowType(checked.type)) {
+                        throw error("Map keys and values must be owned; borrowed payloads cannot escape");
+                    }
+                }
+                return switch (member.member()) {
+                    case "set" -> new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                    case "delete" -> new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    default -> new ValueInfo(
+                            new Ast.TypeRef("Option", List.of(mapValue), false),
+                            isCopyType(mapValue) ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+                };
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
@@ -3456,6 +3480,12 @@ public final class OwnershipChecker {
             Scope scope,
             String callable,
             int position) {
+        if (!param.type().isBorrow() && param.type().name().equals("Map")
+                && param.type().arguments().size() == 2
+                && arg instanceof Ast.NameExpr) {
+            throw error(callable + " argument " + position
+                    + " must explicitly rt take an affine Map<K,V> owner");
+        }
         if (param.type().isBorrow() && arg instanceof Ast.CaptureExpr capture) {
             checkExpr(capture, scope, false);
             arg = new Ast.NameExpr(capture.name());
