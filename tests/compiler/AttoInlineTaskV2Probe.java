@@ -60,6 +60,16 @@ public final class AttoInlineTaskV2Probe {
         accept("pub susp fnc main(): int { val n = sync task<int> { return 40 + 2; }; return n; }");
         accept(main("val n = sync task<int> { return (3 + 4) * 6; }; return n;"));
         accept(main("val n = sync task<int> { return -1 + 43; }; return n;"));
+        // Whitespace between keywords is valid, including CRLF/newlines.
+        accept(main("do sync\\n task {};"
+            + "val answer = sync\\t task<int> { return 40 + 2; }; return answer;")
+            .replace("\\n", "\n").replace("\\t", "\t"));
+        accept(main("val answer = sync\r\n task<int> { return 42; }; return answer;"));
+        accept(main("val record_data = 40; val yield_safe = sync task<int> "
+            + "{ return record_data + 2; }; return yield_safe;"));
+        accept(main("return sync task<int> { return 40 + 2; };"));
+        accept(main("val a = sync task<int> { return 1; }; "
+            + "return a + sync task<int> { return 41; };"));
         var plan = accept(main("val n = sync task<int> { return 40 + 2; }; return n;"));
         if (!plan.typedOps().containsAll(List.of(
                 AttoInlineTaskV2Compiler.MirOp.INLINE_TASK_ENTER,
@@ -134,7 +144,22 @@ public final class AttoInlineTaskV2Probe {
         nesting.append("return 42; }");
         reject(nesting.toString(), "E_INLINE_NESTING_BUDGET");
 
-        if (positives < 15 || negatives < 30) throw new AssertionError("probe cases omitted");
+        // Systematically guard the legacy reserved-word vocabulary against
+        // a fallback into the newer typed frontend. The local names are
+        // synthetic Java identifiers, but Atto syntax must still reject them.
+        for (String keyword : AttoAsyncV1Compiler.FORBIDDEN_IDENTIFIERS) {
+            if (!keyword.matches("[a-z_][a-z_0-9]*")) continue;
+            reject(main("val " + keyword
+                + " = sync task<int> { return 42; }; return 42;"),
+                keyword.equals("sync") ? "E_RESERVED_SYNC" : "E_RESERVED_IDENTIFIER");
+        }
+        // Malformed keyword boundaries must not be accepted as source.
+        reject(main("val n = sync/**/task<int> { return 42; }; return n;"),
+            "E_ASYNC_UNKNOWN_TOKEN");
+        reject(main("val n = sync-task<int> { return 42; }; return n;"),
+            "E_RESERVED_SYNC");
+        if (positives != 20 || negatives < 75)
+            throw new AssertionError("inline hardened keyword/grammar probes omitted");
         System.out.println("ATTO_INLINE_V2_PASS positives=" + positives + " negatives=" + negatives);
     }
 }

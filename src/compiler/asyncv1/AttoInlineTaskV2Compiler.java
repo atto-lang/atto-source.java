@@ -23,6 +23,10 @@ public final class AttoInlineTaskV2Compiler {
     private static final int MAX_SOURCE = 8192;
     private static final int MAX_TOKENS = 384;
     private static final int MAX_DEPTH = 16;
+    private static final Pattern INLINE_MAIN_HEADER = Pattern.compile(
+        "\\A\\s*pub\\s+(?:susp\\s+)?fnc\\s+main\\s*\\(");
+    private static final Pattern INLINE_TASK_TOKENS = Pattern.compile(
+        "\\bsync\\s+task\\b");
     private static final Pattern TOKENS = Pattern.compile(
         "\\s+|[a-zA-Z_][a-zA-Z_0-9]*|[0-9]+|[{}():;=<>+*\\-]");
     private static final Set<String> RESERVED = Set.of(
@@ -38,11 +42,12 @@ public final class AttoInlineTaskV2Compiler {
     // Legacy helper/Future fixtures remain owned by their original closed-world
     // compiler path; this prevents a fallback changing their source contract.
     static boolean candidate(String source) {
-        if (source == null) return false;
-        String trimmed = source.stripLeading();
-        return (trimmed.startsWith("pub fnc main(")
-                || trimmed.startsWith("pub susp fnc main("))
-            && source.contains("sync task");
+        if (source == null || source.length() > MAX_SOURCE) return false;
+        // Routing must use the grammar's token boundaries, not a literal
+        // substring: whitespace/newlines between sync and task are legal.
+        // The AST parser still validates the entire source before codegen.
+        return INLINE_MAIN_HEADER.matcher(source).find()
+            && INLINE_TASK_TOKENS.matcher(source).find();
     }
 
     private static AttoAsyncV1Compiler.Reject reject(String code) {
@@ -95,7 +100,9 @@ public final class AttoInlineTaskV2Compiler {
             if (!t.matches("[a-z_][a-z_0-9]*") || t.length() > 80)
                 throw reject("E_ASYNC_INVALID_IDENTIFIER");
             if (t.equals("sync")) throw reject("E_RESERVED_SYNC");
-            if (RESERVED.contains(t)) throw reject("E_RESERVED_IDENTIFIER");
+            if (RESERVED.contains(t)
+                    || AttoAsyncV1Compiler.FORBIDDEN_IDENTIFIERS.contains(t))
+                throw reject("E_RESERVED_IDENTIFIER");
             return t;
         }
         int number() {

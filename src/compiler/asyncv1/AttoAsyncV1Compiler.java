@@ -28,7 +28,9 @@ public final class AttoAsyncV1Compiler {
     // Guest-sourced identifiers are also emitted as Java symbols. Reject both
     // Atto control keywords and Java reserved/contextual names *before* source
     // generation; never rely on javac to detect an unsafe generated symbol.
-    private static final Set<String> FORBIDDEN_IDENTIFIERS = Set.of(
+    // Shared with the typed inline frontend: never permit a source keyword
+    // through the newer AST path after the legacy parser rejects it.
+    static final Set<String> FORBIDDEN_IDENTIFIERS = Set.of(
         "task", "await", "sync", "susp", "suspends", "async", "fnc",
         "pub", "val", "let", "const", "return", "do", "done",
         "actor", "spawn", "defer", "match", "select", "raise",
