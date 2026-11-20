@@ -18,12 +18,15 @@ compiles program-v2 source to ESM and calls the emitted guest exports.
 ## Profile boundaries
 
 - Java's original unmarked `.ores` evaluator uses legacy wrapping `long`
-  arithmetic; its characterization test stays intact. The **exact first-line**
-  `// oreslang:checked-i64-v1` selects checked i64 execution for one source
-  unit; malformed, displaced or duplicate line-comment selectors reject.
-  This is not an automatic profile migration. The Java branch refuses
-  cross-source imports under this profile until linked callees' source and
-  integer models can be verified transitively.
+  arithmetic; its characterization test stays intact. Canonical `.atto`
+  code-unit names select checked i64 **by default**. The exact first-line
+  `// oreslang:checked-i64-v1` remains a checked opt-in for legacy `.ores`.
+  Malformed, displaced and duplicated line-comment selectors reject.
+  All checked units (including implicit `.atto`) reject cross-source imports
+  until the linker can prove every callee uses the same checked arithmetic
+  model. A source comment, namespace or guest argument cannot forge the
+  code-unit identity; this rule is a candidate implementation, not yet a
+  cross-backend certified integer edition.
 - JS program-v2 already uses provisional checked i64 with or without the
   explicit directive. Legacy scalar-v1 remains a separately tagged,
   provisional wrapping compiler profile.
