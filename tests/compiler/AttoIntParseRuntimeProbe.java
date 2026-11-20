@@ -27,7 +27,7 @@ public final class AttoIntParseRuntimeProbe {
         ok(numeric(alice.parse("00042")) == 42L, "leading zeros");
         for (String invalid : List.of("", "+", "-", " 42", "42 ", "--1", "-+1",
                 "42.0", "42e0", "4_2", "42x", "9223372036854775808",
-                "-9223372036854775809", "٤٢", "０", "\u0000", "4\u00002")) {
+                "-9223372036854775809", "٤٢", "０", String.valueOf((char)0), "4" + (char)0 + "2")) {
             Result value = alice.parse(invalid);
             ok(value instanceof Err, "invalid must be Err: " + invalid);
             AttoIntParseRuntime.Error error = ((Err)value).error();
