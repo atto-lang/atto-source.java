@@ -1,0 +1,9 @@
+// Restricted Atto M6 compiler slice: a remote actor with checked i64 state.
+// The host-owned M6 scheduler runs this compiled on_message body in process B.
+define actor Counter as {
+    let total: int = 0;
+    pub fnc on_message(int increment): int {
+        total = total + increment;
+        return total;
+    }
+}
