@@ -56,6 +56,37 @@ This is not the canonical Atto frontend, not a compiled Atto proxy sender,
 not independent LLVM/Rust/Forge/NET/Wasm/JS interoperability and not
 Native Image verification.
 
+## Restricted Atto source sender slice (NEW, NOT canonical)
+
+The source fixture fixtures/m10/remote_adder_sender.atto declares a
+RemoteAdder proxy actor with a fixed nominal contract, fixed service key
+and IPC transport. Its suspending main function accepts a ProxyActor<RemoteAdder>
+and contains exactly one await proxy.request(32) expression. The deliberately
+limited src/compiler/m10/AttoM10RestrictedSenderCompiler.java accepts only this
+one syntax shape via a whole-file matcher, rejects source injection, and
+generates M10GeneratedSender.java with its original source SHA-256.
+
+The generated sender executes in the parent **process A**. A trusted host
+provides an AttoM10TrustedScalarProxy association bound to M10's test-only
+client. The receiver in process B is independently source-compiled from
+remote_adder.atto to Java bytecode and executes in the real M6 actor mailbox.
+Neither source program chooses its own socket, credentials or tenant ID.
+
+**Critical semantic limit:** this restricted sender DOES NOT implement
+the canonical frontend, general parser/type checker, ProxyActor<T> capability
+validation, ActorRegistry.connect_async, actual susp/await continuation
+lowering, the application unary reply registry, nonblocking client pool,
+TenantVM isolation or a portable Atto proxy ABI. The generated source calls
+a HOST-bound synchronous bridge on a trusted main/test thread, never a
+scheduler carrier. A passing two-source E2E test is a useful interim proof
+of restricted source compilation, not canonical compiled proxy interoperability.
+
+The stand-alone restricted sender compiler, interface and fixture passed
+a local JDK21 source -> bytecode -> injected callback smoke with negative
+grammar cases. All three original Git blobs match the local tested source.
+This does NOT prove the complete M6/M10 IPC integration, whose combined
+exact-head JDK25 CI still has no executed runner steps.
+
 ## Tests and evidence gate
 
 The two-process M10 harness now checks: a genuine second JVM; compiled
