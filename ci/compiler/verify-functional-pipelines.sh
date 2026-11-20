@@ -20,14 +20,15 @@ mkdir -p "$work/compiler"
   src/compiler/pipeline/AttoFunctionalPipelineCompiler.java
 
 execute_expected() {
-  local label="$1" expected="$2"
-  shift 2
+  local label="$1" expected="$2" stdout_file="$3" stderr_file="$4"
+  shift 4
   local actual
   set +e
-  "$@"
+  "$@" >"$stdout_file" 2>"$stderr_file"
   actual=$?
   set -e
   if [[ "$actual" != "$expected" ]]; then
+    cat "$stderr_file" >&2
     echo "ATTO_JAVA_PIPELINE_GUEST_FAILED case=$label expected=$expected got=$actual" >&2
     exit 1
   fi
@@ -54,8 +55,8 @@ for spec in \
   cmp "$produced" "$replay"
   "$JAVA_HOME/bin/javac" -Xlint:all -Werror -d "$work/$name" "$produced"
   execute_expected "$name-jvm" "$expected" \
-    "$JAVA_HOME/bin/java" -cp "$work/$name" AttoFunctionalPipelineGuest \
-    >"$work/$name/jvm.stdout" 2>"$work/$name/jvm.stderr"
+    "$work/$name/jvm.stdout" "$work/$name/jvm.stderr" \
+    "$JAVA_HOME/bin/java" -cp "$work/$name" AttoFunctionalPipelineGuest
   test ! -s "$work/$name/jvm.stdout"
   test ! -s "$work/$name/jvm.stderr"
 
@@ -67,8 +68,8 @@ for spec in \
     )
     test -x "$work/$name/atto-functional-pipeline"
     execute_expected "$name-native-image" "$expected" \
-      "$work/$name/atto-functional-pipeline" \
-      >"$work/$name/aot.stdout" 2>"$work/$name/aot.stderr"
+      "$work/$name/aot.stdout" "$work/$name/aot.stderr" \
+      "$work/$name/atto-functional-pipeline
     test ! -s "$work/$name/aot.stdout"
     test ! -s "$work/$name/aot.stderr"
   fi
