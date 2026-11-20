@@ -41,8 +41,8 @@ public final class AttoAsyncV1CompilerProbe {
             + " pub susp fnc main(): int { val pending = task { ^ 41; };"
             + " ^ pending |> susp |f| -> await f |> plus_one >> val answer: int; }";
         String generated = AttoAsyncV1Compiler.compile(ok);
-        check(generated.contains("CompletableFuture.completedFuture(41)"));
-        check(generated.contains("return Math.addExact(x, 1);"));
+        check(generated.contains("CompletableFuture.completedFuture(41L)"));
+        check(generated.contains("return Math.addExact(x, 1L);"));
         check(generated.contains("ATTO_ASYNC_V1_RESULT"));
         rejects(ok.replace("susp |f|", "|f|"));
         rejects(ok.replace("await f", "await g"));
@@ -50,7 +50,7 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(ok.replace("^ pending", "^ missing"));
         rejects(ok.replace("41", "1_000"));
         rejects(ok.replace("41", "-41"));
-        rejects(ok.replace("41", "2147483647"));
+        rejects(ok.replace("41", "9223372036854775807"));
         rejects(ok.replace(">> val answer: int;", ">> val answer: float;"));
         rejects(ok.replace(">> val answer: int;", ">> val answer: int; ^ 42;"));
         rejects(ok.replace("|> plus_one", "|> plus_one |> plus_one"));
@@ -61,8 +61,8 @@ public final class AttoAsyncV1CompilerProbe {
         // Canonical payload typing: task<int> returns Future<int>, not int.
         String typed = ok.replace("task { ^ 41; }", "task<int> { return 41; }");
         String typedGenerated = AttoAsyncV1Compiler.compile(typed);
-        check(typedGenerated.contains("CompletableFuture<Integer> pending"));
-        check(typedGenerated.contains("CompletableFuture.completedFuture(41)"));
+        check(typedGenerated.contains("CompletableFuture<Long> pending"));
+        check(typedGenerated.contains("CompletableFuture.completedFuture(41L)"));
         check(typedGenerated.equals(AttoAsyncV1Compiler.compile(
             ok.replace("task { ^ 41; }", "task<int> { ^ 41; }"))));
         // Exactly one Future layer; this tiny source compiler has neither
@@ -77,7 +77,7 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(typed.replace("return 41;", "return 41; pending.cancel();"));
         rejects(typed.replace("task<int>", "task<int> /* cancel lock */"));
         check(AttoAsyncV1Compiler.compile(ok.replace("41", "40"))
-            .contains("completedFuture(40)"));
+            .contains("completedFuture(40L)"));
         // Reject both Atto control words and Java keywords before writing
         // generated code, not only when javac later refuses that code.
         for (String name : new String[] {
@@ -93,7 +93,7 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(ok.replace("val pending", "val _"));
         rejects(ok.replace("int x", "int _"));
         check(AttoAsyncV1Compiler.compile(ok.replace("pending", "sync_data"))
-            .contains("CompletableFuture<Integer> sync_data"));
+            .contains("CompletableFuture<Long> sync_data"));
         // This restricted source-to-Java lowering only admits snake_case
         // guest names. An upper-case `Math` parameter previously shadowed
         // java.lang.Math and caused javac to fail after source admission.
@@ -103,7 +103,7 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(ok.replace("fnc plus_one", "fnc PlusOne"));
         rejects(ok.replace("val pending", "val Future"));
         check(AttoAsyncV1Compiler.compile(ok.replace("pending", "future_42"))
-            .contains("CompletableFuture<Integer> future_42"));
+            .contains("CompletableFuture<Long> future_42"));
         // A rejected source token must never be echoed into diagnostics.
         // This string is deliberately shaped like a private guest identifier.
         final String canary = "private_guest_token_abc123";
@@ -130,9 +130,9 @@ public final class AttoAsyncV1CompilerProbe {
         check(AttoAsyncV1Compiler.compile(inline.replace("sync task<int>", "sync task"))
             .contains("return plus_one(answer);"));
         String empty = prefix + " pub fnc main(): int { do sync task {}; return 42; }";
-        check(AttoAsyncV1Compiler.compile(empty).contains("return 42;"));
+        check(AttoAsyncV1Compiler.compile(empty).contains("return 42L;"));
         check(AttoAsyncV1Compiler.compile(empty.replace("do sync task {}", "do sync task<void> {}"))
-            .contains("return 42;"));
+            .contains("return 42L;"));
         check(AttoAsyncV1Compiler.compile(empty.replace("do sync task {}", "do sync task<void> { return; }"))
             .contains("atto_inline_task_0:"));
         rejects(empty.replace("sync task {}", "sync task<int> {}"));
