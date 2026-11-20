@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/AttoCanonicalCallableReturnAnnotationTest.java'
       - 'src/test/java/dev/oreslang/AttoCanonicalImplicitValClassFieldTest.java'
       - '.github/workflows/atto-canonical-return-annotations.yml'
@@ -48,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for pair in 'AttoCanonicalCallableReturnAnnotationTest:9' 'AttoCanonicalImplicitValClassFieldTest:5'; do
+          for pair in 'AttoCanonicalCallableReturnAnnotationTest:11' 'AttoCanonicalImplicitValClassFieldTest:5'; do
             name="${pair%%:*}"
             minimum="${pair##*:}"
             report="target/surefire-reports/TEST-dev.oreslang.${name}.xml"
