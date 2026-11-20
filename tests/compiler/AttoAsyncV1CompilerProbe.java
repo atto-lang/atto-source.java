@@ -71,6 +71,9 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(ok.replace("val pending", "val class"));
         rejects(ok.replace("val pending", "val task"));
         rejects(ok.replace("susp |f|", "susp |return|"));
+        rejects(ok.replace("plus_one", "_"));
+        rejects(ok.replace("val pending", "val _"));
+        rejects(ok.replace("int x", "int _"));
         check(AttoAsyncV1Compiler.compile(ok.replace("pending", "sync_data"))
             .contains("CompletableFuture<Integer> sync_data"));
         System.out.println("ATTO_ASYNC_V1_ADMISSION_PASS checks=" + checks);
