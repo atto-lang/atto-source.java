@@ -11,7 +11,6 @@ import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -30,7 +29,6 @@ public final class AttoM6ProxyUdsV1Probe {
         return new ProxyReceiptGateV1.Identity(1, 11, 77, 17, 1, 31, 6, messageId, 1);
     }
     private static void server(Path path) throws Exception {
-        var turns = new ArrayBlockingQueue<AttoM6ProxyUdsV1.Turn>(8);
         var counter = new AtomicLong();
         var handlerThread = new AtomicReference<String>();
         var session = new AttoM6ProxyUdsV1.Session(test_key());
@@ -46,38 +44,35 @@ public final class AttoM6ProxyUdsV1Probe {
              var listener = AttoM6ProxyUdsV1.bind_private(path)) {
             Object socketKey = Files.readAttributes(path, BasicFileAttributes.class,
                 LinkOption.NOFOLLOW_LINKS).fileKey();
-            var target = runtime.spawn("counter", 2, amount -> {
+            var target = runtime.spawn_with_result("counter", 2, amount -> {
                 handlerThread.set(Thread.currentThread().getName());
-                require(turns.offer(new AttoM6ProxyUdsV1.Turn(
-                    ProxyReceiptGateV1.Event.STARTED, 0)), "start event queue overflow");
                 long after = receiver.applyAsLong(amount);
                 counter.set(after);
-                require(turns.offer(new AttoM6ProxyUdsV1.Turn(
-                    ProxyReceiptGateV1.Event.PROCESSED, after)), "terminal event queue overflow");
+                return after;
             });
             require(target.generation() == 1, "unexpected actor incarnation");
             var replayWindow = new HashSet<String>();
             try {
                 require(AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
-                    route(101), turns, replayWindow), "first destination admission");
+                    route(101), replayWindow), "first destination admission");
                 require(AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
-                    route(102), turns, replayWindow), "second destination completion");
+                    route(102), replayWindow), "second destination completion");
                 require(!AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
-                    route(102), turns, replayWindow), "replay was admitted");
+                    route(102), replayWindow), "replay was admitted");
                 require(!AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
-                    route(103), turns, replayWindow), "cross-target delivery was admitted");
+                    route(103), replayWindow), "cross-target delivery was admitted");
                 require(!AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
-                    route(106), turns, replayWindow), "cross-tenant delivery was admitted");
+                    route(106), replayWindow), "cross-tenant delivery was admitted");
                 boolean rejectedMac = false;
                 try {
                     AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
-                        route(104), turns, replayWindow);
+                        route(104), replayWindow);
                 } catch (IOException unauthenticated) {
                     rejectedMac = true;
                 }
                 require(rejectedMac, "bad HMAC admitted to mailbox");
                 require(AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
-                    route(105), turns, replayWindow), "actual remote panic delivery");
+                    route(105), replayWindow), "actual remote panic delivery");
                 require(runtime.await_terminal(target, 10_000), "remote actor PANIC control");
                 var s = runtime.snapshot(target);
                 AttoM6Runtime.check_conservation(s);
@@ -94,7 +89,7 @@ public final class AttoM6ProxyUdsV1Probe {
                 System.out.println("ATTO_PROXY_UDS_REMOTE_ADMITTED_THEN_PROCESSED=PASS");
                 System.out.println("ATTO_PROXY_UDS_BAD_MAC_REPLAY_WRONG_TARGET_WRONG_TENANT=REJECTED");
                 System.out.println("ATTO_PROXY_UDS_M6_SUPERVISOR_PANIC_CONTROL=PASS");
-                System.out.println("ATTO_PROXY_UDS_PROCESSED_AFTER_M6_COMMIT=PASS");
+                System.out.println("ATTO_PROXY_UDS_EXACT_MESSAGE_RECEIPT_AFTER_M6_COMMIT=PASS");
                 if (compiledGuest) System.out.println(
                     "ATTO_PROXY_UDS_COMPILED_ATTO_PROCESS_B=PASS");
             } finally {
