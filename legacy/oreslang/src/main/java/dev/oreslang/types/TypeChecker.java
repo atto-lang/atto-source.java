@@ -13370,6 +13370,10 @@ public final class TypeChecker {
     }
 
     private void requireAssignable(Type actual, Type expected, String where) {
+        // Implicit argument borrow!: an owned argument satisfies a borrowed
+        // parameter of the same referent type; OwnershipChecker proves the loan.
+        if (where.startsWith("argument ") && expected instanceof Borrow borrowed
+                && !(actual instanceof Borrow) && assignable(actual, borrowed.target())) return;
         if (!assignable(actual, expected)) throw new IllegalArgumentException(where + " has type " + actual + " but expected " + expected);
     }
 

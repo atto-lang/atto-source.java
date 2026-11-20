@@ -308,7 +308,7 @@ public final class OwnershipChecker {
                     && !fn.trapped() && fn.effects().isEmpty());
         }
         for (Ast.Param param : fn.parameters()) {
-            VarState value = stateForParam(param);
+            VarState value = stateForParam(effectiveParam(param));
             scope.define(param.name(), value);
             if (borrowMirAudit != null) {
                 borrowMirAudit.parameter(value, value.kind == ValueKind.COPY);
@@ -453,7 +453,7 @@ public final class OwnershipChecker {
                     }
                 }
             }
-            for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
+            for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(effectiveParam(param)));
             defineImplicitArguments(scope, method.parameters());
             checkBlock(method.body(), scope, method.returnType());
             scope.close();
@@ -492,6 +492,26 @@ public final class OwnershipChecker {
         }
         arguments.aggregateSources = List.copyOf(sources);
         scope.define("arguments", arguments);
+    }
+
+    /**
+     * Implicit argument borrowing (atto-spec implicit-argument-borrow-v1):
+     * an ordinary, non-Copy class-typed function/method parameter `Foo f` is
+     * non-owning. It is checked as an exclusive incoming loan, so the callee
+     * may read and mutate the referent but cannot move, return or retain it,
+     * and the caller's owner stays valid after the call. Constructors, actor
+     * types, generics, structural and already-borrowed parameters keep their
+     * declared ownership.
+     */
+    private Ast.Param effectiveParam(Ast.Param param) {
+        Ast.TypeRef type = param.type();
+        if (type == null || type.isBorrow() || param.structural() || param.mutable()) return param;
+        if (!type.arguments().isEmpty() || type.isRecordType() || type.isUnion()
+                || type.isTupleType() || type.inferArguments()) return param;
+        Ast.ClassDecl klass = findClass(type.name());
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) return param;
+        if (isCopyType(type)) return param;
+        return new Ast.Param(Ast.TypeRef.borrowed(type, true), param.name(), false, false);
     }
 
     private VarState stateForParam(Ast.Param param) {
@@ -3420,7 +3440,7 @@ public final class OwnershipChecker {
                 }
 
                 if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
-                Ast.Param param = params.get(parameterIndex);
+                Ast.Param param = effectiveParam(params.get(parameterIndex));
                 VarState loanOwner = param.type().isBorrow()
                         ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
@@ -3545,6 +3565,14 @@ public final class OwnershipChecker {
                 requireUsable(state, name.name(), false);
                 if (isActorConfinedBorrow(state)) {
                     throw error("actor self borrow cannot cross an ordinary callable boundary");
+                }
+                if (state.kind != ValueKind.IMM_BORROW && state.kind != ValueKind.MUT_BORROW
+                        && !(state.type != null && state.type.isBorrow())) {
+                    // A plain owned argument to a borrowed parameter is an
+                    // implicit borrow! (implicit-argument-borrow-v1) with the
+                    // same loan proof as the explicit spelling; it is not a move.
+                    validateBorrow(state, mutable);
+                    return;
                 }
                 if (mutable && state.kind != ValueKind.MUT_BORROW) {
                     throw error(callable + " argument " + position + " requires a mutable borrowed value");

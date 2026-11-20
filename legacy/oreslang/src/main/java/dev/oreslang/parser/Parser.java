@@ -7182,7 +7182,15 @@ public final class Parser {
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
-        do args.add(parseExpression()); while (match(COMMA));
+        do {
+            // `f(mut x)` requests an exclusive call loan, same as `f(borrow! mut x)`.
+            if (check(MUT) && checkNext(IDENT)) {
+                advance();
+                args.add(new Ast.UnaryExpr("&mut", parseUnary()));
+            } else {
+                args.add(parseExpression());
+            }
+        } while (match(COMMA));
         return args;
     }
 
@@ -7434,8 +7442,18 @@ public final class Parser {
 
     private boolean parseReferentMutability(Ast.BindingKind kind) {
         if (kind == Ast.BindingKind.VAL) {
-            // Canonical `val mut` (local-binding-mutability-v1) requests a writable
-            // referent on a non-rebindable name, which is this backend's `val`.
+            // `val` already means `const mut` (writable referent, fixed name),
+            // so `val mut` is accepted as a redundant spelling with a warning.
+            if (match(MUT)) {
+                Token redundant = previous();
+                warnings.add(new SyntaxWarning(redundant.line(), redundant.column(),
+                        "redundant 'mut' after 'val'; 'val' already means 'const mut'"));
+            }
+            return true;
+        }
+        if (kind == Ast.BindingKind.LET) {
+            // Like `val` (= `const mut`), a `let` binding owns a writable referent;
+            // `let` additionally allows rebinding. `let mut` remains accepted.
             match(MUT);
             return true;
         }
