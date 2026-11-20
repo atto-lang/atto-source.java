@@ -16,6 +16,25 @@ permissions:
   contents: read
 
 jobs:
+  signed-i64-jvm:
+    name: JDK25 signed-i64 compiled guest admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      ATTO_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact source head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.ATTO_EXPECTED_HEAD_SHA }}
+          persist-credentials: false
+      - name: Install JDK25 without requiring GraalVM Native Image
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Execute exact-tree Java compiler and JVM guest matrix
+        run: bash ci/async/verify-java-signed-i64-jvm.sh
   signed-i64-jvm-native:
     name: JDK25 / GraalVM25 signed-i64 compiled guests
     runs-on: ubuntu-24.04
