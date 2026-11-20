@@ -149,7 +149,7 @@ public final class AttoAsyncV1CompilerProbe {
         rejectsSyntax("pub fnc main(): int { sync task<void> { return; }; return 42; }");
         String standalone = "pub fnc main(): int { do sync task {}; return 42; }";
         check(AttoAsyncV1Compiler.compile(standalone).contains("atto_inline_task_0:"));
-        check(!AttoAsyncV1Compiler.compile(standalone).contains("private static int plus_one"));
+        check(!AttoAsyncV1Compiler.compile(standalone).contains("private static long plus_one"));
         check(AttoAsyncV1Compiler.compile("pub fnc main(): int { "
             + "val answer = sync task<int> { return 42; }; return answer; }")
             .contains("return answer;"));
