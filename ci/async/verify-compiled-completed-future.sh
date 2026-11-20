@@ -21,6 +21,8 @@ bash ci/admission/exact-tree.sh \
   fixtures/async_v1/inline_v2_bad_void.atto \
   fixtures/async_v1/inline_v2_unsupported_effect.atto \
   fixtures/async_v1/inline_v2_overflow.atto \
+  fixtures/async_v1/inline_v2_wide.atto \
+  fixtures/async_v1/inline_v2_min_i64.atto \
   ci/async/verify-compiled-completed-future.sh
 test -x "$JAVA_HOME/bin/javac" && test -x "$JAVA_HOME/bin/native-image" || exit 2
 work="$(mktemp -d)"
@@ -206,6 +208,28 @@ grep -Fx 'ATTO_ASYNC_SCOPE=PURE_INLINE_TYPED_V2' "$work/inline_v2_nested/native.
 test ! -s "$work/inline_v2_nested/native.err"
 echo 'ATTO_INLINE_V2_JVM_NATIVE=PASS'
 
+# Canonical int is signed 64-bit; valid wide/signed-min guest values must
+# survive generated Java without narrowing to Java int. Only OS exit status
+# is narrowed at the host boundary; guest result is verified via stdout.
+for entry in inline_v2_wide:2147483648 inline_v2_min_i64:-9223372036854775808; do
+  case_name="${entry%%:*}"
+  expected="${entry#*:}"
+  mkdir -p "$work/$case_name/classes"
+  "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1Compiler \
+    "fixtures/async_v1/$case_name.atto" "$work/$case_name/AttoAsyncV1Guest.java"
+  "$JAVA_HOME/bin/javac" -Xlint:all -Werror -d "$work/$case_name/classes" \
+    "$work/$case_name/AttoAsyncV1Guest.java"
+  set +e
+  "$JAVA_HOME/bin/java" -cp "$work/$case_name/classes" AttoAsyncV1Guest \
+    >"$work/$case_name/stdout" 2>"$work/$case_name/stderr"
+  status=$?
+  set -e
+  test "$status" -eq 0
+  grep -Fx "ATTO_ASYNC_V1_RESULT=$expected" "$work/$case_name/stdout"
+  test ! -s "$work/$case_name/stderr"
+done
+echo 'ATTO_INLINE_V2_SIGNED_I64_JVM=PASS'
+
 # Unsupported effects or nonvoid discarded payloads must reject before
 # writing a generated guest artifact, even when nested.
 for case in inline_v2_bad_void inline_v2_unsupported_effect; do
@@ -240,6 +264,6 @@ set +e
 status=$?
 set -e
 test "$status" -ne 0
-grep -F 'ArithmeticException: integer overflow' "$work/inline_v2_overflow/stderr"
+grep -F 'ArithmeticException: long overflow' "$work/inline_v2_overflow/stderr"
 ! grep -q 'ATTO_ASYNC_V1_RESULT' "$work/inline_v2_overflow/stdout"
 echo 'ATTO_INLINE_V2_CHECKED_OVERFLOW=PASS'
