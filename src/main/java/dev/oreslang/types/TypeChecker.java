@@ -1858,6 +1858,32 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
+            // Canonical class 'const' has a constexpr contract, unlike 'val'
+            // and 'final'. Reject every effectful or non-provable initializer
+            // before construction, even if ordinary field typing could accept
+            // its runtime value. Never borrow constructor parameters or guest
+            // capabilities while evaluating compile-time constants.
+            if (strictAttoEquality && field.bindingKind() == Ast.BindingKind.CONST) {
+                if (field.initializer() == null) {
+                    throw new IllegalArgumentException(
+                            "E_CONST: class constant '" + klass.name() + "." + field.name()
+                                    + "' requires a compile-time initializer");
+                }
+                Object constant;
+                try {
+                    constant = evaluateScalarConstant(field.initializer(), new Env(null), 0);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalArgumentException(
+                            "E_CONST_OVERFLOW: class constant '" + klass.name() + "."
+                                    + field.name() + "' overflows during compile-time evaluation", overflow);
+                }
+                if (constant == null) {
+                    throw new IllegalArgumentException(
+                            "E_CONST: class constant '" + klass.name() + "." + field.name()
+                                    + "' must be provably compile-time evaluable; runtime calls, "
+                                    + "constructor parameters, effects, and unsupported values are forbidden");
+                }
+            }
             if (klass.actorKind() == Ast.ActorKind.NONE
                     && field.initializer() != null
                     && fieldInitializerMaySuspend(field.initializer())) {
@@ -7848,7 +7874,8 @@ public final class TypeChecker {
                                 && root.name().equals("self");
                         if (!initializingInConstructor) {
                             throw new IllegalArgumentException(
-                                    "field '" + field.owner().name() + "." + field.field().name()
+                                    (strictAttoEquality ? "E_IMMUTABLE: " : "")
+                                            + "field '" + field.owner().name() + "." + field.field().name()
                                             + "' is immutable/final; cannot reassign fixed class field");
                         }
                         if (constructorFixedFieldWrites == null
@@ -10943,7 +10970,8 @@ public final class TypeChecker {
             String name) {
         if (visibility == Ast.Visibility.PRIVATE && currentClassOwner != owner) {
             throw new IllegalArgumentException(
-                    "private " + kind + " '" + owner.name() + "." + name
+                    (strictAttoEquality ? "E_PRIVATE: " : "")
+                            + "private " + kind + " '" + owner.name() + "." + name
                             + "' is accessible only from code declared in class " + owner.name());
         }
     }
