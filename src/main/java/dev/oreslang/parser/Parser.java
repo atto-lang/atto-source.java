@@ -6910,6 +6910,17 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
+        // Both |params| -> void { ... } and |params| : void -> { ... }
+        // declare the same result. Do not reinterpret ':' as a parameter
+        // delimiter after the closing pipe, or silently drop the result.
+        if (match(COLON)) {
+            Ast.TypeRef declared = parseTypeRef();
+            consume(ARROW, "expected '->' after the lambda return type");
+            if (!check(LBRACE)) {
+                throw error(peek(), "explicit colon-annotated lambda return type requires a braced block");
+            }
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, declared);
+        }
         consume(ARROW, "lambdas use the slim arrow '->'");
         return parseLambdaBody(params, nonLexical, inlinePipelineStage);
     }
