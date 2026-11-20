@@ -34,6 +34,14 @@ public final class AttoM6ProxyUdsV1Probe {
         var counter = new AtomicLong();
         var handlerThread = new AtomicReference<String>();
         var session = new AttoM6ProxyUdsV1.Session(test_key());
+        boolean compiledGuest = Boolean.getBoolean("atto.proxy.compiled_guest");
+        // This is a *generated* Java class compiled from the pinned .atto
+        // fixture before startup; no source interpretation occurs in process B.
+        // Reflection here is test bootstrap only, not a Graal AOT contract.
+        final java.util.function.LongUnaryOperator receiver = compiledGuest
+            ? (java.util.function.LongUnaryOperator) Class
+                .forName("AttoM6ProxyGuestCounter").getDeclaredConstructor().newInstance()
+            : amount -> Math.addExact(counter.get(), amount);
         try (var runtime = new AttoM6Runtime(2, 3);
              var listener = AttoM6ProxyUdsV1.bind_private(path)) {
             Object socketKey = Files.readAttributes(path, BasicFileAttributes.class,
@@ -42,8 +50,8 @@ public final class AttoM6ProxyUdsV1Probe {
                 handlerThread.set(Thread.currentThread().getName());
                 require(turns.offer(new AttoM6ProxyUdsV1.Turn(
                     ProxyReceiptGateV1.Event.STARTED, 0)), "start event queue overflow");
-                if (amount == -1) throw new ArithmeticException("remote actor panic");
-                long after = counter.updateAndGet(before -> Math.addExact(before, amount));
+                long after = receiver.applyAsLong(amount);
+                counter.set(after);
                 require(turns.offer(new AttoM6ProxyUdsV1.Turn(
                     ProxyReceiptGateV1.Event.PROCESSED, after)), "terminal event queue overflow");
             });
@@ -85,6 +93,8 @@ public final class AttoM6ProxyUdsV1Probe {
                 System.out.println("ATTO_PROXY_UDS_BAD_MAC_REPLAY_WRONG_TARGET=REJECTED");
                 System.out.println("ATTO_PROXY_UDS_M6_SUPERVISOR_PANIC_CONTROL=PASS");
                 System.out.println("ATTO_PROXY_UDS_PROCESSED_AFTER_M6_COMMIT=PASS");
+                if (compiledGuest) System.out.println(
+                    "ATTO_PROXY_UDS_COMPILED_ATTO_PROCESS_B=PASS");
             } finally {
                 AttoM6ProxyUdsV1.unlink_owned(path, socketKey);
             }
@@ -119,7 +129,7 @@ public final class AttoM6ProxyUdsV1Probe {
             ProxyReceiptGateV1.Stage.PROCESSED);
         require(rejectedMac.outcome() == ProxyReceiptGateV1.Outcome.INDETERMINATE,
             "ambiguous connection close misreported as confirmed rejection");
-        var failure = AttoM6ProxyUdsV1.send(path, session, route(105), -1,
+        var failure = AttoM6ProxyUdsV1.send(path, session, route(105), Long.MAX_VALUE,
             ProxyReceiptGateV1.Stage.PROCESSED);
         require(failure.stage() == ProxyReceiptGateV1.Stage.STARTED &&
             failure.outcome() == ProxyReceiptGateV1.Outcome.FAILED,
@@ -136,8 +146,11 @@ public final class AttoM6ProxyUdsV1Probe {
         Path sock = directory.resolve("actor.sock");
         String javaBin = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         String cp = System.getProperty("java.class.path");
-        Process server = new ProcessBuilder(javaBin, "-cp", cp,
-            AttoM6ProxyUdsV1Probe.class.getName(), "--server", sock.toString())
+        Process server = (Boolean.getBoolean("atto.proxy.compiled_guest")
+            ? new ProcessBuilder(javaBin, "-Datto.proxy.compiled_guest=true", "-cp", cp,
+                AttoM6ProxyUdsV1Probe.class.getName(), "--server", sock.toString())
+            : new ProcessBuilder(javaBin, "-cp", cp,
+                AttoM6ProxyUdsV1Probe.class.getName(), "--server", sock.toString()))
             .redirectErrorStream(true).start();
         Process client = null;
         try {
@@ -162,12 +175,17 @@ public final class AttoM6ProxyUdsV1Probe {
             require(server.exitValue() == 0, "server failed: " + serverOut);
             require(serverOut.contains("ATTO_PROXY_UDS_DESTINATION_M6_RECEIVE=PASS"),
                 "server did not execute destination handler");
+            if (Boolean.getBoolean("atto.proxy.compiled_guest"))
+                require(serverOut.contains("ATTO_PROXY_UDS_COMPILED_ATTO_PROCESS_B=PASS"),
+                    "receiver was not the compiled .atto actor: " + serverOut);
             require(!Files.exists(sock, LinkOption.NOFOLLOW_LINKS),
                 "owned UDS path not cleaned");
             System.out.print(clientOut);
             System.out.print(serverOut);
             System.out.println("ATTO_PROXY_UDS_TWO_OS_PROCESSES=PASS");
-            System.out.println("ATTO_PROXY_UDS_SCOPE=EXPERIMENTAL_HOST_M6_NO_COMPILED_ATTO_GUEST");
+            System.out.println(Boolean.getBoolean("atto.proxy.compiled_guest")
+                ? "ATTO_PROXY_UDS_SCOPE=RESTRICTED_COMPILED_ATTO_RECEIVER_HOST_SENDER_ONLY"
+                : "ATTO_PROXY_UDS_SCOPE=EXPERIMENTAL_HOST_M6_NO_COMPILED_ATTO_GUEST");
         } finally {
             if (client != null && client.isAlive()) client.destroyForcibly();
             if (server.isAlive()) server.destroyForcibly();
