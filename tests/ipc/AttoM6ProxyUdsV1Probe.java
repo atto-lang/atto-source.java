@@ -42,6 +42,7 @@ public final class AttoM6ProxyUdsV1Probe {
                 handlerThread.set(Thread.currentThread().getName());
                 require(turns.offer(new AttoM6ProxyUdsV1.Turn(
                     ProxyReceiptGateV1.Event.STARTED, 0)), "start event queue overflow");
+                if (amount == -1) throw new ArithmeticException("remote actor panic");
                 long after = counter.updateAndGet(before -> Math.addExact(before, amount));
                 require(turns.offer(new AttoM6ProxyUdsV1.Turn(
                     ProxyReceiptGateV1.Event.PROCESSED, after)), "terminal event queue overflow");
@@ -65,21 +66,25 @@ public final class AttoM6ProxyUdsV1Probe {
                     rejectedMac = true;
                 }
                 require(rejectedMac, "bad HMAC admitted to mailbox");
-                require(runtime.request_stop(target)
-                    && runtime.await_terminal(target, 10_000), "remote actor stop");
+                require(AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
+                    route(105), turns, replayWindow), "actual remote panic delivery");
+                require(runtime.await_terminal(target, 10_000), "remote actor PANIC control");
                 var s = runtime.snapshot(target);
                 AttoM6Runtime.check_conservation(s);
-                require(s.accepted() == 2 && s.completed() == 2 && s.failed() == 0,
-                    "remote actor receipt conservation: " + s);
+                require(s.accepted() == 3 && s.completed() == 2 && s.failed() == 1 &&
+                    s.controlsDelivered() == 1 &&
+                    s.lastControl() == AttoM6Runtime.ControlKind.PANIC,
+                    "real M6 fault / independent PANIC CONTROL mismatch: " + s);
                 require(counter.get() == 15, "real destination actor did not handle 7 then 8");
                 require(handlerThread.get() != null &&
                     handlerThread.get().startsWith("atto-m6-carrier-"),
                     "actor handler ran on the I/O thread rather than M6 scheduler");
-                require(replayWindow.size() == 2, "replay budget state mismatch");
+                require(replayWindow.size() == 3, "replay budget state mismatch");
                 System.out.println("ATTO_PROXY_UDS_DESTINATION_M6_RECEIVE=PASS");
                 System.out.println("ATTO_PROXY_UDS_REMOTE_ADMITTED_THEN_PROCESSED=PASS");
                 System.out.println("ATTO_PROXY_UDS_BAD_MAC_REPLAY_WRONG_TARGET=REJECTED");
-                System.out.println("ATTO_PROXY_UDS_M6_SUPERVISOR_CONTROL_STOP=PASS");
+                System.out.println("ATTO_PROXY_UDS_M6_SUPERVISOR_PANIC_CONTROL=PASS");
+                System.out.println("ATTO_PROXY_UDS_PROCESSED_AFTER_M6_COMMIT=PASS");
             } finally {
                 AttoM6ProxyUdsV1.unlink_owned(path, socketKey);
             }
@@ -114,6 +119,11 @@ public final class AttoM6ProxyUdsV1Probe {
             ProxyReceiptGateV1.Stage.PROCESSED);
         require(rejectedMac.outcome() == ProxyReceiptGateV1.Outcome.INDETERMINATE,
             "ambiguous connection close misreported as confirmed rejection");
+        var failure = AttoM6ProxyUdsV1.send(path, session, route(105), -1,
+            ProxyReceiptGateV1.Stage.PROCESSED);
+        require(failure.stage() == ProxyReceiptGateV1.Stage.STARTED &&
+            failure.outcome() == ProxyReceiptGateV1.Outcome.FAILED,
+            "remote panic was misreported as successfully Processed");
         System.out.println("ATTO_PROXY_UDS_SENDER_FORKED_PROCESS=PASS");
         System.out.println("ATTO_PROXY_UDS_PROCESS_B_TYPED_I64_REPLY=15");
         System.out.println("ATTO_PROXY_UDS_UNCERTAIN_SEND_NOT_REJECTED=PASS");
