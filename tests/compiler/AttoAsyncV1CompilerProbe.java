@@ -86,6 +86,16 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(ok.replace("val pending", "val Future"));
         check(AttoAsyncV1Compiler.compile(ok.replace("pending", "future_42"))
             .contains("CompletableFuture<Integer> future_42"));
+        // A rejected source token must never be echoed into diagnostics.
+        // This string is deliberately shaped like a private guest identifier.
+        final String canary = "private_guest_token_abc123";
+        try {
+            AttoAsyncV1Compiler.compile(ok.replace("pub susp", canary + " susp"));
+            throw new AssertionError("malformed source unexpectedly compiled");
+        } catch (AttoAsyncV1Compiler.Reject rejected) {
+            check("E_ASYNC_UNEXPECTED_TOKEN".equals(rejected.getMessage()) &&
+                !rejected.getMessage().contains(canary));
+        }
         System.out.println("ATTO_ASYNC_V1_ADMISSION_PASS checks=" + checks);
     }
 }
