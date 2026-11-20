@@ -77,7 +77,9 @@ jobs:
           for suite in AttoCanonicalImplicitValClassFieldTest AttoClassFieldV2ConformanceSourceTest; do
             report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
             test -s "$report"
-            test "$(grep -c '<testcase' "$report")" -ge 5
+            minimum=5
+            if [ "$suite" = AttoCanonicalImplicitValClassFieldTest ]; then minimum=7; fi
+            test "$(grep -c '<testcase' "$report")" -ge "$minimum"
             if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$report"; then exit 1; fi
             printf 'RECEIPT suite=%s scope=java_frontend\n' "$suite"
           done
