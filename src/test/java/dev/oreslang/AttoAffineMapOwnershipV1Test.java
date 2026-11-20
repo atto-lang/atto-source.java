@@ -110,6 +110,38 @@ final class AttoAffineMapOwnershipV1Test {
     }
 
     @Test
+    void exclusiveScopedBorrowMayMutateThroughBothForms() throws Exception {
+        assertEquals(42, execute("""
+                fnc update(borrow mut Map<string,int> view): void {
+                  view["answer"] = 40;
+                  view.put("answer", 42);
+                  return;
+                }
+                pub fnc main(): int {
+                  let Map<string,int> m = ~map<string,int>();
+                  update(rt mut borrow m);
+                  return m["answer"];
+                }
+                """));
+    }
+
+    @Test
+    void immutableBorrowCannotBeUpgradedIntoMapWriteAuthority() {
+        reject("""
+                fnc bad(borrow Map<string,int> view): void {
+                  view.put("answer",42);
+                  return;
+                }
+                """);
+        reject("""
+                fnc bad(borrow Map<string,int> view): void {
+                  view["answer"] = 42;
+                  return;
+                }
+                """);
+    }
+
+    @Test
     void denyActorBoundaryAndBorrowAliasEscapes() {
         reject("actor fnc forbidden(Map<string,int> m): void { return; }");
         reject("""
