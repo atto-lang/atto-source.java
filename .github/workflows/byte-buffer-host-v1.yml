@@ -1,0 +1,25 @@
+name: Java OwnedBytes host-only regression
+on:
+  pull_request:
+    paths:
+      - 'src/memory/OwnedBytesV1.java'
+      - 'tests/OwnedBytesV1Test.java'
+      - '.github/workflows/byte-buffer-host-v1.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-byte-host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Native host-only compile and test (never guest conformance)
+        run: |
+          javac -Xlint:all -Werror src/memory/OwnedBytesV1.java tests/OwnedBytesV1Test.java
+          java -cp src/memory:tests OwnedBytesV1Test
