@@ -64,6 +64,9 @@ public final class Parser {
      * a method of the same name and arity. A default reachable from two
      * implemented traits is ambiguous and must be overridden explicitly.
      */
+    /** Root `pure fnc` / `pure routine` declarations, verified after parsing. */
+    private final List<Ast.FunctionDecl> pureFunctionDecls = new ArrayList<>();
+
     /** Declared `external fnc` symbols and every direct `name(...)` call site. */
     private final java.util.LinkedHashMap<String, Token> externalFunctions = new java.util.LinkedHashMap<>();
     private final List<java.util.Map.Entry<String, Token>> directCallSites = new ArrayList<>();
@@ -446,6 +449,16 @@ public final class Parser {
                 throw error(previous(), "expected module, class, enum, interface, trait, type, fnc, or routine after 'define'");
             }
 
+            if (isContextualIdentifier("pure") && (checkNext(FNC) || checkNext(ROUTINE))) {
+                advance(); // contextual pure: a checked effect contract (PureEffectChecker)
+                Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
+                if (!(declaration instanceof Ast.FunctionDecl pureFunction)) {
+                    throw error(previous(), "'pure' applies only to fnc and routine declarations");
+                }
+                pureFunctionDecls.add(pureFunction);
+                rootDeclarations.add(declaration);
+                continue;
+            }
             if (isContextualIdentifier("external") && checkNext(FNC)) {
                 // `external fnc name(params): T;` declares a foreign host symbol.
                 // No host FFI binding/capability exists in this backend, so the
@@ -492,6 +505,11 @@ public final class Parser {
             List<Ast.ModuleDecl> withDefaults = new ArrayList<>(modules.size());
             for (Ast.ModuleDecl module : modules) withDefaults.add(applyTraitDefaults(module));
             modules = withDefaults;
+        }
+        if (!pureFunctionDecls.isEmpty()) {
+            java.util.Set<String> pureNames = new java.util.HashSet<>();
+            for (Ast.FunctionDecl pureFunction : pureFunctionDecls) pureNames.add(pureFunction.name());
+            dev.oreslang.types.PureEffectChecker.check(pureFunctionDecls, pureNames);
         }
         for (java.util.Map.Entry<String, Token> call : directCallSites) {
             if (externalFunctions.containsKey(call.getKey())) {
