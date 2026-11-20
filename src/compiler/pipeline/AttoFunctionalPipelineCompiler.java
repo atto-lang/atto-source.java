@@ -1,6 +1,9 @@
 package atto.compiler.pipeline;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -336,12 +339,14 @@ public final class AttoFunctionalPipelineCompiler {
                     || Files.exists(output, LinkOption.NOFOLLOW_LINKS))
                 throw reject("E_OUTPUT", "output must be new in a real directory");
             byte[] bytes = Files.readAllBytes(source);
-            String text = new String(bytes, StandardCharsets.UTF_8);
-            String generated = emit(new Parser(text).parse());
-            // The parser must prove its call graph before any artifact exists.
+            String text = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes)).toString();
+            // All token, typing and call-graph checks precede artifact output.
             List<Function> typed = new Parser(text).parse();
             check(typed);
-            generated = emit(typed);
+            String generated = emit(typed);
             temp = Files.createTempFile(parent, ".atto-pipeline-", ".tmp");
             Files.writeString(temp, generated, StandardCharsets.UTF_8);
             Files.createLink(output, temp);
