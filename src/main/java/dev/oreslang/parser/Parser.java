@@ -2567,6 +2567,13 @@ public final class Parser {
                         + "typed pipeline role, forwarding and transport lowering");
             }
             if (match(PUB)) {
+                // A package-scoped member cannot be represented by today's
+                // two-valued PRIVATE/PUBLIC AST. Never erase [pkg] and widen
+                // access across tenant or package boundaries.
+                if (check(LBRACKET)) {
+                    throw error(peek(), "E_PKG_VISIBILITY_UNSUPPORTED: pub[pkg] requires "
+                            + "an authenticated package scope and non-widening compiler lowering");
+                }
                 if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
                 visibilitySeen = true;
                 visibility = Ast.Visibility.PUBLIC;
