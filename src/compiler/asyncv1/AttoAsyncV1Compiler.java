@@ -88,11 +88,12 @@ public final class AttoAsyncV1Compiler {
                 throw new Reject("E_RESERVED_IDENTIFIER_" + value);
             return value;
         }
-        int smallInt() {
+        long smallInt() {
             String value = next();
-            if (!value.matches("[0-9]{1,6}"))
+            if (!value.matches("[0-9]{1,19}"))
                 throw new Reject("E_ASYNC_INTEGER_RANGE");
-            return Integer.parseInt(value);
+            try { return Long.parseLong(value); }
+            catch (NumberFormatException e) { throw new Reject("E_ASYNC_INTEGER_RANGE"); }
         }
         boolean done() { return index == tokens.size(); }
         boolean peekIs(String token) {
@@ -117,7 +118,7 @@ public final class AttoAsyncV1Compiler {
         // tasks additionally admit a standalone main with no helper preamble.
         String fun = null;
         String param = null;
-        int increment = 0;
+        long increment = 0;
         if (p.peekIs("fnc")) {
             p.expect("fnc");
             fun = p.ident();
@@ -154,7 +155,7 @@ public final class AttoAsyncV1Compiler {
             }
             p.expect("{");
             boolean hasValue = false;
-            int ignored = 0;
+            long ignored = 0;
             if (p.peekIs("return")) {
                 p.expect("return");
                 if (p.peekIs(";")) {
@@ -171,7 +172,7 @@ public final class AttoAsyncV1Compiler {
             if (p.peekIs(";")) p.expect(";");
             if (!payload.equals("infer") && !payload.equals(hasValue ? "int" : "void"))
                 throw new Reject("E_TASK_RETURN_TYPE");
-            p.expect("return"); int parentValue = p.smallInt();
+            p.expect("return"); long parentValue = p.smallInt();
             p.expect(";"); p.expect("}");
             if (!p.done()) throw new Reject("E_ASYNC_TRAILING_SOURCE");
             String body = "    atto_inline_task_0: {\n"
@@ -190,7 +191,7 @@ public final class AttoAsyncV1Compiler {
             if (p.peekIs("<")) {
                 p.expect("<"); p.expect("int"); p.expect(">");
             }
-            p.expect("{"); p.expect("return"); int value = p.smallInt();
+            p.expect("{"); p.expect("return"); long value = p.smallInt();
             p.expect(";"); p.expect("}"); p.expect(";");
             boolean hasDiscard = p.peekIs("do");
             if (hasDiscard) {
@@ -225,7 +226,7 @@ public final class AttoAsyncV1Compiler {
             }
             p.expect(";"); p.expect("}");
             if (!p.done()) throw new Reject("E_ASYNC_TRAILING_SOURCE");
-            String body = "    int " + future + ";\n"
+            String body = "    long " + future + ";\n"
                 + "    atto_inline_task_0: {\n"
                 + "      " + future + " = " + value + ";\n"
                 + "      break atto_inline_task_0;\n"
@@ -250,7 +251,7 @@ public final class AttoAsyncV1Compiler {
         p.expect("{");
         if (p.peekIs("return")) p.expect("return");
         else p.expect("^");
-        int value = p.smallInt();
+        long value = p.smallInt();
         p.expect(";"); p.expect("}"); p.expect(";");
         p.expect("^"); p.expect(future); p.expect("|>");
         p.expect("susp"); p.expect("|"); String binding = p.ident();
@@ -267,24 +268,25 @@ public final class AttoAsyncV1Compiler {
             throw new Reject("E_ASYNC_DUPLICATE_LOCAL");
         // All three expressions are checked before generating code; no Atto
         // expression is evaluated by a runtime source interpreter.
-        int expected = Math.addExact(value, increment);
+        try { Math.addExact(value, increment); }
+        catch (ArithmeticException e) { throw new Reject("E_ASYNC_INTEGER_RANGE"); }
         return "import java.util.concurrent.CompletableFuture;\n"
             + "public final class AttoAsyncV1Guest {\n"
-            + "  private static int " + fun + "(int " + param + ") {\n"
+            + "  private static long " + fun + "(long " + param + ") {\n"
             + "    return Math.addExact(" + param + ", " + increment + ");\n"
             + "  }\n"
-            + "  public static int execute() {\n"
-            + "    CompletableFuture<Integer> " + future
-            + " = CompletableFuture.completedFuture(" + value + ");\n"
-            + "    int " + terminal + " = " + fun + "(" + future + ".join());\n"
+            + "  public static long execute() {\n"
+            + "    CompletableFuture<Long> " + future
+            + " = CompletableFuture.completedFuture(" + value + "L);\n"
+            + "    long " + terminal + " = " + fun + "(" + future + ".join());\n"
             + "    return " + terminal + ";\n"
             + "  }\n"
             + "  public static void main(String[] args) {\n"
             + "    if (args.length != 0) throw new IllegalArgumentException();\n"
-            + "    int result = execute();\n"
+            + "    long result = execute();\n"
             + "    System.out.println(\"ATTO_ASYNC_V1_RESULT=\" + result);\n"
             + "    System.out.println(\"ATTO_ASYNC_SCOPE=COMPLETED_FUTURE_ONLY\");\n"
-            + "    System.exit(result);\n"
+            + "    System.exit((int) result);\n"
             + "  }\n"
             + "}\n";
     }
@@ -294,18 +296,18 @@ public final class AttoAsyncV1Compiler {
         // returning from the parent, allocating a Future or scheduling a child.
         return "public final class AttoAsyncV1Guest {\n"
             + (fun == null ? "" :
-                "  private static int " + fun + "(int " + param + ") {\n"
+                "  private static long " + fun + "(long " + param + ") {\n"
                 + "    return Math.addExact(" + param + ", " + increment + ");\n"
                 + "  }\n")
-            + "  public static int execute() {\n"
+            + "  public static long execute() {\n"
             + body
             + "  }\n"
             + "  public static void main(String[] args) {\n"
             + "    if (args.length != 0) throw new IllegalArgumentException();\n"
-            + "    int result = execute();\n"
+            + "    long result = execute();\n"
             + "    System.out.println(\"ATTO_ASYNC_V1_RESULT=\" + result);\n"
             + "    System.out.println(\"ATTO_ASYNC_SCOPE=PURE_INLINE_TASK_ONLY\");\n"
-            + "    System.exit(result);\n"
+            + "    System.exit((int) result);\n"
             + "  }\n"
             + "}\n";
     }
