@@ -187,6 +187,22 @@ public final class M10RemoteActorProcessProbe {
                 var next = send(socket, 711, 106, 10, key);
                 require(next.processed_result() == 20,
                         "second message was not processed by real remote actor");
+                // Host runtime identity is the peer's OS principal, not the
+                // mutable System.getProperty("user.name"). The client must
+                // still pass a properly authenticated request if that Java
+                // property is changed after bootstrap.
+                String originalUserProperty = System.getProperty("user.name");
+                try {
+                    System.setProperty("user.name", "forged-property-not-os-uid");
+                    var identityProbe = send(socket, 711, 109, 2, key);
+                    require(identityProbe.processed_result() == 12,
+                        "host identity incorrectly trusted mutable Java user.name");
+                } finally {
+                    if (originalUserProperty != null)
+                        System.setProperty("user.name", originalUserProperty);
+                    else System.clearProperty("user.name");
+                }
+                System.out.println("M10_UDS_OS_PEER_OWNER_NOT_MUTABLE_USER_PROPERTY=PASS");
                 // Twelve independent M10 selector sessions overlap on the
                 // same destination actor. Each result belongs to its OWN
                 // runtime-issued ticket. Explicit FULL is safe rejection;
