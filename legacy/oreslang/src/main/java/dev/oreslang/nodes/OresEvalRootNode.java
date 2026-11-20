@@ -38,6 +38,7 @@ import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
 import dev.oreslang.runtime.Utf8StringAbi;
 import dev.oreslang.types.NumericValueEquality;
+import dev.oreslang.types.NominalEnumRegistry;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -177,6 +178,7 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private final NominalEnumRegistry.Registry nominalEnums;
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
@@ -271,6 +273,7 @@ public final class OresEvalRootNode extends RootNode {
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.taskAdmissionEpoch = taskAdmissionEpoch;
+            this.nominalEnums = NominalEnumRegistry.forProgram(program);
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -4686,6 +4689,25 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.MemberExpr member) {
+                    // Nullary nominal enum variants are values even in
+                    // suspendable evaluation. Resolve before evaluating the
+                    // namespace name, which is compile-time-only.
+                    if (member.receiver() instanceof Ast.NameExpr enumOwner
+                            && env.lookup(enumOwner.name()) == Env.MISSING) {
+                        NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                                enumOwner.name() + "." + member.member());
+                        if (enumCase != null) {
+                            try {
+                                continuation.accept(
+                                        task,
+                                        constructNominalEnum(enumCase, List.of()),
+                                        null);
+                            } catch (RuntimeException | Error failure) {
+                                continuation.accept(task, null, failure);
+                            }
+                            return;
+                        }
+                    }
                     evalSuspendableExpr(
                             task,
                             member.receiver(),
@@ -5575,6 +5597,34 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, value, null);
                         });
                 return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr enumMember
+                    && enumMember.receiver() instanceof Ast.NameExpr enumOwner
+                    && env.lookup(enumOwner.name()) == Env.MISSING) {
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                enumOwner.name() + "." + enumMember.member());
+                if (enumCase != null) {
+                    evalSuspendableArguments(
+                            task,
+                            call.arguments(),
+                            env,
+                            (t, values, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                try {
+                                    continuation.accept(
+                                            t,
+                                            constructNominalEnum(enumCase, values),
+                                            null);
+                                } catch (RuntimeException | Error enumFailure) {
+                                    continuation.accept(t, null, enumFailure);
+                                }
+                            });
+                    return;
+                }
             }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
@@ -6541,6 +6591,18 @@ public final class OresEvalRootNode extends RootNode {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
                     return new ReadonlyRecordValue(fields);
+                }
+                if (value instanceof NominalEnumValue nominal) {
+                    return nominal.payload() == null
+                            ? nominal
+                            : new NominalEnumValue(
+                                    nominal.ownerUnitId(),
+                                    nominal.enumName(),
+                                    nominal.variant(),
+                                    nominal.tag(),
+                                    detachAsyncValue(
+                                            nominal.payload(),
+                                            visiting));
                 }
                 if (value instanceof MutableStructValue mutableStruct) {
                     LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
@@ -7715,6 +7777,20 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
             }
+            if (call.callee() instanceof Ast.MemberExpr enumMember
+                    && enumMember.receiver() instanceof Ast.NameExpr enumOwner
+                    && env.lookup(enumOwner.name()) == Env.MISSING) {
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                enumOwner.name() + "." + enumMember.member());
+                if (enumCase != null) {
+                    List<Object> args =
+                            evaluateArguments(call.arguments(), env);
+                    return invokableInvocation(
+                            ignored -> constructNominalEnum(enumCase, args),
+                            List.of());
+                }
+            }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 // Immutable checked target within this evaluator's code image.
@@ -7943,6 +8019,29 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return List.copyOf(values);
+        }
+
+        private Object constructNominalEnum(
+                NominalEnumRegistry.Case enumCase,
+                List<Object> args) {
+            int expected = enumCase.payload() == null ? 0 : 1;
+            if (args.size() != expected) {
+                throw new IllegalArgumentException(
+                        "enum constructor " + enumCase.qualifiedName()
+                                + " expects " + expected + " argument(s)");
+            }
+            Object payload = expected == 0
+                    ? null
+                    : shapeReturnedValue(
+                            enumCase.payload(),
+                            args.getFirst(),
+                            "enum constructor " + enumCase.qualifiedName());
+            return new NominalEnumValue(
+                    codeUnitId,
+                    enumCase.owner(),
+                    enumCase.name(),
+                    enumCase.tag(),
+                    payload);
         }
 
         /** A sealed guest intrinsic, never host Java's Integer class. */
@@ -8558,7 +8657,17 @@ public final class OresEvalRootNode extends RootNode {
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
-            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
+            if (expr instanceof Ast.MemberExpr member) {
+                if (member.receiver() instanceof Ast.NameExpr enumOwner
+                        && env.lookup(enumOwner.name()) == Env.MISSING) {
+                    NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                            enumOwner.name() + "." + member.member());
+                    if (enumCase != null) {
+                        return constructNominalEnum(enumCase, List.of());
+                    }
+                }
+                return member(eval(member.receiver(), env), member.member(), env);
+            }
             if (expr instanceof Ast.IndexExpr indexed) {
                 return indexValue(
                         eval(indexed.receiver(), env),
@@ -11458,6 +11567,26 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.ConstructorPattern constructor) {
                 String name = constructor.constructor();
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(name);
+                if (enumCase != null) {
+                    if (!(value instanceof NominalEnumValue nominal)
+                            || !nominal.ownerUnitId().equals(codeUnitId)
+                            || !nominal.enumName().equals(enumCase.owner())
+                            || !nominal.variant().equals(enumCase.name())
+                            || nominal.tag() != enumCase.tag()) {
+                        return false;
+                    }
+                    int expected = enumCase.payload() == null ? 0 : 1;
+                    if (constructor.arguments().size() != expected) {
+                        return false;
+                    }
+                    return expected == 0
+                            || patternMatches(
+                                    constructor.arguments().getFirst(),
+                                    nominal.payload(),
+                                    bindings);
+                }
                 if (name.equals("Some")) {
                     if (!(value instanceof OptionValue option) || !option.present() || constructor.arguments().size() != 1) return false;
                     return patternMatches(constructor.arguments().getFirst(), option.value(), bindings);
@@ -11673,6 +11802,29 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("HttpClientBody"))
                 return value instanceof OutboundHttpRequest.Body;
 
+            NominalEnumRegistry.EnumType enumeration =
+                    nominalEnums.enums().get(name);
+            if (enumeration != null) {
+                if (!(value instanceof NominalEnumValue nominal)
+                        || !nominal.ownerUnitId().equals(codeUnitId)
+                        || !nominal.enumName().equals(name)) {
+                    return false;
+                }
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                nominal.enumName() + "." + nominal.variant());
+                if (enumCase == null || enumCase.tag() != nominal.tag()) {
+                    return false;
+                }
+                if (enumCase.payload() == null) {
+                    return nominal.payload() == null;
+                }
+                return nominal.payload() != null
+                        && oresTypeMatches(
+                                nominal.payload(),
+                                enumCase.payload());
+            }
+
             if (value instanceof OresObject object) {
                 Ast.ClassDecl targetClass = findClass(name);
                 if (targetClass != null) return object.owner.classIsA(object.klass, targetClass, classVisitSet());
@@ -11696,6 +11848,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof NominalEnumValue nominal) return nominal.enumName();
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
@@ -11850,6 +12003,25 @@ public final class OresEvalRootNode extends RootNode {
                         && right instanceof ActorRuntime.ActorRef<?> b
                         && a.kind() == b.kind()
                         && a.id().equals(b.id());
+            }
+
+            if (left instanceof NominalEnumValue
+                    || right instanceof NominalEnumValue) {
+                if (!(left instanceof NominalEnumValue a)
+                        || !(right instanceof NominalEnumValue b)) {
+                    return false;
+                }
+                if (!a.ownerUnitId().equals(b.ownerUnitId())
+                        || !a.enumName().equals(b.enumName())
+                        || !a.variant().equals(b.variant())
+                        || a.tag() != b.tag()) {
+                    return false;
+                }
+                if (a.payload() == null || b.payload() == null) {
+                    return a.payload() == null && b.payload() == null;
+                }
+                if (comparisonPairSeen(left, right, seen)) return true;
+                return valueEquals(a.payload(), b.payload(), seen);
             }
 
             if (left instanceof OptionValue || right instanceof OptionValue) {
@@ -12075,6 +12247,41 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
 
+            NominalEnumRegistry.EnumType enumType =
+                    nominalEnums.enums().get(declared.name());
+            if (enumType != null) {
+                if (!(value instanceof NominalEnumValue nominal)
+                        || !nominal.ownerUnitId().equals(codeUnitId)
+                        || !nominal.enumName().equals(enumType.name())) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                nominal.enumName() + "." + nominal.variant());
+                if (enumCase == null || enumCase.tag() != nominal.tag()) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                if (enumCase.payload() == null) {
+                    if (nominal.payload() != null) {
+                        throw returnTypeMismatch(callable, declared, value);
+                    }
+                    return value;
+                }
+                if (nominal.payload() == null) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                Object payload = shapeReturnedValue(
+                        enumCase.payload(),
+                        nominal.payload(),
+                        callable + " enum payload",
+                        resolving);
+                return new NominalEnumValue(
+                        nominal.ownerUnitId(),
+                        nominal.enumName(),
+                        nominal.variant(),
+                        nominal.tag(),
+                        payload);
+            }
             if (declared.name().equals("Vector") && value instanceof List<?>) {
                 return admitDeclaredVector(declared, value);
             }
@@ -13139,6 +13346,10 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!seen.add(value)) return true;
 
+            if (value instanceof NominalEnumValue nominal) {
+                return nominal.payload() == null
+                        || runtimeSharedSafe(nominal.payload(), seen);
+            }
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
             }
@@ -13179,6 +13390,29 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
     }
+    private record NominalEnumValue(
+            String ownerUnitId,
+            String enumName,
+            String variant,
+            int tag,
+            Object payload) implements OresMutex.SharedState {
+        private NominalEnumValue {
+            Objects.requireNonNull(ownerUnitId, "ownerUnitId");
+            Objects.requireNonNull(enumName, "enumName");
+            Objects.requireNonNull(variant, "variant");
+            if (tag < 1) {
+                throw new IllegalArgumentException("invalid nominal enum tag");
+            }
+        }
+        @Override public Iterable<?> sharedStateChildren() {
+            return payload == null ? List.of() : List.of(payload);
+        }
+        @Override public String toString() {
+            String name = enumName + "." + variant;
+            return payload == null ? name : name + "(" + payload + ")";
+        }
+    }
+
     private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
         @Override public String toString(){return CycleSafeDisplay.render(this);}

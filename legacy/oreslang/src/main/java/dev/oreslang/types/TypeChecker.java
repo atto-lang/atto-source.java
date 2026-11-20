@@ -95,6 +95,7 @@ public final class TypeChecker {
     private final Set<String> inferredTypeNames = new HashSet<>();
     /** Short named inference is resolved only for otherwise unbound capitalized row type names. */
     private final IdentityHashMap<Ast.BindingStmt, String> shortInferredTypeNames = new IdentityHashMap<>();
+    private NominalEnumRegistry.Registry nominalEnums;
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -335,6 +336,7 @@ public final class TypeChecker {
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
+        checker.nominalEnums = NominalEnumRegistry.forProgram(program);
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
@@ -408,6 +410,7 @@ public final class TypeChecker {
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
+        checker.nominalEnums = NominalEnumRegistry.forProgram(program);
         checker.validateImports(program);
         checker.collect(program);
         for (Map.Entry<String, Ast.InterfaceDecl> entry : linkedContracts.entrySet()) {
@@ -549,6 +552,7 @@ public final class TypeChecker {
                     }
                     localNames.add(alias.name());
                 }
+                else if (declaration instanceof Ast.EnumDecl enumeration) localNames.add(enumeration.name());
             }
         }
 
@@ -695,6 +699,17 @@ public final class TypeChecker {
                     else if (decl instanceof Ast.TypeAliasDecl alias) {
                         Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
                         resolve(alias.target(), aliasGenerics, null);
+                    } else if (decl instanceof Ast.EnumDecl enumeration) {
+                        for (Ast.EnumCase variant : enumeration.cases()) {
+                            if (variant.payload() != null) {
+                                Type payload = resolve(variant.payload(), Set.of(), null);
+                                if (payload == Primitive.VOID) {
+                                    throw new IllegalArgumentException(
+                                            "enum case " + enumeration.name() + "." + variant.name()
+                                                    + " cannot carry void");
+                                }
+                            }
+                        }
                     }
                     else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
                 }
@@ -2278,6 +2293,14 @@ public final class TypeChecker {
                             + "' cannot use same-file type alias '" + name
                             + "'; move the type to another source unit and import it explicitly");
         }
+
+        if (nominalEnums != null
+                && nominalEnums.enums().containsKey(name)) {
+            throw new IllegalArgumentException(
+                    "actor '" + lexicalClassOrigin.name()
+                            + "' cannot use same-file nominal enum '" + name
+                            + "'; move the enum to another source unit and import it explicitly");
+        }
     }
 
     /**
@@ -3709,6 +3732,57 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr shadowMember
+                    && shadowMember.receiver() instanceof Ast.NameExpr shadowOwner
+                    && env.lookup(shadowOwner.name()) != null
+                    && nominalEnums != null
+                    && nominalEnums.enums().containsKey(shadowOwner.name())) {
+                throw new IllegalArgumentException("local binding '" + shadowOwner.name()
+                        + "' shadows nominal enum namespace; enum cases cannot be reached through it");
+            }
+            if (call.callee() instanceof Ast.MemberExpr enumMember
+                    && enumMember.receiver() instanceof Ast.NameExpr enumOwner
+                    && env.lookup(enumOwner.name()) == null
+                    && nominalEnums != null) {
+                NominalEnumRegistry.Case enumCase =
+                        nominalEnums.caseOrNull(
+                                enumOwner.name() + "." + enumMember.member());
+                if (enumCase != null) {
+                    rejectUnimportedTypeDependency(enumCase.owner());
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "enum constructors do not accept type arguments");
+                    }
+                    if (call.arguments().stream()
+                            .anyMatch(argument -> argument instanceof Ast.SpreadExpr)) {
+                        throw new IllegalArgumentException(
+                                "enum constructors do not accept spread arguments");
+                    }
+                    int expected = enumCase.payload() == null ? 0 : 1;
+                    if (call.arguments().size() != expected) {
+                        throw new IllegalArgumentException(
+                                "enum constructor " + enumCase.qualifiedName()
+                                        + " expects " + expected + " argument(s)");
+                    }
+                    if (expected == 1) {
+                        Type actual = typeOf(
+                                call.arguments().getFirst(),
+                                env,
+                                generics,
+                                self);
+                        Type payload = resolve(
+                                enumCase.payload(),
+                                generics,
+                                self);
+                        requireAssignable(
+                                actual,
+                                payload,
+                                "payload for " + enumCase.qualifiedName());
+                    }
+                    return new Named(enumCase.owner(), List.of());
+                }
+            }
+
             if (call.arguments().stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
                 throw new IllegalArgumentException(
                         "NAMED_CALL_BINDING_UNSUPPORTED: named arguments are parsed and preserved, "
@@ -5176,6 +5250,25 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            // Nullary enum variants are immutable, nominal values. A payload-bearing
+            // variant remains a constructor and cannot be referenced as a constant.
+            // Resolve only a free enum namespace, never a shadowing local binding.
+            if (member.receiver() instanceof Ast.NameExpr enumOwner
+                    && env.lookup(enumOwner.name()) == null
+                    && nominalEnums != null) {
+                NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                        enumOwner.name() + "." + member.member());
+                if (enumCase != null) {
+                    rejectUnimportedTypeDependency(enumCase.owner());
+                    if (enumCase.payload() != null) {
+                        throw new IllegalArgumentException(
+                                "enum case " + enumCase.qualifiedName()
+                                        + " requires a payload argument");
+                    }
+                    // A nullary case value has its enum type, so `let l = E.A; l = E.B;` is valid.
+                    return new Named(enumCase.owner(), List.of());
+                }
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
@@ -8031,6 +8124,28 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
+        if (named.arguments().isEmpty() && nominalEnums != null) {
+            NominalEnumRegistry.EnumType enumeration =
+                    nominalEnums.enums().get(named.name());
+            if (enumeration != null) {
+                return enumeration.cases().stream().allMatch(
+                        variant -> variant.payload() == null
+                                || isSharedMutexPayloadSafe(
+                                        resolve(variant.payload(), Set.of(), null),
+                                        seen,
+                                        genericBindings));
+            }
+            NominalEnumRegistry.Case enumCase =
+                    nominalEnums.caseOrNull(named.name());
+            if (enumCase != null) {
+                return enumCase.payload() == null
+                        || isSharedMutexPayloadSafe(
+                                resolve(enumCase.payload(), Set.of(), null),
+                                seen,
+                                genericBindings);
+            }
+        }
+
         // This is storage-admission policy, not another auto trait. Keep
         // runtime-domain capabilities out of SharedMutex payloads even when
         // some of them are independently Send.
@@ -8569,6 +8684,36 @@ public final class TypeChecker {
             if (!(subject instanceof Named named)) {
                 throw new IllegalArgumentException("constructor pattern " + constructor.constructor() + " requires a sum/constructor type, got " + subject);
             }
+            NominalEnumRegistry.Case enumCase =
+                    nominalEnums == null ? null
+                            : nominalEnums.caseOrNull(constructor.constructor());
+            if (enumCase != null) {
+                if (!named.arguments().isEmpty()
+                        || !named.name().equals(enumCase.owner())) {
+                    throw new IllegalArgumentException(
+                            "enum case " + enumCase.qualifiedName()
+                                    + " does not belong to match subject " + subject);
+                }
+                List<Type> enumArgs = enumCase.payload() == null
+                        ? List.of()
+                        : List.of(resolve(enumCase.payload(), generics, self));
+                if (enumArgs.size() != constructor.arguments().size()) {
+                    throw new IllegalArgumentException(
+                            "constructor pattern " + enumCase.qualifiedName()
+                                    + " expects " + enumArgs.size()
+                                    + " argument(s), got "
+                                    + constructor.arguments().size());
+                }
+                for (int i = 0; i < enumArgs.size(); i++) {
+                    checkPattern(
+                            constructor.arguments().get(i),
+                            enumArgs.get(i),
+                            bindings,
+                            generics,
+                            self);
+                }
+                return;
+            }
             List<Type> args = switch (constructor.constructor()) {
                 case "Some" -> named.name().equals("Option") && named.arguments().size() == 1
                         ? List.of(named.arguments().getFirst()) : null;
@@ -8810,6 +8955,17 @@ public final class TypeChecker {
                         || (a.constructor().equals("None") && b.constructor().equals("Some"))
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
                         || (a.constructor().equals("Err") && b.constructor().equals("Ok"))) return true;
+                if (nominalEnums != null) {
+                    NominalEnumRegistry.Case leftCase =
+                            nominalEnums.caseOrNull(a.constructor());
+                    NominalEnumRegistry.Case rightCase =
+                            nominalEnums.caseOrNull(b.constructor());
+                    if (leftCase != null
+                            && rightCase != null
+                            && leftCase.owner().equals(rightCase.owner())) {
+                        return true;
+                    }
+                }
             }
             return false;
         }
@@ -8893,6 +9049,25 @@ public final class TypeChecker {
             }
         }
 
+        if (subject instanceof Named enumSubject
+                && enumSubject.arguments().isEmpty()
+                && nominalEnums != null
+                && nominalEnums.enums().containsKey(enumSubject.name())) {
+            NominalEnumRegistry.EnumType enumeration =
+                    nominalEnums.requireEnum(enumSubject.name());
+            return enumeration.cases().stream().allMatch(enumCase ->
+                    patterns.stream().anyMatch(pattern ->
+                            pattern instanceof Ast.ConstructorPattern constructor
+                                    && constructor.constructor().equals(enumCase.qualifiedName())
+                                    && enumConstructorCoversPayload(
+                                            constructor,
+                                            enumCase,
+                                            generics,
+                                            self)));
+        }
+
+        // Finite unions are exhaustively covered when every alternative is
+        // completely covered by at least one unguarded arm.
         if (subject instanceof Union union) {
             return union.options().stream().allMatch(option ->
                     patternsProvablyExhaustive(patterns, option, generics, self, depth + 1));
@@ -8947,6 +9122,23 @@ public final class TypeChecker {
         // coverage proofs (e.g. multiple partially covering tuple rows) can
         // be added without weakening this soundness boundary.
         return false;
+    }
+
+    private boolean enumConstructorCoversPayload(
+            Ast.ConstructorPattern constructor,
+            NominalEnumRegistry.Case enumCase,
+            Set<String> generics,
+            Type self) {
+        if (enumCase.payload() == null) {
+            return constructor.arguments().isEmpty();
+        }
+        if (constructor.arguments().size() != 1) return false;
+        Type payload = resolve(enumCase.payload(), generics, self);
+        return patternCoversType(
+                constructor.arguments().getFirst(),
+                payload,
+                generics,
+                self);
     }
 
     private boolean patternCoversType(
@@ -10448,7 +10640,10 @@ public final class TypeChecker {
         boolean valueSemanticNamed = value instanceof Named named
                 && (named.name().equals("Option")
                     || named.name().equals("Result")
-                    || named.name().equals("IteratorResult"));
+                    || named.name().equals("IteratorResult")
+                    || (nominalEnums != null
+                            && (nominalEnums.enums().containsKey(named.name())
+                                    || nominalEnums.caseOrNull(named.name()) != null)));
 
         if (value instanceof Primitive || value instanceof StringLiteral
                 || value instanceof ClassNamespace || value instanceof Generic
@@ -12679,6 +12874,13 @@ public final class TypeChecker {
                 yield new Function(args.subList(0, args.size() - 1), args.getLast());
             }
             default -> {
+                if (nominalEnums != null && nominalEnums.enums().containsKey(ref.name())) {
+                    if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "nominal enum '" + ref.name() + "' does not accept type arguments");
+                    }
+                    yield new Named(ref.name(), List.of());
+                }
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
                     List<Ast.TypeRef> ordered = orderedNominalTypeArguments(
@@ -12779,6 +12981,24 @@ public final class TypeChecker {
             return structuralRecordAssignable(sourceShape, targetShape);
         }
 
+        if (actual instanceof Named actualNamed
+                && expected instanceof Named expectedNamed
+                && actualNamed.name().equals(expectedNamed.name())
+                && actualNamed.arguments().size() == expectedNamed.arguments().size()) {
+            boolean invariant = true;
+            for (int i = 0; i < actualNamed.arguments().size(); i++) {
+                Type a = actualNamed.arguments().get(i);
+                Type b = expectedNamed.arguments().get(i);
+                if (!assignable(a, b) || !assignable(b, a)) {
+                    invariant = false;
+                    break;
+                }
+            }
+            if (invariant) return true;
+        }
+
+        if (isNominalEnumVariantAssignable(actual, expected)) return true;
+
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
@@ -12834,6 +13054,19 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    private boolean isNominalEnumVariantAssignable(Type actual, Type expected) {
+        if (!(actual instanceof Named variant)
+                || !(expected instanceof Named enumeration)
+                || !variant.arguments().isEmpty()
+                || !enumeration.arguments().isEmpty()
+                || nominalEnums == null) {
+            return false;
+        }
+        NominalEnumRegistry.Case enumCase =
+                nominalEnums.caseOrNull(variant.name());
+        return enumCase != null && enumCase.owner().equals(enumeration.name());
     }
 
     private static boolean aggregateKindsCompatible(

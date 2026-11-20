@@ -77,7 +77,7 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, GpuActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl { }
+            ExternalActorMethodDecl, EnumDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -898,6 +898,14 @@ public final class Ast {
             if (name == null || name.isBlank()) throw new IllegalArgumentException("method name cannot be blank");
             if (arity < 0) throw new IllegalArgumentException("method arity cannot be negative");
         }
+    }
+
+    /** Closed nominal enum case. The positive tag is declaration identity metadata. */
+    public record EnumCase(String name, TypeRef payload, int tag) { }
+
+    /** Closed nominal enum declaration used by compiler-owned exhaustive matching. */
+    public record EnumDecl(String name, List<EnumCase> cases) implements Decl {
+        public EnumDecl { cases = List.copyOf(cases); }
     }
 
     public record TypeAliasDecl(

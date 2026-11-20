@@ -1,0 +1,8 @@
+define enum Light as
+    Red: int
+    Green
+end
+
+fnc bad(): Light {
+    return Light.Red;
+}

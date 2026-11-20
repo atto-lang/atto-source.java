@@ -79,6 +79,7 @@ public final class OwnershipChecker {
     private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
+    private final NominalEnumRegistry.Registry nominalEnums;
     // Must retain every (module, name, arity) slot. A name-only map loses
     // one overload and can silently skip/misapply its move/borrow effects.
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
@@ -129,6 +130,7 @@ public final class OwnershipChecker {
         // older executable Task proofs. A failed check must fail closed.
         Ast.CheckedTaskCaptures.beginCheck(checkedProgram, taskCheckEpoch);
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
+        nominalEnums = NominalEnumRegistry.forProgram(program);
         index(program);
     }
 
@@ -1635,6 +1637,23 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            // Immutable enum symbols have no actor-owned receiver or loan.
+            // A local binding with the same spelling must still be checked as
+            // ordinary member access, not promoted to enum namespace authority.
+            if (member.receiver() instanceof Ast.NameExpr enumOwner
+                    && scope.lookup(enumOwner.name()) == null) {
+                NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                        enumOwner.name() + "." + member.member());
+                if (enumCase != null) {
+                    if (enumCase.payload() != null) {
+                        throw error("enum case " + enumCase.qualifiedName()
+                                + " requires a payload argument");
+                    }
+                    return new ValueInfo(
+                            Ast.TypeRef.simple(enumCase.qualifiedName()),
+                            ValueKind.COPY, null);
+                }
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -2242,6 +2261,37 @@ public final class OwnershipChecker {
                 }
             }
         }
+
+        if (call.callee() instanceof Ast.MemberExpr enumMember
+                && enumMember.receiver() instanceof Ast.NameExpr enumOwner) {
+            NominalEnumRegistry.Case enumCase =
+                    nominalEnums.caseOrNull(
+                            enumOwner.name() + "." + enumMember.member());
+            if (enumCase != null) {
+                int expected = enumCase.payload() == null ? 0 : 1;
+                if (call.typeArgumentsPresent()
+                        || call.arguments().stream()
+                                .anyMatch(argument -> argument instanceof Ast.SpreadExpr)
+                        || call.arguments().size() != expected) {
+                    throw error(
+                            "invalid nominal enum constructor "
+                                    + enumCase.qualifiedName());
+                }
+                if (expected == 1) {
+                    checkExpr(call.arguments().getFirst(), scope, true);
+                }
+                Ast.TypeRef caseType =
+                        Ast.TypeRef.simple(enumCase.qualifiedName());
+                return new ValueInfo(
+                        caseType,
+                        enumCase.payload() == null
+                                        || isCopyType(enumCase.payload())
+                                ? ValueKind.COPY
+                                : ValueKind.MOVE_ONLY,
+                        null);
+            }
+        }
+
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -4540,13 +4590,35 @@ public final class OwnershipChecker {
             List<Ast.TypeRef> argTypes = constructorPatternTypes(constructor.constructor(), subjectType);
             for (int i = 0; i < constructor.arguments().size(); i++) {
                 Ast.TypeRef argType = i < argTypes.size() ? argTypes.get(i) : Ast.TypeRef.inferred();
-                definePatternAliases(constructor.arguments().get(i), argType, source, destination);
+                definePatternAliases(
+                        constructor.arguments().get(i),
+                        argType,
+                        isCopyType(argType) ? null : source,
+                        destination);
             }
         }
     }
 
     private List<Ast.TypeRef> constructorPatternTypes(String constructor, Ast.TypeRef subjectType) {
         if (subjectType == null) return List.of();
+        NominalEnumRegistry.Case enumCase =
+                nominalEnums.caseOrNull(constructor);
+        if (enumCase != null) {
+            Ast.TypeRef domain =
+                    subjectType.isBorrow()
+                            ? subjectType.borrowedTarget()
+                            : subjectType;
+            if (!domain.arguments().isEmpty()
+                    || !domain.name().equals(enumCase.owner())) {
+                throw error(
+                        "enum case " + enumCase.qualifiedName()
+                                + " does not belong to match subject "
+                                + domain.name());
+            }
+            return enumCase.payload() == null
+                    ? List.of()
+                    : List.of(enumCase.payload());
+        }
         if (constructor.equals("Some") && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {
             return List.of(subjectType.arguments().getFirst());
         }
@@ -6366,6 +6438,21 @@ public final class OwnershipChecker {
         if (type.isUnion()) return !type.arguments().isEmpty()
                 && type.arguments().stream().allMatch(this::isCopyType);
         if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        if (type.arguments().isEmpty()) {
+            NominalEnumRegistry.EnumType enumeration =
+                    nominalEnums.enums().get(type.name());
+            if (enumeration != null) {
+                return enumeration.cases().stream().allMatch(
+                        variant -> variant.payload() == null
+                                || isCopyType(variant.payload()));
+            }
+            NominalEnumRegistry.Case enumCase =
+                    nominalEnums.caseOrNull(type.name());
+            if (enumCase != null) {
+                return enumCase.payload() == null
+                        || isCopyType(enumCase.payload());
+            }
+        }
         // Only immutable RECORDs can be copied structurally; a mutable
         // struct remains affine even if every field is a scalar.
         if (type.isRecordType()) return type.isReadonlyRecordType()
