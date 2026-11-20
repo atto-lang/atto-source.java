@@ -152,8 +152,8 @@ final class AttoCheckedI64ProfileTest {
 
     @Test
     void canonicalAttoImportGraphFailsClosedBeforeGuestEvaluation() throws Exception {
-        String source = "import * as imported from \"./unchecked\";\\n"
-                + FUNCTIONS + "pub fnc main(): int {return 42;}\\n";
+        String source = "import * as imported from \"./unchecked\";\n"
+                + FUNCTIONS + "pub fnc main(): int {return 42;}\n";
         try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
             Source canonical = Source.newBuilder("ores", source, "import-guard.atto").build();
             PolyglotException failure = assertThrows(PolyglotException.class,
