@@ -429,7 +429,10 @@ public final class OresContext implements AutoCloseable {
                 if (turn != null) turn.run();
             }
         }
-        return task.join();
+        Object result = task.join();
+        // main finishes first; actor mailboxes then drain before the context closes.
+        if (actors != null) actors.awaitAllAcceptedMailProcessed(30_000);
+        return result;
     }
 
     private void executeRootTurn(Runnable turn) {

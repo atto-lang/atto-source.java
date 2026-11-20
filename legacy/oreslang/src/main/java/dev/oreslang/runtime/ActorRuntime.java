@@ -7450,6 +7450,37 @@ public final class ActorRuntime implements AutoCloseable {
      * This is a processed-message barrier, not an actor termination barrier.
      * Self-drain of unprocessed mail fails closed to prevent a scheduling
      * cycle; the admission snapshot and self-caller guard are atomic. */
+    /**
+     * Host-side end-of-program barrier: wait until every live actor has
+     * processed all mail accepted so far, repeating rounds because draining
+     * actors may send more mail. Called on the launching host thread after
+     * root main completes and before the guest context closes, so a mailbox
+     * that is still draining is never torn down mid-turn. Returns false on timeout.
+     */
+    public boolean awaitAllAcceptedMailProcessed(long timeoutMillis) {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        while (System.nanoTime() < deadline) {
+            boolean idle = true;
+            for (ActorCell<?> cell : List.copyOf(actors.values())) {
+                OresFuture<Void> drained;
+                try {
+                    drained = cell.drainAcceptedMessages(true);
+                } catch (RuntimeException stopping) {
+                    continue;
+                }
+                if (drained.isDone()) continue;
+                idle = false;
+                try {
+                    drained.join();
+                } catch (RuntimeException failedActor) {
+                    // A failed actor is handled by supervision; it no longer holds mail.
+                }
+            }
+            if (idle) return true;
+        }
+        return false;
+    }
+
     public OresFuture<Void> drain(ActorRef<?> ref) {
         requireCallerRuntimeAffinity("drain actor messages");
         Objects.requireNonNull(ref, "ref");

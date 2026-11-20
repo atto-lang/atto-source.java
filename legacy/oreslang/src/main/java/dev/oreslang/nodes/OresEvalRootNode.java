@@ -12272,7 +12272,12 @@ public final class OresEvalRootNode extends RootNode {
                 // An implicit VM fast-throw exception may have suppression disabled,
                 // which would discard source-boundary diagnostics after warm-up.
                 if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
-                return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+                // int is signed 64-bit with checked arithmetic: overflow is a panic, never a wrap.
+                try {
+                    return switch (op) { case '+' -> Math.addExact(x, y); case '-' -> Math.subtractExact(x, y); case '*' -> Math.multiplyExact(x, y); case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+                } catch (ArithmeticException overflow) {
+                    throw new OresPanic("E_PANIC: integer overflow");
+                }
             }
             double x = a.doubleValue(), y = b.doubleValue();
             return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
