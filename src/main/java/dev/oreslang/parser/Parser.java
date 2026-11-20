@@ -3412,6 +3412,21 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        // This compiler has no admitted standalone actor stop control.
+        // Keep stop and contiguous stop! on the same explicit unsupported
+        // boundary; do not synthesize a method call or bypass actor CONTROL.
+        if (check(STOP) && (checkNext(IDENT) || checkNext(BANG))) {
+            Token start = advance();
+            if (check(BANG) && adjacent(start, peek())) {
+                Token bang = advance();
+                if (current < tokens.size() && adjacent(bang, peek())
+                        && (peek().type() == IDENT || peek().type() == BANG)) {
+                    throw error(bang, "E_STOP_BANG_BOUNDARY: stop! requires an operand boundary");
+                }
+            }
+            throw error(start, "E_STOP_BACKEND_UNSUPPORTED: actor stop/stop! require checked "
+                    + "graceful shutdown, lifecycle ownership and supervisor lowering");
+        }
         if (attoCallableVersion != null && match(CARET)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary()
                     ? null : parseExpression();
