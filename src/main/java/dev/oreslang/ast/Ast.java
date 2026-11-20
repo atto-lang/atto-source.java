@@ -218,6 +218,20 @@ public final class Ast {
             arguments = List.copyOf(arguments);
         }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
+        /** A compile-time, binding-derived type; never a runtime typeof call. */
+        public static TypeRef typeQuery(String binding) {
+            if (binding == null || binding.isBlank()) {
+                throw new IllegalArgumentException("typeof requires a binding name");
+            }
+            return new TypeRef("$typeof$", List.of(simple(binding)), false);
+        }
+        public boolean isTypeQuery() { return name.equals("$typeof$"); }
+        public String queriedBinding() {
+            if (!isTypeQuery() || arguments.size() != 1 || !arguments.getFirst().arguments().isEmpty()) {
+                throw new IllegalStateException("malformed typeof binding query");
+            }
+            return arguments.getFirst().name();
+        }
         /** A complement in type position. The token '!' is not a value operator here. */
         public static TypeRef complement(TypeRef excluded) {
             return excluded.isComplement()
@@ -1385,7 +1399,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr, WithExpr,
-            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr,
+            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, CaptureExpr, SpreadExpr, NamedArgExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr,
             TypedEmptyAggregateExpr, ContextualEmptyMapExpr, MapLiteralExpr { }
@@ -1647,6 +1661,20 @@ public final class Ast {
 
     /** Argument-list spread. The parser only constructs this inside call argument lists. */
     public record SpreadExpr(Expr expression) implements Expr { }
+
+    /**
+     * Named call argument. The AST preserves the source label and expression
+     * at the original lexical position; only a checked call plan may map it
+     * to a formal ABI slot. It is not independently executable.
+     */
+    public record NamedArgExpr(String name, Expr value) implements Expr {
+        public NamedArgExpr {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("named argument name cannot be blank");
+            }
+            java.util.Objects.requireNonNull(value, "named argument value");
+        }
+    }
 
     /** Syntax provenance, not proof that asynchronous pipeline lowering exists. */
     public enum CallOrigin {
@@ -2045,6 +2073,10 @@ public final class Ast {
         for (CheckedMetadataTransfer transfer : CheckedMetadataTransfer.values()) {
             transfer.copy(source, target);
         }
+        // The call-plan side table lives in the types package rather than
+        // inside Ast, so it has an explicit transfer hook outside the enum
+        // that enumerates only Ast-owned side tables.
+        dev.oreslang.types.CheckedCallPlan.copyCheckedMetadata(source, target);
     }
 
     static java.util.Set<String> checkedMetadataTransferPolicy() {

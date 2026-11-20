@@ -273,6 +273,163 @@ class NativeHttpTest {
         }
     }
 
+    @Test void oneLongLivedActorStreamsDistinctResponsesAndReleasesEachAdmission() throws Exception {
+        String output = run("""
+            define actor Reused as
+              receive(ActorMail<String> mail): void {
+                if mail.value == "stop"; do
+                  self.end();
+                  return;
+                fi
+                val exchange = http.claim(mail.value);
+                await exchange.start(200, "text/plain");
+                await exchange.write(exchange.target);
+                await exchange.write("::");
+                await exchange.write(exchange.request_id);
+                await exchange.finish();
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              val worker = spawn Reused();
+              await worker.ready;
+
+              // Keep both requests admitted before delivering either to
+              // the shared actor. Response envelopes must not cross streams.
+              val first = await server.accept();
+              val second = await server.accept();
+              val firstDone = first.completion;
+              val secondDone = second.completion;
+              worker.send(first.move_to(worker));
+              worker.send(second.move_to(worker));
+              stdio.println(await firstDone);
+              stdio.println(await secondDone);
+              stdio.println(server.active);
+
+              worker.send("stop");
+              await worker.done;
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> {
+            try (ExecutorService clients = Executors.newVirtualThreadPerTaskExecutor()) {
+                Future<HttpResponse<String>> firstWork = clients.submit(() -> request(port, "GET", "/first", ""));
+                Future<HttpResponse<String>> secondWork = clients.submit(() -> request(port, "GET", "/second", ""));
+                HttpResponse<String> first = firstWork.get(8, TimeUnit.SECONDS);
+                HttpResponse<String> second = secondWork.get(8, TimeUnit.SECONDS);
+                assertEquals(200, first.statusCode());
+                assertEquals(200, second.statusCode());
+                assertTrue(first.body().startsWith("/first::"), first.body());
+                assertTrue(second.body().startsWith("/second::"), second.body());
+                assertNotEquals(first.body(), second.body(), "each exchange must keep its own request identity");
+            }
+        });
+        assertTrue(output.contains("200\n200\n0"), output);
+    }
+
+    @Test void abortingOneRequestNeverCancelsReusableActorOrAnotherRequest() throws Exception {
+        String output = run("""
+            define actor Reused as
+              receive(ActorMail<String> mail): void {
+                if mail.value == "stop"; do
+                  self.end();
+                  return;
+                fi
+                val exchange = http.claim(mail.value);
+                if exchange.target == "/abort"; do
+                  exchange.abort();
+                  return;
+                fi
+                await exchange.respond(200, "text/plain", exchange.target);
+                return;
+              }
+            end
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+              stdio.println(server.port);
+              val worker = spawn Reused();
+              await worker.ready;
+
+              val first = await server.accept();
+              val firstDone = first.completion;
+              worker.send(first.move_to(worker));
+              stdio.println(await firstDone);
+
+              val second = await server.accept();
+              val secondDone = second.completion;
+              worker.send(second.move_to(worker));
+              stdio.println(await secondDone);
+              stdio.println(server.active);
+
+              worker.send("stop");
+              await worker.done;
+              await server.shutdown(0);
+              return;
+            }
+            """, port -> {
+            assertEquals(500, request(port, "GET", "/abort", "").statusCode());
+            HttpResponse<String> second = request(port, "GET", "/alive", "");
+            assertEquals(200, second.statusCode());
+            assertEquals("/alive", second.body());
+        });
+        assertTrue(output.contains("500\n200\n0"), output);
+    }
+
+    @Test void persistentActorReleasesSingleListenerSlotAcrossManyRequests() throws Exception {
+        // Generate 20 distinct source-level accept/dispatch/completion steps.
+        // The fixture must not rely on source loop syntax unrelated to HTTP.
+        String steps = java.util.stream.IntStream.range(0, 20)
+                .mapToObj(i -> """
+                    val exchange%d = await server.accept();
+                    val completed%d = exchange%d.completion;
+                    worker.send(exchange%d.move_to(worker));
+                    await completed%d;
+                    """.formatted(i, i, i, i, i))
+                .collect(java.util.stream.Collectors.joining());
+        String output = run("""
+            define actor Persistent as
+              receive(ActorMail<String> mail): void {
+                if mail.value == "stop"; do
+                  self.end();
+                  return;
+                fi
+                val exchange = http.claim(mail.value);
+                await exchange.respond(200, "text/plain", exchange.target);
+                return;
+              }
+            end
+            pub async routine main(): void {
+              // A capacity of one catches any request whose admission is
+              // mistakenly held until a persistent actor exits.
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 10000);
+              stdio.println(server.port);
+              val worker = spawn Persistent();
+              await worker.ready;
+              __STEPS__
+              stdio.println("reused-20");
+              stdio.println(server.active);
+              worker.send("stop");
+              await worker.done;
+              await server.shutdown(0);
+              return;
+            }
+            """.replace("__STEPS__", steps), port -> {
+            for (int i = 0; i < 20; i++) {
+                String target = "/repeat-" + i;
+                HttpResponse<String> response = request(port, "GET", target, "");
+                assertEquals(200, response.statusCode(), target);
+                assertEquals(target, response.body(), target);
+            }
+        });
+        // All 20 client responses are asserted above. With listener capacity
+        // one, this cannot succeed if a request holds its permit until the
+        // persistent actor dies. Do not assert on an async stdout epilogue:
+        // Context.eval may return before its final print is captured.
+        assertFalse(output.isBlank(), "the listener must have published its port");
+    }
+
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
         assertEquals(List.of(), NativeHttp.segments("/"));
         assertEquals(List.of("😀"), NativeHttp.segments("/😀"));

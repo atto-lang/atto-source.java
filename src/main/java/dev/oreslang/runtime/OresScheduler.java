@@ -880,6 +880,12 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
         /**
+         * Accepted dispatches include queued carrier wrappers that have not
+         * entered the guest context yet. Cancellation cannot publish physical
+         * quiescence while one of those wrappers could still enter it.
+         */
+        private final AtomicInteger acceptedDispatches = new AtomicInteger();
+        /**
          * Guest cancellation checkpoints are observed during the turn, but
          * host Future subscribers must be notified after the guest execution
          * boundary unwinds. Only the RUNNING -> TERMINAL winner owns this.
@@ -1009,10 +1015,24 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void scheduleInitial() {
+            acceptedDispatches.incrementAndGet();
             if (!phase.compareAndSet(NEW, QUEUED)) {
+                releaseAcceptedDispatch();
                 throw new IllegalStateException("scheduler task was already started");
             }
             enqueueTurn();
+        }
+
+        /** An accepted queued wrapper is still a physical lease until it exits. */
+        private void releaseAcceptedDispatch() {
+            int remaining = acceptedDispatches.decrementAndGet();
+            if (remaining < 0) {
+                physicalRetirementFailure.compareAndSet(null,
+                        new IllegalStateException("scheduler accepted dispatch underflow"));
+                throw new IllegalStateException("scheduler accepted dispatch underflow");
+            }
+            retireWhenQuiescent();
+            publishTerminalIfReady();
         }
 
         private void enqueueTurn() {
@@ -1020,6 +1040,12 @@ public final class OresScheduler implements AutoCloseable {
             // or duplicate dispatch must never clear another running dispatch's
             // executing flag, watchdog identity or quota-retirement barrier.
             AtomicBoolean ownsExecution = new AtomicBoolean();
+            AtomicBoolean reservationReleased = new AtomicBoolean();
+            Runnable release = () -> {
+                if (reservationReleased.compareAndSet(false, true)) {
+                    releaseAcceptedDispatch();
+                }
+            };
             try {
                 executeTurn(() -> {
                     // Remember this carrier so the next turn (a resumed
@@ -1028,8 +1054,17 @@ public final class OresScheduler implements AutoCloseable {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn(ownsExecution);
                     }
-                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal, nextCarrierHint());
+                }, () -> {
+                    try {
+                        afterCarrierTurn(ownsExecution.get());
+                    } finally {
+                        // Preserve the actual-carrier locality hint above.
+                        // Retire only after the executor has exited Truffle.
+                        release.run();
+                    }
+                }, this::failTerminal, nextCarrierHint());
             } catch (RuntimeException | Error rejected) {
+                release.run();
                 failTerminal(rejected);
                 throw rejected;
             }
@@ -1404,12 +1439,19 @@ public final class OresScheduler implements AutoCloseable {
         private void scheduleReadyResume() {
             if (executing.get()) return;
             if (pendingResume.get() == null) return;
-            if (!phase.compareAndSet(WAITING, QUEUED)) return;
+            // The reservation precedes WAITING -> QUEUED, just as initial
+            // admission does. A cancel/close racing the CAS cannot publish
+            // getDone while the accepted turn may still enter Truffle.
+            acceptedDispatches.incrementAndGet();
+            if (!phase.compareAndSet(WAITING, QUEUED)) {
+                releaseAcceptedDispatch();
+                return;
+            }
 
             try {
                 enqueueTurn();
             } catch (RejectedExecutionException rejected) {
-                // enqueueTurn already failed the task.
+                // enqueueTurn already failed the task and released admission.
             }
         }
 
@@ -1541,7 +1583,8 @@ public final class OresScheduler implements AutoCloseable {
                 return;
             }
             if (phase.get() != TERMINAL
-                    || executing.get() || !quiescenceState.compareAndSet(0, 1))
+                    || executing.get() || acceptedDispatches.get() != 0
+                    || !quiescenceState.compareAndSet(0, 1))
                 return;
             cancelWallDeadline();
             try {

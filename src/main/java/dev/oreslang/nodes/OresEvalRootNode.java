@@ -2102,13 +2102,23 @@ public final class OresEvalRootNode extends RootNode {
         private boolean functionContainsPotentialSuspension(
                 Ast.FunctionDecl function,
                 Set<Object> seen) {
-            if (!seen.add(function)) return false;
-            for (Ast.Stmt stmt : function.body()) {
-                if (statementContainsPotentialSuspension(stmt, seen)) {
-                    return true;
+            // Re-entering a callable on the active analysis path is a recursive
+            // call-graph cycle. Promote it to a SourceTask boundary so recursive
+            // guest calls suspend through heap-owned continuations instead of
+            // growing the interpreter's Java call stack.
+            if (!seen.add(function)) return true;
+            try {
+                for (Ast.Stmt stmt : function.body()) {
+                    if (statementContainsPotentialSuspension(stmt, seen)) {
+                        return true;
+                    }
                 }
+                return false;
+            } finally {
+                // Keep this set path-sensitive: a shared helper reached from a
+                // second branch is not recursion once its first walk has ended.
+                seen.remove(function);
             }
-            return false;
         }
 
         private boolean statementContainsPotentialSuspension(
@@ -2287,6 +2297,9 @@ public final class OresEvalRootNode extends RootNode {
                 return runtime.arguments().stream()
                         .anyMatch(argument -> expressionContainsPotentialSuspension(argument, seen));
             }
+            if (expr instanceof Ast.NamedArgExpr named) {
+                return expressionContainsPotentialSuspension(named.value(), seen);
+            }
             if (expr instanceof Ast.CallExpr call) {
                 for (Ast.Expr argument : call.arguments()) {
                     if (expressionContainsPotentialSuspension(argument, seen)) return true;
@@ -2303,11 +2316,15 @@ public final class OresEvalRootNode extends RootNode {
                         if (!visitedClasses.add(klass)) continue;
                         for (Ast.MethodDecl method : klass.methods()) {
                             if (method.name().equals(member.member())
-                                    && method.arity() == call.arguments().size()
-                                    && seen.add(method)) {
-                                if (method.async() || method.suspends()) return true;
-                                for (Ast.Stmt statement : method.body()) {
-                                    if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                    && method.arity() == call.arguments().size()) {
+                                if (!seen.add(method)) return true;
+                                try {
+                                    if (method.async() || method.suspends()) return true;
+                                    for (Ast.Stmt statement : method.body()) {
+                                        if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                    }
+                                } finally {
+                                    seen.remove(method);
                                 }
                             }
                         }
@@ -2319,6 +2336,16 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (call.callee() instanceof Ast.NameExpr name
                         && !functionNameBoundLocally(name.name())) {
+                    ImportedBinding sourceImport = namedImports.get(name.name());
+                    if (sourceImport != null
+                            && sourceImport.declaration().kind() == Ast.ImportKind.FUNCTION) {
+                        // The imported body is in another evaluator, not the
+                        // current unit's local suspension index. Always enter
+                        // the resumable caller path: its declared return type
+                        // determines whether the result is awaited or kept as
+                        // a first-class Future.
+                        return true;
+                    }
                     Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
                     if (target != null) {
                         // Creating a generator activation does not pull or await it.
@@ -4818,6 +4845,8 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.NewExpr created) {
+                    rejectUnloweredNamedArguments(
+                            created.arguments(), "suspendable constructor");
                     evalSuspendableArguments(
                             task,
                             created.arguments(),
@@ -5483,11 +5512,21 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        private static void rejectUnloweredNamedArguments(
+                List<Ast.Expr> arguments, String surface) {
+            if (arguments.stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
+                throw new IllegalStateException(
+                        "NAMED_CALL_BINDING_UNSUPPORTED: " + surface
+                                + " reached runtime without a checked source-to-formal binding plan");
+            }
+        }
+
         private void evalSuspendableCall(
                 SourceTask task,
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            rejectUnloweredNamedArguments(call.arguments(), "suspendable call");
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr) {
                 // Preserve left-to-right value-first evaluation even when the
@@ -5546,6 +5585,37 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
+                ImportedBinding sourceImport = namedImports.get(name.name());
+                if (sourceImport != null
+                        && sourceImport.declaration().kind() == Ast.ImportKind.FUNCTION) {
+                    evalSuspendableArguments(
+                            task, call.arguments(), env,
+                            (t, values, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                Invocation invocation;
+                                boolean declaredFuture;
+                                try {
+                                    invocation = importedTarget(sourceImport.declaration())
+                                            .prepareImportedInvocation(
+                                                    Ast.ImportKind.FUNCTION,
+                                                    sourceImport.sourceName(), values);
+                                    declaredFuture = invocationDeclaresAsync(invocation);
+                                } catch (RuntimeException | Error invalid) {
+                                    continuation.accept(t, null, invalid);
+                                    return;
+                                }
+                                // A plain imported function may run its body
+                                // on a source-task Future; await that result.
+                                // A declared async/Future export remains a
+                                // Future value and must require explicit await.
+                                completeSourceInvocation(
+                                        t, invocation, declaredFuture, env, continuation);
+                            });
+                    return;
+                }
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
                 if (direct != null) {
                     requireExplicitClassCallableImport(env, name.name());
@@ -8104,6 +8174,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.NamedArgExpr) {
+                throw new IllegalStateException(
+                        "NAMED_CALL_BINDING_UNSUPPORTED: named argument reached runtime without a checked call plan");
+            }
             if (expr instanceof Ast.WithExpr update) {
                 Object source = eval(update.source(), env);
                 Map<String, Object> original;
@@ -8496,6 +8570,7 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
+                rejectUnloweredNamedArguments(call.arguments(), "synchronous call");
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
@@ -8508,6 +8583,7 @@ public final class OresEvalRootNode extends RootNode {
                         indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
+                rejectUnloweredNamedArguments(created.arguments(), "constructor call");
                 if (created.type().name().equals("HttpResponse") && findClass("HttpResponse") == null) {
                     List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                     return instantiateEvaluated(created, args, env);

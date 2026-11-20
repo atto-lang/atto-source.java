@@ -139,4 +139,64 @@ final class AsyncRuntimeTest {
         assertEquals(9, AsyncRuntime.await(ores));
     }
 
+
+    @Test
+    void concurrentHostWaitsDoNotPreventIndependentAsyncProgress() throws Exception {
+        // Compatibility virtual threads, not native Oreslang guest lowering.
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            int count = 12;
+            CountDownLatch waiting = new CountDownLatch(count);
+            CountDownLatch release = new CountDownLatch(1);
+            java.util.ArrayList<OresFuture<Integer>> blocked = new java.util.ArrayList<>();
+            Thread producer = Thread.currentThread();
+            try {
+                for (int i = 0; i < count; i++) {
+                    final int index = i;
+                    blocked.add(runtime.submit(() -> {
+                        assertNotSame(producer, Thread.currentThread());
+                        assertTrue(AsyncRuntime.isAsyncCarrierThread());
+                        assertFalse(ActorRuntime.isActorCarrierThread());
+                        waiting.countDown();
+                        if (!release.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("host wait did not resume");
+                        }
+                        return index;
+                    }));
+                }
+                assertTrue(waiting.await(5, TimeUnit.SECONDS));
+                assertEquals(999, AsyncRuntime.await(runtime.submit(() -> 999)),
+                        "unrelated work must progress while other tasks wait");
+            } finally {
+                release.countDown();
+            }
+            for (int i = 0; i < count; i++) {
+                assertEquals(i, AsyncRuntime.await(blocked.get(i)));
+            }
+        }
+    }
+
+    @Test
+    void cancelledHostTaskCannotPublishSuccessfulResultAfterRelease() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            OresFuture<Integer> future = runtime.submit(() -> {
+                entered.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException cancellation) {
+                    Thread.currentThread().interrupt();
+                }
+                return 41;
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertTrue(future.cancel(true));
+            } finally {
+                release.countDown();
+            }
+            assertTrue(future.isCancelled(), "late completion cannot revive cancelled task");
+        }
+    }
+
 }
