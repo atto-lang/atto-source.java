@@ -1,5 +1,6 @@
 name: Atto Java migrated-main exact-source Ready-four integration (review-only)
 on:
+  workflow_dispatch:
   push:
     branches:
       - ci/atto-main61-fourway-source-integration-20261120
