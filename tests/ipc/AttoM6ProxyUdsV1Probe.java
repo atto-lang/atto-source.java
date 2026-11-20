@@ -155,11 +155,17 @@ public final class AttoM6ProxyUdsV1Probe {
         Process client = null;
         try {
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
-            while (!Files.exists(sock, LinkOption.NOFOLLOW_LINKS)
+            // A bound socket path exists before server chmod(0600) completes.
+            // Do not race the sender against the credential/ACL admission step.
+            while ((!Files.exists(sock, LinkOption.NOFOLLOW_LINKS) ||
+                !Files.getPosixFilePermissions(sock).equals(EnumSet.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)))
                 && server.isAlive() && System.nanoTime() < until)
                 Thread.sleep(10);
-            require(Files.exists(sock, LinkOption.NOFOLLOW_LINKS),
-                "server did not bind UDS socket");
+            require(Files.exists(sock, LinkOption.NOFOLLOW_LINKS) &&
+                Files.getPosixFilePermissions(sock).equals(EnumSet.of(
+                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)),
+                "server did not publish private UDS socket");
             client = new ProcessBuilder(javaBin, "-cp", cp,
                 AttoM6ProxyUdsV1Probe.class.getName(), "--client", sock.toString())
                 .redirectErrorStream(true).start();
