@@ -4495,39 +4495,6 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
 
-                    // Unlike && and ||, bool XOR is eager. The two operands
-                    // can each suspend, so preserve actor-task continuation
-                    // order and complete the continuation exactly once.
-                    if (binary.operator().equals("^^")) {
-                        evalSuspendableExpr(
-                                task, binary.left(), env,
-                                (t, left, failure) -> {
-                                    if (failure != null) {
-                                        continuation.accept(t, null, failure);
-                                        return;
-                                    }
-                                    evalSuspendableExpr(
-                                            t, binary.right(), env,
-                                            (t2, right, failure2) -> {
-                                                if (failure2 != null) {
-                                                    continuation.accept(t2, null, failure2);
-                                                    return;
-                                                }
-                                                final boolean result;
-                                                try {
-                                                    result = truth(left) ^ truth(right);
-                                                } catch (RuntimeException | Error evaluationFailure) {
-                                                    continuation.accept(t2, null, evaluationFailure);
-                                                    return;
-                                                }
-                                                // Do not catch an exception raised by a downstream
-                                                // continuation and then call it a second time.
-                                                continuation.accept(t2, result, null);
-                                            });
-                                });
-                        return;
-                    }
-
                     evalSuspendableExpr(
                             task,
                             binary.left(),
@@ -4548,22 +4515,27 @@ public final class OresEvalRootNode extends RootNode {
                                                         null,
                                                         failure2);
                                             } else {
+                                                // Only guest operator evaluation belongs in
+                                                // this catch. A downstream continuation may
+                                                // itself throw: catching that failure here
+                                                // would dispatch this continuation twice.
+                                                final Object result;
                                                 try {
-                                                    Object result =
-                                                            binary(
-                                                                    binary.operator(),
-                                                                    left,
-                                                                    right);
-                                                    continuation.accept(
-                                                            t2,
-                                                            result,
-                                                            null);
-                                                } catch (RuntimeException | Error failure3) {
+                                                    result = binary(
+                                                            binary.operator(),
+                                                            left,
+                                                            right);
+                                                } catch (RuntimeException | Error evaluationFailure) {
                                                     continuation.accept(
                                                             t2,
                                                             null,
-                                                            failure3);
+                                                            evaluationFailure);
+                                                    return;
                                                 }
+                                                continuation.accept(
+                                                        t2,
+                                                        result,
+                                                        null);
                                             }
                                         });
                             });
@@ -8454,9 +8426,6 @@ public final class OresEvalRootNode extends RootNode {
                     Object left = eval(binary.left(), env);
                     return truth(left) || truth(eval(binary.right(), env));
                 }
-                if (binary.operator().equals("^^")) {
-                    return truth(eval(binary.left(), env)) ^ truth(eval(binary.right(), env));
-                }
                 Object left = eval(binary.left(), env);
                 Object right = eval(binary.right(), env);
                 if (binary.operator().equals("|") && left instanceof Boolean lb && right instanceof Boolean rb) {
@@ -11768,7 +11737,7 @@ public final class OresEvalRootNode extends RootNode {
                 case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
-                case "^" -> integralLong(left) ^ integralLong(right);
+                case "^^" -> integralLong(left) ^ integralLong(right);
                 case "<<" -> integralLong(left) << shiftDistance(right);
                 case ">>" -> integralLong(left) >> shiftDistance(right);
                 case ">>>" -> integralLong(left) >>> shiftDistance(right);

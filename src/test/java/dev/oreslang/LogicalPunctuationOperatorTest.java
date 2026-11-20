@@ -17,7 +17,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Compiler-backed boolean punctuation contract: no word/single-pipe aliases. */
+/** Compiler-backed boolean punctuation and canonical integer XOR contract. */
 final class LogicalPunctuationOperatorTest {
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -58,12 +58,12 @@ final class LogicalPunctuationOperatorTest {
                     (false || true) == true &&
                     (true || false) == true &&
                     (true || true) == true &&
-                    (false ^^ false) == false &&
-                    (false ^^ true) == true &&
-                    (true ^^ false) == true &&
-                    (true ^^ true) == false &&
-                    (true ^^ true ^^ true) == true &&
-                    (false || true ^^ true && false) == true);
+                    (0 ^^ 0) == 0 &&
+                    (0 ^^ 1) == 1 &&
+                    (1 ^^ 0) == 1 &&
+                    (1 ^^ 1) == 0 &&
+                    (1 ^^ 1 ^^ 1) == 1 &&
+                    ((false || true) && ((1 ^^ 0) == 1)) == true);
                   return;
                 }
                 """));
@@ -71,12 +71,12 @@ final class LogicalPunctuationOperatorTest {
 
     @Test
     void parserEncodesPrecedenceAndAssociativityWithoutWordAliases() {
-        var tree = new Parser(new Lexer("a || b ^^ c && d").scan()).parseExpression();
+        var tree = new Parser(new Lexer("a | b ^^ c & d").scan()).parseExpression();
         var disjunction = assertInstanceOf(dev.oreslang.ast.Ast.BinaryExpr.class, tree);
-        assertEquals("||", disjunction.operator());
+        assertEquals("|", disjunction.operator());
         var exclusive = assertInstanceOf(dev.oreslang.ast.Ast.BinaryExpr.class, disjunction.right());
         assertEquals("^^", exclusive.operator());
-        assertEquals("&&", assertInstanceOf(dev.oreslang.ast.Ast.BinaryExpr.class,
+        assertEquals("&", assertInstanceOf(dev.oreslang.ast.Ast.BinaryExpr.class,
                 exclusive.right()).operator());
 
         var chain = new Parser(new Lexer("a ^^ b ^^ c").scan()).parseExpression();
@@ -96,16 +96,16 @@ final class LogicalPunctuationOperatorTest {
                 }
                 """));
         String order = run("""
-                fnc lhs(): bool { stdio.println("left"); return true; }
-                fnc rhs(): bool { stdio.println("right"); return false; }
+                fnc lhs(): int { stdio.println("left"); return 6; }
+                fnc rhs(): int { stdio.println("right"); return 3; }
                 pub fnc main(): void {
                   stdio.println(lhs() ^^ rhs());
                   return;
                 }
                 """);
-        assertEquals("left\nright\ntrue\n", order);
+        assertEquals("left\nright\n5\n", order);
         PolyglotException failure = assertThrows(PolyglotException.class,
-                () -> run("pub fnc main(): void { stdio.println(false ^^ [true][99]); return; }"));
+                () -> run("pub fnc main(): void { stdio.println(0 ^^ [1][99]); return; }"));
         assertTrue(failure.getMessage().contains("99"), failure::getMessage);
     }
 
@@ -114,7 +114,7 @@ final class LogicalPunctuationOperatorTest {
         for (String expression : List.of(
                 "1 && true", "false || 1", "true ^^ 1",
                 "true | false", "true & false",
-                "true | true ^^ false")) {
+                "true | true ^^ false", "true ^^ false")) {
             assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(
                             "fnc invalid(): bool { return " + expression + "; }")), expression);
@@ -134,19 +134,68 @@ final class LogicalPunctuationOperatorTest {
     }
 
     @Test
-    void userRequestedTypeFirstBooleanDeclarationsExecute() throws Exception {
+    void typeFirstBooleanDeclarationsUseExplicitInequality() throws Exception {
         String sample = """
                 pub fnc main(): int {
                   bool a = true;
                   bool b = false;
                   bool and = a && b;
                   bool or = a || b;
-                  bool xor = a ^^ b;
+                  bool xor = a != b;
                   return (!and && or && xor) ? 42 : 7;
                 }
                 """;
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(sample)));
         assertEquals(42, runMainInt(sample));
+    }
+
+    @Test
+    void integerXorIsTypedAndExecutesAsSignedI64BitPatterns() throws Exception {
+        String source = """
+                pub fnc main(): int {
+                  val int first = 6 ^^ 3;
+                  val int negative = -1 ^^ 1;
+                  val int precedence = 1 | 2 ^^ 3 & 2;
+                  if first eq 5 && negative eq -2 && precedence eq 1 then
+                    return 42;
+                  fi
+                  return 7;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals(42, runMainInt(source));
+        for (String expression : List.of("true ^^ false", "1 ^^ true", "true ^^ 1", "1.5 ^^ 2")) {
+            assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                    "fnc invalid(): int { return " + expression + "; }")), expression);
+        }
+        for (String sourceInvalid : List.of(
+                "fnc bad(): int { return 6 ^ 3; }",
+                "fnc bad(): int { return 6 ^ ^ 3; }",
+                "fnc bad(): int { return 6 ^^^ 3; }")) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(sourceInvalid), sourceInvalid);
+        }
+    }
+
+    @Test
+    void integerXorRhsFailurePreservesLeftToRightEffectsAndDoesNotProduceResult() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        String source = """
+                fnc lhs(): int { stdio.println("left"); return 6; }
+                fnc rhs(): int { stdio.println("right"); return [1][99]; }
+                pub fnc main(): void {
+                  stdio.println(lhs() ^^ rhs());
+                  return;
+                }
+                """;
+        Source guest = Source.newBuilder(OresLanguage.ID, source, "integer-xor-rhs-failure.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            PolyglotException failure = assertThrows(PolyglotException.class, () -> context.eval(guest));
+            assertTrue(failure.getMessage().contains("99"), failure::getMessage);
+        }
+        assertEquals("left\nright\n", output.toString(StandardCharsets.UTF_8),
+                "eager int XOR must evaluate both operands exactly once without printing a result");
     }
 
     @Test
@@ -159,7 +208,7 @@ final class LogicalPunctuationOperatorTest {
                 fnc f(bool a, bool b): bool {
                   val and: bool = a && b;
                   val or: bool = a || b;
-                  val xor: bool = a ^^ b;
+                  val xor: bool = a != b;
                   return and || or && xor;
                 }
                 """)));
