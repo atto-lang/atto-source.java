@@ -51,7 +51,12 @@ jobs:
             tests/ipc/AttoM6ProxyUdsV1Probe.java \
             src/compiler/proxyv1/AttoM6ProxyActorSubsetCompiler.java \
             tests/compiler/AttoM6ProxyActorSubsetCompilerProbe.java \
-            tests/m6/M6PerMessageTicketProbe.java
+            tests/m6/M6PerMessageTicketProbe.java \
+            tests/m6/M6NioRuntimeProbe.java \
+            tests/m6/M6SelectorLifecycleAuditProbe.java \
+            tests/m6/M6ControlBudgetStressProbe.java
+          timeout 120 java -cp build/proxy-uds M6NioRuntimeProbe | tee build/proxy-uds/m6-legacy.txt
+          grep -Fx 'M6_NIO_SCHEDULER_SUPERVISOR_NATIVE_HOST=PASS' build/proxy-uds/m6-legacy.txt
           timeout 90 java -cp build/proxy-uds M6PerMessageTicketProbe | tee build/proxy-uds/tickets.txt
           grep -Fx 'M6_TICKET_128_CONCURRENT_MAIL_EXACT_CORRELATION=PASS' build/proxy-uds/tickets.txt
           timeout 90 java -cp build/proxy-uds AttoM6ProxyUdsV1Probe | tee build/proxy-uds/output.txt
