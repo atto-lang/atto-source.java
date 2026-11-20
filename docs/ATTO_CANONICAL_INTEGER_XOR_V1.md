@@ -87,3 +87,30 @@ governed by security issue #65 and the approved-destination policy.
 ## Consolidation regression coverage (2026-11-20)
 
 Copied the distinct strict-profile regression *intent* from competing Java #70 into this canonical #72 test suite, rather than porting #70's global legacy behavior change or its Python-based workflow. New exact-source strict Truffle guest tests cover signed-i64 negative XOR, bitwise precedence and left-associative chains, eager left-to-right successful operand evaluation exactly once, and preservation of short-circuit `&&`/`||` behavior. Existing #72 tests already cover failed-RHS exactly-once, strict typing, single-caret return/rejection and historical Boolean XOR admission. The ported tests use `canonicalGuest` with the strict prechecked-AST lease, not the legacy default parser. None has executed on the exact current GitHub head yet; do not claim JVM/Native Image parity. Java #70 remains a competing draft until independent review can verify disposition and CI.
+
+## Exact-case JUnit evidence gate (2026-11-20)
+
+The original exact-head workflow used `grep -c '<testcase'` and regex
+matching for failures, skips and a single named method. These text matches
+are not a reliable proof that a required Java/GraalVM guest method executed:
+XML can place multiple cases on one line, substitute unrelated names,
+duplicate names, or disagree with suite-level counters.
+
+The replacement `ci/compiler/CheckCanonicalXorReports.java` is a
+**JDK-only, no-Python** secure XML parser. It requires the 10 current
+`AttoCanonicalIntegerXorParityTest` methods and the 12 current
+`BooleanIntrinsicsTest` methods by exact name, correct suite and classname,
+no duplicate cases, consistent case counters, no reported failures/errors/
+skips, and no nested failure/skip elements. Missing or symlinked evidence,
+DOCTYPE and external entity expansion fail closed. The workflow triggers
+when the verifier changes and executes it only **after** the Maven/JUnit
+guest suites have run.
+
+Local executed validation of the exact verifier Git blob
+`f31bf663936c51c309895e3f59e68869244f1535` using JDK 21 source-file
+mode: **6/6 synthetic-fixture smoke scenarios passed** (one positive
+receipt and five negative admissions: skipped, missing, duplicate, DTD,
+symlink). This checks the verifier's policy logic, **not any Atto guest**.
+Exact-head JDK25/GraalVM Maven/JUnit and Native Image remain **NOT_EXECUTED**
+until an admitted source-side runner supplies authentic evidence. Never
+treat a zero-step GitHub Actions run as a pass.
