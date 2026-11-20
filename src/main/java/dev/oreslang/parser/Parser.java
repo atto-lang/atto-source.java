@@ -136,6 +136,16 @@ public final class Parser {
     public static Ast.Program parseStrictAtto(String source) {
         List<Token> scanned = new Lexer(source).scan();
         for (Token token : scanned) {
+            // Java currently has no source-level typed Error identity or
+            // ordinary throw lowering. Legacy trap converts selected JVM
+            // exceptions into sanitized text: that is NOT the normative
+            // trap-to-Result guest contract. Reject strict source admission
+            // before creating any checked AST until Error/throw is implemented.
+            if (token.type() == TRAP || token.type() == THROW) {
+                throw new IllegalArgumentException("ATTO_STRICT_TYPED_TRAP_UNSUPPORTED at "
+                        + token.line() + ":" + token.column()
+                        + ": source trap/throw requires checked Error identity and ordinary throw lowering");
+            }
             if (token.type() == EQUAL_EQUAL || token.type() == BANG_EQUAL) {
                 throw new IllegalArgumentException("ATTO_STRICT_INVALID_EQUALITY_TOKEN at "
                         + token.line() + ":" + token.column() + ": use eq / neq / !eq");
