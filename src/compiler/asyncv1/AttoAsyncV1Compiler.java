@@ -35,7 +35,7 @@ public final class AttoAsyncV1Compiler {
         "interface", "enum", "extends", "implements", "abstract",
         "this", "super", "instanceof", "assert", "synchronized",
         "volatile", "transient", "strictfp", "record", "sealed",
-        "permits", "yield", "var", "goto"
+        "permits", "yield", "var", "goto", "_"
     );
     private AttoAsyncV1Compiler() {}
 
