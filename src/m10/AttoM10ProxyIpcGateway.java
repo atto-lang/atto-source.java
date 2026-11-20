@@ -319,13 +319,22 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
         }
     }
 
-    // Host-only same-UID UDS fence, independent of the test HMAC. A
-    // production TenantVM gateway still needs explicit per-tenant caps.
-    private static void peer_same_user(SocketChannel channel) throws IOException {
+    // Host-only same-UID UDS fence, independent of the test HMAC. Compare
+    // the kernel-supplied peer to the actual private socket directory owner,
+    // never the mutable Java system property "user.name". A production
+    // TenantVM gateway still needs explicit per-tenant capability checks.
+    private static void peer_same_user(SocketChannel channel, Path socket)
+            throws IOException {
+        Path parent = socket.getParent();
+        if (parent == null || Files.isSymbolicLink(parent) ||
+            !Files.getPosixFilePermissions(parent).equals(Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE)))
+            throw new IOException("untrusted UDS socket parent");
+        var hostOwner = Files.getOwner(parent, LinkOption.NOFOLLOW_LINKS);
         try {
             UnixDomainPrincipal principal = channel.getOption(ExtendedSocketOptions.SO_PEERCRED);
-            if (principal == null ||
-                !principal.user().getName().equals(System.getProperty("user.name")))
+            if (principal == null || !principal.user().equals(hostOwner))
                 throw new IOException("untrusted UDS peer principal");
         } catch (UnsupportedOperationException unavailable) {
             throw new IOException("UDS peer credentials unavailable: fail closed", unavailable);
@@ -338,7 +347,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
             if (next == null) return;
             if (sessions.size() >= MAX_SESSIONS) { next.close(); continue; }
             try {
-                peer_same_user(next);
+                peer_same_user(next, socketPath);
                 Session s = new Session(next);
                 sessions.put(next, s);
             } catch (IOException | RuntimeException err) {
@@ -426,7 +435,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
                 channel.register(wait, SelectionKey.OP_CONNECT);
                 channel.connect(UnixDomainSocketAddress.of(socket));
                 while (!channel.finishConnect()) wait_ready(wait, SelectionKey.OP_CONNECT, deadline);
-                peer_same_user(channel);
+                peer_same_user(channel, socket);
                 Frame hello = new Frame(HELLO, tenant, generation, messageId, attempt, 0);
                 write_exact(channel, wait, encode(hello, secret, actor), deadline);
                 Frame welcome = read_exact(channel, wait, secret, actor, deadline);
