@@ -4495,9 +4495,10 @@ public final class OresEvalRootNode extends RootNode {
                     }
 
 
-                    // Unlike && and ||, bool XOR is eager. The two operands
-                    // can each suspend, so preserve actor-task continuation
-                    // order and complete the continuation exactly once.
+                    // ^^ is eager in both the canonical integer profile and
+                    // the legacy Boolean profile. Both operands may suspend:
+                    // preserve left-to-right continuation and propagate exactly
+                    // one value or failure without bypassing type checks.
                     if (binary.operator().equals("^^")) {
                         evalSuspendableExpr(
                                 task, binary.left(), env,
@@ -4513,9 +4514,9 @@ public final class OresEvalRootNode extends RootNode {
                                                     continuation.accept(t2, null, failure2);
                                                     return;
                                                 }
-                                                final boolean result;
+                                                final Object result;
                                                 try {
-                                                    result = truth(left) ^ truth(right);
+                                                    result = xorValues(left, right);
                                                 } catch (RuntimeException | Error evaluationFailure) {
                                                     continuation.accept(t2, null, evaluationFailure);
                                                     return;
@@ -4548,22 +4549,27 @@ public final class OresEvalRootNode extends RootNode {
                                                         null,
                                                         failure2);
                                             } else {
+                                                // Catch only failures from guest operator
+                                                // evaluation. A downstream continuation can
+                                                // throw after observing the result; re-catching
+                                                // that failure would invoke it a second time.
+                                                final Object result;
                                                 try {
-                                                    Object result =
-                                                            binary(
-                                                                    binary.operator(),
-                                                                    left,
-                                                                    right);
-                                                    continuation.accept(
-                                                            t2,
-                                                            result,
-                                                            null);
-                                                } catch (RuntimeException | Error failure3) {
+                                                    result = binary(
+                                                            binary.operator(),
+                                                            left,
+                                                            right);
+                                                } catch (RuntimeException | Error evaluationFailure) {
                                                     continuation.accept(
                                                             t2,
                                                             null,
-                                                            failure3);
+                                                            evaluationFailure);
+                                                    return;
                                                 }
+                                                continuation.accept(
+                                                        t2,
+                                                        result,
+                                                        null);
                                             }
                                         });
                             });
@@ -8455,7 +8461,9 @@ public final class OresEvalRootNode extends RootNode {
                     return truth(left) || truth(eval(binary.right(), env));
                 }
                 if (binary.operator().equals("^^")) {
-                    return truth(eval(binary.left(), env)) ^ truth(eval(binary.right(), env));
+                    // Legacy bool and canonical integer XOR share the AST
+                    // spelling but never silently coerce one kind into another.
+                    return xorValues(eval(binary.left(), env), eval(binary.right(), env));
                 }
                 Object left = eval(binary.left(), env);
                 Object right = eval(binary.right(), env);
@@ -11970,6 +11978,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             double x = a.doubleValue(), y = b.doubleValue();
             return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+        }
+
+        private Object xorValues(Object left, Object right) {
+            if (left instanceof Boolean lb && right instanceof Boolean rb) {
+                return lb ^ rb; // Legacy source profile; strict typing rejects.
+            }
+            return integralLong(left) ^ integralLong(right);
         }
 
         private long integralLong(Object value) {

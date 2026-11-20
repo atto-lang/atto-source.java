@@ -5663,8 +5663,10 @@ public final class Parser {
 
     private Ast.Expr parseLogicalXor() {
         Ast.Expr expr = parseLogicalAnd();
-        // Canonical boolean XOR: both operands are evaluated once, left to right.
-        // Only an adjacent double caret is recognized; single '^' stays reserved.
+        // The historical .ores profile used ^^ for eager Boolean XOR at this
+        // logical precedence. Never infer that profile from file naming.
+        // Strict/versioned AttoLang has INTEGER XOR below bitwise OR instead.
+        if (canonicalAttoSource) return expr;
         while (matchAdjacentPair(CARET)) {
             expr = new Ast.BinaryExpr("^^", expr, parseLogicalAnd());
         }
@@ -5702,8 +5704,17 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseXor() {
         Ast.Expr expr = parseBitwiseAnd();
+        // Under the canonical source profile, ^^ is contiguous, signed-int
+        // bit-pattern XOR. This placement gives '&' > '^^' > '|' precedence,
+        // matching the Rust/Wasm grammar and the operator-spelling contract.
+        if (canonicalAttoSource) {
+            while (matchAdjacentPair(CARET)) {
+                expr = new Ast.BinaryExpr("^^", expr, parseBitwiseAnd());
+            }
+        }
         if (matchSingleOperator(CARET)) throw error(previous(),
-                "'^' is reserved and is not AttoLang source syntax; use Integer.bitXor(a, b)");
+                "E_OPERATOR_CARET: single infix '^' is invalid; "
+                        + "use '^^' for integer XOR or a leading '^' for return");
         return expr;
     }
 
