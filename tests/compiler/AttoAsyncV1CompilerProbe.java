@@ -26,6 +26,15 @@ public final class AttoAsyncV1CompilerProbe {
         }
         throw new AssertionError("non-void do sync task was accepted");
     }
+    private static void rejectsSyntax(String source) {
+        try {
+            AttoAsyncV1Compiler.compile(source);
+        } catch (AttoAsyncV1Compiler.Reject expected) {
+            check("E_SYNTAX".equals(expected.getMessage()));
+            return;
+        }
+        throw new AssertionError("bare sync task was admitted without do");
+    }
     public static void main(String[] args) {
         if (args.length != 0) throw new AssertionError("unexpected args");
         String ok = "fnc plus_one(int x): int { ^ x + 1; }"
@@ -120,11 +129,11 @@ public final class AttoAsyncV1CompilerProbe {
             "pub fnc main", "pub susp fnc main"))));
         check(AttoAsyncV1Compiler.compile(inline.replace("sync task<int>", "sync task"))
             .contains("return plus_one(answer);"));
-        String empty = prefix + " pub fnc main(): int { sync task {}; return 42; }";
+        String empty = prefix + " pub fnc main(): int { do sync task {}; return 42; }";
         check(AttoAsyncV1Compiler.compile(empty).contains("return 42;"));
-        check(AttoAsyncV1Compiler.compile(empty.replace("sync task {}", "do sync task<void> {}"))
+        check(AttoAsyncV1Compiler.compile(empty.replace("do sync task {}", "do sync task<void> {}"))
             .contains("return 42;"));
-        check(AttoAsyncV1Compiler.compile(empty.replace("sync task {}", "do sync task<void> { return; }"))
+        check(AttoAsyncV1Compiler.compile(empty.replace("do sync task {}", "do sync task<void> { return; }"))
             .contains("atto_inline_task_0:"));
         rejects(empty.replace("sync task {}", "sync task<int> {}"));
         rejects(empty.replace("sync task {}", "sync task<void> { return 5; }"));
@@ -136,7 +145,9 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(inline.replace("return plus_one(answer)", "return missing(answer)"));
         rejects(inline.replace("sync task<int> { return 41; }", "sync task<Future<int>> { return 41; }"));
         rejects(inline.replace("sync task<int> { return 41; }", "sync task<int> { return 41; pending.cancel(); }"));
-        String standalone = "pub fnc main(): int { sync task {}; return 42; }";
+        rejectsSyntax("pub fnc main(): int { sync task {}; return 42; }");
+        rejectsSyntax("pub fnc main(): int { sync task<void> { return; }; return 42; }");
+        String standalone = "pub fnc main(): int { do sync task {}; return 42; }";
         check(AttoAsyncV1Compiler.compile(standalone).contains("atto_inline_task_0:"));
         check(!AttoAsyncV1Compiler.compile(standalone).contains("private static int plus_one"));
         check(AttoAsyncV1Compiler.compile("pub fnc main(): int { "
