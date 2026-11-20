@@ -66,6 +66,9 @@ public final class AttoDirectedPipePlanProbe {
         reject("E_PIPE_DUPLICATE_EDGE",()->check_unicast_attachments(List.of(f,r)));
         reject("E_PIPE_OUTPUT_OCCUPIED",()->check_unicast_attachments(List.of(f,
             plan(List.of(producer(), Stage.sink("other",TENANT,"int")),Direction.PIPE))));
+        reject("E_PIPE_INPUT_OCCUPIED",()->check_unicast_attachments(List.of(f,
+            plan(List.of(Stage.actor("other_producer",TENANT,"int","int"),
+                consumer()), Direction.PIPE))));
         check_unicast_attachments(List.of(f,plan(List.of(
             Stage.actor("other_producer",TENANT,"int","int"),
             Stage.sink("other_sink",TENANT,"int")), Direction.PIPE)));
