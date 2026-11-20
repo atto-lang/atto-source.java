@@ -105,6 +105,41 @@ final class AttoCanonicalCallableReturnAnnotationTest {
     }
 
     @Test
+    void strictCheckerRejectsExplicitInferWithoutProofInsteadOfTreatingItAsNominal() {
+        for (String source : new String[] {
+                "fnc guessed() -> infer { return 42; }",
+                """
+                define class C as
+                  guessed() -> infer { return 42; }
+                end
+                """,
+                """
+                define interface Guess {
+                  fnc guessed() => infer;
+                }
+                """
+        }) {
+            // The grammar accepts the intentional opt-in, but the Java backend
+            // must not select a guest ABI until return inference is proved.
+            assertDoesNotThrow(() -> Parser.parseStrictAtto(source), source);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheckStrictAtto(source),
+                    source);
+            assertTrue(error.getMessage().contains("E_RETURN_INFER"),
+                    error::getMessage);
+        }
+    }
+
+    @Test
+    void directStrictTypecheckerCannotBypassInferenceGateWithPrebuiltAst() {
+        Ast.Program program = Parser.parseStrictAtto(
+                "fnc guessed() -> infer { return 42; }");
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypesWithDiagnostics(program, true));
+        assertTrue(error.getMessage().contains("E_RETURN_INFER"), error::getMessage);
+    }
+
+    @Test
     void legacyUnversionedParserStillAllowsOmittedVoid() {
         Ast.FunctionDecl result = assertInstanceOf(Ast.FunctionDecl.class,
                 Parser.parse("fnc legacy() { return; }")
