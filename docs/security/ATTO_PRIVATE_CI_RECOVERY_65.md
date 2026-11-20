@@ -89,6 +89,59 @@ must record in #65:
    necessary. Do not equate ref deletion with object removal, and
    do not purge evidence before an authorized review.
 
+## Administrator settings checklist (operator action, not automatic enforcement)
+
+GitHub currently documents private-repository branch protection support on
+GitHub Pro, Team and Enterprise plans; GitHub Free does not provide the
+equivalent protected-branch controls for a private repo. An API response
+telling the operator to upgrade is **not** proof of the organization's
+billing entitlement. Confirm the actual repository/organization plan
+with an authorized administrator first.
+
+For an eligible repository, an administrator should open
+`atto-lang/atto-source.java` → **Settings** → **Branches** → add or
+edit the `main` branch protection rule (or the equivalent supported
+repository ruleset). Configure, at minimum, the actual V3 policy's
+stricter requirements, **not** merely one checkbox:
+
+- Require pull requests and independent approving CODEOWNER reviews.
+  Enable stale-approval dismissal after changes and prohibit
+  self-approval. No unreviewed force-merge path.
+- Require a **non-empty list of verified, actually executing CI status
+  checks**, with the trusted status-check publisher/app selected.
+  Do not require a check that has never run or report a zero-step failure
+  as a pass. Add strict up-to-date integration-check expectations.
+- Apply the protections to administrators; disable all review/status
+  bypasses; disallow force pushes and branch deletion; require
+  conversation resolution and the additional V3 controls.
+- Verify that existing CODEOWNERS and the org's Ready-cycle four-party
+  independent-review policy remain in force even if GitHub's built-in
+  reviewer-count control cannot encode verified distinct AI identities.
+- Independently read back the **live** `main` protection and all
+  ruleset/review/status fields using an administrator-capable integration,
+  and record the UTC verification, immutable branch SHA, source repository
+  ID, protected/ruleset output and security-owner identity in #65.
+
+Useful GitHub guidance:
+- https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/managing-a-branch-protection-rule
+- https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches
+
+**Fail closed:** do not grant a carrier destination or ship private
+source simply because the protection UI looks configured. The
+privileged V3 publisher must independently authenticate and verify all
+enforcement, immutable carrier contract, exact source PR and
+destination identity immediately before each permitted transfer.
+
+**Source-local CI capacity option:** if paid GitHub-hosted minutes are
+unavailable, use a *reviewed, single-use ephemeral, isolated runner
+attached to the source repository*. Run only read-only source-local
+checkouts and executable compiler tests; no ambient tenant credentials,
+cloud secrets, shared persistent worker disks, or privileged
+untrusted-PR execution. Confirm the runner really executes test steps
+and publish its result to source native checks. A source-local runner
+does not require a cross-org source grant, but is not a branch-protection
+or review substitute.
+
 ## Release CI after governance authorization
 
 Use the current, authenticated source `main` commit and exact heads
