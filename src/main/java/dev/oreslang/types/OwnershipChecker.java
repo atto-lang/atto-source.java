@@ -2729,7 +2729,10 @@ public final class OwnershipChecker {
                     ensureMapMutationReceiver(member.receiver(), scope);
                 }
                 for (Ast.Expr argument : call.arguments()) {
-                    ValueInfo checked = checkExpr(argument, scope, true);
+                    // Lookup/delete borrow a key; put/set transfer the new
+                    // scalar key/value. Do not consume a Bytes key on lookup.
+                    ValueInfo checked = checkExpr(argument, scope,
+                            member.member().equals("put") || member.member().equals("set"));
                     if (isBorrowValue(checked) || containsBorrowType(checked.type)) {
                         throw error("Map keys and values must be owned; borrowed payloads cannot escape");
                     }

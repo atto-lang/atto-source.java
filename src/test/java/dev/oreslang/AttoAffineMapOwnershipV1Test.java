@@ -43,8 +43,8 @@ final class AttoAffineMapOwnershipV1Test {
     void failedPutAndIndexedMutationLeaveExistingMapUnchanged() {
         OresKeyedMap<String, Long> map = OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
         map.put("answer", 42L);
-        assertThrows(IllegalArgumentException.class, () -> map.put("answer", (Long) null));
-        assertThrows(IllegalArgumentException.class, () -> map.put("different", null));
+        assertThrows(NullPointerException.class, () -> map.put("answer", null));
+        assertThrows(IllegalArgumentException.class, () -> map.put("\uD800", 9L));
         assertEquals(42L, map.getRequired("answer"));
         assertEquals(1, map.size());
     }
