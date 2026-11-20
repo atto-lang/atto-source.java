@@ -7982,10 +7982,25 @@ public final class OresEvalRootNode extends RootNode {
             }
             long left = integralLong(values.get(0));
             long right = integralLong(values.get(1));
+            if (checkedI64Arithmetic && right == 0
+                    && (operation.equals("rem") || operation.equals("mod"))) {
+                throw new ArithmeticException(
+                        "ORES_I64_DIVISION_BY_ZERO: checked signed i64 denominator");
+            }
             return switch (operation) {
                 case "rem" -> dev.oreslang.runtime.StrictIntegerArithmetic.rem(left, right);
                 case "mod" -> dev.oreslang.runtime.StrictIntegerArithmetic.mod(left, right);
-                case "pow" -> dev.oreslang.runtime.StrictIntegerArithmetic.pow(left, right);
+                case "pow" -> {
+                    try {
+                        yield dev.oreslang.runtime.StrictIntegerArithmetic.pow(left, right);
+                    } catch (ArithmeticException overflow) {
+                        if (checkedI64Arithmetic) {
+                            throw new ArithmeticException(
+                                    "ORES_I64_OVERFLOW: checked signed i64 power");
+                        }
+                        throw overflow;
+                    }
+                }
                 case "bitXor" -> dev.oreslang.runtime.StrictIntegerArithmetic.bitXor(left, right);
                 default -> throw new IllegalArgumentException(
                         "unknown Integer intrinsic: " + operation);
