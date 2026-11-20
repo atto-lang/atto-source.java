@@ -2,9 +2,16 @@
 // This is not the canonical Atto frontend: accept exactly one scalar actor
 // form and fail closed for all other syntax. No Python or interpretation.
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Path;
+import java.util.Set;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -50,15 +57,51 @@ public final class AttoM10RestrictedActorCompiler {
             """.formatted(sha, amount);
     }
 
+    // Read through one NOFOLLOW_LINKS file descriptor. A pre-check alone is
+    // vulnerable to a symlink replacement between isSymbolicLink and readString.
+    // Bound bytes BEFORE constructing a String; invalid UTF-8 fails closed.
+    private static String read_source(Path source) throws IOException {
+        if (Files.isSymbolicLink(source) ||
+            !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS))
+            throw new IOException("untrusted sender source path");
+        try (SeekableByteChannel channel = Files.newByteChannel(source,
+                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            if (channel.size() > 4096)
+                throw new IOException("oversized sender source");
+            ByteBuffer bytes = ByteBuffer.allocate(4097);
+            while (bytes.hasRemaining()) {
+                int count = channel.read(bytes);
+                if (count < 0) break;
+                if (count == 0) throw new IOException("sender source stalled");
+            }
+            if (bytes.position() > 4096)
+                throw new IOException("oversized sender source");
+            bytes.flip();
+            try {
+                return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(bytes).toString();
+            } catch (CharacterCodingException malformed) {
+                throw new IOException("malformed UTF-8 in sender source", malformed);
+            }
+        }
+    }
+
     public static void main(String[] args) throws IOException {
         if (args.length != 2 || !args[0].endsWith(".atto") ||
             !args[1].endsWith("M10GeneratedActor.java"))
             throw new IllegalArgumentException("usage: compiler source.atto M10GeneratedActor.java");
+        Path source = Path.of(args[0]);
         Path output = Path.of(args[1]);
-        if (Files.exists(output))
-            throw new IllegalArgumentException("refuse to overwrite generated source");
-        Files.writeString(output, compile_source(Files.readString(Path.of(args[0]))),
-                          StandardCharsets.UTF_8);
+        // CREATE_NEW + NOFOLLOW_LINKS prevents overwrites and redirection to
+        // a dangling symlink, even if another process races this compiler.
+        String generated = compile_source(read_source(source));
+        try (var writer = Files.newBufferedWriter(output, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
+                LinkOption.NOFOLLOW_LINKS)) {
+            writer.write(generated);
+        }
         System.out.println("M10_RESTRICTED_ATTO_GUEST_SOURCE_TRANSLATED=PASS");
     }
 }
