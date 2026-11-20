@@ -55,6 +55,55 @@ public final class Parser {
     // interface declarations to substitute for one another silently.
     private final java.util.IdentityHashMap<Ast.InterfaceDecl, Token.Type> interfaceKinds =
             new java.util.IdentityHashMap<>();
+    /** Trait/interface name to its bodied default methods, in source order. */
+    private final java.util.LinkedHashMap<String, List<Ast.MethodDecl>> traitDefaults =
+            new java.util.LinkedHashMap<>();
+
+    /**
+     * Splice trait defaults into each implementing class that does not declare
+     * a method of the same name and arity. A default reachable from two
+     * implemented traits is ambiguous and must be overridden explicitly.
+     */
+    private Ast.ModuleDecl applyTraitDefaults(Ast.ModuleDecl module) {
+        List<Ast.Decl> declarations = new ArrayList<>(module.declarations().size());
+        boolean changed = false;
+        for (Ast.Decl declaration : module.declarations()) {
+            if (!(declaration instanceof Ast.ClassDecl klass) || klass.interfaces().isEmpty()) {
+                declarations.add(declaration);
+                continue;
+            }
+            List<Ast.MethodDecl> methods = new ArrayList<>(klass.methods());
+            java.util.Map<String, String> inheritedFrom = new java.util.HashMap<>();
+            for (Ast.TypeRef implemented : klass.interfaces()) {
+                for (Ast.MethodDecl fallback : traitDefaults.getOrDefault(implemented.name(), List.of())) {
+                    String key = fallback.name() + "/" + fallback.parameters().size();
+                    boolean declared = klass.methods().stream().anyMatch(own ->
+                            own.name().equals(fallback.name())
+                                    && own.parameters().size() == fallback.parameters().size());
+                    if (declared) continue;
+                    String previousOwner = inheritedFrom.putIfAbsent(key, implemented.name());
+                    if (previousOwner != null) {
+                        throw new IllegalArgumentException("class " + klass.name()
+                                + " inherits conflicting defaults for '" + fallback.name() + "' from "
+                                + previousOwner + " and " + implemented.name() + "; override it explicitly");
+                    }
+                    methods.add(fallback);
+                }
+            }
+            if (methods.size() == klass.methods().size()) {
+                declarations.add(declaration);
+                continue;
+            }
+            changed = true;
+            declarations.add(new Ast.ClassDecl(klass.name(), klass.visibility(), klass.isAbstract(),
+                    klass.actorKind(), klass.genericParameters(), klass.parents(), klass.interfaces(),
+                    klass.fields(), klass.constructor(), methods, klass.actorConcurrency(),
+                    klass.sealedStateFields(), klass.annotations()));
+        }
+        return changed
+                ? new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations)
+                : module;
+    }
 
     public Parser(List<Token> tokens) {
         this(tokens, null);
@@ -383,6 +432,11 @@ public final class Parser {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
+        if (!traitDefaults.isEmpty()) {
+            List<Ast.ModuleDecl> withDefaults = new ArrayList<>(modules.size());
+            for (Ast.ModuleDecl module : modules) withDefaults.add(applyTraitDefaults(module));
+            modules = withDefaults;
+        }
         return StaticProxySynthesis.expand(
                 new Ast.Program(namespace, imports, modules, exports),
                 staticProxyTargets, staticProxyInterceptors);
@@ -2007,6 +2061,30 @@ public final class Parser {
                 continue;
             }
 
+            // Canonical callable members without 'fnc': `name(): T;` is a
+            // required signature; `name(): T { ... }` additionally supplies a
+            // trait default that implementing classes inherit unless they
+            // declare the same method themselves.
+            if (!moduleContract && check(IDENT)
+                    && (checkNext(LPAREN) || checkNext(LT))
+                    && !isBindingKind(peek().type())) {
+                Modifiers m = memberModifiers;
+                // Interface/trait members are public contract members.
+                Modifiers methodModifiers = new Modifiers(Ast.Visibility.PUBLIC, true, m.async(),
+                        m.suspends(), m.generator(), m.generatorStarred(), m.structural(),
+                        m.nonLexical(), m.trapped(), m.isStatic(), m.isAbstract(), m.shared(),
+                        m.untrusted());
+                Ast.MethodDecl method = parseMethod(memberAnnotations, methodModifiers, true);
+                members.add(new Ast.InterfaceFunctionDecl(method.name(), method.structural(),
+                        method.genericParameters(), method.parameters(), method.returnType(),
+                        method.effects()));
+                if (!method.isAbstract()) {
+                    traitDefaults.computeIfAbsent(name, ignored -> new ArrayList<>()).add(method);
+                }
+                match(SEMICOLON);
+                continue;
+            }
+
             validateNoModifiers(memberModifiers, "interface fields");
             if (!memberAnnotations.isEmpty()) {
                 throw error(previous(),
@@ -2299,6 +2377,13 @@ public final class Parser {
     }
 
     private String parseMethodName() {
+        // Canonical `override` member modifier: an explicit redefinition of an
+        // inherited method (same meaning as @Override on the method).
+        if (isContextualIdentifier("override") && checkNext(IDENT)
+                && current + 2 < tokens.size()
+                && (tokens.get(current + 2).type() == LPAREN || tokens.get(current + 2).type() == LT)) {
+            advance();
+        }
         // `new` remains reserved as an expression keyword, but an explicit
         // user-authored method/factory signature may name it. This alone does
         // not synthesize a static factory or grant Newable implementation.
