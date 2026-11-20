@@ -3,7 +3,6 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
-import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
