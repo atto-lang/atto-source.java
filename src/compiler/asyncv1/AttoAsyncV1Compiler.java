@@ -72,7 +72,7 @@ public final class AttoAsyncV1Compiler {
         }
         String ident() {
             String value = next();
-            if (!value.matches("[A-Za-z_][A-Za-z_0-9]*"))
+            if (!value.matches("[a-z_][a-z_0-9]*"))
                 throw new Reject("E_ASYNC_INVALID_IDENTIFIER");
             if (value.equals("sync"))
                 throw new Reject("E_RESERVED_SYNC");
