@@ -166,6 +166,24 @@ final class AttoCanonicalIntegerXorParityTest {
     }
 
     @Test
+    void strictTripleCaretNeverBecomesXorOrReturn() {
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheckStrictAtto(
+                        "pub fnc main(): int { return 6 ^^^ 3; }"));
+    }
+
+    @Test
+    void strictBooleanInequalityReplacesLegacyBooleanXor() throws Exception {
+        assertEquals("true\nfalse\n", canonicalGuest("""
+                pub fnc main(): void {
+                    stdio.println(true != false);
+                    stdio.println(true != true);
+                    return;
+                }
+                """));
+    }
+
+    @Test
     void strictBooleanShortCircuitStillSkipsInvalidRightOperands() throws Exception {
         // ^^ must be eager without weakening the existing && and || semantics.
         assertEquals("false\ntrue\n", canonicalGuest("""
