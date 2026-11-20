@@ -1,6 +1,6 @@
 fnc plus_one(int x): int { ^ x + 1; }
 pub fnc main(): int {
     val answer = sync task<int> { return 41; };
-    do sync task<int> { return 7; };
+    do sync task<void> { return; };
     return plus_one(answer);
 }

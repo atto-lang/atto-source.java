@@ -10,6 +10,7 @@ bash ci/admission/exact-tree.sh \
   fixtures/async_v1/completed_future_typed.atto \
   fixtures/async_v1/sync_inline_int.atto \
   fixtures/async_v1/sync_inline_empty.atto \
+  fixtures/async_v1/sync_inline_do_nonvoid.atto \
   ci/async/verify-compiled-completed-future.sh
 test -x "$JAVA_HOME/bin/javac" && test -x "$JAVA_HOME/bin/native-image" || exit 2
 work="$(mktemp -d)"
@@ -20,7 +21,7 @@ mkdir -p "$work/classes"
   tests/compiler/AttoAsyncV1CompilerProbe.java \
   tests/compiler/AttoAsyncV1GeneratedIdentifierProbe.java
 "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1CompilerProbe | tee "$work/probe"
-grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=81" "$work/probe"
+grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=95" "$work/probe"
 "$JAVA_HOME/bin/java" -cp "$work/classes" \
   atto.compiler.asyncv1.AttoAsyncV1GeneratedIdentifierProbe | tee "$work/identifiers"
 grep -Fx "ATTO_ASYNC_V1_GENERATED_NAMES_PASS accepted=19 rejected=4" "$work/identifiers"
@@ -118,3 +119,17 @@ grep -Fx 'ATTO_ASYNC_V1_RESULT=42' "$work/sync_inline_int/native.out"
 grep -Fx 'ATTO_ASYNC_SCOPE=PURE_INLINE_TASK_ONLY' "$work/sync_inline_int/native.out"
 test ! -s "$work/sync_inline_int/native.err"
 echo 'ATTO_ASYNC_V1_PURE_INLINE_JVM_NATIVE=PASS'
+
+# Invalid discarded task payloads must fail before creating generated Java.
+mkdir -p "$work/do-sync-negative"
+set +e
+"$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1Compiler \
+  fixtures/async_v1/sync_inline_do_nonvoid.atto \
+  "$work/do-sync-negative/AttoAsyncV1Guest.java" \
+  >"$work/do-sync-negative/out" 2>"$work/do-sync-negative/err"
+status=$?
+set -e
+test "$status" -ne 0
+grep -F 'E_TASK_RETURN_TYPE' "$work/do-sync-negative/err"
+test ! -e "$work/do-sync-negative/AttoAsyncV1Guest.java"
+echo 'ATTO_DO_SYNC_VOID_ONLY_NO_ARTIFACT=PASS'

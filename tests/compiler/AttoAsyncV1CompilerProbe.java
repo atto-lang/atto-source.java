@@ -17,6 +17,15 @@ public final class AttoAsyncV1CompilerProbe {
         }
         throw new AssertionError("unsupported source was accepted: " + source);
     }
+    private static void rejectsType(String source) {
+        try {
+            AttoAsyncV1Compiler.compile(source);
+        } catch (AttoAsyncV1Compiler.Reject expected) {
+            check("E_TASK_RETURN_TYPE".equals(expected.getMessage()));
+            return;
+        }
+        throw new AssertionError("non-void do sync task was accepted");
+    }
     public static void main(String[] args) {
         if (args.length != 0) throw new AssertionError("unexpected args");
         String ok = "fnc plus_one(int x): int { ^ x + 1; }"
@@ -100,7 +109,7 @@ public final class AttoAsyncV1CompilerProbe {
         String prefix = "fnc plus_one(int x): int { ^ x + 1; }";
         String inline = prefix + " pub fnc main(): int { "
             + "val answer = sync task<int> { return 41; }; "
-            + "do sync task<int> { return 7; }; return plus_one(answer); }";
+            + "do sync task<void> { return; }; return plus_one(answer); }";
         String inlineJava = AttoAsyncV1Compiler.compile(inline);
         check(inlineJava.contains("atto_inline_task_0:"));
         check(inlineJava.contains("atto_inline_task_1:"));
@@ -115,14 +124,14 @@ public final class AttoAsyncV1CompilerProbe {
         check(AttoAsyncV1Compiler.compile(empty).contains("return 42;"));
         check(AttoAsyncV1Compiler.compile(empty.replace("sync task {}", "do sync task<void> {}"))
             .contains("return 42;"));
-        check(AttoAsyncV1Compiler.compile(empty.replace("sync task {}", "do sync task<int> { return 5; }"))
-            .contains("Math.addExact(5, 0);"));
+        check(AttoAsyncV1Compiler.compile(empty.replace("sync task {}", "do sync task<void> { return; }"))
+            .contains("atto_inline_task_0:"));
         rejects(empty.replace("sync task {}", "sync task<int> {}"));
         rejects(empty.replace("sync task {}", "sync task<void> { return 5; }"));
         rejects(empty.replace("sync task {}", "sync task { await pending; }"));
         rejects(empty.replace("sync task {}", "sync task { using guard; }"));
         rejects(inline.replace("sync task<int> { return 41; }", "sync task<int> { return 41; return 99; }"));
-        rejects(inline.replace("do sync task<int>", "do task<int>"));
+        rejects(inline.replace("do sync task<void>", "do task<void>"));
         rejects(inline.replace("return plus_one(answer)", "return plus_one(other)"));
         rejects(inline.replace("return plus_one(answer)", "return missing(answer)"));
         rejects(inline.replace("sync task<int> { return 41; }", "sync task<Future<int>> { return 41; }"));
@@ -135,6 +144,33 @@ public final class AttoAsyncV1CompilerProbe {
             .contains("return answer;"));
         rejects("pub fnc main(): int { val answer = task<int> { return 42; }; return answer; }");
         rejects("pub fnc main(): int { val answer = sync task<int> { return 42; }; return other; }");
+        // do sync task only has a void payload, whether omitted or explicit.
+        // No explicit/inferred nonvoid return can escape this diagnostic.
+        check(AttoAsyncV1Compiler.compile("pub fnc main(): int { "
+            + "do sync task {}; return 42; }").contains("atto_inline_task_0:"));
+        check(AttoAsyncV1Compiler.compile("pub fnc main(): int { "
+            + "do sync task<void> { return; }; return 42; }")
+            .contains("atto_inline_task_0:"));
+        check(AttoAsyncV1Compiler.compile("pub fnc main(): int { "
+            + "val answer = sync task<int> { return 42; }; "
+            + "do sync task {}; return answer; }").contains("atto_inline_task_1:"));
+        check(AttoAsyncV1Compiler.compile("pub fnc main(): int { "
+            + "val answer = sync task<int> { return 42; }; "
+            + "do sync task<void> { return; }; return answer; }")
+            .contains("atto_inline_task_1:"));
+        rejectsType("pub fnc main(): int { do sync task<int> {}; return 42; }");
+        rejectsType("pub fnc main(): int { do sync task<int> { return 42; }; return 42; }");
+        rejectsType("pub fnc main(): int { do sync task<bool> {}; return 42; }");
+        rejectsType("pub fnc main(): int { do sync task<Future<int>> {}; return 42; }");
+        rejectsType("pub fnc main(): int { do sync task { return 42; }; return 42; }");
+        rejectsType("pub fnc main(): int { do sync task<void> { return 42; }; return 42; }");
+        rejectsType("pub fnc main(): int { do sync task { return 42; } return 42; }");
+        rejectsType("pub fnc main(): int { val answer = sync task<int> { return 41; }; "
+            + "do sync task<int> {}; return answer; }");
+        rejectsType("pub fnc main(): int { val answer = sync task<int> { return 41; }; "
+            + "do sync task<void> { return 9; }; return answer; }");
+        rejectsType("pub fnc main(): int { val answer = sync task<int> { return 41; }; "
+            + "do sync task { return 9; }; return answer; }");
         System.out.println("ATTO_ASYNC_V1_ADMISSION_PASS checks=" + checks);
     }
 }

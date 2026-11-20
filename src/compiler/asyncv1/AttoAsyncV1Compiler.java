@@ -118,27 +118,43 @@ public final class AttoAsyncV1Compiler {
         // Admits only provably non-suspending literal inline bodies. A sync
         // task uses the current logical task and is permitted in a pure caller.
         if (p.peekIs("sync") || p.peekIs("do")) {
-            if (p.peekIs("do")) p.expect("do");
+            boolean discard = p.peekIs("do");
+            if (discard) p.expect("do");
             p.expect("sync"); p.expect("task");
             String payload = "infer";
             if (p.peekIs("<")) {
-                p.expect("<"); payload = p.next(); p.expect(">");
+                p.expect("<");
+                // A do-sync statement's *payload* is void, not an arbitrary
+                // discarded T. Fail before generating any guest artifact.
+                if (discard && !p.peekIs("void"))
+                    throw new Reject("E_TASK_RETURN_TYPE");
+                payload = p.next();
+                p.expect(">");
             }
             p.expect("{");
-            boolean hasResult = p.peekIs("return");
+            boolean hasValue = false;
             int ignored = 0;
-            if (hasResult) {
-                p.expect("return"); ignored = p.smallInt(); p.expect(";");
+            if (p.peekIs("return")) {
+                p.expect("return");
+                if (p.peekIs(";")) {
+                    p.expect(";");
+                } else {
+                    if (discard || payload.equals("void"))
+                        throw new Reject("E_TASK_RETURN_TYPE");
+                    ignored = p.smallInt();
+                    p.expect(";");
+                    hasValue = true;
+                }
             }
             p.expect("}");
             if (p.peekIs(";")) p.expect(";");
-            if (!payload.equals("infer") && !payload.equals(hasResult ? "int" : "void"))
+            if (!payload.equals("infer") && !payload.equals(hasValue ? "int" : "void"))
                 throw new Reject("E_TASK_RETURN_TYPE");
             p.expect("return"); int parentValue = p.smallInt();
             p.expect(";"); p.expect("}");
             if (!p.done()) throw new Reject("E_ASYNC_TRAILING_SOURCE");
             String body = "    atto_inline_task_0: {\n"
-                + (hasResult ? "      Math.addExact(" + ignored + ", 0);\n" : "")
+                + (hasValue ? "      Math.addExact(" + ignored + ", 0);\n" : "")
                 + "      break atto_inline_task_0;\n"
                 + "    }\n"
                 + "    return " + parentValue + ";\n";
@@ -153,14 +169,23 @@ public final class AttoAsyncV1Compiler {
             }
             p.expect("{"); p.expect("return"); int value = p.smallInt();
             p.expect(";"); p.expect("}"); p.expect(";");
-            int discarded = -1;
-            if (p.peekIs("do")) {
+            boolean hasDiscard = p.peekIs("do");
+            if (hasDiscard) {
                 p.expect("do"); p.expect("sync"); p.expect("task");
                 if (p.peekIs("<")) {
-                    p.expect("<"); p.expect("int"); p.expect(">");
+                    p.expect("<");
+                    if (!p.peekIs("void"))
+                        throw new Reject("E_TASK_RETURN_TYPE");
+                    p.expect("void"); p.expect(">");
                 }
-                p.expect("{"); p.expect("return"); discarded = p.smallInt();
-                p.expect(";"); p.expect("}");
+                p.expect("{");
+                if (p.peekIs("return")) {
+                    p.expect("return");
+                    if (!p.peekIs(";"))
+                        throw new Reject("E_TASK_RETURN_TYPE");
+                    p.expect(";");
+                }
+                p.expect("}");
                 if (p.peekIs(";")) p.expect(";");
             }
             p.expect("return"); String called = p.ident();
@@ -182,9 +207,8 @@ public final class AttoAsyncV1Compiler {
                 + "      " + future + " = " + value + ";\n"
                 + "      break atto_inline_task_0;\n"
                 + "    }\n";
-            if (discarded >= 0) {
+            if (hasDiscard) {
                 body += "    atto_inline_task_1: {\n"
-                    + "      Math.addExact(" + discarded + ", 0);\n"
                     + "      break atto_inline_task_1;\n"
                     + "    }\n";
             }
