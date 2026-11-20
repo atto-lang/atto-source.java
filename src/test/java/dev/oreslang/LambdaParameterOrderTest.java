@@ -163,4 +163,68 @@ final class LambdaParameterOrderTest {
                 pub routine main(): void { let fnc bad = || -> 42; return; }
                 """));
     }
+
+    @Test
+    void fourRequestedVoidLambdaStylesHaveSameTypeAndRuntimeContract() throws Exception {
+        String[] forms = {
+                "|int foo, string x| -> { return; };",
+                "|foo: int, x: string| -> { return; }",
+                "|foo: int, x: string| -> void { return; }",
+                "|foo: int, x: string| : void -> { return; }"
+        };
+        for (String form : forms) {
+            String code = """
+                    pub routine main(): void {
+                      const v = %s
+                      v(5, "ok");
+                      stdio.stdout.write("pass");
+                      return;
+                    }
+                    """.formatted(form);
+            Ast.Program ast = Parser.parse(code);
+            Ast.FunctionDecl main = (Ast.FunctionDecl) ast.modules().getFirst().declarations().getFirst();
+            Ast.BindingStmt binding = (Ast.BindingStmt) main.body().getFirst();
+            Ast.LambdaExpr lambda = assertInstanceOf(Ast.LambdaExpr.class, binding.initializer());
+            assertEquals(2, lambda.parameters().size(), form);
+            assertEquals("foo", lambda.parameters().getFirst().name(), form);
+            assertEquals("int", lambda.parameters().getFirst().type().name(), form);
+            assertEquals("x", lambda.parameters().get(1).name(), form);
+            assertEquals("string", lambda.parameters().get(1).type().name(), form);
+            assertEquals(form.contains("void"), lambda.declaredReturnType() != null, form);
+            assertDoesNotThrow(() -> TypeChecker.check(ast), form);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            Source src = Source.newBuilder(OresLanguage.ID, code, "four-void-lambdas.atto")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(out).build()) {
+                ctx.eval(src);
+            }
+            assertEquals("pass", out.toString(StandardCharsets.UTF_8), form);
+        }
+    }
+
+    @Test
+    void malformedColonReturnAndConflictingVoidPathsReject() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc main(): void {
+                    const v = |foo: int| : void { return; };
+                    return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc main(): void {
+                    const v = |foo: int| : void -> return;
+                    return;
+                }
+                """));
+        Ast.Program bad = Parser.parse("""
+                fnc main(): void {
+                    const v = |foo: int| : void -> { return 7; };
+                    return;
+                }
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(bad));
+    }
+
 }
