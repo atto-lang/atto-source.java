@@ -3792,6 +3792,19 @@ public final class Parser {
 
         Ast.Expr expression = parseExpression();
         consumeExpressionStatementTerminator(expression, "expression statement should end with ';'");
+        // Canonical directional channel writes: the arrow points at the
+        // destination channel (`ch << value`, `value >> ch`). A discarded
+        // shift has no observable meaning, so statement position is unambiguous.
+        if (expression instanceof Ast.BinaryExpr arrow) {
+            if (arrow.operator().equals("<<")) {
+                return new Ast.ExprStmt(new Ast.ChannelOpExpr(Ast.ChannelOperation.WRITE,
+                        Ast.WaitMode.BLOCKING, arrow.left(), arrow.right()));
+            }
+            if (arrow.operator().equals(">>")) {
+                return new Ast.ExprStmt(new Ast.ChannelOpExpr(Ast.ChannelOperation.WRITE,
+                        Ast.WaitMode.BLOCKING, arrow.right(), arrow.left()));
+            }
+        }
         return new Ast.ExprStmt(expression);
     }
 
@@ -5892,7 +5905,15 @@ public final class Parser {
             String op;
             if (matchAdjacentTriple(GT)) op = ">>>";
             else if (matchAdjacentPair(LT)) op = "<<";
-            else if (matchAdjacentPair(GT)) op = ">>";
+            else if (matchAdjacentPair(GT)) {
+                // Canonical postfix channel read: `(ch >>)`.
+                if (check(RPAREN)) {
+                    expr = new Ast.ChannelOpExpr(Ast.ChannelOperation.READ,
+                            Ast.WaitMode.BLOCKING, expr, null);
+                    continue;
+                }
+                op = ">>";
+            }
             else break;
             expr = new Ast.BinaryExpr(op, expr, parseAdditive());
         }
@@ -6032,6 +6053,13 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnaryBody() {
+        // Canonical prefix channel read: `(<< ch)` takes the next value out of ch.
+        if (checkAdjacentPair(LT)) {
+            advance();
+            advance();
+            return new Ast.ChannelOpExpr(Ast.ChannelOperation.READ, Ast.WaitMode.BLOCKING,
+                    parseUnary(), null);
+        }
         if (hasBangOwnershipAlias()) return parseBangOwnershipAlias();
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that

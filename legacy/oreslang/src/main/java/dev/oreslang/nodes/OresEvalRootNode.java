@@ -8701,6 +8701,12 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "DynamicStruct has been removed; use infer struct{...} or an explicit closed struct");
                 }
+                if (created.type().name().equals("Channel") && findClass("Channel") == null) {
+                    // Canonical `new Channel<T>(capacity)` is the same bounded
+                    // runtime channel as `Channel.new<T>(capacity)`.
+                    List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return new ChannelFactory().create(args);
+                }
                 HostClassFacade hostClass = hostClasses.get(created.type().name());
                 if (hostClass != null) {
                     context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
