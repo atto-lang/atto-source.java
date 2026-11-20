@@ -36,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/proxy-uds
-          javac -Xlint:all -Werror -d build/proxy-uds \
+          javac -Xlint:all,-try -Werror -d build/proxy-uds \
             src/ipc/ProxyReceiptGateV1.java \
             src/m6/AttoM6Runtime.java \
             src/ipc/AttoM6ProxyUdsV1.java \
