@@ -27,9 +27,13 @@ mkdir -p "$work/classes" "$work/generated"
 "$JAVA_HOME/bin/javac" --release 21 -cp "$work/classes" -d "$work/classes" \
   tests/m6/M6NioRuntimeProbe.java \
   tests/m6/M6SelectorLifecycleAuditProbe.java \
-  tests/m6/M6ControlBudgetStressProbe.java
+  tests/m6/M6ControlBudgetStressProbe.java \
+  tests/m6/M6PerMessageTicketProbe.java
 timeout 120 "$JAVA_HOME/bin/java" -cp "$work/classes" M6NioRuntimeProbe | tee "$work/m6.log"
 grep -Fx 'M6_NIO_SCHEDULER_SUPERVISOR_NATIVE_HOST=PASS' "$work/m6.log" >/dev/null
+timeout 90 "$JAVA_HOME/bin/java" -cp "$work/classes" M6PerMessageTicketProbe | tee "$work/tickets.log"
+grep -Fx 'M6_TICKET_128_CONCURRENT_MAIL_EXACT_CORRELATION=PASS' "$work/tickets.log" >/dev/null
+grep -Fx 'M6_TICKET_PANIC_ABANDON_CONTROL_REINCARNATION=PASS' "$work/tickets.log" >/dev/null
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10MailboxTurnProbe | tee "$work/mailbox.log"
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10RemoteActorProcessProbe | tee "$work/process.log"
 for marker in \
@@ -42,6 +46,7 @@ for marker in \
   M10_RESTRICTED_COMPILED_ATTO_REMOTE_RECEIVE=PASS \
   M10_REMOTE_RECIPIENT_ADMITTED_AND_PROCESSED=PASS \
   M10_REMOTE_DUPLICATE_FAULT_AND_RESTART_FENCING=PASS \
+  M10_12_CONCURRENT_PER_MAIL_SCOPED_RESULTS_OR_VERIFIED_FULL=PASS \
   M10_SCOPE=RESTRICTED_ATTO_GUEST_JAVA_HOST_PROTOCOL_NOT_CANONICAL_BACKEND_OR_TLS; do
     grep -Fx "$marker" "$work/process.log" >/dev/null
 done
