@@ -54,6 +54,8 @@ public final class M10RestrictedSenderCompilerProbe {
         Path out = tmp.resolve("M10GeneratedSender.java");
         Path bait = tmp.resolve("redirected.java");
         Path link = tmp.resolve("untrusted.atto");
+        Path oversized = tmp.resolve("oversized.atto");
+        Path malformed = tmp.resolve("malformed.atto");
         try {
             Files.writeString(clean, src);
             Files.createSymbolicLink(link, clean);
@@ -64,6 +66,14 @@ public final class M10RestrictedSenderCompilerProbe {
                 clean.toString(), out.toString() }), "dangling output symlink accepted");
             require(!Files.exists(bait), "generated source escaped output directory");
             Files.delete(out);
+            Files.writeString(oversized, "x".repeat(4100));
+            expect_io(() -> AttoM10RestrictedSenderCompiler.main(new String[] {
+                oversized.toString(), out.toString() }), "oversized source read");
+            require(!Files.exists(out), "oversized source created partial output");
+            Files.write(malformed, new byte[] {(byte) 0xc3, (byte) 0x28});
+            expect_io(() -> AttoM10RestrictedSenderCompiler.main(new String[] {
+                malformed.toString(), out.toString() }), "invalid UTF-8 accepted");
+            require(!Files.exists(out), "malformed source created partial output");
             AttoM10RestrictedSenderCompiler.main(new String[] {
                 clean.toString(), out.toString() });
             require(Files.readString(out).contains(M10GeneratedSender.SOURCE_SHA256),
@@ -71,11 +81,14 @@ public final class M10RestrictedSenderCompilerProbe {
             expect_io(() -> AttoM10RestrictedSenderCompiler.main(new String[] {
                 clean.toString(), out.toString() }), "existing generated output overwritten");
             System.out.println("M10_SOURCE_SYMLINK_AND_OUTPUT_NOFOLLOW=PASS");
+            System.out.println("M10_SOURCE_BOUNDED_FD_UTF8_FAIL_CLOSED=PASS");
         } finally {
             Files.deleteIfExists(link);
             Files.deleteIfExists(out);
             Files.deleteIfExists(clean);
             Files.deleteIfExists(bait);
+            Files.deleteIfExists(oversized);
+            Files.deleteIfExists(malformed);
             Files.deleteIfExists(tmp);
         }
         System.out.println(
