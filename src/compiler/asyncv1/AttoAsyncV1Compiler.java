@@ -176,10 +176,10 @@ public final class AttoAsyncV1Compiler {
             p.expect(";"); p.expect("}");
             if (!p.done()) throw new Reject("E_ASYNC_TRAILING_SOURCE");
             String body = "    atto_inline_task_0: {\n"
-                + (hasValue ? "      Math.addExact(" + ignored + ", 0);\n" : "")
+                + (hasValue ? "      Math.addExact(" + ignored + "L, 0L);\n" : "")
                 + "      break atto_inline_task_0;\n"
                 + "    }\n"
-                + "    return " + parentValue + ";\n";
+                + "    return " + parentValue + "L;\n";
             return compilePureInline(fun, param, increment, body);
         }
         if (p.peekIs("sync"))
@@ -228,7 +228,7 @@ public final class AttoAsyncV1Compiler {
             if (!p.done()) throw new Reject("E_ASYNC_TRAILING_SOURCE");
             String body = "    long " + future + ";\n"
                 + "    atto_inline_task_0: {\n"
-                + "      " + future + " = " + value + ";\n"
+                + "      " + future + " = " + value + "L;\n"
                 + "      break atto_inline_task_0;\n"
                 + "    }\n";
             if (hasDiscard) {
@@ -273,7 +273,7 @@ public final class AttoAsyncV1Compiler {
         return "import java.util.concurrent.CompletableFuture;\n"
             + "public final class AttoAsyncV1Guest {\n"
             + "  private static long " + fun + "(long " + param + ") {\n"
-            + "    return Math.addExact(" + param + ", " + increment + ");\n"
+            + "    return Math.addExact(" + param + ", " + increment + "L);\n"
             + "  }\n"
             + "  public static long execute() {\n"
             + "    CompletableFuture<Long> " + future
@@ -297,7 +297,7 @@ public final class AttoAsyncV1Compiler {
         return "public final class AttoAsyncV1Guest {\n"
             + (fun == null ? "" :
                 "  private static long " + fun + "(long " + param + ") {\n"
-                + "    return Math.addExact(" + param + ", " + increment + ");\n"
+                + "    return Math.addExact(" + param + ", " + increment + "L);\n"
                 + "  }\n")
             + "  public static long execute() {\n"
             + body
