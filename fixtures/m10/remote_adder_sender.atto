@@ -1,0 +1,10 @@
+define proxy actor RemoteAdder
+    conforms to RemoteAdderContract
+    discover "remote.add.v1"
+    transport ipc
+as
+end
+
+pub susp fnc main(ProxyActor<RemoteAdder> proxy): int {
+    return await proxy.request(32);
+}
