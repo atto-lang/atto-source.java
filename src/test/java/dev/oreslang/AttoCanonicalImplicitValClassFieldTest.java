@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -45,11 +46,12 @@ final class AttoCanonicalImplicitValClassFieldTest {
                   }
                 end
                 """;
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.checkTypes(Parser.parseStrictAtto(
-                        source.formatted("int count: 1"))));
-        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parseStrictAtto(
-                source.formatted("let int count = 1;"))));
+        IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheckStrictAtto(
+                        source.formatted("int count: 1")));
+        assertTrue(rejection.getMessage().contains("E_IMMUTABLE"), rejection::getMessage);
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(
+                source.formatted("let int count = 1;")));
     }
 
     @Test
@@ -83,6 +85,45 @@ final class AttoCanonicalImplicitValClassFieldTest {
         assertEquals(Ast.BindingKind.VAL,
                 firstClass(Parser.parseStrictAtto(source))
                         .fields().get(0).bindingKind());
+    }
+
+    @Test
+    void canonicalPackageScopedVisibilityCannotWidenToPublic() {
+        for (String declaration : new String[] {
+                "pub[pkg] int secret = 42;",
+                "pub [pkg] int secret = 42;"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parseStrictAtto(
+                            "define class C as\n  " + declaration + "\nend\n"));
+            assertTrue(error.getMessage().contains("E_PKG_VISIBILITY_UNSUPPORTED"),
+                    error::getMessage);
+        }
+        assertDoesNotThrow(() -> Parser.parseStrictAtto(
+                "define class C as\n  pub int published = 42;\nend\n"));
+    }
+
+    @Test
+    void constantClassFieldsRejectRuntimeCallsAndOverflowBeforeEmission() {
+        for (String initializer : new String[] {
+                "runtime_number()",
+                "9223372036854775807 + 1"
+        }) {
+            String program = """
+                    fnc runtime_number(): int { return 42; }
+                    define class C as
+                      const int value = %s;
+                    end
+                    """.formatted(initializer);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheckStrictAtto(program));
+            assertTrue(error.getMessage().contains("E_CONST"), error::getMessage);
+        }
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto("""
+                define class C as
+                  const int answer = 40 + 2;
+                end
+                """));
     }
 
     @Test
