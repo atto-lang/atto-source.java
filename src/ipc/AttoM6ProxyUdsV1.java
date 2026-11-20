@@ -165,85 +165,78 @@ public final class AttoM6ProxyUdsV1 {
             throw new IOException("UDS peer credentials unavailable: fail closed", e);
         }
     }
-    // This server entry point must be called from dedicated trusted host-I/O,
-    // not from a scheduler receive callback. The caller provides a per-request
-    // queue of *host-issued* started/processed/failed events, never guest-owned.
-    // Any connection-level error after a possible enqueue is NOT definitive rejection.
+    // Host-only UDS proof. Delivery receipt is minted by the actual M6 mailbox
+    // enqueue and moves only when *that exact message* starts/commits/fails.
+    // Neither guest-produced queues nor aggregate actor counters authorize ACKs.
+    // A disconnected sender after admission cannot roll the admission back.
     public static boolean serve_one(ServerSocketChannel server, Session session,
         AttoM6Runtime runtime, AttoM6Runtime.ActorRef target,
         ProxyReceiptGateV1.Identity expected,
-        java.util.concurrent.BlockingQueue<Turn> hostTurns,
         Set<String> alreadySeen) throws IOException, InterruptedException {
         try (SocketChannel channel = server.accept()) {
             peer_same_user(channel);
             Request req = decode_request(session, read_frame(channel));
             var id = req.identity();
-            String replay = id.callerIncarnation() + ":" + id.messageId() + ":" + id.attempt();
-            boolean allowed = id.equals(expected) && id.targetIncarnation() == target.generation()
-                && !alreadySeen.contains(replay) && alreadySeen.size() < 256;
-            if (!allowed) {
+            String replay = id.tenant() + ":" + id.callerIncarnation() + ":" +
+                id.targetActor() + ":" + id.targetIncarnation() + ":" +
+                id.associationGeneration() + ":" + id.placementEpoch() + ":" +
+                id.messageId() + ":" + id.attempt();
+            AttoM6Runtime.TicketAdmission admitted = null;
+            // Atomic between every connection handler: no duplicate request can
+            // cross the replay window and mint a second destination admission.
+            synchronized (alreadySeen) {
+                if (id.equals(expected) && id.targetIncarnation() == target.generation()
+                    && !alreadySeen.contains(replay) && alreadySeen.size() < 256) {
+                    admitted = runtime.try_send_ticket(target, req.message());
+                    if (admitted.admission() == AttoM6Runtime.Admission.ACCEPTED)
+                        alreadySeen.add(replay);
+                }
+            }
+            if (admitted == null ||
+                admitted.admission() != AttoM6Runtime.Admission.ACCEPTED) {
                 write_frame(channel, encode_receipt(session, id,
                     new Turn(ProxyReceiptGateV1.Event.REJECTED, 0)));
                 return false;
             }
-            // Snapshot destination authority before enqueue. A callback-supplied
-            // terminal signal is never enough to claim that M6 committed the turn.
-            var before = runtime.snapshot(target);
-            var admission = runtime.try_send(target, req.message());
-            if (admission != AttoM6Runtime.Admission.ACCEPTED) {
-                write_frame(channel, encode_receipt(session, id,
-                    new Turn(ProxyReceiptGateV1.Event.REJECTED, 0)));
-                return false;
-            }
-            alreadySeen.add(replay);
+            var ticket = admitted.ticket();
+            // Only the destination's atomic enqueue issued the opaque ticket.
             write_frame(channel, encode_receipt(session, id,
                 new Turn(ProxyReceiptGateV1.Event.ADMITTED, 0)));
-            // The guest handler is not run on this I/O thread. A bridge-generated
-            // host turn wrapper reports start and terminal outcome from M6 carrier.
-            for (int n = 0; n < 2; n++) {
-                // All waiting occurs on host I/O, never on an actor carrier.
-                // A panicking receive may not publish a terminal callback.
-                long deadline = System.nanoTime() +
-                    java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
-                Turn next = null;
-                while (next == null && System.nanoTime() < deadline) {
-                    next = hostTurns.poll(20, java.util.concurrent.TimeUnit.MILLISECONDS);
-                    if (n == 1 && runtime.snapshot(target).failed() > before.failed())
-                        next = new Turn(ProxyReceiptGateV1.Event.FAILED, 0);
-                }
-                if (next == null) throw new IOException("destination turn deadline");
-                if (n == 0 && next.event() != ProxyReceiptGateV1.Event.STARTED)
-                    throw new IOException("missing scheduler-start evidence");
-                if (n == 1) {
-                    if (next.event() != ProxyReceiptGateV1.Event.PROCESSED &&
-                        next.event() != ProxyReceiptGateV1.Event.FAILED)
-                        throw new IOException("missing terminal turn evidence");
-                    // PROCESSED is not authoritative until the *runtime's*
-                    // post-handler commit counter has advanced.
-                    while (next.event() == ProxyReceiptGateV1.Event.PROCESSED &&
-                           runtime.snapshot(target).completed() == before.completed() &&
-                           System.nanoTime() < deadline) {
-                        if (runtime.snapshot(target).failed() > before.failed()) {
-                            next = new Turn(ProxyReceiptGateV1.Event.FAILED, 0);
-                            break;
-                        }
-                        Thread.sleep(1);
-                    }
-                    if (next.event() == ProxyReceiptGateV1.Event.PROCESSED &&
-                        runtime.snapshot(target).completed() <= before.completed())
-                        throw new IOException("handler callback without M6 commit");
-                    if (next.event() == ProxyReceiptGateV1.Event.FAILED &&
-                        runtime.snapshot(target).failed() <= before.failed())
-                        throw new IOException("failure without M6 fault accounting");
-                }
-                try {
-                    write_frame(channel, encode_receipt(session, id, next));
-                } catch (IOException closedAfterAdmit) {
-                    // Sender may close after ADMITTED; delivery still happened.
-                    // This close is not an authoritative rejection of the admitted mail.
-                    if (n == 1) return true;
-                    // Continue draining terminal evidence even if the sender closes.
-                }
+            var started = runtime.await_ticket(ticket, AttoM6Runtime.TicketState.STARTED,
+                                                10_000);
+            if (started.state() == AttoM6Runtime.TicketState.ADMITTED)
+                throw new IOException("message start uncertain after admission");
+            if (started.state() == AttoM6Runtime.TicketState.ABANDONED) {
+                write_frame(channel, encode_receipt(session, id,
+                    new Turn(ProxyReceiptGateV1.Event.FAILED, 0)));
+                return true;
+            }
+            try {
+                write_frame(channel, encode_receipt(session, id,
+                    new Turn(ProxyReceiptGateV1.Event.STARTED, 0)));
+            } catch (IOException closedAfterAdmission) {
+                // Still await the exact committed outcome to bound its lifetime.
+            }
+            var finished = runtime.await_ticket(ticket, AttoM6Runtime.TicketState.PROCESSED,
+                                                 10_000);
+            if (finished.state() == AttoM6Runtime.TicketState.STARTED)
+                throw new IOException("message terminal status uncertain");
+            Turn outcome;
+            if (finished.state() == AttoM6Runtime.TicketState.PROCESSED) {
+                if (!finished.hasResult())
+                    throw new IOException("typed i64 result not implemented for this target");
+                outcome = new Turn(ProxyReceiptGateV1.Event.PROCESSED, finished.result());
+            } else if (finished.state() == AttoM6Runtime.TicketState.FAILED ||
+                       finished.state() == AttoM6Runtime.TicketState.ABANDONED) {
+                outcome = new Turn(ProxyReceiptGateV1.Event.FAILED, 0);
+            } else {
+                throw new IOException("invalid runtime-issued terminal ticket state");
+            }
+            try {
+                write_frame(channel, encode_receipt(session, id, outcome));
+            } catch (IOException closedAfterAdmission) {
+                // Client already stopped reading. It may have an indeterminate
+                // outcome, but this does not undo the real mailbox commit.
             }
             return true;
         }
