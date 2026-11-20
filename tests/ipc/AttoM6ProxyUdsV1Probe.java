@@ -124,9 +124,9 @@ public final class AttoM6ProxyUdsV1Probe {
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
             PosixFilePermission.OWNER_EXECUTE));
         Path sock = directory.resolve("actor.sock");
-        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        String javaBin = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         String cp = System.getProperty("java.class.path");
-        Process server = new ProcessBuilder(java, "-cp", cp,
+        Process server = new ProcessBuilder(javaBin, "-cp", cp,
             AttoM6ProxyUdsV1Probe.class.getName(), "--server", sock.toString())
             .redirectErrorStream(true).start();
         Process client = null;
@@ -137,7 +137,7 @@ public final class AttoM6ProxyUdsV1Probe {
                 Thread.sleep(10);
             require(Files.exists(sock, LinkOption.NOFOLLOW_LINKS),
                 "server did not bind UDS socket");
-            client = new ProcessBuilder(java, "-cp", cp,
+            client = new ProcessBuilder(javaBin, "-cp", cp,
                 AttoM6ProxyUdsV1Probe.class.getName(), "--client", sock.toString())
                 .redirectErrorStream(true).start();
             require(client.waitFor(30, TimeUnit.SECONDS), "client process timeout");
