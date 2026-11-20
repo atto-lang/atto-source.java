@@ -26,15 +26,31 @@ public final class AttoM6Runtime implements AutoCloseable {
     public enum Admission { ACCEPTED, FULL, CLOSED, STALE }
     // Host-issued, opaque per-mail authority. Never a guest-visible wire token.
     public enum TicketState { ADMITTED, STARTED, PROCESSED, FAILED, ABANDONED }
+    // Correlation data is validated by an authenticated host gateway before
+    // enqueue. This record is NOT an authorization capability by itself.
+    public record ReceiptRoute(int protocolMajor, long tenant, long callerIncarnation,
+            long targetActor, long targetIncarnation, long associationGeneration,
+            long placementEpoch, long messageId, long attempt) {
+        boolean valid_for(ActorRef ref) {
+            return protocolMajor == 1 && tenant > 0 && callerIncarnation > 0 &&
+                targetActor > 0 && targetIncarnation > 0 &&
+                associationGeneration > 0 && placementEpoch > 0 &&
+                messageId > 0 && attempt > 0 && ref != null &&
+                targetIncarnation == ref.generation();
+        }
+    }
     public static final class Ticket {
         private final AttoM6Runtime runtime;
         private final ActorRef destination;
+        private final ReceiptRoute route;
         private final long sequence;
         private TicketState state = TicketState.ADMITTED;
         private boolean hasResult;
         private long result;
-        private Ticket(AttoM6Runtime runtime, ActorRef destination, long sequence) {
-            this.runtime = runtime; this.destination = destination; this.sequence = sequence;
+        private Ticket(AttoM6Runtime runtime, ActorRef destination, ReceiptRoute route,
+                       long sequence) {
+            this.runtime = runtime; this.destination = destination;
+            this.route = route; this.sequence = sequence;
         }
     }
     public record TicketAdmission(Admission admission, Ticket ticket) {
@@ -180,13 +196,16 @@ public final class AttoM6Runtime implements AutoCloseable {
     }
 
     public Admission try_send(ActorRef ref, long value) {
-        synchronized (gate) { return enqueue(ref, value, false).admission(); }
+        synchronized (gate) { return enqueue(ref, value, null).admission(); }
     }
-    // The mailbox enqueue and its particular receipt are ONE atomic operation.
-    public TicketAdmission try_send_ticket(ActorRef ref, long value) {
-        synchronized (gate) { return enqueue(ref, value, true); }
+    // Only a trusted host gateway can supply a prevalidated route, and only
+    // this mailbox may issue the opaque ticket for that route after admission.
+    public TicketAdmission try_send_ticket(ActorRef ref, long value, ReceiptRoute route) {
+        if (route == null || !route.valid_for(ref))
+            throw new IllegalArgumentException("invalid scoped receipt route");
+        synchronized (gate) { return enqueue(ref, value, route); }
     }
-    private TicketAdmission enqueue(ActorRef ref, long value, boolean receipt) {
+    private TicketAdmission enqueue(ActorRef ref, long value, ReceiptRoute route) {
         Actor actor = resolve(ref);
         if (actor == null) return new TicketAdmission(Admission.STALE, null);
         if (!actor.accepting || actor.fenced || stopping || closing)
@@ -194,9 +213,9 @@ public final class AttoM6Runtime implements AutoCloseable {
         if (actor.inbox.size() >= actor.capacity)
             return new TicketAdmission(Admission.FULL, null);
         Ticket ticket = null;
-        if (receipt) {
+        if (route != null) {
             actor.nextTicketSequence = Math.addExact(actor.nextTicketSequence, 1L);
-            ticket = new Ticket(this, actor.ref, actor.nextTicketSequence);
+            ticket = new Ticket(this, actor.ref, route, actor.nextTicketSequence);
         }
         actor.inbox.addLast(new Mail(value, ticket));
         actor.accepted++;
@@ -205,13 +224,20 @@ public final class AttoM6Runtime implements AutoCloseable {
     }
     private void check_ticket(Ticket ticket) {
         if (ticket == null || ticket.runtime != this ||
-            ticket.destination == null || ticket.sequence <= 0)
+            ticket.destination == null || ticket.route == null ||
+            ticket.sequence <= 0)
             throw new IllegalArgumentException("foreign/unissued ticket");
     }
     public TicketSnapshot ticket_snapshot(Ticket ticket) {
         synchronized (gate) {
             check_ticket(ticket);
             return new TicketSnapshot(ticket.state, ticket.hasResult, ticket.result);
+        }
+    }
+    public ReceiptRoute ticket_route(Ticket ticket) {
+        synchronized (gate) {
+            check_ticket(ticket);
+            return ticket.route;
         }
     }
     // Only a trusted host I/O thread may block; carrier/CONTROL/reactor never parks.
