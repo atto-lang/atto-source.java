@@ -4549,22 +4549,27 @@ public final class OresEvalRootNode extends RootNode {
                                                         null,
                                                         failure2);
                                             } else {
+                                                // Catch only failures from guest operator
+                                                // evaluation. A downstream continuation can
+                                                // throw after observing the result; re-catching
+                                                // that failure would invoke it a second time.
+                                                final Object result;
                                                 try {
-                                                    Object result =
-                                                            binary(
-                                                                    binary.operator(),
-                                                                    left,
-                                                                    right);
-                                                    continuation.accept(
-                                                            t2,
-                                                            result,
-                                                            null);
-                                                } catch (RuntimeException | Error failure3) {
+                                                    result = binary(
+                                                            binary.operator(),
+                                                            left,
+                                                            right);
+                                                } catch (RuntimeException | Error evaluationFailure) {
                                                     continuation.accept(
                                                             t2,
                                                             null,
-                                                            failure3);
+                                                            evaluationFailure);
+                                                    return;
                                                 }
+                                                continuation.accept(
+                                                        t2,
+                                                        result,
+                                                        null);
                                             }
                                         });
                             });
