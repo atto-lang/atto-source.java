@@ -5,7 +5,6 @@
 // *refuses* unrecognized tokens, methods, effects, types, or guest Java imports.
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -87,8 +86,7 @@ public final class AttoM6ProxyActorSubsetCompiler {
             System.out.println("ATTO_M6_PROXY_RESTRICTED_ATTO_COMPILED=PASS");
             System.out.println("ATTO_M6_PROXY_GUEST_SHA256=" + found);
             return 0;
-        } catch (IOException | NoSuchAlgorithmException | CharacterCodingException |
-                 Reject error) {
+        } catch (IOException | NoSuchAlgorithmException | Reject error) {
             System.err.println("ATTO_M6_PROXY_RESTRICTED_ATTO_REJECT=" + error.getMessage());
             return 2;
         } finally {
