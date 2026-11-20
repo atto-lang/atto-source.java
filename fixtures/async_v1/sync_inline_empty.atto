@@ -1,4 +1,3 @@
-fnc plus_one(int x): int { ^ x + 1; }
 pub fnc main(): int {
     sync task {};
     return 42;

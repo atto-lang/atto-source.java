@@ -94,14 +94,21 @@ public final class AttoAsyncV1Compiler {
     }
     public static String compile(String source) {
         Parser p = new Parser(source);
-        p.expect("fnc");
-        String fun = p.ident();
-        p.expect("("); p.expect("int");
-        String param = p.ident();
-        p.expect(")"); p.expect(":"); p.expect("int");
-        p.expect("{"); p.expect("^"); p.expect(param); p.expect("+");
-        int increment = p.smallInt();
-        p.expect(";"); p.expect("}");
+        // The completed-Future pipeline requires a helper. Literal-only sync
+        // tasks additionally admit a standalone main with no helper preamble.
+        String fun = null;
+        String param = null;
+        int increment = 0;
+        if (p.peekIs("fnc")) {
+            p.expect("fnc");
+            fun = p.ident();
+            p.expect("("); p.expect("int");
+            param = p.ident();
+            p.expect(")"); p.expect(":"); p.expect("int");
+            p.expect("{"); p.expect("^"); p.expect(param); p.expect("+");
+            increment = p.smallInt();
+            p.expect(";"); p.expect("}");
+        }
         p.expect("pub");
         boolean suspendingMain = p.peekIs("susp");
         if (suspendingMain) p.expect("susp");
@@ -157,11 +164,19 @@ public final class AttoAsyncV1Compiler {
                 if (p.peekIs(";")) p.expect(";");
             }
             p.expect("return"); String called = p.ident();
-            p.expect("("); String argument = p.ident(); p.expect(")");
+            String parentReturn;
+            if (p.peekIs("(")) {
+                p.expect("("); String argument = p.ident(); p.expect(")");
+                if (fun == null || !called.equals(fun))
+                    throw new Reject("E_INLINE_CALL_MISMATCH");
+                if (!argument.equals(future)) throw new Reject("E_INLINE_BINDER_MISMATCH");
+                parentReturn = "    return " + fun + "(" + future + ");\n";
+            } else {
+                if (!called.equals(future)) throw new Reject("E_INLINE_BINDER_MISMATCH");
+                parentReturn = "    return " + future + ";\n";
+            }
             p.expect(";"); p.expect("}");
             if (!p.done()) throw new Reject("E_ASYNC_TRAILING_SOURCE");
-            if (!called.equals(fun)) throw new Reject("E_INLINE_CALL_MISMATCH");
-            if (!argument.equals(future)) throw new Reject("E_INLINE_BINDER_MISMATCH");
             String body = "    int " + future + ";\n"
                 + "    atto_inline_task_0: {\n"
                 + "      " + future + " = " + value + ";\n"
@@ -173,10 +188,11 @@ public final class AttoAsyncV1Compiler {
                     + "      break atto_inline_task_1;\n"
                     + "    }\n";
             }
-            body += "    return " + fun + "(" + future + ");\n";
+            body += parentReturn;
             return compilePureInline(fun, param, increment, body);
         }
         if (!suspendingMain) throw new Reject("E_EFFECT");
+        if (fun == null) throw new Reject("E_UNSUPPORTED_COMPLETED_FUTURE_PROFILE");
         p.expect("task");
         // The payload parameter is int, NOT Future<int>: task<int>
         // produces a Future<int>. Unparameterized legacy task remains
@@ -230,9 +246,10 @@ public final class AttoAsyncV1Compiler {
         // Labelled Java lexical scopes implement inline-local returns without
         // returning from the parent, allocating a Future or scheduling a child.
         return "public final class AttoAsyncV1Guest {\n"
-            + "  private static int " + fun + "(int " + param + ") {\n"
-            + "    return Math.addExact(" + param + ", " + increment + ");\n"
-            + "  }\n"
+            + (fun == null ? "" :
+                "  private static int " + fun + "(int " + param + ") {\n"
+                + "    return Math.addExact(" + param + ", " + increment + ");\n"
+                + "  }\n")
             + "  public static int execute() {\n"
             + body
             + "  }\n"

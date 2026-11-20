@@ -127,6 +127,14 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(inline.replace("return plus_one(answer)", "return missing(answer)"));
         rejects(inline.replace("sync task<int> { return 41; }", "sync task<Future<int>> { return 41; }"));
         rejects(inline.replace("sync task<int> { return 41; }", "sync task<int> { return 41; pending.cancel(); }"));
+        String standalone = "pub fnc main(): int { sync task {}; return 42; }";
+        check(AttoAsyncV1Compiler.compile(standalone).contains("atto_inline_task_0:"));
+        check(!AttoAsyncV1Compiler.compile(standalone).contains("private static int plus_one"));
+        check(AttoAsyncV1Compiler.compile("pub fnc main(): int { "
+            + "val answer = sync task<int> { return 42; }; return answer; }")
+            .contains("return answer;"));
+        rejects("pub fnc main(): int { val answer = task<int> { return 42; }; return answer; }");
+        rejects("pub fnc main(): int { val answer = sync task<int> { return 42; }; return other; }");
         System.out.println("ATTO_ASYNC_V1_ADMISSION_PASS checks=" + checks);
     }
 }

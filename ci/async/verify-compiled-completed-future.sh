@@ -20,7 +20,7 @@ mkdir -p "$work/classes"
   tests/compiler/AttoAsyncV1CompilerProbe.java \
   tests/compiler/AttoAsyncV1GeneratedIdentifierProbe.java
 "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1CompilerProbe | tee "$work/probe"
-grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=76" "$work/probe"
+grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=81" "$work/probe"
 "$JAVA_HOME/bin/java" -cp "$work/classes" \
   atto.compiler.asyncv1.AttoAsyncV1GeneratedIdentifierProbe | tee "$work/identifiers"
 grep -Fx "ATTO_ASYNC_V1_GENERATED_NAMES_PASS accepted=19 rejected=4" "$work/identifiers"
