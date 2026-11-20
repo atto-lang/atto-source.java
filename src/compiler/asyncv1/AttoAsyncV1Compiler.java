@@ -7,6 +7,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -18,6 +19,24 @@ import java.util.regex.Pattern;
 public final class AttoAsyncV1Compiler {
     private static final Pattern TOKENS = Pattern.compile(
         "\\s+|\\|>|>>|->|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[{}():;^+=|<>]");
+    // Guest-sourced identifiers are also emitted as Java symbols. Reject both
+    // Atto control keywords and Java reserved/contextual names *before* source
+    // generation; never rely on javac to detect an unsafe generated symbol.
+    private static final Set<String> FORBIDDEN_IDENTIFIERS = Set.of(
+        "task", "await", "sync", "susp", "suspends", "async", "fnc",
+        "pub", "val", "let", "const", "return", "do", "done",
+        "actor", "spawn", "defer", "match", "select", "raise",
+        "panic", "recover", "using", "class", "new", "static",
+        "final", "public", "private", "protected", "native", "void",
+        "int", "long", "short", "byte", "float", "double", "boolean",
+        "char", "true", "false", "null", "if", "else", "for",
+        "while", "try", "catch", "throw", "throws", "switch", "case",
+        "default", "break", "continue", "import", "package",
+        "interface", "enum", "extends", "implements", "abstract",
+        "this", "super", "instanceof", "assert", "synchronized",
+        "volatile", "transient", "strictfp", "record", "sealed",
+        "permits", "yield", "var", "goto"
+    );
     private AttoAsyncV1Compiler() {}
 
     public static final class Reject extends IllegalArgumentException {
@@ -55,8 +74,8 @@ public final class AttoAsyncV1Compiler {
             String value = next();
             if (!value.matches("[A-Za-z_][A-Za-z_0-9]*"))
                 throw new Reject("E_ASYNC_INVALID_IDENTIFIER");
-            if (value.equals("sync"))
-                throw new Reject("E_RESERVED_SYNC");
+            if (FORBIDDEN_IDENTIFIERS.contains(value))
+                throw new Reject("E_RESERVED_IDENTIFIER_" + value);
             return value;
         }
         int smallInt() {
