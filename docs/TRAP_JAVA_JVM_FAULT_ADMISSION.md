@@ -57,3 +57,39 @@ review-cycle governance.
   parsing/typechecking, source-only catch boundaries, original Error identity,
   cleanup-aware `?`, and adversarial negative tests. The currently pinned
   `05-ordinary-throw.atto` conformance case is intentionally still rejected.
+
+## Strict Atto source-profile fail-closed admission (2026-11-20)
+
+An additional risk existed outside the JVM failure-classifier change.
+`Parser.parseStrictAtto` accepted the legacy `trap` expression and
+`trap fnc` modifier, even though this Java backend still rejects source
+`throw Error(...)`, has no guest-owned Error identity, and constructs
+sanitized `TrapError(type, message)` instead of preserving the caught
+guest object. That could make strict AOT front-end admission appear to
+implement normative `atto-spec/language/trap-result-v1.md` when it does not.
+
+The strict-profile lexer preflight now fails **before AST emission** for
+both `TRAP` and `THROW` tokens with deterministic
+`ATTO_STRICT_TYPED_TRAP_UNSUPPORTED`, including token location.
+The rule is applied only via `Parser.parseStrictAtto`, which is called by
+`OresCompiler.parseAndTypeCheckStrictAtto` and strict graph/build paths.
+No unversioned/legacy `Parser.parse` or ordinary `trap fnc`
+behavior was silently changed.
+
+Added `AttoStrictTrapSourceAdmissionTest` with five focused regression
+cases: strict expression trap rejection, strict trapped-callable rejection,
+source-level throw rejection, string/comment noninterference, and separate
+legacy compatibility. The exact-head CI includes the new test class and
+the parser path. **Tests authored; full repo Maven/GraalVM/JDK25 tests
+NOT_EXECUTED at the current source head**. This is not a positive guest
+implementation; conformance `05-ordinary-throw.atto` remains a blocker.
+
+The real enabling change must add (a) compiler-recognized Error instances
+with nominal subtype, payload and stable object identity; (b) source
+`throw Error` AST and checked effect admission; (c) ordinary exception
+unwinding through `try/catch`, `trap`, `defer`, `finally` and the
+`?` early-return path; and (d) original Error-valued `Err(error)`
+without the host `TrapError` sanitizer. The strict fail-closed gate may
+be removed **only** alongside positive and negative guest compiler tests
+demonstrating those obligations. Source-branch CI and private carrier
+governance remain independently blocking.
