@@ -1697,6 +1697,15 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.CallExpr call) {
             return checkCall(call, scope);
         }
+        if (expr instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr ambient
+                && ambient.name().equals("stdio")
+                && scope.lookup("stdio") == null
+                && java.util.Set.of("in", "out", "err", "stdin", "stdout", "stderr").contains(member.member())) {
+            // Ambient stdio streams are runtime capability handles, not owned
+            // guest data: binding one copies the handle (authority is checked at use).
+            return new ValueInfo(Ast.TypeRef.simple("stdio." + member.member()), ValueKind.COPY, null);
+        }
         if (expr instanceof Ast.MemberExpr member) {
             // Immutable enum symbols have no actor-owned receiver or loan.
             // A local binding with the same spelling must still be checked as

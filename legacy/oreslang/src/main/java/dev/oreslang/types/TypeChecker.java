@@ -5339,8 +5339,9 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
-                if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
-                if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
+                if (member.member().equals("stdout") || member.member().equals("out")) return new Named("stdio.stdout", List.of());
+                if (member.member().equals("stdin") || member.member().equals("in")) return new Named("stdio.stdin", List.of());
+                if (member.member().equals("stderr") || member.member().equals("err")) return new Named("stdio.stderr", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             if (receiver instanceof Named named && named.name().equals("$TelemetrySpan")) {
@@ -5962,6 +5963,22 @@ public final class TypeChecker {
                     "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
+            Type streamTarget = typeOf(channelOp.channel(), env, generics, self);
+            if (streamTarget instanceof Named stream && stream.name().startsWith("stdio.")) {
+                // stdio streams are line channels: write a value to stdout/stderr,
+                // read one line (string) from stdin.
+                boolean write = channelOp.operation() == Ast.ChannelOperation.WRITE;
+                if (write && (stream.name().equals("stdio.stdout") || stream.name().equals("stdio.stderr"))) {
+                    typeOf(channelOp.value(), env, generics, self);
+                    return Primitive.VOID;
+                }
+                if (!write && stream.name().equals("stdio.stdin")
+                        && channelOp.mode() == Ast.WaitMode.BLOCKING) {
+                    return Primitive.STRING;
+                }
+                throw new IllegalArgumentException((write ? "writech" : "readch")
+                        + " is not supported on " + stream.name());
+            }
             Type element = channelElementType(
                     typeOf(channelOp.channel(), env, generics, self),
                     channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");

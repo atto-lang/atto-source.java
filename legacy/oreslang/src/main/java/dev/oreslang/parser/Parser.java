@@ -1241,6 +1241,13 @@ public final class Parser {
                 ? parseReturnType(annotations)
                 : validateReturnFirstType(prefixReturnType, annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
+        // Canonical capability clause `using io, suspend, ...` before the body:
+        // a declaration of the authorities used. Isolate policy still grants
+        // or denies each capability at run time.
+        if (isContextualIdentifier("using") && checkNext(IDENT)) {
+            advance();
+            do consume(IDENT, "expected capability name after 'using'"); while (match(COMMA));
+        }
         if (!modifiers.generator && returnType != null && returnType.arguments().size() == 1
                 && (returnType.name().equals("Generator") || returnType.name().equals("AsyncGenerator"))
                 && bodyAheadYields()) {

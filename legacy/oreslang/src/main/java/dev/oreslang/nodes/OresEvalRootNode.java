@@ -5264,6 +5264,17 @@ public final class OresEvalRootNode extends RootNode {
                             return;
                         }
 
+                        if (isStdioStream(channelValue)) {
+                            try {
+                                Object written = operation.operation() == Ast.ChannelOperation.WRITE
+                                        ? eval(operation.value(), env) : null;
+                                continuation.accept(t, stdioStreamOperation(channelValue, operation, written), null);
+                            } catch (RuntimeException | Error failure) {
+                                continuation.accept(t, null, failure);
+                            }
+                            return;
+                        }
+
                         ChannelRuntime.Channel<Object> channel;
                         try {
                             channel = requireChannel(
@@ -7516,11 +7527,44 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private static boolean isStdioStream(Object target) {
+            return target instanceof StdoutFacade || target instanceof StderrFacade
+                    || target instanceof StdinFacade;
+        }
+
+        /**
+         * stdio streams behave as line channels: writech stdio.out/stdio.err
+         * writes one line; readch stdio.in reads one line ("" at end of input).
+         */
+        private Object stdioStreamOperation(Object target, Ast.ChannelOpExpr operation, Object value) {
+            boolean write = operation.operation() == Ast.ChannelOperation.WRITE;
+            if (write && target instanceof StdoutFacade stdout) {
+                stdout.println(List.of(value));
+                return null;
+            }
+            if (write && target instanceof StderrFacade stderr) {
+                stderr.println(value);
+                return null;
+            }
+            if (!write && target instanceof StdinFacade stdin) {
+                Object line = stdin.readLine(List.of());
+                return line instanceof OptionValue option && option.present() ? option.value() : "";
+            }
+            throw new IllegalArgumentException(
+                    (write ? "writech" : "readch") + " is not supported on this stdio stream");
+        }
+
         private Object evalChannelOperation(
                 Ast.ChannelOpExpr operation,
                 Env env) {
+            Object channelTarget = eval(operation.channel(), env);
+            if (isStdioStream(channelTarget)) {
+                Object written = operation.operation() == Ast.ChannelOperation.WRITE
+                        ? eval(operation.value(), env) : null;
+                return stdioStreamOperation(channelTarget, operation, written);
+            }
             ChannelRuntime.Channel<Object> channel = requireChannel(
-                    eval(operation.channel(), env),
+                    channelTarget,
                     operation.operation() == Ast.ChannelOperation.READ
                             ? "readch"
                             : "writech");
@@ -9238,8 +9282,9 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
                     case "println" -> (Invokable) stdio::println;
-                    case "stdout" -> new StdoutFacade(stdio.context());
-                    case "stdin" -> new StdinFacade(stdio.context());
+                    case "stdout", "out" -> new StdoutFacade(stdio.context());
+                    case "stdin", "in" -> new StdinFacade(stdio.context());
+                    case "stderr", "err" -> new StderrFacade(stdio.context());
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
                 };
             }
@@ -13784,6 +13829,14 @@ public final class OresEvalRootNode extends RootNode {
             return log(expandArgumentSequence(args.getFirst(),"stdio.stdout.logList"));
         }
     }
+    /** stdio.err: one-line diagnostic writes to the host error stream. */
+    private record StderrFacade(OresContext context) {
+        private void println(Object value) {
+            context.requireCapability(IsolatePolicy.Capability.STDOUT, "stdio.err");
+            System.err.println(CycleSafeDisplay.render(value));
+        }
+    }
+
     private record StdinFacade(OresContext context) {
         private Object readLine(List<Object> args) {
             context.requireCapability(IsolatePolicy.Capability.STDIN, "stdio.stdin.read_line");
