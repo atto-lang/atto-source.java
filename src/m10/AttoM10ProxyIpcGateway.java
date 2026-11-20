@@ -5,7 +5,7 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
-import java.net.UnixDomainPrincipal;
+import jdk.net.UnixDomainPrincipal;
 import jdk.net.ExtendedSocketOptions;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
@@ -45,6 +45,7 @@ public final class AttoM10ProxyIpcGateway implements AutoCloseable {
     public record Delivery(long remote_pid, long processed_result) {}
     private record RequestKey(long message_id, long attempt) {}
     public static final class RemoteRejected extends IOException {
+        private static final long serialVersionUID = 1L;
         public final long reason;
         public RemoteRejected(long reason) {
             super("remote destination rejected request, reason=" + reason);
