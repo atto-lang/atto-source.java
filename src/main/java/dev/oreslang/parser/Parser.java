@@ -28,6 +28,8 @@ public final class Parser {
             new ArrayList<>();
     // Null preserves the shipping Oreslang parser's historical behavior.
     private final AttoCallableVersion attoCallableVersion;
+    /** Canonical AttoLang source rules, never guessed from a legacy filename. */
+    private final boolean canonicalAttoSource;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     // A long chain of contextual ownership prefixes must not exhaust the JVM
@@ -57,11 +59,16 @@ public final class Parser {
             new java.util.IdentityHashMap<>();
 
     public Parser(List<Token> tokens) {
-        this(tokens, null);
+        this(tokens, null, false);
     }
 
     private Parser(List<Token> tokens, AttoCallableVersion version) {
+        this(tokens, version, true);
+    }
+
+    private Parser(List<Token> tokens, AttoCallableVersion version, boolean canonicalAttoSource) {
         this.attoCallableVersion = version;
+        this.canonicalAttoSource = canonicalAttoSource;
         this.tokens = List.copyOf(tokens);
         // A public parser must not trust an externally supplied Token stream to
         // have come from Lexer. In particular, a synthesized IDENT("unsafe")
@@ -146,7 +153,7 @@ public final class Parser {
                         + ": template interpolation requires profile-preserving typed lowering");
             }
         }
-        return new Parser(scanned).parseProgram();
+        return new Parser(scanned, null, true).parseProgram();
     }
 
 
@@ -2097,7 +2104,11 @@ public final class Parser {
         // Slot reassignment and mutation through its stored referent are
         // separate capabilities. 'final' does NOT silently grant mutable
         // referent access; only an explicit 'mut' modifier requests it.
-        Ast.BindingKind kind = isFinal ? Ast.BindingKind.VAL : Ast.BindingKind.LET;
+        // AttoLang v2: an omitted class-field binder means val, irrespective
+        // of the referent's mutability. Historical unversioned .ores parsing
+        // remains intentionally unchanged until an explicit migration.
+        Ast.BindingKind kind = isFinal || canonicalAttoSource
+                ? Ast.BindingKind.VAL : Ast.BindingKind.LET;
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer, mutableReferent);
     }
 
