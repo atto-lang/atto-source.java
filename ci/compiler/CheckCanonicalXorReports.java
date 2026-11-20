@@ -37,7 +37,9 @@ public final class CheckCanonicalXorReports {
                 "booleanXorLegacyGuestStillWorks",
                 "strictSignedI64XorPrecedenceAndLeftAssociativeChain",
                 "strictXorSuccessEvaluatesEachOperandExactlyOnceFromLeftToRight",
-                "strictBooleanShortCircuitStillSkipsInvalidRightOperands"));
+                "strictBooleanShortCircuitStillSkipsInvalidRightOperands",
+                "strictTripleCaretNeverBecomesXorOrReturn",
+                "strictBooleanInequalityReplacesLegacyBooleanXor"));
         check(BOOL_SUITE, methods(
                 "builtinGlobalsNeedNoImportsAndSurviveBuildAdmission",
                 "exhaustiveTruthTablesForGlobalAndQualifiedScalarAndArrayForms",
