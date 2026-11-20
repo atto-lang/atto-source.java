@@ -16,6 +16,8 @@ on:
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/AttoCanonicalCallableReturnAnnotationTest.java'
       - 'src/test/java/dev/oreslang/AttoCanonicalImplicitValClassFieldTest.java'
+      - 'src/test/java/dev/oreslang/AttoClassFieldV2ConformanceSourceTest.java'
+      - 'tests/parity/class-fields-v2/**'
       - '.github/workflows/atto-canonical-return-annotations.yml'
   workflow_dispatch:
 
@@ -52,13 +54,13 @@ jobs:
       - name: Run canonical Java parser and typechecker tests
         run: >-
           mvn -B -ntp '-P!native-thread-unix'
-          -Dtest=AttoCanonicalCallableReturnAnnotationTest,AttoCanonicalImplicitValClassFieldTest
+          -Dtest=AttoCanonicalCallableReturnAnnotationTest,AttoCanonicalImplicitValClassFieldTest,AttoClassFieldV2ConformanceSourceTest
           -Dsurefire.failIfNoSpecifiedTests=true clean test
       - name: Require real nonempty JUnit test suites
         shell: bash
         run: |
           set -euo pipefail
-          for pair in 'AttoCanonicalCallableReturnAnnotationTest:11' 'AttoCanonicalImplicitValClassFieldTest:5'; do
+          for pair in 'AttoCanonicalCallableReturnAnnotationTest:11' 'AttoCanonicalImplicitValClassFieldTest:7' 'AttoClassFieldV2ConformanceSourceTest:5'; do
             name="${pair%%:*}"
             minimum="${pair##*:}"
             report="target/surefire-reports/TEST-dev.oreslang.${name}.xml"
