@@ -54,6 +54,19 @@ final class PackageNamespaceImportSyntaxTest {
     }
 
     @Test
+    void collisionsAcrossPackageAndExistingImportsAreCompileTimeErrors() {
+        for (String source : List.of(
+                "import pkg 'z';\\nimport pkg 'other' as z;",
+                "import module z from './local';\\nimport pkg 'z';",
+                "import pkg 'z' as x;\\nimport * as x from './local';"
+        )) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                    source.replace("\\n", "\n")
+                            + "\npub routine main(): void { return; }\n"), source);
+        }
+    }
+
+    @Test
     void packageImportsCannotBypassUnimplementedLinkerThroughHostPath() {
         for (String source : List.of(
                 "import pkg 'z';",
