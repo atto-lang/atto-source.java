@@ -349,7 +349,17 @@ public final class Lexer {
             tokens.add(new Token(SELECT, "select", line, keywordColumn));
             return;
         }
-        add(KEYWORDS.getOrDefault(text, IDENT));
+        Token.Type type = KEYWORDS.getOrDefault(text, IDENT);
+        // Bang-suffixed exceptional control is a single contiguous keyword.
+        // Preserve != and !eq, and do not consume an unrelated logical-not.
+        if ((type == TRAP || type == THROW || type == RAISE || type == PANIC)
+                && peek() == '!' && peekNext() != '='
+                && !(source.startsWith("!eq", current)
+                    && (current + 3 == source.length()
+                        || !isIdentPart(source.charAt(current + 3))))) {
+            advance();
+        }
+        add(type);
     }
 
     private boolean isAtEnd() { return current >= source.length(); }
