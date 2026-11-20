@@ -102,8 +102,7 @@ final class AttoCheckedI64ProfileTest {
                                 () -> c.id() + ": missing overflow classification: "
                                         + failure.getMessage());
                     } else {
-                        assertTrue(failure.getMessage().toLowerCase(java.util.Locale.ROOT)
-                                        .contains("zero"),
+                        assertTrue(failure.getMessage().contains("ORES_I64_DIVISION_BY_ZERO"),
                                 () -> "zero denominator incorrectly classified: "
                                         + failure.getMessage());
                     }
