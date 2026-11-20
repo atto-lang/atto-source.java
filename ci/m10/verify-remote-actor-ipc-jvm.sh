@@ -30,6 +30,7 @@ mkdir -p "$work/classes" "$work/generated"
   tests/m10/M10RestrictedSenderCompilerProbe.java \
   tests/m10/M10RestrictedReceiverCompilerProbe.java \
   tests/m10/M10MailboxTurnProbe.java \
+  tests/m10/M10ResponseCorrelationProbe.java \
   tests/m10/M10RemoteActorProcessProbe.java \
   tests/m10/M10UnixPeerCredentialProbe.java
 "$JAVA_HOME/bin/javac" --release 21 -Xlint:all,-try -Werror -cp "$work/classes" -d "$work/classes" \
@@ -53,6 +54,9 @@ grep -Fx 'M10_RECEIVER_SOURCE_FD_UTF8_AND_OUTPUT_NOFOLLOW=PASS' "$work/receiver.
 grep -Fx 'M10_RECEIVER_COMPILED_SCALAR_HANDLER_CHECKED_ARITHMETIC=PASS' "$work/receiver.log" >/dev/null
 timeout 30 "$JAVA_HOME/bin/java" -cp "$work/classes" M10UnixPeerCredentialProbe | tee "$work/peer.log"
 grep -Fx 'M10_UDS_PEER_KERNEL_PRINCIPAL_NOT_USER_NAME_PROPERTY=PASS' "$work/peer.log" >/dev/null
+timeout 30 "$JAVA_HOME/bin/java" -cp "$work/classes" M10ResponseCorrelationProbe | tee "$work/correlation.log"
+grep -Fx 'M10_SIGNED_REJECTED_FULL_ROUTE_CORRELATION=PASS' "$work/correlation.log" >/dev/null
+grep -Fx 'M10_REJECTION_NEVER_INTERMEDIARY_ACK=PASS' "$work/correlation.log" >/dev/null
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10MailboxTurnProbe | tee "$work/mailbox.log"
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10RemoteActorProcessProbe | tee "$work/process.log"
 for marker in \
