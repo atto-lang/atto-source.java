@@ -1,8 +1,11 @@
 package dev.oreslang.runtime;
 
 /**
- * Opt-in checked-i64 source admission. The exact first-line directive is a
- * source profile, not a best-effort hint or an ambient host permission.
+ * Checked-i64 source admission. Canonical .atto code units are checked by
+ * default; historical .ores units retain wrapping arithmetic unless the exact
+ * first-line directive explicitly selects the checked profile.
+ * Source identity comes from the trusted compiler's code-unit path or name,
+ * never from a guest-declared namespace or untrusted runtime argument.
  *
  * <p>Like the JavaScript program-v2 scanner, only actual line comments can
  * select/reject a directive. Quoted text and nested block comments never do.
@@ -15,6 +18,10 @@ public final class AttoCheckedI64Profile {
     private AttoCheckedI64Profile() { }
 
     public static boolean select(String source) {
+        return select(source, null);
+    }
+
+    public static boolean select(String source, String codeUnitId) {
         if (source == null) throw new IllegalArgumentException("null Atto source");
         boolean enabled = source.startsWith(DIRECTIVE);
         int blockDepth = 0;
@@ -50,6 +57,9 @@ public final class AttoCheckedI64Profile {
             }
             i++;
         }
-        return enabled;
+        // Only the complete canonical source extension enables this by default.
+        // Relative or absolute code-unit names are supplied by the trusted host
+        // parse boundary; source text cannot masquerade as a filename.
+        return enabled || (codeUnitId != null && codeUnitId.endsWith(".atto"));
     }
 }
