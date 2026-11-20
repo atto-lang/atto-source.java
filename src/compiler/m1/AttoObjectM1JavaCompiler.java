@@ -26,7 +26,7 @@ import java.util.regex.Pattern;
  */
 public final class AttoObjectM1JavaCompiler {
     private static final Pattern TOKEN = Pattern.compile(
-        "\\s+|//[^\\n]*|-?[0-9]+|[A-Za-z_][A-Za-z_0-9]*|[{}():;.=+,-]");
+        "\\s+|//[^\\n]*|-?[0-9]+|[A-Za-z_][A-Za-z_0-9]*|[{}():;.=+,<>-]");
     private static final Pattern NAME = Pattern.compile("[A-Za-z_][A-Za-z_0-9]*");
     private static final Pattern NUMBER = Pattern.compile("-?[0-9]+");
     private static final Pattern HASH = Pattern.compile("[0-9a-f]{64}");
@@ -47,6 +47,29 @@ public final class AttoObjectM1JavaCompiler {
             offset = scanner.end();
             if (!token.isBlank() && !token.startsWith("//")) tokens.add(token);
             if (tokens.size() > 1000) throw reject("token budget exceeded");
+        }
+        // A mutex is an opaque nominal resource class, not an M1 value
+        // struct. The M1 compiler cannot lower its scheduler or lease, but
+        // it must distinguish an illegal bare constructor from unsupported
+        // canonical class construction, before writing any guest Java.
+        for (int i = 0; i < tokens.size(); i++) {
+            if (!tokens.get(i).equals("Mutex") || i + 1 >= tokens.size()
+                    || !tokens.get(i + 1).equals("<")) continue;
+            int depth = 0;
+            int close = -1;
+            for (int j = i + 1; j < tokens.size(); j++) {
+                if (tokens.get(j).equals("<")) depth++;
+                else if (tokens.get(j).equals(">")) {
+                    depth--;
+                    if (depth == 0) { close = j; break; }
+                    if (depth < 0) break;
+                }
+            }
+            if (close < 0 || close + 1 >= tokens.size()
+                    || !tokens.get(close + 1).equals("(")) continue;
+            if (i == 0 || !tokens.get(i - 1).equals("new"))
+                throw reject("E_NEW_REQUIRED: construct resource class with new Mutex<T>(value)");
+            throw reject("E_LOCK_UNSUPPORTED: Java M1 subset lacks guest mutex lease runtime");
         }
         return List.copyOf(tokens);
     }

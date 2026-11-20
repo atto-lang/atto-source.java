@@ -1,0 +1,122 @@
+name: Atto Java migrated-main exact-source Ready-four integration (review-only)
+on:
+  push:
+    branches:
+      - ci/atto-main61-fourway-source-integration-20261120
+permissions:
+  contents: read
+concurrency:
+  group: atto-java-main61-ready-four-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  baseline-maven:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout exact original source repository integration candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Configure GraalVM JDK 25 for full Maven reactor
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: graalvm
+          java-version: '25'
+      - name: Require exact current commit and non-sparse source tree
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse --is-inside-work-tree)" = true
+          test "$(git config --get core.sparseCheckout || echo false)" != true
+          test "$(git ls-files | wc -l)" -gt 300
+          git diff --quiet && git diff --cached --quiet
+          test -f pom.xml
+          test -f scripts/verify_github_run_evidence.py
+          echo ATTO_JAVA_FULL_SOURCE_TREE_CHECKOUT=PASS
+      - name: Build and execute migrated-main Maven verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dmaven.test.failure.ignore=false verify
+          echo ATTO_JAVA_MIGRATED_MAIN_MAVEN_VERIFY=PASS
+  four-ready-compiler-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pr: '58'
+            script: ci/compiler/verify-m1-java.sh
+            required: ATTO_M1_JAVA_COMPILED_GUEST_NATIVE=PASS
+          - pr: '53'
+            script: ci/compiler/verify-channel-read.sh
+            required: ATTO_CHANNEL_PREHIR_HOST_JVM_NATIVE=PASS
+          - pr: '52'
+            script: ci/compiler/verify-int-parse-result.sh
+            required: ATTO_INT_PARSE_HOST_JVM_NATIVE=PASS
+          - pr: '51'
+            script: ci/compiler/verify-functional-pipelines.sh
+            required: ATTO_JAVA_PIPELINE_GUEST_MATRIX=EXECUTED jvm=5 native_image=2 negative=11 plus_edges=7
+    steps:
+      - name: Checkout exact original source repository integration candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Configure GraalVM JDK 25 and Native Image
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: graalvm
+          java-version: '25'
+      - name: Check exact source checkout provenance
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          git diff --quiet && git diff --cached --quiet
+          test "$(git ls-files | wc -l)" -gt 300
+          echo ATTO_JAVA_FULL_SOURCE_TREE_CHECKOUT=PASS
+      - name: Execute original source compiler and Native Image gate
+        shell: bash
+        env:
+          ATTO_EXPECTED_HEAD_SHA: ${{ github.sha }}
+          ATTO_NATIVE_IMAGE_REQUIRED: '1'
+          SCRIPT: ${{ matrix.script }}
+          REQUIRED_MARKER: ${{ matrix.required }}
+        run: |
+          set -euo pipefail
+          bash "$SCRIPT" | tee /tmp/atto-source-local-original-script.log
+          grep -Fx "$REQUIRED_MARKER" /tmp/atto-source-local-original-script.log
+          echo ATTO_JAVA_FOUR_READY_SOURCE_LOCAL_JOB_PASS=PASS
+  admission-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact original source repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate source identity before running Python controls
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git ls-files | wc -l)" -gt 300
+      - name: Test source CI evidence and destination-denial regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_verify_github_run_evidence.py -v
+          python3 -m unittest discover -s tests -p test_private_ci_approval_reset.py -v
+          python3 -m unittest discover -s tests -p test_ci_private_mirror_preflight.py -v
+          echo ATTO_JAVA_SOURCE_LOCAL_POLICY_NEGATIVE_TESTS=PASS

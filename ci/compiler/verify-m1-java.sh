@@ -2,7 +2,7 @@
 # Bounded native Java ObjectStorage M1 compiler and actual generated guest.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-bash ci/admission/exact-tree.sh src/compiler/m1/AttoObjectM1JavaCompiler.java tests/compiler/AttoObjectM1JavaCompilerProbe.java fixtures/object_m1/point_particle.atto ci/compiler/verify-m1-java.sh
+bash ci/admission/exact-tree.sh src/compiler/m1/AttoObjectM1JavaCompiler.java tests/compiler/AttoObjectM1JavaCompilerProbe.java tests/compiler/AttoMutexConstructorM1Probe.java fixtures/object_m1/point_particle.atto fixtures/mutex_constructor/negative_bare.atto fixtures/mutex_constructor/negative_new_unsupported.atto ci/compiler/verify-m1-java.sh
 if [[ -n "$ATTO_EXPECTED_HEAD_SHA" ]]; then
   [[ "$ATTO_EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
   [[ "$(git rev-parse HEAD)" = "$ATTO_EXPECTED_HEAD_SHA" ]]
@@ -14,10 +14,14 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/compiler" "$work/guest"
 "$JAVA_HOME/bin/javac" -Xlint:all -Werror -d "$work/compiler" \
   src/compiler/m1/AttoObjectM1JavaCompiler.java \
-  tests/compiler/AttoObjectM1JavaCompilerProbe.java
+  tests/compiler/AttoObjectM1JavaCompilerProbe.java \
+  tests/compiler/AttoMutexConstructorM1Probe.java
 "$JAVA_HOME/bin/java" -cp "$work/compiler" atto.compiler.m1.AttoObjectM1JavaCompilerProbe \
   fixtures/object_m1/point_particle.atto | tee "$work/probe.out"
 grep -F 'ATTO_JAVA_M1_COMPILER_PROBE_PASS checks=' "$work/probe.out"
+"$JAVA_HOME/bin/java" -cp "$work/compiler" atto.compiler.m1.AttoMutexConstructorM1Probe \
+  fixtures/mutex_constructor/negative_bare.atto \
+  fixtures/mutex_constructor/negative_new_unsupported.atto
 sha="$(sha256sum fixtures/object_m1/point_particle.atto | cut -d' ' -f1)"
 "$JAVA_HOME/bin/java" -cp "$work/compiler" atto.compiler.m1.AttoObjectM1JavaCompiler \
   fixtures/object_m1/point_particle.atto --source-sha256 "$sha" \
