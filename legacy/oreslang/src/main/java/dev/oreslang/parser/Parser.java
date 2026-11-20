@@ -6071,6 +6071,32 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnaryBody() {
+        // Canonical ownership vocabulary (atto-spec ownership-vocabulary-v1):
+        // borrow! x, borrow! mut x, take! x, share! x, copy! x, copy!! x.
+        // They lower to the same checked AST as rt borrow/take/share/copy and
+        // rt mut borrow, so every existing loan/move/share proof applies.
+        if (check(IDENT) && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == BANG
+                && adjacent(tokens.get(current), tokens.get(current + 1))) {
+            String op = peek().lexeme();
+            if (op.equals("borrow") || op.equals("take") || op.equals("share") || op.equals("copy")) {
+                Token opToken = advance();
+                advance(); // '!'
+                if (op.equals("copy") && check(BANG) && adjacent(previous(), peek())) {
+                    // copy!! (deep copy) admits only values whose typed copy
+                    // contract rt copy already proves; graphs fail closed.
+                    advance();
+                }
+                if (op.equals("borrow") && match(MUT)) {
+                    return new Ast.UnaryExpr("&mut", parseUnary());
+                }
+                if (check(MUT)) throw error(peek(), "only borrow! accepts 'mut'");
+                if (check(SEMICOLON) || check(RPAREN)) {
+                    throw error(opToken, op + "! requires an operand");
+                }
+                return new Ast.RuntimeCallExpr(op, List.of(parseUnary()));
+            }
+        }
         // Canonical prefix channel read: `(<< ch)` takes the next value out of ch.
         if (checkAdjacentPair(LT)) {
             advance();
@@ -7408,9 +7434,9 @@ public final class Parser {
 
     private boolean parseReferentMutability(Ast.BindingKind kind) {
         if (kind == Ast.BindingKind.VAL) {
-            if (match(MUT)) {
-                throw error(previous(), "'val' already means 'const mut'; 'val mut' is a duplicate mutability qualifier");
-            }
+            // Canonical `val mut` (local-binding-mutability-v1) requests a writable
+            // referent on a non-rebindable name, which is this backend's `val`.
+            match(MUT);
             return true;
         }
         return match(MUT);
