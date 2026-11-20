@@ -5,6 +5,7 @@ cd "$(dirname "$0")/../.."
 bash ci/admission/exact-tree.sh \
   src/compiler/asyncv1/AttoAsyncV1Compiler.java \
   tests/compiler/AttoAsyncV1CompilerProbe.java \
+  tests/compiler/AttoAsyncV1GeneratedIdentifierProbe.java \
   fixtures/async_v1/completed_future.atto \
   fixtures/async_v1/completed_future_typed.atto \
   ci/async/verify-compiled-completed-future.sh
@@ -14,9 +15,13 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/classes"
 "$JAVA_HOME/bin/javac" -Xlint:all -Werror -d "$work/classes" \
   src/compiler/asyncv1/AttoAsyncV1Compiler.java \
-  tests/compiler/AttoAsyncV1CompilerProbe.java
+  tests/compiler/AttoAsyncV1CompilerProbe.java \
+  tests/compiler/AttoAsyncV1GeneratedIdentifierProbe.java
 "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1CompilerProbe | tee "$work/probe"
 grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=56" "$work/probe"
+"$JAVA_HOME/bin/java" -cp "$work/classes" \
+  atto.compiler.asyncv1.AttoAsyncV1GeneratedIdentifierProbe | tee "$work/identifiers"
+grep -Fx "ATTO_ASYNC_V1_GENERATED_NAMES_PASS accepted=19 rejected=4" "$work/identifiers"
 "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1Compiler \
   fixtures/async_v1/completed_future.atto "$work/AttoAsyncV1Guest.java"
 "$JAVA_HOME/bin/javac" -Xlint:all -Werror -d "$work/classes" "$work/AttoAsyncV1Guest.java"
