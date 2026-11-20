@@ -68,7 +68,7 @@ public final class AttoAsyncV1Compiler {
         void expect(String value) {
             String got = next();
             if (!got.equals(value))
-                throw new Reject("E_ASYNC_EXPECTED_" + value + " got " + got);
+                throw new Reject("E_ASYNC_UNEXPECTED_TOKEN"); // never echo untrusted guest identifiers
         }
         String ident() {
             String value = next();
