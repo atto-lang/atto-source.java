@@ -30,7 +30,7 @@ public final class AttoIntParseRuntimeProbe {
                 "-9223372036854775809", "٤٢", "０", "\u0000", "4\u00002")) {
             Result value = alice.parse(invalid);
             ok(value instanceof Err, "invalid must be Err: " + invalid);
-            Error error = ((Err)value).error();
+            AttoIntParseRuntime.Error error = ((Err)value).error();
             ok(error.message().equals(INVALID_INTEGER), "immutable Error.message");
             ok(alice.can_observe(error), "tenant owns Error");
             ok(!bob.can_observe(error), "other tenant cannot observe Error");
