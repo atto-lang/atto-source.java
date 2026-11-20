@@ -9,6 +9,7 @@ on:
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/test/java/dev/oreslang/AttoCanonicalIntegerXorParityTest.java'
+      - 'ci/compiler/CheckCanonicalXorReports.java'
       - '.github/workflows/atto-canonical-int-xor.yml'
   pull_request:
     paths:
@@ -16,6 +17,7 @@ on:
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/test/java/dev/oreslang/AttoCanonicalIntegerXorParityTest.java'
+      - 'ci/compiler/CheckCanonicalXorReports.java'
       - '.github/workflows/atto-canonical-int-xor.yml'
   workflow_dispatch:
 
@@ -54,22 +56,8 @@ jobs:
           mvn -B -ntp '-P!native-thread-unix'
           -Dtest=AttoCanonicalIntegerXorParityTest,BooleanIntrinsicsTest
           -Dsurefire.failIfNoSpecifiedTests=true clean test
-      - name: Require material JUnit receipts
+      - name: Require exact named JUnit cases, zero skips and safe XML
         shell: bash
         run: |
           set -euo pipefail
-          for pair in 'AttoCanonicalIntegerXorParityTest:7' 'BooleanIntrinsicsTest:10'; do
-            suite="${pair%%:*}"
-            minimum="${pair##*:}"
-            xml="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
-            test -s "$xml"
-            test "$(grep -c '<testcase' "$xml")" -ge "$minimum"
-            if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$xml"; then exit 1; fi
-            printf 'RECEIPT suite=%s required_cases=%s\n' "$suite" "$minimum"
-          done
-          # Require execution of the newly reconciled failure-path regression,
-          # not merely a minimum count of unrelated tests.
-          grep -Eq '<testcase[^>]*name="canonicalIntegerXorRhsFailureExecutesEffectsOnlyOnce"' \
-            target/surefire-reports/TEST-dev.oreslang.AttoCanonicalIntegerXorParityTest.xml
-          echo 'RECEIPT canonical_xor_rhs_failure_case=EXECUTED'
-          echo 'RECEIPT scope=strict_java_jvm_guest+legacy_boolean guests_native_aot=NOT_EXECUTED'
+          java ci/compiler/CheckCanonicalXorReports.java
