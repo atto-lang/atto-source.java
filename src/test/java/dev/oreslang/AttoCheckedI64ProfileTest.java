@@ -149,6 +149,20 @@ final class AttoCheckedI64ProfileTest {
     }
 
     @Test
+    void checkedCallerCannotSilentlyExecuteAnUncheckedImportedUnit() {
+        // Java's per-code-unit evaluator profile must not be mistaken for a
+        // transitive module-graph guarantee before the linker checks imports.
+        String source = HEADER + "import * as imported from \"./unchecked\";\n"
+                + FUNCTIONS + "pub fnc main(): int {return 42;}\n";
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    () -> context.eval("ores", source));
+            assertTrue(failure.getMessage().contains("ATTO_CHECKED_I64_IMPORT_GRAPH_UNSUPPORTED"),
+                    () -> "no mixed-profile import graph admitted: " + failure.getMessage());
+        }
+    }
+
+    @Test
     void runtimeRejectsSpoofedProfileBeforeGuestEvaluation() {
         String source = HEADER + HEADER + FUNCTIONS
                 + "pub fnc main(): int {return 42;}\n";
