@@ -136,16 +136,21 @@ public final class AttoDirectedPipePlan {
         Objects.requireNonNull(plans, "E_PIPE_PLANS");
         if (plans.size() > 64) throw new IllegalArgumentException("E_PIPE_PLAN_LIMIT");
         Set<String> outputs = new HashSet<>();
+        Set<String> inputs = new HashSet<>();
         Set<String> pairs = new HashSet<>();
         for (Plan p : plans) {
             Objects.requireNonNull(p, "E_PIPE_PLAN");
             for (Edge edge : p.dataEdges()) {
                 String source = p.tenant() + "\u0000" + edge.source();
-                String pair = source + "\u0000" + edge.sink();
+                String sink = p.tenant() + "\u0000" + edge.sink();
+                String pair = source + "\u0000" + sink;
                 if (!pairs.add(pair))
                     throw new IllegalArgumentException("E_PIPE_DUPLICATE_EDGE");
                 if (!outputs.add(source))
                     throw new IllegalArgumentException("E_PIPE_OUTPUT_OCCUPIED");
+                // Multiple producers require an explicitly typed merge adapter.
+                if (!inputs.add(sink))
+                    throw new IllegalArgumentException("E_PIPE_INPUT_OCCUPIED");
             }
         }
     }
