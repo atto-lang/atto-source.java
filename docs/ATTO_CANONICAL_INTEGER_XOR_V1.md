@@ -83,3 +83,7 @@ copy that workflow into AttoLang.
 committed, not material exact-head JDK25/GraalVM/JUnit or Native Image
 execution. No cross-org private-source transfer was made. Source CI remains
 governed by security issue #65 and the approved-destination policy.
+
+## Consolidation regression coverage (2026-11-20)
+
+Copied the distinct strict-profile regression *intent* from competing Java #70 into this canonical #72 test suite, rather than porting #70's global legacy behavior change or its Python-based workflow. New exact-source strict Truffle guest tests cover signed-i64 negative XOR, bitwise precedence and left-associative chains, eager left-to-right successful operand evaluation exactly once, and preservation of short-circuit `&&`/`||` behavior. Existing #72 tests already cover failed-RHS exactly-once, strict typing, single-caret return/rejection and historical Boolean XOR admission. The ported tests use `canonicalGuest` with the strict prechecked-AST lease, not the legacy default parser. None has executed on the exact current GitHub head yet; do not claim JVM/Native Image parity. Java #70 remains a competing draft until independent review can verify disposition and CI.

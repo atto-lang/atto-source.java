@@ -137,4 +137,44 @@ final class AttoCanonicalIntegerXorParityTest {
         }
         assertEquals("true\n", output.toString(StandardCharsets.UTF_8));
     }
+
+    @Test
+    void strictSignedI64XorPrecedenceAndLeftAssociativeChain() throws Exception {
+        // Independent regression cases from overlapping Java #70.
+        // Preserve bit-pattern semantics, not a Boolean truthiness conversion.
+        assertEquals("5\n-2\n1\n0\n", canonicalGuest("""
+                pub fnc main(): void {
+                    stdio.println(6 ^^ 3);
+                    stdio.println(-1 ^^ 1);
+                    stdio.println(1 | 2 ^^ 3 & 2);
+                    stdio.println(1 ^^ 2 ^^ 3);
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void strictXorSuccessEvaluatesEachOperandExactlyOnceFromLeftToRight() throws Exception {
+        assertEquals("left\nright\n5\n", canonicalGuest("""
+                fnc lhs(): int { stdio.println("left"); return 6; }
+                fnc rhs(): int { stdio.println("right"); return 3; }
+                pub fnc main(): void {
+                    stdio.println(lhs() ^^ rhs());
+                    return;
+                }
+                """));
+    }
+
+    @Test
+    void strictBooleanShortCircuitStillSkipsInvalidRightOperands() throws Exception {
+        // ^^ must be eager without weakening the existing && and || semantics.
+        assertEquals("false\ntrue\n", canonicalGuest("""
+                pub fnc main(): void {
+                    stdio.println(false && [true][99]);
+                    stdio.println(true || [false][99]);
+                    return;
+                }
+                """));
+    }
+
 }
