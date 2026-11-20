@@ -44,9 +44,15 @@ final class AttoClassFieldV2ConformanceSourceTest {
     }
 
     @Test
-    void positiveCanonicalClassFixtureMustPassStrictFrontend() throws Exception {
+    void packageScopedPositiveFixtureMustFailClosedUntilPackageIdentityIsProved() throws Exception {
+        // Registry #84 expects a successful guest result 42. Java cannot
+        // represent pub[pkg] without widening package access, so this is a
+        // documented conformance GAP, not a passing positive guest test.
         String program = source("class-field-visibility-default-val.atto");
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheckStrictAtto(program));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheckStrictAtto(program));
+        assertTrue(error.getMessage().contains("E_PKG_VISIBILITY_UNSUPPORTED"),
+                error::getMessage);
     }
 
     @Test
