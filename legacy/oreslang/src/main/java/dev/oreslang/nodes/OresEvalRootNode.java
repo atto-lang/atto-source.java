@@ -4912,7 +4912,7 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(
                                             t,
                                             failure == null
-                                                    ? List.copyOf(values)
+                                                    ? new TupleList(List.copyOf(values))
                                                     : null,
                                             failure));
                     return;
@@ -8863,7 +8863,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "unverified typed empty aggregate cannot execute: " + witness);
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) return new TupleList(tuple.elements().stream().map(item -> eval(item, env)).toList());
             if (expr instanceof Ast.ObjectExpr object) {
                 if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
                     throw new IllegalArgumentException("unverified aggregate spread cannot execute");
@@ -13057,12 +13057,26 @@ public final class OresEvalRootNode extends RootNode {
     }
 
 
+    /** Immutable positional tuple value; a List for runtime purposes, rendered as (a, b). */
+    static final class TupleList extends java.util.AbstractList<Object> implements java.util.RandomAccess {
+        private final List<Object> elements;
+        TupleList(List<?> elements) { this.elements = java.util.Collections.unmodifiableList(new ArrayList<>(elements)); }
+        @Override public Object get(int index) { return elements.get(index); }
+        @Override public int size() { return elements.size(); }
+    }
+
     /** Identity-aware bounded diagnostic rendering; not a serializer. */
     static final class CycleSafeDisplay {
         private static final int MAX_DEPTH = 64;
         private static final int MAX_NODES = 8192;
         private static final int MAX_CHARS = 65536;
         private static final String TRUNCATED = "<truncated>";
+
+        private static boolean isPreludeProduct(OresObject object) {
+            List<String> names = List.copyOf(object.fields.keySet());
+            return (object.klass.name().equals("Pair") && names.equals(List.of("first", "second")))
+                    || (object.klass.name().equals("Entry") && names.equals(List.of("key", "value")));
+        }
 
         static String render(Object value) {
             State state = new State();
@@ -13109,7 +13123,18 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 try {
-                    if (value instanceof OresObject object) {
+                    if (value instanceof OresObject object && isPreludeProduct(object)) {
+                        // Prelude products render positionally: Pair(widgets, 2).
+                        write(object.klass.name());
+                        write("(");
+                        boolean first = true;
+                        for (Object field : object.fields.values()) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(field, depth + 1);
+                        }
+                        write(")");
+                    } else if (value instanceof OresObject object) {
                         write(object.klass.name());
                         write("{");
                         boolean first = true;
@@ -13150,6 +13175,16 @@ public final class OresEvalRootNode extends RootNode {
                             if (output.length() >= MAX_CHARS) break;
                         }
                         write("}");
+                    } else if (value instanceof TupleList tupleList) {
+                        write("(");
+                        boolean first = true;
+                        for (Object element : tupleList) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(element, depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write(")");
                     } else if (value instanceof List<?> list) {
                         write("[");
                         boolean first = true;

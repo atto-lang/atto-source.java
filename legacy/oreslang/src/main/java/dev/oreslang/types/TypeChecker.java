@@ -2569,10 +2569,9 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "lexical telemetry span cannot be rebound or captured as a value");
             }
-            if (actual instanceof Record record && record.readOnly() && binding.mutableReferent()) {
-                throw new IllegalArgumentException(
-                        "readonly record values cannot be bound with mutable referent access");
-            }
+            // `val`/`let` request a writable referent by default (val = const mut),
+            // but a readonly record stays readonly: its type, not the binding,
+            // rejects every field write.
 
             if (namedInference) {
                 String name = inferredName;
@@ -10397,6 +10396,13 @@ public final class TypeChecker {
         return null;
     }
 
+    /** Diamond `new C<>(...)` binds generics to declared value types, not literal singletons. */
+    private Type widenLiteralForInference(Type type) {
+        if (type instanceof StringLiteral) return Primitive.STRING;
+        if (type instanceof Types.BoolLiteral) return Primitive.BOOL;
+        return type;
+    }
+
     private Type widenCollectionElement(Type type) {
         return type instanceof StringLiteral ? Primitive.STRING : type;
     }
@@ -10806,7 +10812,7 @@ public final class TypeChecker {
                         constructor.parameters().get(i),
                         classGenericNames,
                         patternType);
-                Type actual = typeOf(arguments.get(i), env, callerGenerics, callerSelf);
+                Type actual = widenLiteralForInference(typeOf(arguments.get(i), env, callerGenerics, callerSelf));
                 inferGenericBindings(
                         parameterPattern,
                         actual,

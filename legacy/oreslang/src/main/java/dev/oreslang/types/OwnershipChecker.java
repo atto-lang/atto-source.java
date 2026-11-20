@@ -1141,9 +1141,9 @@ public final class OwnershipChecker {
         }
 
         boolean readonlyRecord = value.type.isReadonlyRecordType();
-        if (readonlyRecord && binding.mutableReferent()) {
-            throw error("readonly structural records cannot gain mutable bindings or aliases");
-        }
+        // The default writable-referent request of val/let never makes a
+        // readonly record writable: field writes are rejected by its type and
+        // validateBorrow refuses any mutable loan of it.
 
         // A whole move-only owner may transfer from a read-only binding into a
         // new mutable owner. A field/index projection is different: ordinary

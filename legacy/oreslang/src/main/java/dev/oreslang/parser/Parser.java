@@ -64,6 +64,37 @@ public final class Parser {
      * a method of the same name and arity. A default reachable from two
      * implemented traits is ambiguous and must be overridden explicitly.
      */
+    /** Root `define struct`/`define record` names usable as `Name{...}` literals. */
+    private final java.util.Map<String, RootAggregate> rootAggregateShapes = new java.util.HashMap<>();
+    private record RootAggregate(boolean struct, List<Ast.StructFieldSpec> fields) { }
+
+    /**
+     * Prelude two-element products. Injected only when a program constructs
+     * one and does not declare a type of the same name.
+     */
+    static final java.util.Map<String, String> PRELUDE_PRODUCTS = java.util.Map.of(
+            "Pair", """
+                    define class Pair<A, B> as
+                      pub let A first;
+                      pub let B second;
+                      constructor(A first, B second) {
+                        self.first = first;
+                        self.second = second;
+                      }
+                    end
+                    """,
+            "Entry", """
+                    define class Entry<K, V> as
+                      pub let K key;
+                      pub let V value;
+                      constructor(K key, V value) {
+                        self.key = key;
+                        self.value = value;
+                      }
+                    end
+                    """);
+    private final java.util.Set<String> usedPreludeProducts = new java.util.LinkedHashSet<>();
+
     /** Root `pure fnc` / `pure routine` declarations, verified after parsing. */
     private final List<Ast.FunctionDecl> pureFunctionDecls = new ArrayList<>();
 
@@ -439,6 +470,45 @@ public final class Parser {
                         continue;
                     }
                 }
+                if ((check(STRUCT) || isContextualIdentifier("record")) && checkNext(IDENT)) {
+                    // `define struct P as int x; int y; end` / `define record R as ... end`
+                    // lower to the existing nominal aliases `type P = struct {...}` and
+                    // `type R = record {...}` (records are structurally readonly).
+                    boolean struct = advance().type() == STRUCT;
+                    validateOnlyVisibilityModifiers(modifiers, struct ? "structs" : "records");
+                    rejectCallableStructuralAnnotation(annotations, struct ? "struct declarations" : "record declarations");
+                    String aggregateName = consumeTypeDeclarationName("expected " + (struct ? "struct" : "record") + " name");
+                    consume(AS, "expected 'as' after " + aggregateName);
+                    java.util.LinkedHashMap<String, Ast.TypeRef> members = new java.util.LinkedHashMap<>();
+                    while (!check(END) && !check(EOF)) {
+                        Ast.TypeRef memberType;
+                        String memberName;
+                        if (check(IDENT) && checkNext(COLON)) {
+                            memberName = advance().lexeme();
+                            advance();
+                            memberType = parseTypeRef();
+                        } else {
+                            memberType = parseTypeRef();
+                            memberName = consume(IDENT, "expected field name").lexeme();
+                        }
+                        if (members.putIfAbsent(memberName, memberType) != null) {
+                            throw error(previous(), "duplicate field '" + memberName + "' in " + aggregateName);
+                        }
+                        if (!match(SEMICOLON, COMMA) && !check(END) && !isImplicitNewlineTerminator()) {
+                            throw error(peek(), "field declaration should end with ';'");
+                        }
+                    }
+                    consume(END, "expected 'end' after " + aggregateName);
+                    if (members.isEmpty()) throw error(previous(), aggregateName + " must declare at least one field");
+                    List<Ast.StructFieldSpec> specs = new ArrayList<>();
+                    for (java.util.Map.Entry<String, Ast.TypeRef> member : members.entrySet()) {
+                        specs.add(new Ast.StructFieldSpec(member.getKey(), member.getValue()));
+                    }
+                    rootAggregateShapes.put(aggregateName, new RootAggregate(struct, specs));
+                    rootDeclarations.add(new Ast.TypeAliasDecl(aggregateName, modifiers.visibility, List.of(),
+                            struct ? Ast.TypeRef.structType(members) : Ast.TypeRef.recordType(members)));
+                    continue;
+                }
                 if (match(ENUM)) {
                     validateOnlyVisibilityModifiers(modifiers, "enums");
                     rejectCallableStructuralAnnotation(annotations, "enum declarations");
@@ -495,6 +565,15 @@ public final class Parser {
             rootDeclarations.add(declaration);
         }
 
+        for (String product : usedPreludeProducts) {
+            boolean declared = rootDeclarations.stream().anyMatch(d ->
+                    (d instanceof Ast.ClassDecl c && c.name().equals(product))
+                            || (d instanceof Ast.TypeAliasDecl a && a.name().equals(product)));
+            if (!declared) {
+                Ast.Program prelude = new Parser(new Lexer(PRELUDE_PRODUCTS.get(product)).scan()).parseProgram();
+                for (Ast.ModuleDecl module : prelude.modules()) rootDeclarations.addAll(module.declarations());
+            }
+        }
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
         validateExports(exports, rootDeclarations);
         if (!rootDeclarations.isEmpty()) {
@@ -6661,6 +6740,15 @@ public final class Parser {
                 rejectUnsupportedActorFactory(expr);
                 if (expr instanceof Ast.NameExpr calleeName) {
                     directCallSites.add(java.util.Map.entry(calleeName.name(), previous()));
+                    if (PRELUDE_PRODUCTS.containsKey(calleeName.name())) {
+                        // Canonical `Pair(a, b)` / `Entry(k, v)` construct the
+                        // prelude product with inferred type arguments.
+                        List<Ast.Expr> productArgs = parseCallArgumentsUntil(RPAREN);
+                        consume(RPAREN, "expected ')' after arguments");
+                        usedPreludeProducts.add(calleeName.name());
+                        expr = new Ast.NewExpr(new Ast.TypeRef(calleeName.name(), List.of(), true), productArgs);
+                        continue;
+                    }
                 }
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
@@ -6670,6 +6758,13 @@ public final class Parser {
                 // evaluation path; no dynamic symbol lookup or macro rewrite.
                 String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
+            } else if (expr instanceof Ast.NameExpr name && check(LBRACE)
+                    && rootAggregateShapes.containsKey(name.name())) {
+                // `Point{ x: 3 }` for a root define struct/record: the same checked
+                // literal as `struct{x: int}{x: 3}` / `record{...}`.
+                RootAggregate shape = rootAggregateShapes.get(name.name());
+                expr = parseObjectLiteral(shape.struct() ? Ast.ObjectKind.EXPLICIT_STRUCT : Ast.ObjectKind.RECORD,
+                        shape.struct() ? shape.fields() : List.of());
             } else if (expr instanceof Ast.NameExpr name
                     && check(LBRACE) && isLocalTypeName(name.name())) {
                 expr = parseLocalAggregateConstructor(name.name());
