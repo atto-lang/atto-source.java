@@ -5,12 +5,20 @@ on:
       - 'src/ipc/**'
       - 'src/m6/**'
       - 'tests/ipc/**'
+      - 'tests/m6/**'
+      - 'tests/compiler/**'
+      - 'src/compiler/proxyv1/**'
+      - 'fixtures/proxy_v1/**'
       - '.github/workflows/proxy-uds-m6-two-process.yml'
   push:
     paths:
       - 'src/ipc/**'
       - 'src/m6/**'
       - 'tests/ipc/**'
+      - 'tests/m6/**'
+      - 'tests/compiler/**'
+      - 'src/compiler/proxyv1/**'
+      - 'fixtures/proxy_v1/**'
       - '.github/workflows/proxy-uds-m6-two-process.yml'
 permissions:
   contents: read
@@ -42,7 +50,10 @@ jobs:
             src/ipc/AttoM6ProxyUdsV1.java \
             tests/ipc/AttoM6ProxyUdsV1Probe.java \
             src/compiler/proxyv1/AttoM6ProxyActorSubsetCompiler.java \
-            tests/compiler/AttoM6ProxyActorSubsetCompilerProbe.java
+            tests/compiler/AttoM6ProxyActorSubsetCompilerProbe.java \
+            tests/m6/M6PerMessageTicketProbe.java
+          timeout 90 java -cp build/proxy-uds M6PerMessageTicketProbe | tee build/proxy-uds/tickets.txt
+          grep -Fx 'M6_TICKET_128_CONCURRENT_MAIL_EXACT_CORRELATION=PASS' build/proxy-uds/tickets.txt
           timeout 90 java -cp build/proxy-uds AttoM6ProxyUdsV1Probe | tee build/proxy-uds/output.txt
           grep -Fx 'ATTO_PROXY_UDS_TWO_OS_PROCESSES=PASS' build/proxy-uds/output.txt
           grep -Fx 'ATTO_PROXY_UDS_SCOPE=EXPERIMENTAL_HOST_M6_NO_COMPILED_ATTO_GUEST' build/proxy-uds/output.txt
