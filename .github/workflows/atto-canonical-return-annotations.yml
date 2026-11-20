@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for pair in 'AttoCanonicalCallableReturnAnnotationTest:8' 'AttoCanonicalImplicitValClassFieldTest:5'; do
+          for pair in 'AttoCanonicalCallableReturnAnnotationTest:9' 'AttoCanonicalImplicitValClassFieldTest:5'; do
             name="${pair%%:*}"
             minimum="${pair##*:}"
             report="target/surefire-reports/TEST-dev.oreslang.${name}.xml"
