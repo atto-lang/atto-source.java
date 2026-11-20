@@ -4,11 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 fixture_count="$(find fixtures/pipelines -type f -name '*.atto' | wc -l)"
-test "$fixture_count" -eq 16 || { echo 'ATTO_PIPELINE_FIXTURE_COUNT_MISMATCH' >&2; exit 2; }
+test "$fixture_count" -eq 23 || { echo 'ATTO_PIPELINE_FIXTURE_COUNT_MISMATCH' >&2; exit 2; }
 find fixtures/pipelines -type f -name '*.atto' -print0 | sort -z | \
   xargs -0 bash ci/admission/exact-tree.sh \
     src/compiler/pipeline/AttoFunctionalPipelineCompiler.java \
     ci/compiler/verify-functional-pipelines.sh \
+    ci/compiler/verify-functional-pipeline-edges.sh \
     .github/workflows/java-functional-pipelines.yml
 
 test -x "$JAVA_HOME/bin/javac" || exit 2
@@ -130,4 +131,5 @@ for spec in \
   test ! -e "$output" || { echo "ATTO_JAVA_NEGATIVE_ARTIFACT_LEAK=$name" >&2; exit 1; }
 done
 
-echo 'ATTO_JAVA_PIPELINE_GUEST_MATRIX=EXECUTED jvm=5 native_image=2 negative=11'
+bash ci/compiler/verify-functional-pipeline-edges.sh "$work"
+echo 'ATTO_JAVA_PIPELINE_GUEST_MATRIX=EXECUTED jvm=5 native_image=2 negative=11 plus_edges=7'
