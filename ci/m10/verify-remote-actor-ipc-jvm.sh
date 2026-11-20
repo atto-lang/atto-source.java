@@ -28,6 +28,7 @@ mkdir -p "$work/classes" "$work/generated"
   "$work/generated/M10GeneratedActor.java" \
   "$work/generated/M10GeneratedSender.java" \
   tests/m10/M10RestrictedSenderCompilerProbe.java \
+  tests/m10/M10RestrictedReceiverCompilerProbe.java \
   tests/m10/M10MailboxTurnProbe.java \
   tests/m10/M10RemoteActorProcessProbe.java \
   tests/m10/M10UnixPeerCredentialProbe.java
@@ -46,6 +47,10 @@ timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10RestrictedSenderCompiler
 grep -Fx 'M10_COMPILED_RESTRICTED_ATTO_SENDER_BROKER_AND_NEGATIVES=PASS' "$work/sender.log" >/dev/null
 grep -Fx 'M10_SOURCE_SYMLINK_AND_OUTPUT_NOFOLLOW=PASS' "$work/sender.log" >/dev/null
 grep -Fx 'M10_SOURCE_BOUNDED_FD_UTF8_FAIL_CLOSED=PASS' "$work/sender.log" >/dev/null
+timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10RestrictedReceiverCompilerProbe \
+  fixtures/m10/remote_adder.atto | tee "$work/receiver.log"
+grep -Fx 'M10_RECEIVER_SOURCE_FD_UTF8_AND_OUTPUT_NOFOLLOW=PASS' "$work/receiver.log" >/dev/null
+grep -Fx 'M10_RECEIVER_COMPILED_SCALAR_HANDLER_CHECKED_ARITHMETIC=PASS' "$work/receiver.log" >/dev/null
 timeout 30 "$JAVA_HOME/bin/java" -cp "$work/classes" M10UnixPeerCredentialProbe | tee "$work/peer.log"
 grep -Fx 'M10_UDS_PEER_KERNEL_PRINCIPAL_NOT_USER_NAME_PROPERTY=PASS' "$work/peer.log" >/dev/null
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10MailboxTurnProbe | tee "$work/mailbox.log"
