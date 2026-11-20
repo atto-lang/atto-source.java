@@ -5662,13 +5662,10 @@ public final class Parser {
     }
 
     private Ast.Expr parseLogicalXor() {
-        Ast.Expr expr = parseLogicalAnd();
-        // Canonical boolean XOR: both operands are evaluated once, left to right.
-        // Only an adjacent double caret is recognized; single '^' stays reserved.
-        while (matchAdjacentPair(CARET)) {
-            expr = new Ast.BinaryExpr("^^", expr, parseLogicalAnd());
-        }
-        return expr;
+        // Atto's ^^ operator is integer bitwise XOR and belongs *below* the
+        // bitwise OR precedence tier, not between boolean || and &&.
+        // Keep this entry point to preserve the existing logical grammar.
+        return parseLogicalAnd();
     }
 
     private Ast.Expr parseLogicalAnd() {
@@ -5702,8 +5699,13 @@ public final class Parser {
 
     private Ast.Expr parseBitwiseXor() {
         Ast.Expr expr = parseBitwiseAnd();
+        // The two carets must be adjacent; single caret is a statement-level
+        // return marker in approved callable bodies, never integer XOR.
+        while (matchAdjacentPair(CARET)) {
+            expr = new Ast.BinaryExpr("^^", expr, parseBitwiseAnd());
+        }
         if (matchSingleOperator(CARET)) throw error(previous(),
-                "'^' is reserved and is not AttoLang source syntax; use Integer.bitXor(a, b)");
+                "'^' is reserved and is not AttoLang source syntax; use '^^' for integer bitwise XOR");
         return expr;
     }
 
