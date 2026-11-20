@@ -29,7 +29,7 @@ public final class M10RemoteActorProcessProbe {
         require(keyHex != null && keyHex.length() == 64, "missing secret bootstrap");
         byte[] key = HexFormat.of().parseHex(keyHex);
         try (var runtime = new AttoM6Runtime(2, 8)) {
-            var target = runtime.spawn_reply_actor("RemoteAdder", 2,
+            var target = runtime.spawn_with_result("RemoteAdder", 2,
                                                    M10GeneratedActor.new_handler());
             require(target.generation() == 1, "unexpected initial local actor generation");
             try (var gateway = new AttoM10ProxyIpcGateway(runtime, target,
