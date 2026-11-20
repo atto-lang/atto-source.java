@@ -63,14 +63,14 @@ public final class AttoInlineTaskV2Probe {
             + "return x + 2; }; return n;"));
         accept(main("val n = sync task<int> { val x = 2; val y = 7; "
             + "return 6 * y + (x - x); }; return n;"));
-        accept(main("val x = 41; val n = sync task<int> { return x + 1; }; return n;"));
+        accept(main("val x = 2147483647; val n = sync task<int> { return x + 1; }; return n;"));
         accept(main("val x = 40; do sync task { val x = 99; }; "
             + "val n = sync task<int> { return x + 2; }; return n;"));
         accept(main("val x = sync task<int> { do sync task { return; }; "
             + "return 6 * 7; }; return x;"));
         accept("pub susp fnc main(): int { val n = sync task<int> { return 40 + 2; }; return n; }");
         accept(main("val n = sync task<int> { return (3 + 4) * 6; }; return n;"));
-        accept(main("val n = sync task<int> { return -1 + 43; }; return n;"));
+        accept(main("val n = sync task<int> { return -9223372036854775808; }; return n;"));
         // Whitespace between keywords is valid, including CRLF/newlines.
         accept(main("do sync\\n task {};"
             + "val answer = sync\\t task<int> { return 40 + 2; }; return answer;")
@@ -132,7 +132,7 @@ public final class AttoInlineTaskV2Probe {
             "E_ASYNC_INVALID_IDENTIFIER");
         reject(main("val n = sync task<int> { return 42.0; }; return n;"),
             "E_ASYNC_UNKNOWN_TOKEN");
-        reject(main("val n = sync task<int> { return 2147483648; }; return n;"),
+        reject(main("val n = sync task<int> { return 9223372036854775808; }; return n;"),
             "E_ASYNC_INTEGER_RANGE");
         reject(main("val n = sync task<int> { return 42; }; return n / 2;"),
             "E_ASYNC_UNKNOWN_TOKEN");
