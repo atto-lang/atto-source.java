@@ -123,4 +123,16 @@ final class ReturnFirstBulletBodyParityTest {
         }
         assertEquals("42|42|42|42", output.toString(StandardCharsets.UTF_8));
     }
+
+    @Test
+    void mixedArrowAndBulletNamesAreNotSeparateOverloads() {
+        String source = """
+                int <- compute(int x) { return x; }
+                int • compute(int x) { return x; }
+                pub fnc main(): int { return compute(42); }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(source)),
+                "the marker cannot disambiguate duplicate callable signatures");
+    }
 }
