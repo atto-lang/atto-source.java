@@ -239,6 +239,21 @@ public final class Parser {
             else break;
         }
 
+        // Once a package namespace participates, require unique local import
+        // bindings across *all* import forms, including legacy selections.
+        // The later verified linker must additionally check top-level
+        // declarations and declared public exports before guest lowering.
+        if (imports.stream().anyMatch(i -> i.path().startsWith(UNLINKED_PACKAGE_PREFIX))) {
+            var boundNames = new java.util.HashSet<String>();
+            for (Ast.ImportDecl imported : imports) {
+                for (String name : dev.oreslang.imports.ImportRules.exposedBindings(imported)) {
+                    if (!boundNames.add(name)) {
+                        throw error(previous(), "duplicate local import binding '" + name + "'");
+                    }
+                }
+            }
+        }
+
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
