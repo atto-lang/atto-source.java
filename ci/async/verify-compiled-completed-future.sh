@@ -8,6 +8,8 @@ bash ci/admission/exact-tree.sh \
   tests/compiler/AttoAsyncV1GeneratedIdentifierProbe.java \
   fixtures/async_v1/completed_future.atto \
   fixtures/async_v1/completed_future_typed.atto \
+  fixtures/async_v1/sync_inline_int.atto \
+  fixtures/async_v1/sync_inline_empty.atto \
   ci/async/verify-compiled-completed-future.sh
 test -x "$JAVA_HOME/bin/javac" && test -x "$JAVA_HOME/bin/native-image" || exit 2
 work="$(mktemp -d)"
@@ -18,7 +20,7 @@ mkdir -p "$work/classes"
   tests/compiler/AttoAsyncV1CompilerProbe.java \
   tests/compiler/AttoAsyncV1GeneratedIdentifierProbe.java
 "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1CompilerProbe | tee "$work/probe"
-grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=56" "$work/probe"
+grep -Fx "ATTO_ASYNC_V1_ADMISSION_PASS checks=76" "$work/probe"
 "$JAVA_HOME/bin/java" -cp "$work/classes" \
   atto.compiler.asyncv1.AttoAsyncV1GeneratedIdentifierProbe | tee "$work/identifiers"
 grep -Fx "ATTO_ASYNC_V1_GENERATED_NAMES_PASS accepted=19 rejected=4" "$work/identifiers"
@@ -78,3 +80,41 @@ test ! -s "$work/typed/native.err"
 echo 'ATTO_ASYNC_V1_TYPED_PAYLOAD_JVM_NATIVE=PASS'
 echo 'ATTO_ASYNC_V1_JVM_AND_NATIVE=PASS'
 echo 'ATTO_GENERAL_FUTURE_SUSPENSION_AND_BORROW_CHECKER=NOT_VERIFIED'
+
+# Verify lexically inline source-to-Java execution and no TaskSpawn/Future.
+for case in sync_inline_int sync_inline_empty; do
+  mkdir -p "$work/$case/classes"
+  "$JAVA_HOME/bin/java" -cp "$work/classes" atto.compiler.asyncv1.AttoAsyncV1Compiler \
+    "fixtures/async_v1/$case.atto" "$work/$case/AttoAsyncV1Guest.java"
+  if grep -Eq 'CompletableFuture|\.join\(' "$work/$case/AttoAsyncV1Guest.java"; then
+    echo "inline task unexpectedly allocated a Future or joined" >&2
+    exit 1
+  fi
+  "$JAVA_HOME/bin/javac" -Xlint:all -Werror -d "$work/$case/classes" \
+    "$work/$case/AttoAsyncV1Guest.java"
+  set +e
+  "$JAVA_HOME/bin/java" -cp "$work/$case/classes" AttoAsyncV1Guest \
+    >"$work/$case/jvm.out" 2>"$work/$case/jvm.err"
+  status=$?
+  set -e
+  test "$status" -eq 42 || { cat "$work/$case/jvm.err"; exit 1; }
+  grep -Fx 'ATTO_ASYNC_V1_RESULT=42' "$work/$case/jvm.out"
+  grep -Fx 'ATTO_ASYNC_SCOPE=PURE_INLINE_TASK_ONLY' "$work/$case/jvm.out"
+  test ! -s "$work/$case/jvm.err"
+done
+(
+  cd "$work/sync_inline_int"
+  "$JAVA_HOME/bin/native-image" --no-fallback --gc=epsilon \
+    -H:Name=atto-sync-inline-v1 -cp "$work/sync_inline_int/classes" AttoAsyncV1Guest
+)
+test -x "$work/sync_inline_int/atto-sync-inline-v1"
+set +e
+timeout 60 "$work/sync_inline_int/atto-sync-inline-v1" \
+  >"$work/sync_inline_int/native.out" 2>"$work/sync_inline_int/native.err"
+status=$?
+set -e
+test "$status" -eq 42 || { cat "$work/sync_inline_int/native.err"; exit 1; }
+grep -Fx 'ATTO_ASYNC_V1_RESULT=42' "$work/sync_inline_int/native.out"
+grep -Fx 'ATTO_ASYNC_SCOPE=PURE_INLINE_TASK_ONLY' "$work/sync_inline_int/native.out"
+test ! -s "$work/sync_inline_int/native.err"
+echo 'ATTO_ASYNC_V1_PURE_INLINE_JVM_NATIVE=PASS'

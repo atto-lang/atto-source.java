@@ -12,8 +12,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Restrictive, statically generating .atto source compiler for one completed-Future
- * pipeline. NOT a full parser, suspending scheduler, cancellation, ownership checker
+ * Restrictive, statically generating .atto source compiler for completed-Future
+ * pipelines and purely inline scalar sync-task examples. NOT a full parser,
+ * suspending scheduler, cancellation, ownership checker
  * or production asynchronous frontend.
  */
 public final class AttoAsyncV1Compiler {
@@ -101,10 +102,82 @@ public final class AttoAsyncV1Compiler {
         p.expect("{"); p.expect("^"); p.expect(param); p.expect("+");
         int increment = p.smallInt();
         p.expect(";"); p.expect("}");
-        p.expect("pub"); p.expect("susp"); p.expect("fnc"); p.expect("main");
+        p.expect("pub");
+        boolean suspendingMain = p.peekIs("susp");
+        if (suspendingMain) p.expect("susp");
+        p.expect("fnc"); p.expect("main");
         p.expect("("); p.expect(")"); p.expect(":"); p.expect("int");
-        p.expect("{"); p.expect("val"); String future = p.ident();
-        p.expect("="); p.expect("task");
+        p.expect("{");
+        // Admits only provably non-suspending literal inline bodies. A sync
+        // task uses the current logical task and is permitted in a pure caller.
+        if (p.peekIs("sync") || p.peekIs("do")) {
+            if (p.peekIs("do")) p.expect("do");
+            p.expect("sync"); p.expect("task");
+            String payload = "infer";
+            if (p.peekIs("<")) {
+                p.expect("<"); payload = p.next(); p.expect(">");
+            }
+            p.expect("{");
+            boolean hasResult = p.peekIs("return");
+            int ignored = 0;
+            if (hasResult) {
+                p.expect("return"); ignored = p.smallInt(); p.expect(";");
+            }
+            p.expect("}");
+            if (p.peekIs(";")) p.expect(";");
+            if (!payload.equals("infer") && !payload.equals(hasResult ? "int" : "void"))
+                throw new Reject("E_TASK_RETURN_TYPE");
+            p.expect("return"); int parentValue = p.smallInt();
+            p.expect(";"); p.expect("}");
+            if (!p.done()) throw new Reject("E_ASYNC_TRAILING_SOURCE");
+            String body = "    atto_inline_task_0: {\n"
+                + (hasResult ? "      Math.addExact(" + ignored + ", 0);\n" : "")
+                + "      break atto_inline_task_0;\n"
+                + "    }\n"
+                + "    return " + parentValue + ";\n";
+            return compilePureInline(fun, param, increment, body);
+        }
+        p.expect("val"); String future = p.ident();
+        p.expect("=");
+        if (p.peekIs("sync")) {
+            p.expect("sync"); p.expect("task");
+            if (p.peekIs("<")) {
+                p.expect("<"); p.expect("int"); p.expect(">");
+            }
+            p.expect("{"); p.expect("return"); int value = p.smallInt();
+            p.expect(";"); p.expect("}"); p.expect(";");
+            int discarded = -1;
+            if (p.peekIs("do")) {
+                p.expect("do"); p.expect("sync"); p.expect("task");
+                if (p.peekIs("<")) {
+                    p.expect("<"); p.expect("int"); p.expect(">");
+                }
+                p.expect("{"); p.expect("return"); discarded = p.smallInt();
+                p.expect(";"); p.expect("}");
+                if (p.peekIs(";")) p.expect(";");
+            }
+            p.expect("return"); String called = p.ident();
+            p.expect("("); String argument = p.ident(); p.expect(")");
+            p.expect(";"); p.expect("}");
+            if (!p.done()) throw new Reject("E_ASYNC_TRAILING_SOURCE");
+            if (!called.equals(fun)) throw new Reject("E_INLINE_CALL_MISMATCH");
+            if (!argument.equals(future)) throw new Reject("E_INLINE_BINDER_MISMATCH");
+            String body = "    int " + future + ";\n"
+                + "    atto_inline_task_0: {\n"
+                + "      " + future + " = " + value + ";\n"
+                + "      break atto_inline_task_0;\n"
+                + "    }\n";
+            if (discarded >= 0) {
+                body += "    atto_inline_task_1: {\n"
+                    + "      Math.addExact(" + discarded + ", 0);\n"
+                    + "      break atto_inline_task_1;\n"
+                    + "    }\n";
+            }
+            body += "    return " + fun + "(" + future + ");\n";
+            return compilePureInline(fun, param, increment, body);
+        }
+        if (!suspendingMain) throw new Reject("E_EFFECT");
+        p.expect("task");
         // The payload parameter is int, NOT Future<int>: task<int>
         // produces a Future<int>. Unparameterized legacy task remains
         // admitted only by this closed-world completed-Future profile.
@@ -148,6 +221,26 @@ public final class AttoAsyncV1Compiler {
             + "    int result = execute();\n"
             + "    System.out.println(\"ATTO_ASYNC_V1_RESULT=\" + result);\n"
             + "    System.out.println(\"ATTO_ASYNC_SCOPE=COMPLETED_FUTURE_ONLY\");\n"
+            + "    System.exit(result);\n"
+            + "  }\n"
+            + "}\n";
+    }
+    private static String compilePureInline(String fun, String param, int increment,
+                                            String body) {
+        // Labelled Java lexical scopes implement inline-local returns without
+        // returning from the parent, allocating a Future or scheduling a child.
+        return "public final class AttoAsyncV1Guest {\n"
+            + "  private static int " + fun + "(int " + param + ") {\n"
+            + "    return Math.addExact(" + param + ", " + increment + ");\n"
+            + "  }\n"
+            + "  public static int execute() {\n"
+            + body
+            + "  }\n"
+            + "  public static void main(String[] args) {\n"
+            + "    if (args.length != 0) throw new IllegalArgumentException();\n"
+            + "    int result = execute();\n"
+            + "    System.out.println(\"ATTO_ASYNC_V1_RESULT=\" + result);\n"
+            + "    System.out.println(\"ATTO_ASYNC_SCOPE=PURE_INLINE_TASK_ONLY\");\n"
             + "    System.exit(result);\n"
             + "  }\n"
             + "}\n";

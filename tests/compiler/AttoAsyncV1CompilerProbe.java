@@ -96,6 +96,37 @@ public final class AttoAsyncV1CompilerProbe {
             check("E_ASYNC_UNEXPECTED_TOKEN".equals(rejected.getMessage()) &&
                 !rejected.getMessage().contains(canary));
         }
+        // Pure lexical sync tasks do not allocate a Future or schedule work.
+        String prefix = "fnc plus_one(int x): int { ^ x + 1; }";
+        String inline = prefix + " pub fnc main(): int { "
+            + "val answer = sync task<int> { return 41; }; "
+            + "do sync task<int> { return 7; }; return plus_one(answer); }";
+        String inlineJava = AttoAsyncV1Compiler.compile(inline);
+        check(inlineJava.contains("atto_inline_task_0:"));
+        check(inlineJava.contains("atto_inline_task_1:"));
+        check(inlineJava.contains("return plus_one(answer);"));
+        check(inlineJava.contains("PURE_INLINE_TASK_ONLY"));
+        check(!inlineJava.contains("CompletableFuture") && !inlineJava.contains(".join()"));
+        check(inlineJava.equals(AttoAsyncV1Compiler.compile(inline.replace(
+            "pub fnc main", "pub susp fnc main"))));
+        check(AttoAsyncV1Compiler.compile(inline.replace("sync task<int>", "sync task"))
+            .contains("return plus_one(answer);"));
+        String empty = prefix + " pub fnc main(): int { sync task {}; return 42; }";
+        check(AttoAsyncV1Compiler.compile(empty).contains("return 42;"));
+        check(AttoAsyncV1Compiler.compile(empty.replace("sync task {}", "do sync task<void> {}"))
+            .contains("return 42;"));
+        check(AttoAsyncV1Compiler.compile(empty.replace("sync task {}", "do sync task<int> { return 5; }"))
+            .contains("Math.addExact(5, 0);"));
+        rejects(empty.replace("sync task {}", "sync task<int> {}"));
+        rejects(empty.replace("sync task {}", "sync task<void> { return 5; }"));
+        rejects(empty.replace("sync task {}", "sync task { await pending; }"));
+        rejects(empty.replace("sync task {}", "sync task { using guard; }"));
+        rejects(inline.replace("sync task<int> { return 41; }", "sync task<int> { return 41; return 99; }"));
+        rejects(inline.replace("do sync task<int>", "do task<int>"));
+        rejects(inline.replace("return plus_one(answer)", "return plus_one(other)"));
+        rejects(inline.replace("return plus_one(answer)", "return missing(answer)"));
+        rejects(inline.replace("sync task<int> { return 41; }", "sync task<Future<int>> { return 41; }"));
+        rejects(inline.replace("sync task<int> { return 41; }", "sync task<int> { return 41; pending.cancel(); }"));
         System.out.println("ATTO_ASYNC_V1_ADMISSION_PASS checks=" + checks);
     }
 }
