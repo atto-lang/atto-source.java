@@ -44,6 +44,7 @@ timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10RestrictedSenderCompiler
   fixtures/m10/remote_adder_sender.atto | tee "$work/sender.log"
 grep -Fx 'M10_COMPILED_RESTRICTED_ATTO_SENDER_BROKER_AND_NEGATIVES=PASS' "$work/sender.log" >/dev/null
 grep -Fx 'M10_SOURCE_SYMLINK_AND_OUTPUT_NOFOLLOW=PASS' "$work/sender.log" >/dev/null
+grep -Fx 'M10_SOURCE_BOUNDED_FD_UTF8_FAIL_CLOSED=PASS' "$work/sender.log" >/dev/null
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10MailboxTurnProbe | tee "$work/mailbox.log"
 timeout 35 "$JAVA_HOME/bin/java" -cp "$work/classes" M10RemoteActorProcessProbe | tee "$work/process.log"
 for marker in \
@@ -58,6 +59,7 @@ for marker in \
   M10_REMOTE_RECIPIENT_ADMITTED_AND_PROCESSED=PASS \
   M10_REMOTE_DUPLICATE_FAULT_AND_RESTART_FENCING=PASS \
   M10_12_CONCURRENT_PER_MAIL_SCOPED_RESULTS_OR_VERIFIED_FULL=PASS \
+  M10_UDS_OS_PEER_OWNER_NOT_MUTABLE_USER_PROPERTY=PASS \
   M10_SCOPE=RESTRICTED_ATTO_GUEST_JAVA_HOST_PROTOCOL_NOT_CANONICAL_BACKEND_OR_TLS; do
     grep -Fx "$marker" "$work/process.log" >/dev/null
 done
