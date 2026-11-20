@@ -98,6 +98,18 @@ public final class AttoAsyncV1Compiler {
         }
     }
     public static String compile(String source) {
+        // Preserve the previously verified literal-only and Future contracts.
+        // The typed AST path is attempted only for standalone pure main sources
+        // containing inline tasks, and only when legacy admission rejects.
+        try {
+            return compileLegacy(source);
+        } catch (Reject legacy) {
+            if (!AttoInlineTaskV2Compiler.candidate(source)) throw legacy;
+            return AttoInlineTaskV2Compiler.compile(source);
+        }
+    }
+
+    private static String compileLegacy(String source) {
         Parser p = new Parser(source);
         // The completed-Future pipeline requires a helper. Literal-only sync
         // tasks additionally admit a standalone main with no helper preamble.
