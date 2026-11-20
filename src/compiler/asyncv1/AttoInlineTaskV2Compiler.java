@@ -55,7 +55,7 @@ public final class AttoInlineTaskV2Compiler {
     }
 
     private interface Expr {}
-    private record NumberExpr(int value) implements Expr {}
+    private record NumberExpr(long value) implements Expr {}
     private record NameExpr(String name) implements Expr {}
     private record ArithmeticExpr(char op, Expr left, Expr right) implements Expr {}
     private record InlineExpr(Block body) implements Expr {}
@@ -105,10 +105,10 @@ public final class AttoInlineTaskV2Compiler {
                 throw reject("E_RESERVED_IDENTIFIER");
             return t;
         }
-        int number() {
+        long number() {
             String t = next();
-            if (!t.matches("[0-9]{1,10}")) throw reject("E_ASYNC_INTEGER_RANGE");
-            try { return Integer.parseInt(t); }
+            if (!t.matches("[0-9]{1,19}")) throw reject("E_ASYNC_INTEGER_RANGE");
+            try { return Long.parseLong(t); }
             catch (NumberFormatException e) { throw reject("E_ASYNC_INTEGER_RANGE"); }
         }
         Block main() {
@@ -198,8 +198,13 @@ public final class AttoInlineTaskV2Compiler {
             }
             if (is("-")) {
                 expect("-");
-                // Expression unary negation uses runtime checked subtraction.
-                return new ArithmeticExpr('-', new NumberExpr(0), atom(depth + 1));
+                // Signed 64-bit minimum cannot be parsed as a positive long.
+                if (is("9223372036854775808")) {
+                    next();
+                    return new NumberExpr(Long.MIN_VALUE);
+                }
+                // Preserve checked unary negation for all other expressions.
+                return new ArithmeticExpr('-', new NumberExpr(0L), atom(depth + 1));
             }
             if (cursor < tokens.size() && tokens.get(cursor).matches("[0-9]+"))
                 return new NumberExpr(number());
@@ -235,13 +240,13 @@ public final class AttoInlineTaskV2Compiler {
             code.append("  ".repeat(indent)).append(text).append('\n');
         }
         String eval(Expr e, Scope scope, int indent) {
-            if (e instanceof NumberExpr n) return Integer.toString(n.value());
+            if (e instanceof NumberExpr n) return Long.toString(n.value()) + "L";
             if (e instanceof NameExpr n) return scope.get(n.name());
             if (e instanceof ArithmeticExpr a) {
                 String l = eval(a.left(), scope, indent);
                 // Freeze the LHS result before evaluating any nested RHS.
                 String saved = fresh("value");
-                line(indent, "int " + saved + " = " + l + ";");
+                line(indent, "long " + saved + " = " + l + ";");
                 String r = eval(a.right(), scope, indent);
                 String op = switch (a.op()) {
                     case '+' -> "addExact";
@@ -250,14 +255,14 @@ public final class AttoInlineTaskV2Compiler {
                     default -> throw reject("E_UNSUPPORTED_INLINE_EFFECT");
                 };
                 String result = fresh("value");
-                line(indent, "int " + result + " = Math." + op + "(" + saved + ", " + r + ");");
+                line(indent, "long " + result + " = Math." + op + "(" + saved + ", " + r + ");");
                 ops.add(MirOp.CHECKED_ARITHMETIC);
                 return result;
             }
             if (e instanceof InlineExpr task) {
                 String value = fresh("result");
                 String label = fresh("inline");
-                line(indent, "int " + value + ";");
+                line(indent, "long " + value + ";");
                 line(indent, label + ": {");
                 ops.add(MirOp.INLINE_TASK_ENTER);
                 block(task.body(), new Scope(scope), indent + 1, label, value, false);
@@ -278,7 +283,7 @@ public final class AttoInlineTaskV2Compiler {
                     String rhs = eval(bind.value(), scope, indent);
                     String variable = fresh("local");
                     scope.put(bind.name(), variable);
-                    line(indent, "int " + variable + " = " + rhs + ";");
+                    line(indent, "long " + variable + " = " + rhs + ";");
                     ops.add(MirOp.SCALAR_BIND);
                 } else if (statement instanceof InlineVoid task) {
                     String innerLabel = fresh("inline");
@@ -310,15 +315,15 @@ public final class AttoInlineTaskV2Compiler {
         }
         Plan finish(Block parsed) {
             line(0, "public final class AttoAsyncV1Guest {");
-            line(1, "public static int execute() {");
+            line(1, "public static long execute() {");
             block(parsed, new Scope(null), 2, null, null, false);
             line(1, "}");
             line(1, "public static void main(String[] args) {");
             line(2, "if (args.length != 0) throw new IllegalArgumentException();");
-            line(2, "int result = execute();");
+            line(2, "long result = execute();");
             line(2, "System.out.println(\"ATTO_ASYNC_V1_RESULT=\" + result);");
             line(2, "System.out.println(\"ATTO_ASYNC_SCOPE=PURE_INLINE_TYPED_V2\");");
-            line(2, "System.exit(result);");
+            line(2, "System.exit((int) result);");
             line(1, "}");
             line(0, "}");
             return new Plan(code.toString(), ops);
