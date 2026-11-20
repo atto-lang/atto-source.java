@@ -181,13 +181,17 @@ public final class AttoM6ProxyUdsV1 {
                 id.targetActor() + ":" + id.targetIncarnation() + ":" +
                 id.associationGeneration() + ":" + id.placementEpoch() + ":" +
                 id.messageId() + ":" + id.attempt();
+            var route = new AttoM6Runtime.ReceiptRoute(id.protocolMajor(),
+                id.tenant(), id.callerIncarnation(), id.targetActor(),
+                id.targetIncarnation(), id.associationGeneration(),
+                id.placementEpoch(), id.messageId(), id.attempt());
             AttoM6Runtime.TicketAdmission admitted = null;
             // Atomic between every connection handler: no duplicate request can
             // cross the replay window and mint a second destination admission.
             synchronized (alreadySeen) {
                 if (id.equals(expected) && id.targetIncarnation() == target.generation()
                     && !alreadySeen.contains(replay) && alreadySeen.size() < 256) {
-                    admitted = runtime.try_send_ticket(target, req.message());
+                    admitted = runtime.try_send_ticket(target, req.message(), route);
                     if (admitted.admission() == AttoM6Runtime.Admission.ACCEPTED)
                         alreadySeen.add(replay);
                 }
@@ -199,6 +203,8 @@ public final class AttoM6ProxyUdsV1 {
                 return false;
             }
             var ticket = admitted.ticket();
+            if (!runtime.ticket_route(ticket).equals(route))
+                throw new IOException("runtime receipt correlation mismatch");
             // Only the destination's atomic enqueue issued the opaque ticket.
             write_frame(channel, encode_receipt(session, id,
                 new Turn(ProxyReceiptGateV1.Event.ADMITTED, 0)));
