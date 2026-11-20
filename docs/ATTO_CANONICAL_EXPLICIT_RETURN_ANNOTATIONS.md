@@ -23,9 +23,11 @@ different grammar categories and are unaffected.
 `@Ret(T)` is treated as an explicitly supplied result in the legacy
 annotation form, subject to existing compatibility checks. This
 milestone **does not implement whole-program return inference**:
-accepting `-> infer` syntax is not evidence that all inference or
-guest dispatch paths work. The canonical checker must reject an
-unsupported inference profile rather than silently pick `void`.
+the parser accepts authored `-> infer`, but both strict TypeChecker
+entrypoints now reject unresolved named results as `E_RETURN_INFER`
+before type/ownership checking or guest emission. This also covers the
+strict linked-program checker path and cannot be bypassed by supplying
+a prebuilt AST. Anonymous contextual lambda inference is separate.
 
 ## Security / migration
 
