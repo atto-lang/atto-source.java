@@ -1,0 +1,53 @@
+name: Java signed-i64 inline task exact-head JVM and Native Image
+on:
+  push:
+    branches:
+      - feat/typed-task-sync-cancel-admission-v1-20261120
+  pull_request:
+    paths:
+      - 'src/compiler/asyncv1/**'
+      - 'tests/compiler/**'
+      - 'fixtures/async_v1/**'
+      - 'ci/async/**'
+      - 'ci/admission/exact-tree.sh'
+      - '.github/workflows/java-signed-i64-inline-guest.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  signed-i64-jvm-native:
+    name: JDK25 / GraalVM25 signed-i64 compiled guests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ATTO_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout source-local exact head without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.ATTO_EXPECTED_HEAD_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Validate exact commit/tree before installing toolchain
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$ATTO_EXPECTED_HEAD_SHA"
+          test -z "$(git status --porcelain)"
+          echo "ATTO_SOURCE_HEAD=$ATTO_EXPECTED_HEAD_SHA"
+          echo "ATTO_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Install GraalVM JDK25 including native-image
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78
+        with:
+          distribution: graalvm
+          java-version: '25'
+      - name: Verify executable guest toolchain
+        shell: bash
+        run: |
+          "$JAVA_HOME/bin/java" -version
+          "$JAVA_HOME/bin/javac" -version
+          "$JAVA_HOME/bin/native-image" --version
+          test -x "$JAVA_HOME/bin/native-image"
+      - name: Run existing exact-tree compiler probes and JVM/GraalVM native guests
+        shell: bash
+        run: bash ci/async/verify-compiled-completed-future.sh
