@@ -70,6 +70,8 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
+    /** Exact source-selected numeric policy; never chosen by a guest argument. */
+    private final boolean checkedI64Arithmetic;
     /** Ownership epoch captured when this executable root is created. */
     private final long taskAdmissionEpoch;
     private volatile Evaluator evaluator;
@@ -79,9 +81,15 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
+        this(language, program, codeUnitId, false);
+    }
+
+    public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId,
+                            boolean checkedI64Arithmetic) {
         super(language);
         this.program = Objects.requireNonNull(program, "checked Oreslang program");
         this.codeUnitId = codeUnitId;
+        this.checkedI64Arithmetic = checkedI64Arithmetic;
         this.taskAdmissionEpoch =
                 Ast.CheckedTaskCaptures.requireProgramEpoch(program);
     }
@@ -146,7 +154,8 @@ public final class OresEvalRootNode extends RootNode {
                                 program,
                                 context,
                                 codeUnitId,
-                                taskAdmissionEpoch);
+                                taskAdmissionEpoch,
+                                checkedI64Arithmetic);
             }
             return current;
         }
@@ -162,6 +171,7 @@ public final class OresEvalRootNode extends RootNode {
         private final OresContext context;
         private final String codeUnitId;
         private final long taskAdmissionEpoch;
+        private final boolean checkedI64Arithmetic;
         private final AtomicLong nextTaskLaunchId = new AtomicLong();
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
@@ -266,8 +276,10 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Program program,
                 OresContext context,
                 String codeUnitId,
-                long taskAdmissionEpoch) {
+                long taskAdmissionEpoch,
+                boolean checkedI64Arithmetic) {
             this.program = program;
+            this.checkedI64Arithmetic = checkedI64Arithmetic;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.taskAdmissionEpoch = taskAdmissionEpoch;
@@ -11966,6 +11978,19 @@ public final class OresEvalRootNode extends RootNode {
                 // An implicit VM fast-throw exception may have suppression disabled,
                 // which would discard source-boundary diagnostics after warm-up.
                 if (op == '%' && y == 0) throw new ArithmeticException("/ by zero");
+                if (checkedI64Arithmetic && (op == '+' || op == '-' || op == '*')) {
+                    try {
+                        return switch (op) {
+                            case '+' -> Math.addExact(x, y);
+                            case '-' -> Math.subtractExact(x, y);
+                            case '*' -> Math.multiplyExact(x, y);
+                            default -> throw new AssertionError("unreachable checked operator");
+                        };
+                    } catch (ArithmeticException overflow) {
+                        throw new ArithmeticException(
+                                "ORES_I64_OVERFLOW: checked signed i64 operator " + op);
+                    }
+                }
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
             }
             double x = a.doubleValue(), y = b.doubleValue();
@@ -11989,7 +12014,18 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object negate(Object value) {
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
-            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
+            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
+                long operand = ((Number) value).longValue();
+                if (checkedI64Arithmetic) {
+                    try {
+                        return Math.negateExact(operand);
+                    } catch (ArithmeticException overflow) {
+                        throw new ArithmeticException(
+                                "ORES_I64_OVERFLOW: checked signed i64 unary negation");
+                    }
+                }
+                return -operand;
+            }
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
         }
