@@ -58,21 +58,27 @@ final class AttoClassFieldV2ConformanceSourceTest {
     @Test
     void implicitValConstructorRebindIsRejected() throws Exception {
         String program = source("class-field-implicit-val-constructor-assign.atto");
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheckStrictAtto(program));
+        assertTrue(error.getMessage().contains("E_IMMUTABLE"),
+                "required compiler denial was not an immutable-slot violation: " + error);
     }
 
     @Test
     void privateClassFieldIsNotExposedToOutsideCode() throws Exception {
         String program = source("class-field-private-outside-class.atto");
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheckStrictAtto(program));
+        assertTrue(error.getMessage().contains("E_PRIVATE"),
+                "required compiler denial was not a private-field violation: " + error);
     }
 
     @Test
     void nonConstantInitializerCannotEnterClassConstField() throws Exception {
         String program = source("class-field-const-runtime-call.atto");
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheckStrictAtto(program));
+        assertTrue(error.getMessage().contains("E_CONST"),
+                "required compiler denial was not a const-purity violation: " + error);
     }
 }
