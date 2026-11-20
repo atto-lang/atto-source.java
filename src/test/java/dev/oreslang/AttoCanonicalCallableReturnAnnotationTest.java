@@ -42,6 +42,20 @@ final class AttoCanonicalCallableReturnAnnotationTest {
     }
 
     @Test
+    void interfaceSignatureMustAlsoDeclareItsResult() {
+        rejectsMissingReturn("""
+                define interface Api {
+                  fnc read();
+                }
+                """);
+        assertDoesNotThrow(() -> Parser.parseStrictAtto("""
+                define interface Api {
+                  fnc read() => int;
+                }
+                """));
+    }
+
+    @Test
     void explicitlyTypedCallableFormsRemainAccepted() {
         for (String source : new String[] {
                 "fnc empty(): void { return; }",
