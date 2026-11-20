@@ -177,6 +177,28 @@ final class LogicalPunctuationOperatorTest {
     }
 
     @Test
+    void integerXorRhsFailurePreservesLeftToRightEffectsAndDoesNotProduceResult() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        String source = """
+                fnc lhs(): int { stdio.println("left"); return 6; }
+                fnc rhs(): int { stdio.println("right"); return [1][99]; }
+                pub fnc main(): void {
+                  stdio.println(lhs() ^^ rhs());
+                  return;
+                }
+                """;
+        Source guest = Source.newBuilder(OresLanguage.ID, source, "integer-xor-rhs-failure.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            PolyglotException failure = assertThrows(PolyglotException.class, () -> context.eval(guest));
+            assertTrue(failure.getMessage().contains("99"), failure::getMessage);
+        }
+        assertEquals("left\nright\n", output.toString(StandardCharsets.UTF_8),
+                "eager int XOR must evaluate both operands exactly once without printing a result");
+    }
+
+    @Test
     void tokensAreAdjacentAndWordsRemainOrdinaryIdentifiers() {
         List<Token> spaced = new Lexer("true ^ ^ false").scan();
         assertEquals(2, spaced.stream().filter(t -> t.type() == Token.Type.CARET).count());
