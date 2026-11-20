@@ -66,6 +66,8 @@ public final class AttoM6ProxyUdsV1Probe {
                     route(102), turns, replayWindow), "replay was admitted");
                 require(!AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
                     route(103), turns, replayWindow), "cross-target delivery was admitted");
+                require(!AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
+                    route(106), turns, replayWindow), "cross-tenant delivery was admitted");
                 boolean rejectedMac = false;
                 try {
                     AttoM6ProxyUdsV1.serve_one(listener, session, runtime, target,
@@ -90,7 +92,7 @@ public final class AttoM6ProxyUdsV1Probe {
                 require(replayWindow.size() == 3, "replay budget state mismatch");
                 System.out.println("ATTO_PROXY_UDS_DESTINATION_M6_RECEIVE=PASS");
                 System.out.println("ATTO_PROXY_UDS_REMOTE_ADMITTED_THEN_PROCESSED=PASS");
-                System.out.println("ATTO_PROXY_UDS_BAD_MAC_REPLAY_WRONG_TARGET=REJECTED");
+                System.out.println("ATTO_PROXY_UDS_BAD_MAC_REPLAY_WRONG_TARGET_WRONG_TENANT=REJECTED");
                 System.out.println("ATTO_PROXY_UDS_M6_SUPERVISOR_PANIC_CONTROL=PASS");
                 System.out.println("ATTO_PROXY_UDS_PROCESSED_AFTER_M6_COMMIT=PASS");
                 if (compiledGuest) System.out.println(
@@ -122,6 +124,12 @@ public final class AttoM6ProxyUdsV1Probe {
             ProxyReceiptGateV1.Stage.PROCESSED);
         require(crossed.outcome() == ProxyReceiptGateV1.Outcome.REJECTED,
             "wrong-target authenticated request accepted");
+        var foreignTenant = new ProxyReceiptGateV1.Identity(
+            1, 12, 77, 17, 1, 31, 6, 106, 1);
+        var tenantDenied = AttoM6ProxyUdsV1.send(path, session, foreignTenant, 1000,
+            ProxyReceiptGateV1.Stage.PROCESSED);
+        require(tenantDenied.outcome() == ProxyReceiptGateV1.Outcome.REJECTED,
+            "wrong-tenant authenticated request accepted");
         byte[] wrongKey = new byte[32];
         Arrays.fill(wrongKey, (byte) 0xee);
         var rejectedMac = AttoM6ProxyUdsV1.send(path,
