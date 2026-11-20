@@ -5897,6 +5897,7 @@ public final class TypeChecker {
                     env.restoreInitialization(before);
                     Env armEnv = new Env(env);
                     checkPattern(arm.pattern(), subject, armEnv, generics, self);
+                    narrowSubjectName(valueMatch.subject(), arm.pattern(), armEnv, generics, self);
                     if (arm.guard() != null) {
                         requireAssignable(
                                 typeOfCondition(arm.guard(), armEnv, generics, self),
@@ -6140,6 +6141,15 @@ public final class TypeChecker {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical, !nonLexical);
             List<Type> parameters = new ArrayList<>();
+            // Scalar lambda profile: `|n| : int -> n * k` with no contextual
+            // callable type infers each untyped parameter as the declared scalar result.
+            Type scalarParamDefault = null;
+            if (lambda.declaredReturnType() != null) {
+                Type declaredScalar = resolve(lambda.declaredReturnType(), generics, self);
+                if (declaredScalar == Primitive.INT || declaredScalar == Primitive.FLOAT) {
+                    scalarParamDefault = declaredScalar;
+                }
+            }
             for (Ast.Param param : lambda.parameters()) {
                 if (param.type().isBorrow()
                         && param.type().borrowedTarget().name().equals("$infer$")) {
@@ -6154,6 +6164,10 @@ public final class TypeChecker {
                                     + "' requires a typed callable contract");
                 }
                 Type type = resolveParam(param, generics, self);
+                if (type == Unknown.INSTANCE && scalarParamDefault != null
+                        && param.type().name().equals("$infer$")) {
+                    type = scalarParamDefault;
+                }
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -8227,6 +8241,12 @@ public final class TypeChecker {
 
     private void defineConditionBindings(
             Ast.Expr condition, Env destination, Env sourceEnv, Set<String> generics, Type self) {
+        if (condition instanceof Ast.TypeTestExpr test && test.binding() == null
+                && test.value() instanceof Ast.NameExpr) {
+            narrowSubjectName(test.value(),
+                    new Ast.TypePattern(test.targetType(), null), destination, generics, self);
+            return;
+        }
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
             Type source = deref(typeOf(test.value(), sourceEnv, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
@@ -8248,6 +8268,21 @@ public final class TypeChecker {
             defineConditionBindings(binary.left(), destination, sourceEnv, generics, self);
             defineConditionBindings(binary.right(), destination, destination, generics, self);
         }
+    }
+
+    /**
+     * A positive binder-less type test on a plain local name (`on is int`,
+     * `x is int && ...`) narrows that name to the tested type inside the arm
+     * or the guarded conjunction. The narrowed binding is read-only.
+     */
+    private void narrowSubjectName(
+            Ast.Expr subjectExpr, Ast.Pattern pattern, Env armEnv, Set<String> generics, Type self) {
+        if (!(subjectExpr instanceof Ast.NameExpr name)) return;
+        if (!(pattern instanceof Ast.TypePattern typed) || typed.binding() != null
+                || typed.type().isComplement()) return;
+        if (armEnv.bindings.containsKey(name.name())) return;
+        Type target = deref(resolve(typed.type(), generics, self));
+        armEnv.define(name.name(), target, Ast.BindingKind.VAL);
     }
 
     private void checkMatch(
@@ -8277,6 +8312,7 @@ public final class TypeChecker {
 
             Env armEnv = new Env(env);
             checkPattern(arm.pattern(), subject, armEnv, generics, self);
+            narrowSubjectName(matched.subject(), arm.pattern(), armEnv, generics, self);
             if (arm.guard() != null) {
                 requireAssignable(typeOfCondition(arm.guard(), armEnv, generics, self), Primitive.BOOL, "match guard");
             }
@@ -9050,9 +9086,15 @@ public final class TypeChecker {
      * identity relation, while open nominal types may share a future/common
      * subtype and therefore cannot be declared disjoint without a proof.
      */
+    private static boolean isAnyTop(Type t) {
+        return t instanceof Named n && n.arguments().isEmpty() && n.name().equals("Any");
+    }
+
     private boolean typesMayOverlap(Type a, Type b) {
         if (a == Unknown.INSTANCE || b == Unknown.INSTANCE
                 || a instanceof Generic || b instanceof Generic) return true;
+        // Any is the open top type: every runtime type test may succeed.
+        if (isAnyTop(a) || isAnyTop(b)) return true;
         if (a instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(option, b));
         if (b instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(a, option));
 
@@ -12690,6 +12732,8 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        // Any is the open top type for owned values (borrows never widen to Any).
+        if (isAnyTop(expected) && !(actual instanceof Borrow)) return true;
         // A negative constraint requires positive evidence that values are disjoint.
         // The generic/Unknown and dynamic compatibility paths below are not evidence.
         if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);

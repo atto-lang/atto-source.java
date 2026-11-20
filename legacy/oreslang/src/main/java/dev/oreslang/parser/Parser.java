@@ -5104,6 +5104,7 @@ public final class Parser {
             // grammar also allows adjacent arms without redundant punctuation.
             // Do not let arbitrary expressions substitute for an arm terminator.
             if (!match(SEMICOLON)
+                    && !match(COMMA)
                     && !check(DEFAULT)
                     && !check(END)
                     && !(braced && check(RBRACE))
@@ -5119,8 +5120,9 @@ public final class Parser {
         if (valueArms.isEmpty()) {
             throw error(previous(), "value match requires at least one 'on' arm");
         }
-        return new Ast.MatchExpr(subject, valueArms, declaredResult,
-                canonicalFirst || legacyFirst);
+        // Canonical `over` matches are source-ordered first-match (spec language.md),
+        // consistent with statement-form `match ... over`.
+        return new Ast.MatchExpr(subject, valueArms, declaredResult, true);
     }
 
     /**
@@ -5314,7 +5316,8 @@ public final class Parser {
             Ast.TypeRef target = parseTypeRef();
             String binding = match(AS)
                     ? consume(IDENT, "expected name after type pattern 'as'").lexeme()
-                    : check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
+                    : check(IDENT) && !peek().lexeme().equals("_")
+                            && !peek().lexeme().equals("when") ? advance().lexeme() : null;
             return new Ast.TypePattern(target, binding);
         }
 
@@ -5713,6 +5716,25 @@ public final class Parser {
         return expr;
     }
 
+    private static final java.util.Set<String> IS_TYPE_TEST_NAMES = java.util.Set.of(
+            "int", "string", "bool", "float", "decimal", "byte", "char", "Any");
+
+    /**
+     * Canonical `value is int` / `value is Shape` is a runtime type test; the
+     * historical identity spelling `a is b` remains for value operands.
+     */
+    private boolean isTypeTestAfterIs() {
+        if (current + 1 >= tokens.size()) return false;
+        Token next = tokens.get(current + 1);
+        if (next.type() != IDENT) return false;
+        String name = next.lexeme();
+        if (IS_TYPE_TEST_NAMES.contains(name)) return true;
+        if (!Character.isUpperCase(name.codePointAt(0))) return false;
+        if (current + 2 >= tokens.size()) return true;
+        Token.Type after = tokens.get(current + 2).type();
+        return after != DOT && after != LPAREN;
+    }
+
     private Ast.Expr parseEquality() {
         Ast.Expr expr = parseComparison();
         while (true) {
@@ -5720,6 +5742,12 @@ public final class Parser {
             if (match(EQ, EQUAL_EQUAL)) op = "eq";
             else if (match(NEQ, BANG_EQUAL)) op = "neq";
             else if (matchAdjacentBangEqKeyword()) op = "neq";
+            else if (!suppressRefinementOperators && check(IS) && isTypeTestAfterIs()) {
+                advance();
+                Ast.TypeRef target = parseTypeRef();
+                expr = new Ast.TypeTestExpr(expr, target, null);
+                continue;
+            }
             else if (!suppressRefinementOperators && match(IS)) op = "is";
             else break;
             expr = new Ast.BinaryExpr(op, expr, parseComparison());
@@ -6824,6 +6852,18 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
+        if (match(COLON)) {
+            // Canonical `|n| : int -> expr` / `|n| : int -> { ... }`: the result
+            // type precedes the arrow. Lower an expression body to `{ return expr; }`.
+            Ast.TypeRef declared = parseTypeRef();
+            consume(ARROW, "lambdas use the slim arrow '->'");
+            if (check(LBRACE)) {
+                return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, declared);
+            }
+            Ast.Expr value = inlinePipelineStage ? parseConditional() : parseExpression();
+            return new Ast.LambdaExpr(params, null,
+                    List.of(new Ast.ReturnStmt(value)), nonLexical, declared);
+        }
         consume(ARROW, "lambdas use the slim arrow '->'");
         return parseLambdaBody(params, nonLexical, inlinePipelineStage);
     }
