@@ -290,7 +290,7 @@ public final class AttoAsyncV1Compiler {
             + "  }\n"
             + "}\n";
     }
-    private static String compilePureInline(String fun, String param, int increment,
+    private static String compilePureInline(String fun, String param, long increment,
                                             String body) {
         // Labelled Java lexical scopes implement inline-local returns without
         // returning from the parent, allocating a Future or scheduling a child.
