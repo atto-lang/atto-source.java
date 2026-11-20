@@ -93,3 +93,76 @@ without the host `TrapError` sanitizer. The strict fail-closed gate may
 be removed **only** alongside positive and negative guest compiler tests
 demonstrating those obligations. Source-branch CI and private carrier
 governance remain independently blocking.
+
+## Typed ordinary guest Error runtime foundation — 2026-11-20
+
+The draft now contains a **runtime-only, compiler-inaccessible** foundation
+for a future real typed `throw!` and caller-side `trap!` path. It does
+not replace the fail-closed strict-source admission gate.
+
+- `GuestErrorValue`: immutable nominal base `Error` payload with JVM
+  reference identity; it is not a Java Throwable, has no overridden
+  equals/hashCode, and implicit `toString` does not disclose the message.
+  The first bounded slice accepts a non-null message of at most 4096 Java
+  UTF-16 code units, rejects oversized input rather than silently truncating,
+  and does **not** yet support source Error subclass instantiation, guest
+  traces, structured payloads, capability transport or TenantVM transfer.
+- `GuestOrdinaryThrow`: distinct stackless JVM control marker holding
+  the original `GuestErrorValue` reference, not a stringified copy or host
+  Throwable cause. A fresh signal can represent a rethrow without copying
+  the underlying Error object.
+- `TrapFailurePolicy`: directly raised guest signals remain ordinary
+  throw/catch candidates, with fatal host VM classes, cancellation and
+  panic excluded. A signal hidden inside an async/host wrapper now **fails
+  closed**, rather than becoming a sanitized Err with lost Error identity.
+  Bounded source trace markers remain diagnostic only; suppressed
+  cancellation or other terminal faults still prevent capture.
+- `OresEvalRootNode`: the existing direct and suspendable try/catch
+  handlers bind the **original Error value** for these typed signals.
+  The `trapErr` branch puts that same object in the Err slot. Unversioned
+  legacy Java failure translation continues to use `TrapError` and is
+  not misrepresented as typed source Error conformance.
+
+### Evidence, exact Git blobs and scope
+
+Runtime files tested locally and checked against GitHub:
+- `GuestErrorValue.java` `64d8af2734f79c95d3faef19d297ac3125ba3c86`
+- `GuestOrdinaryThrow.java` `0ad3b4bbe7c0543e4b4e6d51ef5c26ad42acf884`
+- `TrapFailurePolicy.java` `20109dbbb153309b28fa22c82ce105f4f224efe9`
+- `GuestOrdinaryThrowTest.java` `3aa9d31570859dc3c46e88d6a78c0189de0558f3`
+
+**Local Java 21 execution:** 14/14 direct smoke assertions passed
+with the exact two guest Error runtime blobs. The actual six committed
+`GuestOrdinaryThrowTest` methods also compiled and **6/6 passed**
+using a local stand-in JUnit assertion/annotation shim and minimal
+`SourceBoundaryTrace` / `LogicalStackOverflowException` stubs,
+with the Error and policy files **Git-blob-exact**. This is **NOT**
+real Maven/JUnit test execution against the complete repository graph,
+nor JDK25/GraalVM guest execution, Native Image or fully checked
+AttoLang compiler semantics.
+
+The exact-head workflow now includes the two new runtime files, the
+evaluator, the test class and the new named Maven test selection.
+Material source-runner verification remains **NOT_EXECUTED**.
+
+### Syntax overlap and remaining end-to-end blockers
+
+- [Java syntax PR #194](https://github.com/atto-lang/atto-source.java/pull/194)
+  owns lexer recognition of `trap!`, `throw!`, `raise!` and `panic!`.
+  [Spec PR #146](https://github.com/atto-lang/atto-spec/pull/146)
+  owns canonical bang spelling and historical migration.
+  Their sources are not copied into this runtime patch; integration
+  must preserve contiguity and unary-not distinctions.
+- Strict Java source `trap!` and `throw!` still **reject before AST
+  admission** until checked nominal Error/subtype construction, source
+  exceptional-effect AST, escape/throws typing, call-chain propagation,
+  cleanup-aware `?`, guest Error identity through ordinary catch, and
+  raise/panic/actor supervisor behavior have compiled proof.
+- The initial immutable Error carrier has **no TenantVM affinity or
+  cross-tenant sharing authority**. It may only be used by the trusted
+  internal runtime; adding guest-visible constructors and actor transfers
+  requires tenant-bound ownership/capability gates and an audited nominal
+  ABI. The host marker itself is not exposed to guest code.
+- End-to-end compiler guest tests, exact-current-head JDK25/GraalVM
+  execution, cross-backend Rust/Wasm differential proof and independent
+  security/merge review remain mandatory. Keep this PR DRAFT.
