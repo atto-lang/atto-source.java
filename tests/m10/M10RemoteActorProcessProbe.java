@@ -137,6 +137,11 @@ public final class M10RemoteActorProcessProbe {
         String produced = AttoM10RestrictedActorCompiler.compile_source(source);
         require(produced.contains(M10GeneratedActor.SOURCE_SHA256),
                 "server handler does not represent exact fixture source SHA");
+        String senderSource = Files.readString(Path.of(
+            "fixtures/m10/remote_adder_sender.atto"));
+        require(AttoM10RestrictedSenderCompiler.compile_source(senderSource)
+            .contains(M10GeneratedSender.SOURCE_SHA256),
+            "process A compiled sender source SHA mismatch");
         for (String invalid : new String[] {
             "define actor RemoteAdder as { pub fnc on_message(int value): int { return os.read_env(\"secret\"); } }",
             "define proxy actor RemoteAdder as { }",
@@ -165,13 +170,20 @@ public final class M10RemoteActorProcessProbe {
                 fails(() -> AttoM10ProxyIpcGateway.send_request_blocking(
                     socket, "WrongActor", 7, 711, 104, 1, 32, key),
                       "cross-target actor name may not authenticate");
-                var first = send(socket, 711, 105, 32, key);
-                require(first.remote_pid() == server.process.pid(),
-                        "ACK is not bound to second OS process PID");
-                require(first.remote_pid() != ProcessHandle.current().pid(),
-                        "actor executed in the calling process");
-                require(first.processed_result() == 42,
-                        "source-derived remote receive() returned wrong result");
+                // The sender in process A is a separately source-compiled
+                // Atto preview. It can only invoke the HOST-INJECTED,
+                // authenticated association, never choose a socket/capability
+                // or mint a destination receipt from guest code.
+                long compiledResult = M10GeneratedSender.main(value -> {
+                    var received = send(socket, 711, 105, value, key);
+                    require(received.remote_pid() == server.process.pid(),
+                        "compiled sender response is not from process B");
+                    require(received.remote_pid() != ProcessHandle.current().pid(),
+                        "compiled receiver ran in the sender process");
+                    return received.processed_result();
+                });
+                require(compiledResult == 42,
+                    "source-derived sender and receiver returned wrong result");
                 var next = send(socket, 711, 106, 10, key);
                 require(next.processed_result() == 20,
                         "second message was not processed by real remote actor");
@@ -240,6 +252,7 @@ public final class M10RemoteActorProcessProbe {
         }
         System.out.println("M10_TWO_REAL_JVM_PROCESSES_UDS_IPC=PASS");
         System.out.println("M10_RESTRICTED_COMPILED_ATTO_REMOTE_RECEIVE=PASS");
+        System.out.println("M10_RESTRICTED_COMPILED_ATTO_PROCESS_A_SENDER=PASS");
         System.out.println("M10_REMOTE_RECIPIENT_ADMITTED_AND_PROCESSED=PASS");
         System.out.println("M10_REMOTE_TENANT_TARGET_MAC_AND_VERSION_GATE=PARTIAL");
         System.out.println("M10_REMOTE_DUPLICATE_FAULT_AND_RESTART_FENCING=PASS");
