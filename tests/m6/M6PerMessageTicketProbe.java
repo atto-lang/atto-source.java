@@ -12,9 +12,14 @@ public final class M6PerMessageTicketProbe {
     private static void require(boolean truth, String why) {
         if (!truth) throw new AssertionError(why);
     }
+    private static AttoM6Runtime.ReceiptRoute route(
+            AttoM6Runtime.ActorRef ref, long value) {
+        return new AttoM6Runtime.ReceiptRoute(1, 11, 77, 17, ref.generation(),
+            31, 6, Math.addExact(Math.abs(value), 100), 1);
+    }
     private static AttoM6Runtime.Ticket accept(AttoM6Runtime runtime,
             AttoM6Runtime.ActorRef ref, long value) {
-        var a = runtime.try_send_ticket(ref, value);
+        var a = runtime.try_send_ticket(ref, value, route(ref, value));
         require(a.admission() == AttoM6Runtime.Admission.ACCEPTED && a.ticket() != null,
             "no issued receipt for admitted message: " + a.admission());
         return a.ticket();
@@ -39,7 +44,7 @@ public final class M6PerMessageTicketProbe {
             var first = accept(runtime, slow, 11);
             require(entered.await(5, TimeUnit.SECONDS), "slow turn never started");
             var queued = accept(runtime, slow, 12);
-            var full = runtime.try_send_ticket(slow, 13);
+            var full = runtime.try_send_ticket(slow, 13, route(slow, 13));
             require(full.admission() == AttoM6Runtime.Admission.FULL && full.ticket() == null,
                 "full mailbox minted phantom ticket");
             var other = accept(runtime, fast, 70);
@@ -51,9 +56,19 @@ public final class M6PerMessageTicketProbe {
                 "another actor completed a blocked first message");
             require(runtime.ticket_snapshot(queued).state() == AttoM6Runtime.TicketState.ADMITTED,
                 "another actor completed queued message");
+            require(runtime.ticket_route(queued).equals(route(slow, 12)) &&
+                runtime.ticket_route(other).equals(route(fast, 70)),
+                "ticket lost authenticated route/target/incarnation identity");
+            boolean badScope = false;
+            try {
+                runtime.try_send_ticket(slow, 99,
+                    new AttoM6Runtime.ReceiptRoute(1, 11, 77, 17, 999,
+                        31, 6, 199, 1));
+            } catch (IllegalArgumentException expected) { badScope = true; }
+            require(badScope, "wrong target incarnation minted a receipt");
             require(!runtime.ticket_snapshot(queued).hasResult(), "uncommitted result visible");
             var forgedRef = new AttoM6Runtime.ActorRef("slow", slow.generation());
-            var forged = runtime.try_send_ticket(forgedRef, 999);
+            var forged = runtime.try_send_ticket(forgedRef, 999, route(forgedRef, 999));
             require(forged.admission() == AttoM6Runtime.Admission.STALE &&
                 forged.ticket() == null, "forged record became mailbox authority");
             try (var foreign = new AttoM6Runtime(1, 1)) {
@@ -159,7 +174,7 @@ public final class M6PerMessageTicketProbe {
             var restarted = runtime.spawn_with_result("restarting", 1, value -> value + 42);
             require(restarted.generation() == target.generation() + 1,
                 "actor incarnation not rotated");
-            var old = runtime.try_send_ticket(target, 9);
+            var old = runtime.try_send_ticket(target, 9, route(target, 9));
             require(old.admission() == AttoM6Runtime.Admission.STALE && old.ticket() == null,
                 "old incarnation admitted after restart");
             var fresh = accept(runtime, restarted, 8);
