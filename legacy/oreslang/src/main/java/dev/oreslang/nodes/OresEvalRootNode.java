@@ -2368,7 +2368,6 @@ public final class OresEvalRootNode extends RootNode {
                         unary.operand(), seen);
             }
             if (expr instanceof Ast.BinaryExpr binary) {
-                if (Ast.ChannelFlow.isFlowOperator(binary.operator())) return true;
                 return expressionContainsPotentialSuspension(
                                 binary.left(), seen)
                         || expressionContainsPotentialSuspension(
@@ -4451,12 +4450,6 @@ public final class OresEvalRootNode extends RootNode {
                         // if an untyped graph operator reaches guest evaluation.
                         continuation.accept(task, null, new IllegalStateException(
                                 "actor pipe graph is not implemented; no stages were spawned"));
-                        return;
-                    }
-                    if (Ast.ChannelFlow.isFlowOperator(binary.operator())) {
-                        // Channel data-flow suspends exactly like its writech/readch lowering.
-                        evalSuspendableExpr(task, Ast.ChannelFlow.require(binary), env,
-                                (resumed, ignored, failure) -> continuation.accept(resumed, null, failure));
                         return;
                     }
                     if (binary.operator().equals("&&")) {
@@ -7694,7 +7687,7 @@ public final class OresEvalRootNode extends RootNode {
                     && env.accessClass() != null // nlex closures lose receiver authority
                     && env.lookup(unqualified.name()) == Env.MISSING
                     && !Set.of("init", "Some", "Ok", "Err", "And", "Or", "Xor",
-                            "print", "ashr", "task_context", "task_cancel_requested",
+                            "print", "task_context", "task_cancel_requested",
                             "$task_context_enter", "$task_context_exit").contains(unqualified.name())) {
                 Object lexicalSelf = env.lookup("self");
                 if (lexicalSelf instanceof OresObject receiver) {
@@ -8278,10 +8271,6 @@ public final class OresEvalRootNode extends RootNode {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
                 };
-                if (name.name().equals("ashr")) return (Invokable) args -> {
-                    if (args.size() != 2) throw new IllegalArgumentException("ashr(value, distance) takes 2 arguments");
-                    return integralLong(args.get(0)) >> shiftDistance(args.get(1));
-                };
                 if (name.name().equals("task_cancel_requested")) return (Invokable) args -> {
                     requireZero(args, "task_cancel_requested");
                     return SourceTaskHandles.currentTaskCancelRequested();
@@ -8456,11 +8445,6 @@ public final class OresEvalRootNode extends RootNode {
                 if (binary.operator().equals("pipe")) {
                     throw new IllegalStateException(
                             "actor pipe graph is not implemented; no stages were spawned");
-                }
-                if (Ast.ChannelFlow.isFlowOperator(binary.operator())) {
-                    // Channel data-flow: run the checked writech/readch lowering.
-                    eval(Ast.ChannelFlow.require(binary), env);
-                    return null;
                 }
                 if (binary.operator().equals("&&")) {
                     Object left = eval(binary.left(), env);
@@ -11787,6 +11771,9 @@ public final class OresEvalRootNode extends RootNode {
                 case "^" -> integralLong(left) ^ integralLong(right);
                 case "<<<" -> integralLong(left) << shiftDistance(right);
                 case ">>>" -> integralLong(left) >>> shiftDistance(right);
+                case "ashr" -> integralLong(left) >> shiftDistance(right);
+                // `<<` / `>>` are channel I/O statements, desugared by the parser
+                // and rejected anywhere else by the checker: never a shift.
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
             };
         }

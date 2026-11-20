@@ -23,15 +23,15 @@ final class Odb1ScalarShiftGuestTest {
     private record Case(String name, String expression, String stdout) { }
 
     private static final List<Case> CASES = List.of(
-            new Case("zero", "ashr(0, 8)", "0"),
-            new Case("below-one-byte", "ashr(255, 8)", "0"),
-            new Case("first-high-byte", "ashr(256, 8)", "1"),
-            new Case("unsigned-16-maximum", "ashr(65535, 8)", "255"),
-            new Case("odb1-id-maximum", "ashr(2147483647, 8)", "8388607"),
-            new Case("addition-before-shift", "255 + 1 >>> 8", "1"),
-            new Case("two-shifts", "65536 >>> 8 >>> 8", "1"),
-            new Case("signed-negative", "ashr(-256, 8)", "-1"),
-            new Case("signed-minimum", "ashr(-9223372036854775808, 8)",
+            new Case("zero", "0 ashr 8", "0"),
+            new Case("below-one-byte", "255 ashr 8", "0"),
+            new Case("first-high-byte", "256 ashr 8", "1"),
+            new Case("unsigned-16-maximum", "65535 ashr 8", "255"),
+            new Case("odb1-id-maximum", "2147483647 ashr 8", "8388607"),
+            new Case("addition-before-shift", "255 + 1 ashr 8", "1"),
+            new Case("two-shifts", "65536 ashr 8 ashr 8", "1"),
+            new Case("signed-negative", "-256 ashr 8", "-1"),
+            new Case("signed-minimum", "-9223372036854775808 ashr 8",
                     "-36028797018963968")
     );
 
@@ -59,6 +59,6 @@ final class Odb1ScalarShiftGuestTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(
                 Parser.parse("pub fnc main():int{return 256/256;}")));
         assertDoesNotThrow(() -> TypeChecker.check(
-                Parser.parse("pub fnc main():int{return ashr(256, 8);}")));
+                Parser.parse("pub fnc main():int{return 256 ashr 8;}")));
     }
 }

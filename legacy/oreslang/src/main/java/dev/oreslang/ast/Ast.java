@@ -1746,72 +1746,64 @@ public final class Ast {
      * Runtime reads fail closed for ASTs that never passed type checking.
      */
     /**
-     * Type-checked lowering of the channel data-flow operators {@code <<} and
-     * {@code >>}. The arrow is the direction the data flows:
-     * {@code ch << v} and {@code v >> ch} write {@code v} into {@code ch};
-     * {@code x << ch} and {@code ch >> x} read one value from {@code ch} into
-     * {@code x}. The checker resolves the direction from which operand is the
-     * channel and records the equivalent {@code writech}/{@code readch} node,
-     * so the operators inherit exactly those suspension, backpressure,
-     * cancellation and ownership rules. Bit shifts are {@code <<<} and {@code >>>}.
+     * Channel I/O direction shorthand (atto-spec io-direction-shorthand-v1).
+     * The parser desugars {@code sink << value;} to {@code writech sink, value}
+     * and {@code source >> val name;} / {@code val name << source;} to a binding
+     * initialized by {@code readch source}, so the shorthand has exactly the
+     * suspension, backpressure, cancellation and ownership rules of the explicit
+     * spelling. A read always declares a fresh {@code val}/{@code let} binding.
+     * This side table only remembers which writes were spelled {@code <<}, so a
+     * non-channel sink gets a diagnostic that points at the bit-shift spelling.
+     * {@code <<} and {@code >>} are never integer shifts: those are
+     * {@code <<<}, {@code >>>} and {@code ashr}.
      */
-    public static final class ChannelFlow {
-        private ChannelFlow() { }
+    public static final class IoShorthand {
+        private IoShorthand() { }
 
-        private static final java.lang.ref.ReferenceQueue<BinaryExpr> CLEARED =
+        private static final java.lang.ref.ReferenceQueue<ChannelOpExpr> CLEARED =
                 new java.lang.ref.ReferenceQueue<>();
-        private static final java.util.Map<Key, Expr> LOWERED = new java.util.HashMap<>();
+        private static final java.util.Set<Key> WRITES = new java.util.HashSet<>();
 
-        private static final class Key extends java.lang.ref.WeakReference<BinaryExpr> {
+        private static final class Key extends java.lang.ref.WeakReference<ChannelOpExpr> {
             private final int hash;
-            private Key(BinaryExpr flow, java.lang.ref.ReferenceQueue<BinaryExpr> queue) {
-                super(flow, queue);
-                hash = System.identityHashCode(flow);
+            private Key(ChannelOpExpr write, java.lang.ref.ReferenceQueue<ChannelOpExpr> queue) {
+                super(write, queue);
+                hash = System.identityHashCode(write);
             }
             @Override public int hashCode() { return hash; }
             @Override public boolean equals(Object other) {
                 if (this == other) return true;
                 if (!(other instanceof Key key)) return false;
-                BinaryExpr value = get();
+                ChannelOpExpr value = get();
                 return value != null && value == key.get();
             }
         }
 
-        public static boolean isFlowOperator(String operator) {
+        /** {@code sink << value;} as the blocking writech it means. */
+        public static synchronized ChannelOpExpr write(Expr sink, Expr value) {
+            expunge();
+            ChannelOpExpr write = new ChannelOpExpr(ChannelOperation.WRITE, WaitMode.BLOCKING, sink, value);
+            WRITES.add(new Key(write, CLEARED));
+            return write;
+        }
+
+        /** {@code source >> val name;} and {@code val name << source;} read with readch. */
+        public static ChannelOpExpr read(Expr source) {
+            return new ChannelOpExpr(ChannelOperation.READ, WaitMode.BLOCKING, source, null);
+        }
+
+        public static synchronized boolean isShorthandWrite(ChannelOpExpr write) {
+            expunge();
+            return WRITES.contains(new Key(write, null));
+        }
+
+        public static boolean isDirectionOperator(String operator) {
             return "<<".equals(operator) || ">>".equals(operator);
         }
 
-        /**
-         * The one lowering of this node. Re-checking the same program reuses it,
-         * so every later pass and the evaluator see the same lowered node.
-         */
-        public static synchronized Expr lowerOnce(BinaryExpr flow, java.util.function.Supplier<Expr> build) {
-            if (!isFlowOperator(flow.operator())) {
-                throw new IllegalArgumentException("not a channel flow operator: " + flow.operator());
-            }
-            expunge();
-            Key key = new Key(flow, CLEARED);
-            Expr existing = LOWERED.get(key);
-            if (existing != null) return existing;
-            Expr lowered = java.util.Objects.requireNonNull(build.get(), "lowered");
-            LOWERED.put(key, lowered);
-            return lowered;
-        }
-
-        /** The checked lowering, or a failure if this node was never type-checked. */
-        public static synchronized Expr require(BinaryExpr flow) {
-            expunge();
-            Expr lowered = LOWERED.get(new Key(flow, null));
-            if (lowered == null) {
-                throw new IllegalStateException(
-                        "channel flow '" + flow.operator() + "' reached execution without type checking");
-            }
-            return lowered;
-        }
-
         private static void expunge() {
-            for (java.lang.ref.Reference<? extends BinaryExpr> cleared; (cleared = CLEARED.poll()) != null; ) {
-                LOWERED.remove(cleared);
+            for (java.lang.ref.Reference<? extends ChannelOpExpr> cleared; (cleared = CLEARED.poll()) != null; ) {
+                WRITES.remove(cleared);
             }
         }
     }

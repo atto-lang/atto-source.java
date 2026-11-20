@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -11,17 +12,23 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /**
- * Channel data-flow operators. The arrow is where the data goes:
- * {@code ch << v} and {@code v >> ch} write; {@code x << ch} and
- * {@code ch >> x} read. They lower to exactly {@code writech}/{@code readch},
- * so they suspend (never park a carrier), apply backpressure and keep channel
- * ownership rules. Bit shifts are {@code <<<} and {@code >>>}.
+ * Channel I/O direction shorthand (atto-spec io-direction-shorthand-v1) and
+ * the integer shifts that replaced {@code <<}/{@code >>}
+ * (bitwise-and-stream-operators-v1).
+ *
+ * <p>{@code sink << value;} is exactly {@code writech sink, value;}.
+ * {@code source >> val name;} and {@code val name << source;} are exactly
+ * {@code val name = readch source;}: a read always declares a fresh binding.
+ * The shorthand therefore suspends (never parks a carrier), applies
+ * backpressure and keeps channel ownership rules. Shifts are {@code <<<},
+ * {@code >>>} and the infix word {@code ashr}.</p>
  */
 @Timeout(60)
 final class ChannelFlowOperatorTest {
@@ -30,36 +37,32 @@ final class ChannelFlowOperatorTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).out(output).build()) {
-            context.eval(Source.newBuilder(OresLanguage.ID, program, "channel-flow.ores")
+            context.eval(Source.newBuilder(OresLanguage.ID, program, "channel-io.ores")
                     .mimeType(OresLanguage.MIME_TYPE).buildLiteral());
         }
         return output.toString(StandardCharsets.UTF_8);
     }
 
     @Test
-    void bothArrowsWriteAndReadThroughARendezvousChannel() throws Exception {
+    void everyReadAndWriteSpellingRendezvousesThroughACapacityZeroChannel() throws Exception {
         // Capacity 0: every write suspends until a reader arrives, and every
-        // read suspends until a writer arrives, in both directions.
+        // read suspends until a writer arrives.
         assertEquals("41|42|43|44", run("""
                 async fnc produce(Channel<int> data): void {
                   data << 41;
-                  42 >> data;
-                  data << 43;
-                  44 >> data;
+                  data << 42;
+                  writech data, 43;
+                  data << 44;
                   return;
                 }
 
                 pub async routine main(): void {
                   val Channel<int> data = Channel.new<int>(0);
                   val Future<void> producer = produce(data);
-                  let int a = 0;
-                  let int b = 0;
-                  let int c = 0;
-                  let int d = 0;
-                  a << data;
-                  data >> b;
-                  c << data;
-                  data >> d;
+                  data >> val a;
+                  val b << data;
+                  data >> let int c;
+                  val d: int << data;
                   await producer;
                   stdio.stdout.write(a);
                   stdio.stdout.write("|");
@@ -89,14 +92,10 @@ final class ChannelFlowOperatorTest {
                   val Channel<int> data = Channel.new<int>(1);
                   val Channel<bool> ready = Channel.new<bool>(1);
                   val Future<void> producer = produce(data, ready);
-                  let bool extra = true;
-                  extra << ready;
-                  let int first = 0;
-                  let int second = 0;
-                  let int third = 0;
-                  data >> first;
-                  data >> second;
-                  data >> third;
+                  ready >> val extra;
+                  data >> val first;
+                  val second << data;
+                  data >> val third;
                   await producer;
                   stdio.stdout.write(extra);
                   stdio.stdout.write("|");
@@ -111,7 +110,7 @@ final class ChannelFlowOperatorTest {
     }
 
     @Test
-    void flowsWorkInsideAnActorReceiveAndOnActorFields() throws Exception {
+    void theShorthandWorksInsideAnActorReceiveOnAFieldChannel() throws Exception {
         assertEquals("10|20|30|", run("""
                 define actor Relay as
                   let Channel<int> feed;
@@ -125,7 +124,8 @@ final class ChannelFlowOperatorTest {
 
                   receive(ActorMail<int> mail): void {
                     self.feed << mail.value * 10;
-                    self.feed >> self.last;
+                    self.feed >> val got;
+                    self.last = got;
                     stdio.stdout.write(self.last);
                     stdio.stdout.write("|");
                     if mail.value == 3 then
@@ -148,48 +148,69 @@ final class ChannelFlowOperatorTest {
     }
 
     @Test
-    void bitShiftsAreTripleArrows() throws Exception {
-        assertEquals("16|4|0|-1|9223372036854775807", run("""
+    void shiftsAreTripleArrowsAndInfixAshrPerTheBitwiseConformanceCases() throws Exception {
+        // BW-005, BW-006, BW-007, BW-009, BW-010, BW-011 plus a logical/arithmetic contrast.
+        assertEquals("32|9223372036854775807|-4|24|1|-1|4|-1", run("""
                 pub fnc main(): void {
-                  stdio.stdout.write(1 <<< 4);
+                  stdio.stdout.write(8 <<< 2);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(-1 >>> 1);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(-8 ashr 1);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(1 + 2 <<< 3);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write((1 <<< 63) >>> 63);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write((1 <<< 63) ashr 63);
                   stdio.stdout.write("|");
                   stdio.stdout.write(16 >>> 2);
                   stdio.stdout.write("|");
-                  stdio.stdout.write(1 >>> 3);
-                  stdio.stdout.write("|");
-                  stdio.stdout.write(ashr(-1, 1));
-                  stdio.stdout.write("|");
-                  stdio.stdout.write(-1 >>> 1);
+                  stdio.stdout.write(-1 ashr 1);
                   return;
                 }
                 """));
     }
 
+    private static List<Ast.Stmt> mainBody(Ast.Program program) {
+        return ((Ast.FunctionDecl) program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(d -> d instanceof Ast.FunctionDecl).findFirst().orElseThrow()).body();
+    }
+
     @Test
-    void aFlowLowersToExactlyTheEquivalentChannelOperation() {
+    void theShorthandDesugarsToExactlyTheExplicitChannelOperation() {
         Ast.Program program = Parser.parse("""
                 pub async routine main(): void {
-                  val Channel<int> data = Channel.new<int>(1);
+                  val Channel<int> data = Channel.new<int>(2);
                   data << 7;
-                  let int x = 0;
-                  x << data;
+                  data >> val x;
+                  data << 8;
+                  let y: int << data;
                   return;
                 }
                 """);
         TypeChecker.check(program);
-        var body = ((Ast.FunctionDecl) program.modules().stream()
-                .flatMap(module -> module.declarations().stream())
-                .filter(d -> d instanceof Ast.FunctionDecl).findFirst().orElseThrow()).body();
-        var write = (Ast.BinaryExpr) ((Ast.ExprStmt) body.get(1)).expression();
-        var read = (Ast.BinaryExpr) ((Ast.ExprStmt) body.get(3)).expression();
-        Ast.ChannelOpExpr writech = assertInstanceOf(Ast.ChannelOpExpr.class, Ast.ChannelFlow.require(write));
-        assertEquals(Ast.ChannelOperation.WRITE, writech.operation());
-        assertEquals(Ast.WaitMode.BLOCKING, writech.mode());
-        Ast.AssignExpr assign = assertInstanceOf(Ast.AssignExpr.class, Ast.ChannelFlow.require(read));
-        Ast.ChannelOpExpr readch = assertInstanceOf(Ast.ChannelOpExpr.class, assign.value());
-        assertEquals(Ast.ChannelOperation.READ, readch.operation());
-        TypeChecker.check(program);
-        assertTrue(Ast.ChannelFlow.require(write) == writech, "re-checking reuses the same lowering");
+        List<Ast.Stmt> body = mainBody(program);
+        Ast.ChannelOpExpr write = assertInstanceOf(Ast.ChannelOpExpr.class,
+                ((Ast.ExprStmt) body.get(1)).expression());
+        assertEquals(Ast.ChannelOperation.WRITE, write.operation());
+        assertEquals(Ast.WaitMode.BLOCKING, write.mode());
+        assertTrue(Ast.IoShorthand.isShorthandWrite(write));
+
+        Ast.BindingStmt sourceFirst = assertInstanceOf(Ast.BindingStmt.class, body.get(2));
+        assertEquals(Ast.BindingKind.VAL, sourceFirst.kind());
+        assertEquals("x", sourceFirst.name());
+        assertNull(sourceFirst.declaredType());
+        Ast.ChannelOpExpr read = assertInstanceOf(Ast.ChannelOpExpr.class, sourceFirst.initializer());
+        assertEquals(Ast.ChannelOperation.READ, read.operation());
+        assertEquals(Ast.WaitMode.BLOCKING, read.mode());
+
+        Ast.BindingStmt declarationFirst = assertInstanceOf(Ast.BindingStmt.class, body.get(4));
+        assertEquals(Ast.BindingKind.LET, declarationFirst.kind());
+        assertEquals("int", declarationFirst.declaredType().name());
+        assertEquals(Ast.ChannelOperation.READ,
+                assertInstanceOf(Ast.ChannelOpExpr.class, declarationFirst.initializer()).operation());
     }
 
     private static void rejected(String source, String fragment) {
@@ -199,14 +220,34 @@ final class ChannelFlowOperatorTest {
     }
 
     @Test
-    void misuseFailsClosedAtTypeCheck() {
+    void misuseFailsClosedBeforeExecution() {
+        // `<<` / `>>` are never integer shifts.
         rejected("""
                 pub fnc main(): void {
                   val int x = 1;
                   val int y = x << 2;
                   return;
                 }
-                """, "use '<<<' or '>>>' for bit shifts");
+                """, "use '<<<', '>>>' or 'ashr' for bit shifts");
+        rejected("""
+                pub fnc main(): int {
+                  return 8 >> 2;
+                }
+                """, "use '<<<', '>>>' or 'ashr' for bit shifts");
+        rejected("""
+                pub fnc main(): void {
+                  let int x = 1;
+                  x << 2;
+                  return;
+                }
+                """, "Use '<<<' for a bit shift");
+        rejected("""
+                pub async routine main(): void {
+                  val Channel<int> data = Channel.new<int>(1);
+                  5 << data;
+                  return;
+                }
+                """, "'<<' writes to a Channel<T> sink");
         rejected("""
                 pub async routine main(): void {
                   val Channel<int> data = Channel.new<int>(1);
@@ -214,12 +255,60 @@ final class ChannelFlowOperatorTest {
                   return;
                 }
                 """, "writech value");
+        // A read declares a fresh binding; it never assigns an existing name.
         rejected("""
                 pub async routine main(): void {
                   val Channel<int> data = Channel.new<int>(1);
-                  5 << data;
+                  let int x = 0;
+                  data >> x;
                   return;
                 }
-                """, "reads from a channel into a local, field or index");
+                """, "'>>' is channel I/O, only valid as a statement");
+        // v1 rejects chains.
+        rejected("""
+                pub async routine main(): void {
+                  val Channel<int> data = Channel.new<int>(2);
+                  data << 1 << 2;
+                  return;
+                }
+                """, "Chains and nested uses are rejected");
+        // const is compile-time; a runtime read cannot initialize it.
+        rejected("""
+                pub async routine main(): void {
+                  val Channel<int> data = Channel.new<int>(1);
+                  data >> const x;
+                  return;
+                }
+                """, "E_CONST_EFFECT");
+        rejected("""
+                pub async routine main(): void {
+                  val Channel<int> data = Channel.new<int>(1);
+                  const x << data;
+                  return;
+                }
+                """, "E_CONST_EFFECT");
+        rejected("""
+                pub fnc main(): void {
+                  val x << 5;
+                  return;
+                }
+                """, "readch requires Channel<T>");
+        rejected("""
+                pub fnc main(): int {
+                  return 1 ashr true;
+                }
+                """, "bitwise right operand");
+    }
+
+    @Test
+    void nestedGenericClosersAreNotShifts() {
+        OresCompiler.parseAndTypeCheck("""
+                pub async routine main(): void {
+                  val Channel<Option<int>> data = Channel.new<Option<int>>(1);
+                  data << Some(1);
+                  data >> val Option<int> got;
+                  return;
+                }
+                """);
     }
 }
