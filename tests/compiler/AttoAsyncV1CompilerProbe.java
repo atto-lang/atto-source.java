@@ -76,6 +76,16 @@ public final class AttoAsyncV1CompilerProbe {
         rejects(ok.replace("int x", "int _"));
         check(AttoAsyncV1Compiler.compile(ok.replace("pending", "sync_data"))
             .contains("CompletableFuture<Integer> sync_data"));
+        // This restricted source-to-Java lowering only admits snake_case
+        // guest names. An upper-case `Math` parameter previously shadowed
+        // java.lang.Math and caused javac to fail after source admission.
+        for (String bad : new String[] { "Math", "System", "Future", "PlusOne", "xValue" }) {
+            rejects(ok.replace("int x", "int " + bad).replace("^ x +", "^ " + bad + " +"));
+        }
+        rejects(ok.replace("fnc plus_one", "fnc PlusOne"));
+        rejects(ok.replace("val pending", "val Future"));
+        check(AttoAsyncV1Compiler.compile(ok.replace("pending", "future_42"))
+            .contains("CompletableFuture<Integer> future_42"));
         System.out.println("ATTO_ASYNC_V1_ADMISSION_PASS checks=" + checks);
     }
 }
