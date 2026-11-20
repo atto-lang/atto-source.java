@@ -117,9 +117,11 @@ public final class AttoAsyncV1Compiler {
         p.expect("{");
         // Admits only provably non-suspending literal inline bodies. A sync
         // task uses the current logical task and is permitted in a pure caller.
-        if (p.peekIs("sync") || p.peekIs("do")) {
-            boolean discard = p.peekIs("do");
-            if (discard) p.expect("do");
+        // A value-producing sync task belongs in an expression context.
+        // Void sync task statements require 'do' under atto-spec #129.
+        if (p.peekIs("do")) {
+            boolean discard = true;
+            p.expect("do");
             p.expect("sync"); p.expect("task");
             String payload = "infer";
             if (p.peekIs("<")) {
@@ -160,6 +162,8 @@ public final class AttoAsyncV1Compiler {
                 + "    return " + parentValue + ";\n";
             return compilePureInline(fun, param, increment, body);
         }
+        if (p.peekIs("sync"))
+            throw new Reject("E_SYNTAX");
         p.expect("val"); String future = p.ident();
         p.expect("=");
         if (p.peekIs("sync")) {
