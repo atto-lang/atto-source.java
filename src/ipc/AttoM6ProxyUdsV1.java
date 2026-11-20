@@ -186,7 +186,9 @@ public final class AttoM6ProxyUdsV1 {
                     new Turn(ProxyReceiptGateV1.Event.REJECTED, 0)));
                 return false;
             }
-            // The only positive admission authority: atomic destination mailbox enqueue.
+            // Snapshot destination authority before enqueue. A callback-supplied
+            // terminal signal is never enough to claim that M6 committed the turn.
+            var before = runtime.snapshot(target);
             var admission = runtime.try_send(target, req.message());
             if (admission != AttoM6Runtime.Admission.ACCEPTED) {
                 write_frame(channel, encode_receipt(session, id,
@@ -199,13 +201,41 @@ public final class AttoM6ProxyUdsV1 {
             // The guest handler is not run on this I/O thread. A bridge-generated
             // host turn wrapper reports start and terminal outcome from M6 carrier.
             for (int n = 0; n < 2; n++) {
-                Turn next = hostTurns.poll(10, java.util.concurrent.TimeUnit.SECONDS);
+                // All waiting occurs on host I/O, never on an actor carrier.
+                // A panicking receive may not publish a terminal callback.
+                long deadline = System.nanoTime() +
+                    java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+                Turn next = null;
+                while (next == null && System.nanoTime() < deadline) {
+                    next = hostTurns.poll(20, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if (n == 1 && runtime.snapshot(target).failed() > before.failed())
+                        next = new Turn(ProxyReceiptGateV1.Event.FAILED, 0);
+                }
                 if (next == null) throw new IOException("destination turn deadline");
                 if (n == 0 && next.event() != ProxyReceiptGateV1.Event.STARTED)
                     throw new IOException("missing scheduler-start evidence");
-                if (n == 1 && next.event() != ProxyReceiptGateV1.Event.PROCESSED &&
-                    next.event() != ProxyReceiptGateV1.Event.FAILED)
-                    throw new IOException("missing terminal turn evidence");
+                if (n == 1) {
+                    if (next.event() != ProxyReceiptGateV1.Event.PROCESSED &&
+                        next.event() != ProxyReceiptGateV1.Event.FAILED)
+                        throw new IOException("missing terminal turn evidence");
+                    // PROCESSED is not authoritative until the *runtime's*
+                    // post-handler commit counter has advanced.
+                    while (next.event() == ProxyReceiptGateV1.Event.PROCESSED &&
+                           runtime.snapshot(target).completed() == before.completed() &&
+                           System.nanoTime() < deadline) {
+                        if (runtime.snapshot(target).failed() > before.failed()) {
+                            next = new Turn(ProxyReceiptGateV1.Event.FAILED, 0);
+                            break;
+                        }
+                        Thread.sleep(1);
+                    }
+                    if (next.event() == ProxyReceiptGateV1.Event.PROCESSED &&
+                        runtime.snapshot(target).completed() <= before.completed())
+                        throw new IOException("handler callback without M6 commit");
+                    if (next.event() == ProxyReceiptGateV1.Event.FAILED &&
+                        runtime.snapshot(target).failed() <= before.failed())
+                        throw new IOException("failure without M6 fault accounting");
+                }
                 try {
                     write_frame(channel, encode_receipt(session, id, next));
                 } catch (IOException closedAfterAdmit) {
