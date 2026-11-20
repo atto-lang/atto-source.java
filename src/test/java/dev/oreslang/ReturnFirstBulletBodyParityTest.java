@@ -2,6 +2,11 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -89,5 +94,33 @@ final class ReturnFirstBulletBodyParityTest {
             assertFalse(explicit.body().getFirst() instanceof Ast.ReturnStmt);
             assertFalse(bare.body().getFirst() instanceof Ast.ReturnStmt);
         }
+    }
+
+    @Test
+    void arrowAndBulletReturnFirstCallablesActuallyExecuteGuest() throws Exception {
+        String program = """
+                int <- arrow_brace(int x) { return x + 1; }
+                fnc int • bullet_begin(int x) begin return x + 1; end
+                int• bullet_bare(int x) return x + 1; end
+                fnc int <- arrow_inline_begin(int x) begin return x + 1; end
+                pub fnc main(): void {
+                    stdio.stdout.write(arrow_brace(41));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(bullet_begin(41));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(bullet_bare(41));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(arrow_inline_begin(41));
+                    return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            ctx.eval(Source.newBuilder(OresLanguage.ID, program, "return-first-bullet.atto")
+                    .mimeType(OresLanguage.MIME_TYPE).buildLiteral());
+        }
+        assertEquals("42|42|42|42", output.toString(StandardCharsets.UTF_8));
     }
 }
