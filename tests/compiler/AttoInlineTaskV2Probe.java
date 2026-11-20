@@ -175,7 +175,7 @@ public final class AttoInlineTaskV2Probe {
         // The public compiler still reports its exact lexical rejection.
         rejectIntegratedLexical(commentGap);
         rejectIntegratedLexical(hyphenGap);
-        if (positives != 20 || negatives < 75)
+        if (positives != 20 || negatives != 116)
             throw new AssertionError("inline hardened keyword/grammar probes omitted");
         System.out.println("ATTO_INLINE_V2_PASS positives=" + positives + " negatives=" + negatives);
     }
