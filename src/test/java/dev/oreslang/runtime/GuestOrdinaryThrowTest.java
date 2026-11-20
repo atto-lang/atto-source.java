@@ -20,7 +20,7 @@ final class GuestOrdinaryThrowTest {
         assertEquals("Error", original.nominalType());
         assertEquals("same text", original.message());
         assertEquals("Error", original.toString());
-        assertFalse(original instanceof java.lang.Throwable);
+        assertFalse(java.lang.Throwable.class.isInstance(original));
     }
 
     @Test
