@@ -316,6 +316,51 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * The canonical syntax reserves an explicit 'infer' result, but this Java
+     * compiler cannot yet prove all return-path joins before ABI generation.
+     * Reject it at both strict check entrypoints (including imported-unit
+     * linking) rather than resolving it as an arbitrary nominal type.
+     *
+     * Do not inspect lambda expression bodies here: contextual lambda
+     * inference has a separate contract and does not authorize named infer.
+     */
+    private static void rejectUnprovedStrictNamedReturns(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl function) {
+                    rejectUnprovedNamedReturn(function.name(), function.returnType());
+                } else if (declaration instanceof Ast.ClassDecl klass) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        rejectUnprovedNamedReturn(klass.name() + "." + method.name(),
+                                method.returnType());
+                    }
+                } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    for (Ast.InterfaceMember member : iface.members()) {
+                        if (member instanceof Ast.InterfaceFunctionDecl function) {
+                            rejectUnprovedNamedReturn(iface.name() + "." + function.name(),
+                                    function.returnType());
+                        } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                            rejectUnprovedNamedReturn(iface.name() + "." + method.name(),
+                                    method.returnType());
+                        }
+                    }
+                } else if (declaration instanceof Ast.ExternalActorMethodDecl method) {
+                    rejectUnprovedNamedReturn(method.actorName() + "." + method.name(),
+                            method.returnType());
+                }
+            }
+        }
+    }
+
+    private static void rejectUnprovedNamedReturn(String name, Ast.TypeRef result) {
+        if (result != null && "infer".equals(result.name())
+                && result.arguments().isEmpty() && !result.inferArguments()) {
+            throw new IllegalArgumentException("E_RETURN_INFER: named callable '"
+                    + name + "' requires a proven static return type before guest emission");
+        }
+    }
+
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         rejectUnloweredSealedActorState(program);
         return checkTypesWithDiagnostics(program, false);
@@ -332,6 +377,7 @@ public final class TypeChecker {
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
+        if (strictAttoEquality) rejectUnprovedStrictNamedReturns(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
@@ -405,6 +451,7 @@ public final class TypeChecker {
         // structural projection can discard newly introduced effect rows.
         rejectUnloweredSealedActorState(program);
         rejectUnloweredCheckedEffects(program);
+        if (strictAttoEquality) rejectUnprovedStrictNamedReturns(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.strictAttoEquality = strictAttoEquality;
