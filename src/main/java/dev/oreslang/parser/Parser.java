@@ -877,7 +877,7 @@ public final class Parser {
             consume(PIPE, "expected closing '|' in lambda-style callable declaration");
             consume(ARROW, "lambda-style callable declarations use the slim arrow '->'");
             Ast.TypeRef returnType = check(LBRACE)
-                    ? Ast.TypeRef.simple("void")
+                    ? omittedNamedCallableReturn()
                     : parseTypeRef();
             Ast.EffectSpec effects = parseCheckedEffects();
             List<Ast.Stmt> body = parseBlock();
@@ -971,7 +971,9 @@ public final class Parser {
             throw error(peek(), "return-first callable cannot declare a second return type");
         }
         boolean annotated = annotations.stream().anyMatch(a -> a.name().equals("Ret"));
-        Ast.TypeRef annotationType = parseReturnType(annotations);
+        // The return-first prefix already supplies the mandatory return
+        // annotation. Do not ask the ordinary suffix parser to infer void.
+        Ast.TypeRef annotationType = annotated ? parseReturnType(annotations) : type;
         if (annotated && !sameType(type, annotationType)) {
             throw error(previous(), "@Ret type and return-first declared type disagree");
         }
@@ -1041,7 +1043,7 @@ public final class Parser {
                     + "or shadow the receiver binding");
         }
         Ast.TypeRef returns = match(FAT_ARROW, COLON)
-                ? parseTypeRef() : Ast.TypeRef.simple("void");
+                ? parseTypeRef() : omittedNamedCallableReturn();
         if (!parseCheckedEffects().isEmpty()) {
             throw error(previous(), "external receiver effects require checked actor-effect lowering");
         }
@@ -1967,7 +1969,7 @@ public final class Parser {
                 if (parameters.stream().anyMatch(Ast.Param::structural)) {
                     throw error(previous(), "structural arguments cannot cross an actor receiver boundary");
                 }
-                Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : omittedNamedCallableReturn();
                 if (!parseCheckedEffects().isEmpty()) {
                     throw error(previous(), "receiver contract checked effects require typed actor-effect lowering");
                 }
@@ -2001,7 +2003,7 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
-                Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                Ast.TypeRef returns = match(FAT_ARROW, COLON) ? parseTypeRef() : omittedNamedCallableReturn();
                 Ast.EffectSpec effects = parseCheckedEffects();
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, callableStructural.enabled(), memberGenerics, params, returns, effects));
@@ -2706,6 +2708,15 @@ public final class Parser {
         return new Ast.EffectSpec(thrown, raised, panicked);
     }
 
+    /** Canonical AttoLang never turns omitted named-callable results into void. */
+    private Ast.TypeRef omittedNamedCallableReturn() {
+        if (canonicalAttoSource) {
+            throw error(peek(), "E_RETURN_ANNOTATION: named callable requires "
+                    + "an explicit result (: T, -> T, : void, -> void or infer)");
+        }
+        return Ast.TypeRef.simple("void");
+    }
+
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
         Ast.TypeRef annotated = null;
         for (Ast.Annotation annotation : annotations) {
@@ -2729,7 +2740,7 @@ public final class Parser {
         if (annotated != null && declared != null && !sameType(annotated, declared)) {
             throw error(previous(), "@Ret type and declared return type disagree");
         }
-        return declared != null ? declared : annotated != null ? annotated : Ast.TypeRef.simple("void");
+        return declared != null ? declared : annotated != null ? annotated : omittedNamedCallableReturn();
     }
 
     // A pipe after a name-first type may be a union separator or the
