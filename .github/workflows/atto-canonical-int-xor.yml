@@ -1,0 +1,70 @@
+name: Atto canonical integer XOR strict JVM guest parity
+
+on:
+  push:
+    branches:
+      - fix/atto-canonical-integer-xor-20261120
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/AttoCanonicalIntegerXorParityTest.java'
+      - '.github/workflows/atto-canonical-int-xor.yml'
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/AttoCanonicalIntegerXorParityTest.java'
+      - '.github/workflows/atto-canonical-int-xor.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xor-strict-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout immutable PR or push commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source and record Git tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          printf 'RECEIPT source_sha=%s source_tree=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+      - name: GraalVM 25 / Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute strict frontend and real Truffle guest regressions
+        run: >-
+          mvn -B -ntp '-P!native-thread-unix'
+          -Dtest=AttoCanonicalIntegerXorParityTest,BooleanIntrinsicsTest
+          -Dsurefire.failIfNoSpecifiedTests=true clean test
+      - name: Require material JUnit receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in 'AttoCanonicalIntegerXorParityTest:6' 'BooleanIntrinsicsTest:10'; do
+            suite="${pair%%:*}"
+            minimum="${pair##*:}"
+            xml="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            test -s "$xml"
+            test "$(grep -c '<testcase' "$xml")" -ge "$minimum"
+            if grep -Eq '<testsuite[^>]*(errors|failures|skipped)="[1-9][0-9]*"' "$xml"; then exit 1; fi
+            printf 'RECEIPT suite=%s required_cases=%s\n' "$suite" "$minimum"
+          done
+          echo 'RECEIPT scope=strict_java_jvm_guest+legacy_boolean guests_native_aot=NOT_EXECUTED'
