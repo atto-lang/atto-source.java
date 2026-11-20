@@ -179,7 +179,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
 
         // Source profile selection precedes parsing, even for prechecked AST leases:
         // a host may not quietly ignore a malformed or duplicated directive.
-        boolean checkedI64 = AttoCheckedI64Profile.select(text);
+        boolean checkedI64 = AttoCheckedI64Profile.select(text, codeUnitId);
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {
             program = OresCompiler.parseAndTypeCheck(text);
