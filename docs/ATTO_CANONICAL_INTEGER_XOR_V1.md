@@ -97,7 +97,7 @@ XML can place multiple cases on one line, substitute unrelated names,
 duplicate names, or disagree with suite-level counters.
 
 The replacement `ci/compiler/CheckCanonicalXorReports.java` is a
-**JDK-only, no-Python** secure XML parser. It requires the 10 current
+**JDK-only, no-Python** secure XML parser. It requires the 12 current
 `AttoCanonicalIntegerXorParityTest` methods and the 12 current
 `BooleanIntrinsicsTest` methods by exact name, correct suite and classname,
 no duplicate cases, consistent case counters, no reported failures/errors/
@@ -107,10 +107,15 @@ when the verifier changes and executes it only **after** the Maven/JUnit
 guest suites have run.
 
 Local executed validation of the exact verifier Git blob
-`f31bf663936c51c309895e3f59e68869244f1535` using JDK 21 source-file
+`6fab73c48e0236abdea24ef01136bd3182278b17` using JDK 21 source-file
 mode: **6/6 synthetic-fixture smoke scenarios passed** (one positive
 receipt and five negative admissions: skipped, missing, duplicate, DTD,
 symlink). This checks the verifier's policy logic, **not any Atto guest**.
 Exact-head JDK25/GraalVM Maven/JUnit and Native Image remain **NOT_EXECUTED**
 until an admitted source-side runner supplies authentic evidence. Never
 treat a zero-step GitHub Actions run as a pass.
+
+The final consolidation also adds strict-source regression coverage for
+malformed `6 ^^^ 3` and explicit primitive Boolean `!=` as a
+replacement for retired canonical Boolean XOR. They are required by name in
+the XML evidence gate but are not yet JDK25/GraalVM guest-executed.
