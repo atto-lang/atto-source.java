@@ -114,3 +114,34 @@ for case in \
   }
 done
 echo 'ATTO_JAVA_EDGE_MATRIX=JVM_3_NATIVE_IMAGE_2_OVERFLOW_1_NEGATIVE_3'
+
+
+# Every scalar frontend must reject reserved task/synchronization/generator
+# identifiers in all binding positions, without generating Java guest code.
+for name in sync task yield; do
+  for site in function parameter local; do
+    dest="$work/edge/reserved-${name}-${site}"
+    mkdir -p "$dest"
+    source="$dest/input.atto"
+    case "$site" in
+      function)
+        printf 'fnc %s(int x): int -> x; pub fnc main(): int -> 42 |> %s;\n' "$name" "$name" >"$source" ;;
+      parameter)
+        printf 'fnc f(int %s): int -> 42; pub fnc main(): int -> f(1);\n' "$name" >"$source" ;;
+      local)
+        printf 'pub fnc main(): int { val %s = 42; return %s; }\n' "$name" "$name" >"$source" ;;
+    esac
+    set +e
+    "$JAVA_HOME/bin/java" -cp "$work/compiler" "$compiler_main" \
+      "$source" "$dest/AttoFunctionalPipelineGuest.java" \
+      >"$dest/stdout" 2>"$dest/stderr"
+    status=$?
+    set -e
+    test "$status" -eq 2 && test ! -e "$dest/AttoFunctionalPipelineGuest.java" \
+      && test ! -s "$dest/stdout" && grep -Fq 'E_NAME:' "$dest/stderr" || {
+      echo "ATTO_JAVA_RESERVED_ADMISSION_FAIL name=$name site=$site exit=$status" >&2
+      exit 1
+    }
+  done
+done
+echo 'ATTO_JAVA_AUTHORITY_WORD_MATRIX=9_NO_GUEST_OUTPUT'
