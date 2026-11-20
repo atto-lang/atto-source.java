@@ -35,6 +35,17 @@ public final class AttoInlineTaskV2Probe {
         }
         throw new AssertionError("bad inline task accepted");
     }
+    private static void rejectIntegratedLexical(String source) {
+        try {
+            AttoAsyncV1Compiler.compile(source);
+        } catch (AttoAsyncV1Compiler.Reject expected) {
+            if (!expected.getMessage().startsWith("E_ASYNC_UNKNOWN_TOKEN"))
+                throw new AssertionError("public compiler lexer diagnostic changed");
+            negatives++;
+            return;
+        }
+        throw new AssertionError("malformed separator reached guest compilation");
+    }
     private static String main(String body) {
         return "pub fnc main(): int { " + body + " }";
     }
@@ -156,10 +167,14 @@ public final class AttoInlineTaskV2Probe {
                 : "E_RESERVED_IDENTIFIER");
         }
         // Malformed keyword boundaries must not be accepted as source.
-        reject(main("val n = sync/**/task<int> { return 42; }; return n;"),
-            "E_ASYNC_UNKNOWN_TOKEN");
-        reject(main("val n = sync-task<int> { return 42; }; return n;"),
-            "E_RESERVED_SYNC");
+        String commentGap = main("val n = sync/**/task<int> { return 42; }; return n;");
+        String hyphenGap = main("val n = sync-task<int> { return 42; }; return n;");
+        // A malformed token boundary never qualifies for the typed profile.
+        reject(commentGap, "E_UNSUPPORTED_INLINE_PROFILE");
+        reject(hyphenGap, "E_UNSUPPORTED_INLINE_PROFILE");
+        // The public compiler still reports its exact lexical rejection.
+        rejectIntegratedLexical(commentGap);
+        rejectIntegratedLexical(hyphenGap);
         if (positives != 20 || negatives < 75)
             throw new AssertionError("inline hardened keyword/grammar probes omitted");
         System.out.println("ATTO_INLINE_V2_PASS positives=" + positives + " negatives=" + negatives);
