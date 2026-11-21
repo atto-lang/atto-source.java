@@ -16,21 +16,26 @@ import static org.junit.jupiter.api.Assertions.*;
  * Existing owned heap mutation remains legal; live borrows keep exclusive
  * ownership and escape restrictions regardless of allocation placement.
  *
- * This is a fail-closed precursor, NOT implementation of annotated injection.
+ * Stage 1 compiles only exclusively owned initialized scalar state; shared
+ * state and runtime-minted critical read/write loans remain unsupported.
  */
 final class AnnotatedMutableHeapStateAdmissionTest {
     @Test
-    void injected_class_state_does_not_silently_fall_back_to_ordinary_class() {
+    void injected_scalar_state_is_lowered_to_private_mutable_class_storage() {
         String source = """
                 @Inject(MutableStateContainer())
                 define class Counter as
                   state { count: int = 0; }
                 end
                 """;
-        var error = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(source));
-        assertTrue(error.getMessage().contains("@Inject"), error::getMessage);
-        assertTrue(error.getMessage().contains("not implemented"), error::getMessage);
+        var checked = assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        var counter = assertInstanceOf(dev.oreslang.ast.Ast.ClassDecl.class,
+                checked.modules().getFirst().declarations().getFirst());
+        assertEquals(1, counter.fields().size());
+        var field = counter.fields().getFirst();
+        assertEquals("count", field.name());
+        assertEquals(dev.oreslang.ast.Ast.Visibility.PRIVATE, field.visibility());
+        assertEquals(dev.oreslang.ast.Ast.BindingKind.LET, field.bindingKind());
     }
 
     @Test
@@ -54,8 +59,7 @@ final class AnnotatedMutableHeapStateAdmissionTest {
                           let int value = 0;
                         end
                         """));
-        assertTrue(error.getMessage().contains("@Inject"), error::getMessage);
-        assertTrue(error.getMessage().contains("not implemented"), error::getMessage);
+        assertTrue(error.getMessage().contains("STATE_INJECTION_UNSUPPORTED: @Inject"), error::getMessage);
     }
 
     @Test
@@ -70,6 +74,7 @@ final class AnnotatedMutableHeapStateAdmissionTest {
                         end
                         """));
         assertTrue(error.getMessage().contains("@Inject"), error::getMessage);
+        assertTrue(error.getMessage().contains("inside state"), error::getMessage);
     }
 
     @Test

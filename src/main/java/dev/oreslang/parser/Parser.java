@@ -126,12 +126,13 @@ public final class Parser {
                 if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
-                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                boolean injectedMutableState = checkedInjectedClassAnnotation(annotations);
                 validateClassModifiers(modifiers);
                 rootDeclarations.add(parseClass(
                         modifiers.visibility,
                         modifiers.isAbstract,
-                        modifiers.visibility != Ast.Visibility.PUBLIC));
+                        modifiers.visibility != Ast.Visibility.PUBLIC,
+                        injectedMutableState));
                 continue;
             }
 
@@ -190,12 +191,13 @@ public final class Parser {
                 if (match(CLASS)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
-                    rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                    boolean injectedMutableState = checkedInjectedClassAnnotation(annotations);
                     validateClassModifiers(modifiers);
                     rootDeclarations.add(parseClass(
                             modifiers.visibility,
                             modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC));
+                            modifiers.visibility != Ast.Visibility.PUBLIC,
+                        injectedMutableState));
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
@@ -354,9 +356,10 @@ public final class Parser {
             if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
             modifiers = mergeModifiers(modifiers, parseModifiers());
             rejectCallableStructuralAnnotation(annotations, "class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+            boolean injectedMutableState = checkedInjectedClassAnnotation(annotations);
             validateClassModifiers(modifiers);
-            return parseClass(modifiers.visibility, modifiers.isAbstract, false);
+            return parseClass(modifiers.visibility, modifiers.isAbstract, false,
+                    injectedMutableState);
         }
 
         if (check(CONTRACT) && defineFollowsAfterVisibilityModifiers()) {
@@ -401,10 +404,10 @@ public final class Parser {
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
-                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                boolean injectedMutableState = checkedInjectedClassAnnotation(annotations);
                 validateClassModifiers(modifiers);
                 return parseClass(modifiers.visibility,
-                        modifiers.isAbstract, false);
+                        modifiers.isAbstract, false, injectedMutableState);
             }
             if (match(INTERFACE, TRAIT)) {
                 Token.Type declarationKind = previous().type();
@@ -586,21 +589,94 @@ public final class Parser {
     private Ast.ClassDecl parseClass(
             Ast.Visibility visibility,
             boolean isAbstract,
-            boolean filePrivateScope) {
+            boolean filePrivateScope,
+            boolean injectedMutableState) {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        if (injectedMutableState && (isAbstract || !generics.isEmpty()
+                || !parents.isEmpty() || !interfaces.isEmpty())) {
+            throw error(previous(), "injected mutable state v0 requires a concrete, "
+                    + "non-generic, non-inheriting owned class");
+        }
         consume(AS, "expected 'as' after class header");
         boolean braceStyle = match(LBRACE);
         Token.Type classTerminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
         Ast.ConstructorDecl constructor = null;
+        boolean sawInjectedStateBlock = false;
 
         while (!check(classTerminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+
+            if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+                if (!injectedMutableState) {
+                    throw error(peek(), "class state {} requires @Inject(MutableStateContainer())");
+                }
+                if (sawInjectedStateBlock) {
+                    throw error(peek(), "duplicate injected state {} block");
+                }
+                if (!annotations.isEmpty() || mods.visibilitySeen || mods.async
+                        || mods.suspends || mods.generator || mods.trapped
+                        || mods.isStatic || mods.isAbstract || mods.shared
+                        || mods.untrusted || mods.structural || mods.nonLexical) {
+                    throw error(peek(), "injected state block cannot carry modifiers or annotations");
+                }
+                advance(); // state
+                consume(LBRACE, "expected '{' after state");
+                sawInjectedStateBlock = true;
+                int stateFieldStart = fields.size();
+                while (!check(RBRACE) && !check(EOF)) {
+                    Ast.FieldDecl field;
+                    if (isBindingKind(peek().type())) {
+                        field = parseField(List.of(), Ast.Visibility.PRIVATE);
+                        if (field.bindingKind() != Ast.BindingKind.LET) {
+                            throw error(previous(), "injected mutable state fields require let");
+                        }
+                    } else if (check(IDENT) && checkNext(COLON)) {
+                        Ast.FieldDecl inferred = parseColonField(
+                                List.of(), Ast.Visibility.PRIVATE);
+                        field = new Ast.FieldDecl(
+                                inferred.name(), Ast.Visibility.PRIVATE,
+                                Ast.BindingKind.LET, inferred.type(),
+                                List.of(), inferred.initializer());
+                    } else {
+                        throw error(peek(), "expected mutable state field inside state {}");
+                    }
+                    if (field.initializer() == null
+                            || field.type() == null
+                            || !(field.type().name().equals("int")
+                                    || field.type().name().equals("bool"))
+                            || !field.type().arguments().isEmpty()) {
+                        throw error(previous(), "injected state v0 requires initialized "
+                                + "scalar int/bool fields; object graphs need region lowering");
+                    }
+                    // Owned-state v0 is initialized before the instance is fully
+                    // published. Admit only type-matching scalar literals.
+                    // Calls, self references, field dependencies and closures
+                    // require verified initialization-order/lifetime lowering.
+                    boolean primitiveLiteral = field.initializer() instanceof Ast.LiteralExpr literal
+                            && ((field.type().name().equals("int") && literal.value() instanceof Long)
+                                    || (field.type().name().equals("bool")
+                                            && literal.value() instanceof Boolean));
+                    if (!primitiveLiteral) {
+                        throw error(previous(), "injected state v0 requires literal int/bool initializers"
+                                + " to prevent prepublication self escape and side effects");
+                    }
+                    if (fields.stream().anyMatch(existing -> existing.name().equals(field.name()))) {
+                        throw error(previous(), "duplicate injected mutable state field: " + field.name());
+                    }
+                    fields.add(field);
+                }
+                consume(RBRACE, "expected '}' to close injected state");
+                if (fields.size() == stateFieldStart) {
+                    throw error(previous(), "injected state block must declare at least one field");
+                }
+                continue;
+            }
 
             if (check(DEFINE) || check(CLASS) || check(MODULE) || check(INTERFACE)
                     || check(ACTOR) || check(ISOACTOR)) {
@@ -609,6 +685,9 @@ public final class Parser {
             }
 
             if (isContextualIdentifier("constructor")) {
+                if (injectedMutableState) {
+                    throw error(peek(), "injected state v0 uses field initializers; custom constructors are reserved");
+                }
                 if (constructor != null) {
                     throw error(peek(), "class '" + name + "' may declare only one constructor");
                 }
@@ -628,6 +707,9 @@ public final class Parser {
                 throw error(peek(), "instance methods omit 'fn'/'fnc'; declare the method name directly");
             }
             if (isBindingKind(peek().type())) {
+                if (injectedMutableState) {
+                    throw error(peek(), "@Inject(MutableStateContainer()) requires all owned fields inside state {}");
+                }
                 validateClassFieldModifiers(mods);
                 Ast.FieldDecl field = parseField(annotations, mods.visibility);
                 if (field.bindingKind() == Ast.BindingKind.CONST
@@ -639,6 +721,9 @@ public final class Parser {
                 continue;
             }
             if (check(IDENT) && checkNext(COLON)) {
+                if (injectedMutableState) {
+                    throw error(peek(), "@Inject(MutableStateContainer()) requires all owned fields inside state {}");
+                }
                 validateClassFieldModifiers(mods);
                 fields.add(parseColonField(annotations, mods.visibility));
                 continue;
@@ -647,6 +732,9 @@ public final class Parser {
             // 'final' is contextual, so final(...) remains an ordinary method.
             if ((isContextualIdentifier("final") && (checkNext(IDENT) || checkNext(MUT)))
                     || looksLikeTypeFirstClassField()) {
+                if (injectedMutableState) {
+                    throw error(peek(), "@Inject(MutableStateContainer()) requires all owned fields inside state {}");
+                }
                 validateClassFieldModifiers(mods);
                 fields.add(parseTypeFirstClassField(annotations, mods.visibility));
                 continue;
@@ -664,6 +752,10 @@ public final class Parser {
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (mods.trapped) throw error(peek(), "'trap' on class methods/static fnc is not enabled until method callable metadata carries the trap effect");
             if (mods.shared || mods.untrusted) throw error(peek(), "actor-kind modifiers are not permitted on class members");
+            if (injectedMutableState && mods.isStatic) {
+                throw error(peek(), "injected mutable state v0 forbids static class functions"
+                        + " until class initialization and storage isolation are verified");
+            }
             if (mods.isStatic) {
                 if (explicitMethod) {
                     throw error(previous(), "static class functions use 'static fnc', not 'static method'");
@@ -682,6 +774,9 @@ public final class Parser {
                 braceStyle
                         ? "expected '}' to close class " + name
                         : "expected 'end' to close class " + name);
+        if (injectedMutableState && !sawInjectedStateBlock) {
+            throw error(previous(), "@Inject(MutableStateContainer()) requires a state {} block");
+        }
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
                 parents, interfaces, fields, constructor, methods);
@@ -1506,15 +1601,48 @@ public final class Parser {
                 throw error(previous(), "@" + name
                         + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
-            // A mutable-state injection is a compiler effect, never inert
-            // annotation metadata. Reserve only this requested intrinsic;
-            // other annotation names keep their existing source behavior.
-            if (name.equals("Inject") && (check(LPAREN) || check(LT))
+            // V0 lowers only an exclusively owned, scalar private state block.
+            // Parse nested constructor spelling explicitly: generic metadata
+            // annotations must not silently swallow a stateful compiler effect.
+            if (name.equals("Inject") && check(LPAREN)
                     && current + 1 < tokens.size()
                     && tokens.get(current + 1).type() == IDENT
                     && tokens.get(current + 1).lexeme().equals("MutableStateContainer")) {
-                throw error(previous(), "@Inject(MutableStateContainer(...)) requires "
-                        + "compiler-checked private state-region lowering; not implemented");
+                advance(); // outer (
+                advance(); // MutableStateContainer
+                consume(LPAREN, "expected '(' after MutableStateContainer");
+                consume(RPAREN, "MutableStateContainer v0 takes no constructor arguments");
+                consume(RPAREN, "expected ')' after @Inject(MutableStateContainer())");
+                // This marker must never become inert callable/member/module
+                // annotation metadata. Reserve it exclusively for class
+                // declarations, including accepted class-first permutations.
+                boolean classTarget = false;
+                for (int probe = current; probe < tokens.size(); probe++) {
+                    Token.Type kind = tokens.get(probe).type();
+                    if (kind == CLASS) {
+                        classTarget = true;
+                        break;
+                    }
+                    if (kind != DEFINE && kind != PUB && kind != PRIVATE
+                            && kind != ABSTRACT) break;
+                }
+                if (!classTarget) {
+                    throw error(previous(),
+                            "@Inject(MutableStateContainer()) is only available on owned classes");
+                }
+                result.add(new Ast.Annotation("$compiler.inject.mutable-state-v0", List.of()));
+                continue;
+            }
+            // These names carry storage, provider-resolution and borrowing
+            // semantics. Only the exact, explicitly lowered owned-class
+            // Inject form above is supported in v0. Do not let alternate
+            // spellings survive as inert user annotation metadata on methods,
+            // fields, actors, classes or callables.
+            if (List.of("Inject", "StateBacked", "MutableStateContainer",
+                    "StateContainer").contains(name)) {
+                throw error(previous(), "STATE_INJECTION_UNSUPPORTED: @" + name
+                        + " requires typed state ownership, provider resolution"
+                        + " and compiler-checked AOT lowering");
             }
             List<Ast.TypeRef> args = new ArrayList<>();
             Token.Type close = null;
@@ -4546,6 +4674,16 @@ public final class Parser {
      * Silently dropping metadata can bypass compile-time macro, ABI and safety contracts.
      * Module, function, method and field annotations have AST storage and are unaffected.
      */
+    /** Class-only compiler macro; the marker never survives as inert metadata. */
+    private boolean checkedInjectedClassAnnotation(List<Ast.Annotation> annotations) {
+        String marker = "$compiler.inject.mutable-state-v0";
+        if (annotations.size() == 1 && annotations.getFirst().name().equals(marker)) {
+            return true;
+        }
+        rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+        return false;
+    }
+
     private void rejectDiscardedDeclarationAnnotations(List<Ast.Annotation> annotations, String target) {
         if (!annotations.isEmpty()) {
             throw error(previous(), "@" + annotations.getFirst().name() + " on " + target

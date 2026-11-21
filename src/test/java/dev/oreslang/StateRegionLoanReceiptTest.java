@@ -67,6 +67,12 @@ final class StateRegionLoanReceiptTest {
                             fields[3], fields[4], fields[5], fields[6],
                             "inventory.stock", Kind.WRITE, Action.BORROW),
                     "zero identity " + at);
+            fields[at] = -1;
+            assertThrows(IllegalArgumentException.class, () ->
+                    new Provenance(fields[0], fields[1], fields[2],
+                            fields[3], fields[4], fields[5], fields[6],
+                            "inventory.stock", Kind.WRITE, Action.BORROW),
+                    "negative identity " + at);
         }
         assertThrows(IllegalArgumentException.class, () ->
                 new Provenance(9, 3, 7, 1001, 41, 6, 501,
@@ -74,6 +80,9 @@ final class StateRegionLoanReceiptTest {
         assertThrows(NullPointerException.class, () ->
                 new Provenance(9, 3, 7, 1001, 41, 6, 501,
                         "inventory.stock", null, Action.BORROW));
+        assertThrows(NullPointerException.class, () ->
+                new Provenance(9, 3, 7, 1001, 41, 6, 501,
+                        "inventory.stock", Kind.WRITE, null));
     }
 
     @Test
@@ -91,6 +100,12 @@ final class StateRegionLoanReceiptTest {
         assertFalse(b.authorizes_release(new Requirement(
                 "inventory.state", true, true, 502,
                 "inventory.stock", Kind.WRITE, Action.RELEASE)));
+        assertFalse(b.authorizes_release(new Requirement(
+                "inventory.state", true, true, 501,
+                "inventory.other", Kind.WRITE, Action.RELEASE)));
+        assertFalse(b.authorizes_release(new Requirement(
+                "inventory.state", true, true, 501,
+                "inventory.stock", Kind.READ, Action.RELEASE)));
         assertThrows(IllegalArgumentException.class, () ->
                 new Requirement("inventory", false, true, 501,
                         "inventory.stock", Kind.WRITE, Action.BORROW));
@@ -104,6 +119,12 @@ final class StateRegionLoanReceiptTest {
         assertThrows(IllegalArgumentException.class, () ->
                 new Requirement("inventory", true, true, 0,
                         "inventory.stock", Kind.WRITE, Action.BORROW));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Requirement("inventory", true, true, -1,
+                        "inventory.stock", Kind.WRITE, Action.BORROW));
+        assertThrows(NullPointerException.class, () ->
+                new Requirement("inventory", true, true, 501,
+                        "inventory.stock", Kind.WRITE, null));
 
         Set<String> names = Arrays.stream(Requirement.class.getRecordComponents())
                 .map(java.lang.reflect.RecordComponent::getName)
