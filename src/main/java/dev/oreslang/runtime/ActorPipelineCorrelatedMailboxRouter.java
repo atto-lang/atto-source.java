@@ -299,16 +299,26 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
             throw preflight;
         }
         int next = 0;
+        int definitelyAdmitted = 0;
+        boolean currentSendUncertain = false;
         try {
             for (; next < children.size(); next++) {
                 var child = children.get(next);
                 try {
+                    // A fatal failure inside host transport can occur AFTER
+                    // enqueue, so treat the current child as possibly live
+                    // until a scheduler-owned cleanup resolves its receipt.
+                    currentSendUncertain = true;
                     owner.sendWithPipelineFrame(targets.get(child.receiver()), value, child, this);
-                    // No allocation: ArrayList was pre-sized and the success
-                    // receipt was created before any branch publication.
+                    currentSendUncertain = false;
+                    definitelyAdmitted++;
+                    // All receipt wrappers were materialized before enqueue.
                     result.add(prepared.get(next));
                     guestResult.add(guestPrepared.get(next));
                 } catch (RuntimeException failure) {
+                    // The existing typed rejection contract guarantees a
+                    // RuntimeException means definite nonadmission.
+                    currentSendUncertain = false;
                     ActorPipelineRouteSession.retireDelivered(child);
                     var denied = rejected.get(next);
                     denied.failure().initCause(failure);
@@ -317,16 +327,22 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
                 }
             }
             // A completed fan-out attempt consumes the authenticated source
-            // frame. Reusing it would permit duplicate/hidden fan-out batches.
+            // frame, even if individual mailbox branches were rejected.
             ActorPipelineRouteSession.retireDelivered(frame);
             return reports;
         } catch (RuntimeException | Error failure) {
-            // Previously published branches retain their independent frames.
-            // The current and later frames have not been published if the
-            // error happened during receipt construction. A fatal error
-            // during send is treated as terminal runtime failure; session
-            // cleanup is idempotent and never claims a delivery succeeded.
-            for (int rest = next; rest < children.size(); rest++)
+            // Any accepted branch, ambiguous transport Error, or subsequent
+            // receipt fault consumes the source turn. Never allow replay of
+            // earlier admitted fanout after a later exceptional exit.
+            if (definitelyAdmitted != 0 || currentSendUncertain
+                    || failure instanceof Error)
+                ActorPipelineRouteSession.retireDelivered(frame);
+            // If a host Error interrupted the current transport call, do not
+            // guess that its side effect rolled back; preserve its frame for
+            // delivered-envelope completion or physical shutdown. Reclaim
+            // only provably unattempted later child reservations.
+            int firstUnattempted = currentSendUncertain ? next + 1 : next;
+            for (int rest = firstUnattempted; rest < children.size(); rest++)
                 ActorPipelineRouteSession.retireDelivered(children.get(rest));
             throw failure;
         }
