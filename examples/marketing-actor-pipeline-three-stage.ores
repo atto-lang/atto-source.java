@@ -1,0 +1,82 @@
+// Three-stage executable marketing conformance fixture.
+// Current Java feature-branch grammar uses ActorStream without a type argument;
+// the public ActorStream<int> annotation remains a design target.
+// The end-to-end envelope is the closed, typed Signal/PipeMessages variant.
+define enum Signal as
+    Data: int = 1
+    Result: int = 2
+end
+
+define pattern PipeMessages as
+    Signal.Data
+    Signal.Result
+end
+
+define actor Source as
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                stdio.stdout.write("SRC_FORWARD_");
+                stdio.stdout.write(n);
+                stdio.stdout.write("|");
+                self.forward(Signal.Data(n));
+            }
+            on Signal.Result n -> {
+                if n == 8 then
+                    stdio.stdout.write("PIPE_3_RESULT_8");
+                else
+                    stdio.stdout.write("PIPE_3_WRONG_RESULT");
+                fi
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+define actor Transform as
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                stdio.stdout.write("TRANSFORM_FORWARD_");
+                stdio.stdout.write(n + 1);
+                stdio.stdout.write("|");
+                self.forward(Signal.Data(n + 1));
+            }
+            on Signal.Result n -> {
+                stdio.stdout.write("TRANSFORM_BACKWARD_");
+                stdio.stdout.write(n + 1);
+                stdio.stdout.write("|");
+                self.backward(Signal.Result(n + 1));
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+define actor Sink as
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                stdio.stdout.write("SINK_BACKWARD_");
+                stdio.stdout.write(n + 1);
+                stdio.stdout.write("|");
+                self.backward(Signal.Result(n + 1));
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+pub fnc connect(): ActorStream {
+    return spawn Source() pipe spawn Transform() pipe spawn Sink();
+}
+
+pub async routine main(): void {
+    val route = connect();
+    route.send(Signal.Data(5));
+    await route.get_done();
+    return;
+}

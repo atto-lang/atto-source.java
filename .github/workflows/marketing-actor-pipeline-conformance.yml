@@ -1,0 +1,54 @@
+name: Marketing actor pipeline compiler conformance
+on:
+  pull_request:
+    paths:
+      - 'examples/marketing-actor-pipeline-three-stage.ores'
+      - 'src/test/java/dev/oreslang/MarketingActorPipelineConformanceTest.java'
+      - 'contracts/conformance/language-motion-v1.json'
+      - '.github/workflows/marketing-actor-pipeline-conformance.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evidence-and-compiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact tested revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact fixture blob and prohibit unearned verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned='280c3e6ee9bf63ab1c9360bb0329651f644a72a7'
+          test "$(git hash-object examples/marketing-actor-pipeline-three-stage.ores)" = "$pinned"
+          test "$(git rev-parse HEAD:examples/marketing-actor-pipeline-three-stage.ores)" = "$pinned"
+          test -f contracts/conformance/language-motion-v1.json
+          jq -e --arg blob "$pinned" '
+            .schema_version == 1
+            and .candidate.not_in_main == true
+            and .candidate.baseline_compiler_revision == "00c344e05a5265a340a5dc68c012caa7e375115d"
+            and .public_site.merged_revision == "b499725f5eb345c8b3828f1e70c9fc8fed836d21"
+            and (.examples | length == 4)
+            and ([.examples[].id] | unique | length) == 4
+            and ([.examples[].id] | sort) == ["http-unary","ml-backprop","select-result-modes","three-actor-pipeline"]
+            and ([.examples[] | select(.id == "three-actor-pipeline") | .source_file] == ["examples/marketing-actor-pipeline-three-stage.ores"])
+            and ([.examples[].public_property] | sort) == ["httpCode","mlCode","pipelineCode","selectCode"]
+            and ([.examples[] | select(.id == "three-actor-pipeline") | .source_blob_sha1] == [$blob])
+            and ([.examples[] | select(.id == "three-actor-pipeline") | .java_status] == ["pending_ci"])
+            and ([.examples[] | select(.id == "three-actor-pipeline") | .expected_stdout] == ["SRC_FORWARD_5|TRANSFORM_FORWARD_6|SINK_BACKWARD_7|TRANSFORM_BACKWARD_8|PIPE_3_RESULT_8"])
+            and ([.examples[] | [.id, .java_status, .llvm_status]] | sort) == [["http-unary","design_only","design_only"],["ml-backprop","design_only","design_only"],["select-result-modes","partial_legacy_implementation","not_verified"],["three-actor-pipeline","pending_ci","not_verified"]]
+            and (all(.examples[]; .ci_evidence_url == null and .java_evidence == null and .llvm_evidence == null))
+            and ([.examples[] | select(.id != "three-actor-pipeline") | .source_file] == [null,null,null])
+          ' contracts/conformance/language-motion-v1.json
+      - name: Set up GraalVM 25
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run actual source compiler and three-stage actor roundtrip
+        run: mvn -B -ntp -Dtest=MarketingActorPipelineConformanceTest test

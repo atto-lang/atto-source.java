@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "purpose": "Evidence registry for public language-in-motion examples. Unverified means no claim of executable compiler support.",
+  "public_site": {
+    "repository": "ores-truffle-oreslang/ores-truffle-oreslang.github.io",
+    "merged_revision": "b499725f5eb345c8b3828f1e70c9fc8fed836d21",
+    "path": "src/data/language-motion-examples.mjs"
+  },
+  "candidate": {
+    "repository": "ores-truffle-oreslang/oreslang-source.java",
+    "baseline_compiler_revision": "00c344e05a5265a340a5dc68c012caa7e375115d",
+    "feature_branch": "feat/actorstream-pipe-15-stage-20261012",
+    "test_branch": "test/marketing-three-stage-pipe-20261018",
+    "not_in_main": true
+  },
+  "examples": [
+    {
+      "id": "three-actor-pipeline",
+      "public_property": "pipelineCode",
+      "source_file": "examples/marketing-actor-pipeline-three-stage.ores",
+      "source_blob_sha1": "280c3e6ee9bf63ab1c9360bb0329651f644a72a7",
+      "test_class": "dev.oreslang.MarketingActorPipelineConformanceTest",
+      "expected_stdout": "SRC_FORWARD_5|TRANSFORM_FORWARD_6|SINK_BACKWARD_7|TRANSFORM_BACKWARD_8|PIPE_3_RESULT_8",
+      "java_status": "pending_ci",
+      "llvm_status": "not_verified",
+      "syntax_delta": "Java feature-branch fixture uses non-generic ActorStream plus closed ActorMail<PipeMessages>; marketing site shows proposed ActorStream<int> with empty actors.",
+      "capability_constraints": "exactly three exclusive actor instances; bounded single-flow roundtrip; full-route physical completion",
+      "ci_evidence_url": null
+    },
+    {
+      "id": "ml-backprop",
+      "public_property": "mlCode",
+      "source_file": null,
+      "java_status": "design_only",
+      "llvm_status": "design_only",
+      "ci_evidence_url": null
+    },
+    {
+      "id": "http-unary",
+      "public_property": "httpCode",
+      "source_file": null,
+      "java_status": "design_only",
+      "llvm_status": "design_only",
+      "ci_evidence_url": null
+    },
+    {
+      "id": "select-result-modes",
+      "public_property": "selectCode",
+      "source_file": null,
+      "java_status": "partial_legacy_implementation",
+      "llvm_status": "not_verified",
+      "ci_evidence_url": null
+    }
+  ],
+  "promotion_rules": [
+    "Never use the word verified for a backend until its exact candidate Git commit compiled and ran the pinned fixture in a job with executed steps.",
+    "Do not infer production main support from a draft PR or a feature branch.",
+    "Do not infer source conformance from the marketing-site HTML, syntax highlighting, unit tests or browser CI.",
+    "Update source blob SHA and expected output when the fixture changes; invalidate prior evidence.",
+    "Never copy private compiler source across repositories without protected-branch approval of an exact private destination."
+  ]
+}
