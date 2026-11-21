@@ -2,13 +2,16 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * CPU-only, host-side reference for three concurrently allocated layouts of one
- * logical fixed-width region. A single layout is authoritative per epoch;
+ * CPU-only, host-side reference for one, two, or three physically allocated
+ * layouts of one logical fixed-width region. A single layout is authoritative
+ * per epoch;
  * materializations are refreshed before reads or writes. This is NOT guest
  * language lowering, an actor-private heap, or a zero-GC production storage ABI.
  * No backing arrays or mutable borrows escape this reference implementation.
@@ -20,6 +23,9 @@ public final class TriLayoutMotionStore implements AutoCloseable {
 
     private static final AtomicLong NEXT_STORE_ID = new AtomicLong(1);
     private static final int FIELDS = 4;
+    private static final int MAX_ARRAY_LENGTH = Integer.MAX_VALUE - 8;
+    private final EnumSet<Layout> resident;
+    private final long reservedPayloadBytes;
     private final long storeId;
     private final int capacity;
     private final int tile;
@@ -30,42 +36,127 @@ public final class TriLayoutMotionStore implements AutoCloseable {
     private final int[] rowBySlot;
     private final long[] generations;
     private final int[] freeSlots;
-    private final long[] materializedEpoch = {1, 1, 1};
+    private final long[] materializedEpoch = {-1, -1, -1};
     private int freeCount;
     private int nextSlot;
     private int size;
     private long epoch = 1;
-    private Layout authoritative = Layout.AOS;
+    private Layout authoritative;
     private boolean closed;
 
+    /** Backward-compatible tri-resident reference constructor. */
     public TriLayoutMotionStore(int capacity, int tile) {
+        this(capacity, tile, EnumSet.allOf(Layout.class), Layout.AOS, Long.MAX_VALUE);
+    }
+
+    /** Choose only the physical layouts needed by this region. */
+    public TriLayoutMotionStore(int capacity, int tile, Set<Layout> layouts) {
+        this(capacity, tile, layouts, firstLayout(layouts), Long.MAX_VALUE);
+    }
+
+    /**
+     * Select the initial writer and a conservative primitive/handle payload
+     * reservation budget. This estimate is NOT Java heap/RSS accounting: array
+     * headers, runtime allocator fragmentation and snapshots are not included.
+     *
+     * There is no implicit layout fallback. A request for an absent layout
+     * fails before it can mutate the selected authoritative representation.
+     */
+    public TriLayoutMotionStore(int capacity, int tile, Set<Layout> layouts,
+                                Layout initialAuthority, long budgetBytes) {
         if (capacity <= 0 || tile < 2 || tile > 1024 || (tile & (tile - 1)) != 0) {
             throw new IllegalArgumentException("capacity must be positive; tile must be power of two in [2,1024]");
         }
-        int aosCells;
-        int tiles;
-        int aosoaCells;
-        try {
-            aosCells = Math.multiplyExact(capacity, FIELDS);
-            tiles = Math.addExact(capacity / tile, capacity % tile == 0 ? 0 : 1);
-            aosoaCells = Math.multiplyExact(Math.multiplyExact(tiles, tile), FIELDS);
-        } catch (ArithmeticException e) {
-            throw new IllegalArgumentException("region array size overflows", e);
+        if (capacity > MAX_ARRAY_LENGTH) {
+            throw new IllegalArgumentException("region exceeds JVM array length bounds");
         }
+        if (budgetBytes < 0) throw new IllegalArgumentException("negative region memory budget");
+        if (layouts == null || layouts.isEmpty() || layouts.stream().anyMatch(Objects::isNull)) {
+            throw new IllegalArgumentException("nonempty nonnull layout residency is required");
+        }
+        this.resident = EnumSet.copyOf(layouts);
+        if (initialAuthority == null || !resident.contains(initialAuthority)) {
+            throw new IllegalArgumentException("initial authority must be resident");
+        }
+        int aosCells = 0;
+        int aosoaCells = 0;
+        long payload;
+        try {
+            if (resident.contains(Layout.AOS)) {
+                aosCells = checkedCellCount(Math.multiplyExact((long) capacity, FIELDS));
+            }
+            if (resident.contains(Layout.AOSOA)) {
+                long tiles = (long) capacity / tile + (capacity % tile == 0 ? 0 : 1);
+                aosoaCells = checkedCellCount(Math.multiplyExact(
+                        Math.multiplyExact(tiles, tile), FIELDS));
+            }
+            // Count actual resident primitive payloads and fixed row/slot tables.
+            // SoA also owns a tiny reference table; its object headers are NOT
+            // part of this lower-bound reservation.
+            long cells = Math.addExact(aosCells, aosoaCells);
+            if (resident.contains(Layout.SOA)) {
+                cells = Math.addExact(cells, Math.multiplyExact((long) capacity, FIELDS));
+            }
+            long representation = Math.multiplyExact(cells, Double.BYTES);
+            long handles = Math.multiplyExact((long) capacity,
+                    Integer.BYTES * 3L + Long.BYTES);
+            payload = Math.addExact(representation, Math.addExact(handles,
+                    Math.multiplyExact((long) Layout.values().length, Long.BYTES)));
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException("layout reservation overflows", e);
+        }
+        if (payload > budgetBytes) {
+            throw new IllegalArgumentException("region primitive payload exceeds budget");
+        }
+        // Validate the selected geometry/budget before consuming a unique ID.
         long next = NEXT_STORE_ID.getAndUpdate(v -> v == Long.MAX_VALUE ? v : v + 1);
         if (next == Long.MAX_VALUE) throw new IllegalStateException("store identity exhausted");
         this.storeId = next;
         this.capacity = capacity;
         this.tile = tile;
-        this.aos = new double[aosCells];
-        this.soa = new double[FIELDS][capacity];
-        this.aosoa = new double[aosoaCells];
+        this.reservedPayloadBytes = payload;
+        this.authoritative = initialAuthority;
+        this.aos = resident.contains(Layout.AOS) ? new double[aosCells] : null;
+        this.soa = resident.contains(Layout.SOA) ? new double[FIELDS][capacity] : null;
+        this.aosoa = resident.contains(Layout.AOSOA) ? new double[aosoaCells] : null;
         this.slotByRow = new int[capacity];
         this.rowBySlot = new int[capacity];
         this.generations = new long[capacity];
         this.freeSlots = new int[capacity];
         Arrays.fill(rowBySlot, -1);
         Arrays.fill(generations, 1);
+        for (Layout layout : resident) materializedEpoch[layout.ordinal()] = epoch;
+    }
+
+    private static int checkedCellCount(long count) {
+        if (count > MAX_ARRAY_LENGTH) {
+            throw new IllegalArgumentException("physical layout exceeds JVM primitive array limit");
+        }
+        return (int) count;
+    }
+
+    private static Layout firstLayout(Set<Layout> layouts) {
+        if (layouts == null || layouts.isEmpty() || layouts.stream().anyMatch(Objects::isNull)) {
+            throw new IllegalArgumentException("nonempty nonnull layout residency is required");
+        }
+        return EnumSet.copyOf(layouts).iterator().next();
+    }
+
+    /** Immutable copy: caller cannot change this store's physical residency. */
+    public synchronized Set<Layout> residentLayouts() {
+        requireOpen();
+        return Set.copyOf(resident);
+    }
+
+    public synchronized boolean hasLayout(Layout layout) {
+        requireOpen();
+        return resident.contains(Objects.requireNonNull(layout, "layout"));
+    }
+
+    /** Primitive payload and fixed index tables only; not a total RSS estimate. */
+    public synchronized long reservedPayloadBytes() {
+        requireOpen();
+        return reservedPayloadBytes;
     }
 
     public synchronized int size() { requireOpen(); return size; }
@@ -73,7 +164,7 @@ public final class TriLayoutMotionStore implements AutoCloseable {
     public synchronized Layout authoritativeLayout() { requireOpen(); return authoritative; }
     public synchronized long materializedEpoch(Layout layout) {
         requireOpen();
-        return materializedEpoch[Objects.requireNonNull(layout).ordinal()];
+        return materializedEpoch[requireResident(layout).ordinal()];
     }
 
     public synchronized Handle insert(Motion motion) {
@@ -118,11 +209,24 @@ public final class TriLayoutMotionStore implements AutoCloseable {
         return read(layout, row); // Explicit one-row copy, not a mutable alias.
     }
 
+    /**
+     * Select the sole writable representation. This is an explicit versioned
+     * authority transfer, not an extra writable copy; the selected resident
+     * buffer is made current before publishing the new epoch.
+     */
+    public synchronized void selectLayout(Layout layout) {
+        requireResident(layout);
+        requireNextEpoch();
+        ensure(layout);
+        advance(layout);
+    }
+
     public synchronized void set(Handle handle, Layout layout, Motion value) {
         int row = checkedRow(handle);
         Objects.requireNonNull(value, "value");
-        ensure(layout);
+        requireResident(layout);
         requireNextEpoch();
+        ensure(layout);
         write(layout, row, value);
         advance(layout);
     }
@@ -131,8 +235,16 @@ public final class TriLayoutMotionStore implements AutoCloseable {
     public synchronized void integrate(Layout layout, double dt) {
         requireOpen();
         if (!Double.isFinite(dt)) throw new IllegalArgumentException("dt must be finite");
-        ensure(layout);
+        requireResident(layout);
         requireNextEpoch();
+        for (int row = 0; row < size; row++) {
+            double nx = getField(authoritative, row, 0) + getField(authoritative, row, 2) * dt;
+            double ny = getField(authoritative, row, 1) + getField(authoritative, row, 3) * dt;
+            if (!Double.isFinite(nx) || !Double.isFinite(ny)) {
+                throw new ArithmeticException("integration would produce non-finite positions");
+            }
+        }
+        ensure(layout);
         for (int row = 0; row < size; row++) {
             setField(layout, row, 0, getField(layout, row, 0) + getField(layout, row, 2) * dt);
             setField(layout, row, 1, getField(layout, row, 1) + getField(layout, row, 3) * dt);
@@ -157,10 +269,21 @@ public final class TriLayoutMotionStore implements AutoCloseable {
         return List.copyOf(result);
     }
 
-    private void ensure(Layout requested) {
+    private Layout requireResident(Layout requested) {
         requireOpen();
         Layout target = Objects.requireNonNull(requested, "layout");
+        if (!resident.contains(target)) {
+            throw new IllegalArgumentException("layout not resident: " + target);
+        }
+        return target;
+    }
+
+    private void ensure(Layout requested) {
+        Layout target = requireResident(requested);
         if (materializedEpoch[target.ordinal()] == epoch) return;
+        // Only a fully completed reconciliation publishes a current stamp.
+        // An exception leaves the target marked stale; the next strong access
+        // must retry conversion. Synchronized methods hide partial copies.
         for (int row = 0; row < size; row++) write(target, row, read(authoritative, row));
         materializedEpoch[target.ordinal()] = epoch;
     }

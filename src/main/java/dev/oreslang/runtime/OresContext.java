@@ -38,6 +38,29 @@ public final class OresContext implements AutoCloseable {
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
 
+    // Bounded live V0 regions: individual primitive caps are insufficient
+    // without a context-wide admission limit. Strong retention is intentional:
+    // an unclosed region still consumes its quota until Context.close().
+    private static final int MAX_GUEST_REGIONS_V0 = 8;
+    private final java.util.Set<TriLayoutMotionStore> guestRegions =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    public synchronized void registerGuestRegion(TriLayoutMotionStore store) {
+        java.util.Objects.requireNonNull(store, "region");
+        if (guestRegions.size() >= MAX_GUEST_REGIONS_V0) {
+            throw new IllegalStateException("Region<Motion> V0 context live-region quota exceeded");
+        }
+        if (!guestRegions.add(store)) throw new IllegalStateException("region registered twice");
+    }
+
+    public synchronized void unregisterGuestRegion(TriLayoutMotionStore store) {
+        guestRegions.remove(store);
+    }
+
+    public synchronized int guestRegionCountForTest() {
+        return guestRegions.size();
+    }
+
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final AtomicLong sourceLoopCooperates = new AtomicLong();
@@ -449,6 +472,8 @@ public final class OresContext implements AutoCloseable {
             else failure.addSuppressed(vmFailure);
         } finally {
             synchronized (this) {
+                for (TriLayoutMotionStore region : guestRegions) region.close();
+                guestRegions.clear();
                 linkedCodeUnits.clear();
                 linkedImportResolutions.clear();
                 sharedCodeImages.close();

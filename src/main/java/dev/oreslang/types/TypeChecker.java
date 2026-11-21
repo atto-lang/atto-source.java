@@ -187,7 +187,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Channel", "Region", "Motion", "RegionHandle", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -229,6 +229,17 @@ public final class TypeChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                String declaredName = null;
+                if (decl instanceof Ast.FunctionDecl fn) declaredName = fn.name();
+                else if (decl instanceof Ast.ClassDecl klass) declaredName = klass.name();
+                else if (decl instanceof Ast.InterfaceDecl iface) declaredName = iface.name();
+                else if (decl instanceof Ast.TypeAliasDecl alias) declaredName = alias.name();
+                if ("Region".equals(declaredName) || "RegionHandle".equals(declaredName)
+                        || "Motion".equals(declaredName)) {
+                    throw new IllegalArgumentException(
+                            "Region<Motion> V0 reserves compiler-owned type/factory name '"
+                                    + declaredName + "'");
+                }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
@@ -2096,7 +2107,8 @@ public final class TypeChecker {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
-                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+                    || name.name().equals("Channel") || name.name().equals("Region")
+                    || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -2488,6 +2500,37 @@ public final class TypeChecker {
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
+            }
+            // Region<Motion> v0 is deliberately limited to a compiler-known
+            // four-double fixed-width payload. No arbitrary guest class, actor
+            // field, borrowed record, or user-derived Send/Sync proof is admitted.
+            if (call.callee() instanceof Ast.MemberExpr regionCall
+                    && regionCall.receiver() instanceof Ast.NameExpr factoryName
+                    && factoryName.name().equals("Region")
+                    && env.lookup("Region") == null) {
+                if (!regionCall.member().equals("new")) {
+                    throw new IllegalArgumentException("unknown Region factory operation");
+                }
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "Region<Motion> v0 cannot be constructed inside actor turns");
+                }
+                if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1
+                        || !call.typeArguments().getFirst().name().equals("Motion")
+                        || !call.typeArguments().getFirst().arguments().isEmpty()
+                        || call.typeArguments().getFirst().inferArguments()) {
+                    throw new IllegalArgumentException(
+                            "Region.new<Motion>(capacity, tile, residencyMask) requires exactly Motion");
+                }
+                if (call.arguments().size() != 3) {
+                    throw new IllegalArgumentException(
+                            "Region.new<Motion> expects capacity, tile, residencyMask");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    requireAssignable(typeOf(argument, env, generics, self),
+                            Primitive.INT, "Region.new<Motion> integer argument");
+                }
+                return new Named("Region", List.of(new Named("Motion", List.of())));
             }
             if (call.callee() instanceof Ast.MemberExpr channelCall
                     && channelCall.receiver() instanceof Ast.NameExpr factory
@@ -3337,6 +3380,34 @@ public final class TypeChecker {
                     case "is_closed" -> new Function(List.of(), Primitive.BOOL);
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named region
+                    && region.name().equals("Region")
+                    && region.arguments().size() == 1) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "Region<Motion> v0 cannot be accessed inside actor turns");
+                }
+                if (!(region.arguments().getFirst() instanceof Named element)
+                        || !element.name().equals("Motion") || !element.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "only Region<Motion> is executable in the current V0");
+                }
+                Type handle = new Named("RegionHandle", List.of());
+                return switch (member.member()) {
+                    case "insert" -> new Function(List.of(
+                            Primitive.FLOAT, Primitive.FLOAT, Primitive.FLOAT, Primitive.FLOAT), handle);
+                    case "get_x", "get_y" -> new Function(List.of(handle), Primitive.FLOAT);
+                    case "set" -> new Function(List.of(
+                            handle, Primitive.FLOAT, Primitive.FLOAT,
+                            Primitive.FLOAT, Primitive.FLOAT), Primitive.VOID);
+                    case "erase_swap" -> new Function(List.of(handle), Primitive.VOID);
+                    case "set_layout" -> new Function(List.of(Primitive.INT), Primitive.VOID);
+                    case "size", "epoch" -> new Function(List.of(), Primitive.INT);
+                    case "close" -> new Function(List.of(), Primitive.VOID);
+                    default -> throw new IllegalArgumentException(
+                            "unknown Region<Motion> member '" + member.member() + "'");
                 };
             }
             Type ioMember = builtinIoMember(sumReceiver, member.member());
@@ -8122,6 +8193,21 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Mutex<T> requires an owned value type; borrowed payload types are invalid");
                 }
                 yield new Named("Mutex", List.of(element));
+            }
+            case "Motion", "RegionHandle" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(ref.name() + " takes no type arguments");
+                }
+                yield new Named(ref.name(), List.of());
+            }
+            case "Region" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1
+                        || !ref.arguments().getFirst().name().equals("Motion")
+                        || !ref.arguments().getFirst().arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "Region<Motion> V0 only accepts the compiler-known Motion record");
+                }
+                yield new Named("Region", List.of(new Named("Motion", List.of())));
             }
             case "Channel" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {

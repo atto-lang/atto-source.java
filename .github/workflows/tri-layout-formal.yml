@@ -9,10 +9,18 @@ on:
       - 'src/main/java/dev/oreslang/runtime/TriLayoutMotionStore.java'
       - 'src/test/java/dev/oreslang/TriLayoutMotionStoreTest.java'
       - 'src/test/java/dev/oreslang/TriLayoutMotionFormalRefinementTest.java'
+      - 'src/test/java/dev/oreslang/TriLayoutSelectableResidencyTest.java'
+      - 'src/test/java/dev/oreslang/TriLayoutSelectHardeningTest.java'
+      - 'src/test/java/dev/oreslang/RegionMotionGuestV0Test.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'docs/SELECTABLE_LAYOUT_RESIDENCY_V1.md'
       - '.github/workflows/tri-layout-formal.yml'
   push:
     branches:
       - 'feature/**'
+      - 'feat/**'
       - main
     paths:
       - 'formal/tri_layout_model.py'
@@ -21,6 +29,13 @@ on:
       - 'src/main/java/dev/oreslang/runtime/TriLayoutMotionStore.java'
       - 'src/test/java/dev/oreslang/TriLayoutMotionStoreTest.java'
       - 'src/test/java/dev/oreslang/TriLayoutMotionFormalRefinementTest.java'
+      - 'src/test/java/dev/oreslang/TriLayoutSelectableResidencyTest.java'
+      - 'src/test/java/dev/oreslang/TriLayoutSelectHardeningTest.java'
+      - 'src/test/java/dev/oreslang/RegionMotionGuestV0Test.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'docs/SELECTABLE_LAYOUT_RESIDENCY_V1.md'
       - '.github/workflows/tri-layout-formal.yml'
 
 permissions:
@@ -56,4 +71,4 @@ jobs:
           distribution: temurin
           java-version: '21'
       - name: Execute actual Java host layout reference
-        run: mvn -B -ntp -Dtest=TriLayoutMotionStoreTest,TriLayoutMotionFormalRefinementTest test
+        run: mvn -B -ntp -Dtest=TriLayoutMotionStoreTest,TriLayoutMotionFormalRefinementTest,TriLayoutSelectableResidencyTest,TriLayoutSelectHardeningTest,RegionMotionGuestV0Test test

@@ -26,6 +26,7 @@ import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
+import dev.oreslang.runtime.TriLayoutMotionStore;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -6143,6 +6144,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("Region")) return RegionMotionFactory.INSTANCE;
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
@@ -6914,6 +6916,92 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member " + name);
+                };
+            }
+            if (receiver == RegionMotionFactory.INSTANCE) {
+                if (!name.equals("new")) throw new IllegalArgumentException("unknown Region factory member");
+                return (Invokable) args -> {
+                    if (args.size() != 3) throw new IllegalArgumentException("Region.new<Motion> arity");
+                    int capacity = Math.toIntExact(regionIntegral(args.get(0), "capacity"));
+                    int tile = Math.toIntExact(regionIntegral(args.get(1), "tile"));
+                    if (capacity < 1 || capacity > 4096) {
+                        throw new IllegalArgumentException("Region<Motion> V0 allows 1..4096 rows");
+                    }
+                    long mask = regionIntegral(args.get(2), "residencyMask");
+                    if (mask < 1 || mask > 7) throw new IllegalArgumentException("invalid layout residency mask");
+                    var resident = java.util.EnumSet.noneOf(TriLayoutMotionStore.Layout.class);
+                    for (var l : TriLayoutMotionStore.Layout.values()) {
+                        if ((mask & (1L << l.ordinal())) != 0) resident.add(l);
+                    }
+                    TriLayoutMotionStore store = new TriLayoutMotionStore(
+                            capacity, tile, resident, resident.iterator().next(), 1048576L);
+                    try {
+                        context.registerGuestRegion(store);
+                        return new RegionMotionValue(store, context);
+                    } catch (RuntimeException failure) {
+                        store.close();
+                        throw failure;
+                    }
+                };
+            }
+            if (receiver instanceof RegionMotionValue region) {
+                return switch (name) {
+                    case "insert" -> (Invokable) args -> {
+                        if (args.size() != 4) throw new IllegalArgumentException("Region.insert arity");
+                        return region.store.insert(regionMotion(args, 0));
+                    };
+                    case "get_x", "get_y" -> (Invokable) args -> {
+                        requireOne(args, "Region." + name);
+                        if (!(args.getFirst() instanceof TriLayoutMotionStore.Handle handle)) {
+                            throw new IllegalArgumentException("expected region handle");
+                        }
+                        var motion = region.store.get(handle, region.selected);
+                        return name.equals("get_x") ? motion.x() : motion.y();
+                    };
+                    case "set" -> (Invokable) args -> {
+                        if (args.size() != 5 || !(args.getFirst() instanceof TriLayoutMotionStore.Handle handle)) {
+                            throw new IllegalArgumentException("Region.set requires handle and 4 doubles");
+                        }
+                        region.store.set(handle, region.selected, regionMotion(args, 1));
+                        return null;
+                    };
+                    case "erase_swap" -> (Invokable) args -> {
+                        requireOne(args, "Region.erase_swap");
+                        if (!(args.getFirst() instanceof TriLayoutMotionStore.Handle handle)) {
+                            throw new IllegalArgumentException("expected region handle");
+                        }
+                        region.store.eraseSwap(handle);
+                        return null;
+                    };
+                    case "set_layout" -> (Invokable) args -> {
+                        requireOne(args, "Region.set_layout");
+                        long ordinal = regionIntegral(args.getFirst(), "layout");
+                        if (ordinal < 0 || ordinal >= TriLayoutMotionStore.Layout.values().length) {
+                            throw new IllegalArgumentException("invalid layout ordinal");
+                        }
+                        var selected = TriLayoutMotionStore.Layout.values()[(int) ordinal];
+                        region.store.selectLayout(selected);
+                        region.selected = selected;
+                        return null;
+                    };
+                    case "size" -> (Invokable) args -> {
+                        requireZero(args, "Region.size");
+                        return (long) region.store.size();
+                    };
+                    case "epoch" -> (Invokable) args -> {
+                        requireZero(args, "Region.epoch");
+                        return region.store.epoch();
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "Region.close");
+                        try {
+                            region.store.close();
+                        } finally {
+                            region.context.unregisterGuestRegion(region.store);
+                        }
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException("unknown Region<Motion> member " + name);
                 };
             }
             if (receiver instanceof ChannelFactory factory) {
@@ -9444,6 +9532,39 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    private enum RegionMotionFactory { INSTANCE }
+    private static final class RegionMotionValue {
+        private final TriLayoutMotionStore store;
+        private final OresContext context;
+        private volatile TriLayoutMotionStore.Layout selected;
+        private RegionMotionValue(TriLayoutMotionStore store, OresContext context) {
+            this.store = store;
+            this.context = context;
+            this.selected = store.authoritativeLayout();
+        }
+    }
+    private static long regionIntegral(Object value, String label) {
+        if (!(value instanceof Long number)) {
+            throw new IllegalArgumentException("Region " + label + " requires int");
+        }
+        return number;
+    }
+    private static double regionFloat(Object value, String label) {
+        if (!(value instanceof Number number)) {
+            throw new IllegalArgumentException("Region " + label + " requires numeric scalar");
+        }
+        double scalar = number.doubleValue();
+        if (!Double.isFinite(scalar)) {
+            throw new IllegalArgumentException("Region<Motion> V0 requires finite scalar fields");
+        }
+        return scalar;
+    }
+    private static TriLayoutMotionStore.Motion regionMotion(List<Object> args, int first) {
+        return new TriLayoutMotionStore.Motion(
+                regionFloat(args.get(first), "x"), regionFloat(args.get(first + 1), "y"),
+                regionFloat(args.get(first + 2), "vx"), regionFloat(args.get(first + 3), "vy"));
+    }
+
     private static final class ChannelFactory {
         private Object create(List<Object> args) {
             requireOne(args, "Channel.new<T>");
