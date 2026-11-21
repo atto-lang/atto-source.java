@@ -219,3 +219,29 @@ This is a syntax/typechecking hardening only; **no execution evidence exists**
 for this stage. Future typed-message dispatch must introduce a separate,
 explicitly versioned contract and must not inherit this legacy hook ABI by
 accident.
+
+## Stage 4 (draft): mandatory actor-local lifecycle hook contracts
+
+Module contracts can now statically require the **already supported**
+`on_start` and `tear_down` hooks without granting actor-local lifecycle
+entry points to ordinary callers:
+
+```atto
+define contract Lifecycle as
+  actor Worker;
+  mtd on_start(Worker worker)(): void;
+  mtd tear_down(Worker worker)(): void;
+end
+```
+
+An implementing actor must declare both nonstatic instance hooks with their
+existing runtime-compatible bodies; an ordinary module `fnc` never satisfies
+them. Requirements must be **private, zero-argument, void**. `pub mtd`,
+additional parameters and non-`void` results are rejected at typecheck time.
+`on_panic`, `on_raise`, `on_throw`, `on_stop` and `on_restart` stay
+reserved until their control-plane semantics and backend lowering are proved.
+A panic is never interceptable by its actor.
+
+This changes **static conformance only**. It does not expose lifecycle hooks,
+introduce external executable receiver bodies, or establish any guest-run or
+NativeAOT test result. The nine added JUnit cases have not been executed.

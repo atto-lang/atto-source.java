@@ -874,8 +874,21 @@ public final class TypeChecker {
                 // These names are runtime/control-plane hooks or compiler-owned
                 // intrinsics. Matching a source method may not establish a
                 // mailbox-callable user API or grant supervisor authority.
-                if (Set.of("tear_down", "handle_state", "on_panic", "on_throw",
-                        "on_throws", "on_raise", "on_recover", "on_start",
+                // on_start and tear_down already have checked actor-local
+                // implementations. Requiring them is safe only as private,
+                // synchronous, zero-argument void hooks: never as exported
+                // mailbox-callable APIs. Other control hooks stay reserved.
+                if (method.name().equals("on_start") || method.name().equals("tear_down")) {
+                    if (method.visibility() != Ast.Visibility.PRIVATE
+                            || !method.parameters().isEmpty()
+                            || !method.returnType().name().equals("void")
+                            || !method.returnType().arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "actor-local lifecycle contract hook '" + method.name()
+                                        + "' must be private, zero-argument and return void");
+                    }
+                } else if (Set.of("handle_state", "on_panic", "on_throw",
+                        "on_throws", "on_raise", "on_recover",
                         "on_stop", "on_restart").contains(method.name())) {
                     throw new IllegalArgumentException(
                             "reserved actor lifecycle/control hook '" + method.name()
