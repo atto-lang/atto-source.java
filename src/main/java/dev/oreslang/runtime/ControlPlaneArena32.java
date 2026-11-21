@@ -36,12 +36,25 @@ final class ControlPlaneArena32 implements AutoCloseable {
     private int freeHead;
     private boolean closed;
 
+    /**
+     * Reserve an issuer once, without ever incrementing beyond the unsigned
+     * 32-bit identity space. Synthetic counters can test rollover boundaries
+     * without burning process-global issuer IDs.
+     */
+    static long reserveIssuer(AtomicLong sequence) {
+        for (;;) {
+            long seen = sequence.get();
+            if (seen < 0L || seen >= 0xffff_ffffL)
+                throw new IllegalStateException("control issuer IDs exhausted; cannot recycle");
+            long next = seen + 1L;
+            if (sequence.compareAndSet(seen, next)) return next;
+        }
+    }
+
     public ControlPlaneArena32(int capacity) {
         if (capacity <= 0 || capacity > SLOT_MASK)
             throw new IllegalArgumentException("control slot quota outside Ref32 capacity");
-        final long id = NEXT_ISSUER.incrementAndGet();
-        if (id <= 0 || id > 0xffff_ffffL)
-            throw new IllegalStateException("control issuer IDs exhausted; cannot recycle");
+        final long id = reserveIssuer(NEXT_ISSUER);
         this.issuer = id;
         this.capacity = capacity;
         arena = Arena.ofShared();
