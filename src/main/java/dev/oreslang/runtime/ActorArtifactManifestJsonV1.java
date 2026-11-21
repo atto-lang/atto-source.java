@@ -175,6 +175,40 @@ public final class ActorArtifactManifestJsonV1 {
                 provenance);
     }
 
+    /**
+     * Package-private primitive shared by the V2 admission path. This does NOT
+     * weaken the public V1 parser: schema-specific V1 decoding is unchanged.
+     * One defensive raw-byte snapshot is strict-UTF8 decoded, then tokenized
+     * with the existing duplicate-decoded-key and surrogate rejection rules.
+     * JSON numbers are converted losslessly to BigDecimal for V2 size policy.
+     */
+    static Object parseStrictJsonValue(byte[] rawUtf8) {
+        Objects.requireNonNull(rawUtf8, "rawUtf8");
+        if (rawUtf8.length == 0 || rawUtf8.length > MAX_MANIFEST_BYTES) {
+            throw new IllegalArgumentException("V2 JSON input must be 1..64 KiB");
+        }
+        String decoded = decodeUtf8(rawUtf8.clone());
+        Object parsed = new StrictJsonParser(decoded).parseDocument();
+        return exposeExactNumbers(parsed);
+    }
+
+    private static Object exposeExactNumbers(Object parsed) {
+        if (parsed instanceof JsonNumber n) return n.value();
+        if (parsed instanceof Map<?, ?> fields) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> field : fields.entrySet()) {
+                out.put((String) field.getKey(), exposeExactNumbers(field.getValue()));
+            }
+            return java.util.Collections.unmodifiableMap(out);
+        }
+        if (parsed instanceof List<?> elements) {
+            List<Object> out = new ArrayList<>(elements.size());
+            for (Object element : elements) out.add(exposeExactNumbers(element));
+            return java.util.Collections.unmodifiableList(out);
+        }
+        return parsed;
+    }
+
     private static String decodeUtf8(byte[] bytes) {
         try {
             return StandardCharsets.UTF_8
