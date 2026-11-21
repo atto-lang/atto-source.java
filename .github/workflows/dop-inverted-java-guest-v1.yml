@@ -5,6 +5,16 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/compiler/DopInvertedGuestI64V1.java'
       - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
+      - 'src/main/java/dev/oreslang/parser/Lexer.java'
+      - 'src/main/java/dev/oreslang/parser/Token.java'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'pom.xml'
+      - 'tools/VerifyDopInvertedJUnit.java'
+      - 'tools/verify-dop-inverted-atto-contract.sh'
+      - 'tools/test-verify-dop-inverted-atto-contract.sh'
       - 'src/main/java/dev/oreslang/runtime/InvertedColumnStore.java'
       - 'src/test/java/dev/oreslang/compiler/DopInvertedGuestI64V1Test.java'
       - 'src/test/java/dev/oreslang/DopInvertedGuestAdmissionTest.java'
@@ -39,23 +49,12 @@ jobs:
           echo "DOP_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
       - name: verify-fixture
         shell: bash
-        run: |
-          set -euo pipefail
-          while read -r name expected; do
-            file="contracts/dop-inverted-v1/$name"
-            [[ -f "$file" && ! -L "$file" ]]
-            [[ "$(wc -c < "$file")" -le 65536 ]]
-            observed="$(git hash-object --no-filters -- "$file")"
-            if [[ "$observed" != "$expected" ]]; then
-              echo "FAIL: canonical AttoLang source blob mismatch: $name" >&2
-              exit 1
-            fi
-          done <<'DOP_EXPECTED_BLOBS'
-          swap-reuse.atto 8f5599a9e0b11ded2929110b4936441fceb2ef21
-          removed-index-trap.atto c3c87cfd2515707932734e183bb5768436526a96
-          positive-immutable-column-swap.atto 863b1f20137656a277fc7bc04415a6f001f76512
-          DOP_EXPECTED_BLOBS
-          echo "DOP_CANONICAL_SOURCE_BLOBS_MATCHED=3"
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash tools/verify-dop-inverted-atto-contract.sh
+      - name: source-admission-mutation-tests
+        shell: bash
+        run: bash tools/test-verify-dop-inverted-atto-contract.sh
       - name: setup-graalvm
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
@@ -70,3 +69,12 @@ jobs:
         run: mvn -B -ntp -Dtest=DopInvertedGuestI64V1Test,DopInvertedGuestAdmissionTest test
       - name: verify-junit-report
         run: java tools/VerifyDopInvertedJUnit.java
+      - name: verify-post-execution-source
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # Run the pinned Git-object script; JUnit/build code could rewrite its
+          # working-tree copy and otherwise bypass the post-execution check.
+          git show HEAD:tools/verify-dop-inverted-atto-contract.sh | bash
