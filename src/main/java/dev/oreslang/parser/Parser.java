@@ -3386,6 +3386,158 @@ public final class Parser {
         return new Ast.LocalAggregateConstructExpr(name, positional, named);
     }
 
+    /**
+     * First executable AttoLang maybe slice. This is deliberately lowered to
+     * the existing *procedural* checked match CFG; value-match arm-result
+     * rewriting would turn an inner function return into the wrong control
+     * transfer. Failure handlers are copied only to their compatible variant
+     * (Err for Ok, None for Some); the existing checker proves exhaustiveness,
+     * binding type and moves on each branch.
+     *
+     * V1 admits contiguous fallible bindings and a terminal body; independent
+     * statements before/among bindings and body-local defer need dedicated
+     * cleanup CFG lowering. Reject rather than silently change cleanup order.
+     */
+    private record MaybeBinding(Ast.Pattern success, Ast.Expr value, String failedVariant) { }
+
+    private boolean isMaybeBindingAt(int index) {
+        if (index + 2 >= tokens.size()
+                || tokens.get(index).type() != IDENT
+                || tokens.get(index + 1).type() != LPAREN) return false;
+        String name = tokens.get(index).lexeme();
+        if (!name.equals("Ok") && !name.equals("Some")) return false;
+        int depth = 0;
+        for (int i = index + 1; i < tokens.size(); i++) {
+            Token.Type kind = tokens.get(i).type();
+            if (kind == LPAREN) depth++;
+            else if (kind == RPAREN && --depth == 0) {
+                return i + 1 < tokens.size()
+                        && tokens.get(i + 1).type() == FALLIBLE_BIND;
+            }
+        }
+        return false;
+    }
+
+    private Ast.Stmt parseMaybe(boolean returning) {
+        List<MaybeBinding> bindings = new ArrayList<>();
+        while (isMaybeBindingAt(current)) {
+            Ast.Pattern pattern = parsePattern();
+            if (!(pattern instanceof Ast.ConstructorPattern constructor)
+                    || constructor.arguments().size() != 1
+                    || !(constructor.arguments().getFirst() instanceof Ast.BindingPattern
+                        || constructor.arguments().getFirst() instanceof Ast.WildcardPattern)
+                    || !(constructor.constructor().equals("Ok")
+                        || constructor.constructor().equals("Some"))) {
+                throw error(previous(), "maybe v1 requires Ok(name) or Some(name) fallible bindings");
+            }
+            consume(FALLIBLE_BIND, "maybe binding requires the atomic '?=' operator");
+            Ast.Expr value = parseExpression();
+            consume(SEMICOLON, "maybe fallible bindings must end with ';'");
+            bindings.add(new MaybeBinding(pattern, value,
+                    constructor.constructor().equals("Ok") ? "Err" : "None"));
+        }
+        if (bindings.isEmpty()) {
+            throw error(peek(), "maybe requires at least one Ok(name) ?= or Some(name) ?= binding");
+        }
+
+        List<Ast.Stmt> normal = parseUntil(ELSE, END);
+        if (normal.isEmpty()) {
+            throw error(peek(), "maybe success path must explicitly return or produce a result");
+        }
+        rejectMaybeBodyDefer(normal);
+        if (returning) normal = functionReturnMaybeTail(normal);
+        consume(ELSE, "maybe v1 requires exhaustive 'else' failure arms");
+
+        List<Ast.MatchArm> handlers = new ArrayList<>();
+        while (!check(END) && !check(EOF)) {
+            Ast.Pattern pattern = parsePattern();
+            if (!maybeFailureVariant(pattern, "Err")
+                    && !maybeFailureVariant(pattern, "None")
+                    && !(pattern instanceof Ast.WildcardPattern)) {
+                throw error(previous(), "maybe else requires Err(...), None, or _ failure pattern");
+            }
+            consume(ARROW, "maybe failure arms require '->'");
+            boolean braced = check(LBRACE);
+            List<Ast.Stmt> handler = braced ? parseBlock() : List.of(parseStatement());
+            if (braced) match(SEMICOLON);
+            if (handler.isEmpty()) {
+                throw error(previous(), "maybe failure arm cannot be empty");
+            }
+            if (returning) handler = functionReturnMaybeTail(handler);
+            handlers.add(new Ast.MatchArm(pattern, null, handler));
+        }
+        consume(END, "expected 'end' to close maybe");
+        if (returning) {
+            consume(SEMICOLON, "return maybe expression requires ';' after end");
+        } else {
+            match(SEMICOLON);
+        }
+        if (handlers.isEmpty()) {
+            throw error(previous(), "maybe requires at least one failure arm");
+        }
+
+        List<Ast.Stmt> next = normal;
+        for (int i = bindings.size() - 1; i >= 0; i--) {
+            MaybeBinding binding = bindings.get(i);
+            List<Ast.MatchArm> arms = new ArrayList<>();
+            arms.add(new Ast.MatchArm(binding.success(), null, next));
+            for (Ast.MatchArm handler : handlers) {
+                if (maybeFailureVariant(handler.pattern(), binding.failedVariant())
+                        || handler.pattern() instanceof Ast.WildcardPattern) {
+                    arms.add(handler);
+                }
+            }
+            if (arms.size() == 1) {
+                throw error(previous(), "non-exhaustive maybe: missing "
+                        + binding.failedVariant() + " failure arm");
+            }
+            // Procedural matching must propagate inner returns to the callable.
+            next = List.of(new Ast.MatchStmt(binding.value(), true, arms, true));
+        }
+        return new Ast.BlockStmt(next);
+    }
+
+    private static boolean maybeFailureVariant(Ast.Pattern pattern, String variant) {
+        return pattern instanceof Ast.ConstructorPattern constructor
+                && constructor.constructor().equals(variant);
+    }
+
+    private List<Ast.Stmt> functionReturnMaybeTail(List<Ast.Stmt> body) {
+        if (body.isEmpty()) throw error(previous(), "return maybe branch requires a value or return");
+        Ast.Stmt last = body.getLast();
+        if (last instanceof Ast.ReturnStmt) return body;
+        if (!(last instanceof Ast.ExprStmt expression)) {
+            throw error(previous(), "return maybe branch needs terminal value or explicit function return");
+        }
+        List<Ast.Stmt> normalized = new ArrayList<>(body);
+        normalized.set(normalized.size() - 1, new Ast.ReturnStmt(expression.expression()));
+        return List.copyOf(normalized);
+    }
+
+    private void rejectMaybeBodyDefer(List<Ast.Stmt> body) {
+        // A shared function-scope defer is already correct. But an in-body
+        // defer cannot be pushed into nested match success arms: on a later
+        // failure, it must run BEFORE the else handler, not after it.
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.DeferStmt
+                    || stmt instanceof Ast.BlockStmt
+                    || stmt instanceof Ast.IfStmt
+                    || stmt instanceof Ast.MatchStmt
+                    || stmt instanceof Ast.TryStmt
+                    || stmt instanceof Ast.LoopStmt
+                    || stmt instanceof Ast.ForStmt
+                    || stmt instanceof Ast.ForOfStmt
+                    || stmt instanceof Ast.ForOfDestructureStmt
+                    || stmt instanceof Ast.DoWhileStmt
+                    || stmt instanceof Ast.SelectStmt
+                    || stmt instanceof Ast.TaskScopeStmt
+                    || stmt instanceof Ast.UsingBorrowStmt) {
+                throw error(previous(), "maybe v1 body admits only expression statements "
+                        + "and a terminal return; nested scopes/defer need typed cleanup CFG");
+            }
+        }
+    }
+
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
         if (attoCallableVersion != null && match(CARET)) {
@@ -3462,6 +3614,14 @@ public final class Parser {
         // The value-producing static select expression is not lowered yet.
         // Preserve historical statement sources until expression migration
         // provides an executable replacement; do-select stays procedural.
+        // Contextual, not reserved: this form is lowered to typed, procedural
+        // Result/Option matches. Normal identifiers named maybe are unaffected.
+        if (check(DO) && checkNext(IDENT)
+                && tokens.get(current + 1).lexeme().equals("maybe")) {
+            advance(); // do
+            advance(); // maybe
+            return parseMaybe(false);
+        }
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
@@ -3557,6 +3717,13 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
+            // Contextual return-maybe: its inner return statements are true
+            // FUNCTION_RETURN. It is NOT the value-match ARM_RESULT construct.
+            // No synthetic outer ReturnStmt is emitted for diverging arms.
+            if (isContextualIdentifier("maybe") && isMaybeBindingAt(current + 1)) {
+                advance();
+                return parseMaybe(true);
+            }
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
