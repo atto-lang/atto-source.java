@@ -9,6 +9,8 @@ on:
       - "src/test/java/dev/oreslang/runtime/ActorStateRwLoansTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorStateSupervisorLoansTest.java"
       - "docs/ACTOR_STATE_RW_ALLOCATION_BOUND_AUDIT.md"
+      - "docs/ACTOR_SUPERVISOR_CONTROL_GUARDED_STATE_V1.md"
+      - "docs/ACTOR_SUPERVISOR_SCOPED_CONTROL_LOANS_V1.md"
       - ".github/workflows/actor-state-rw-ownership.yml"
   workflow_dispatch:
 
@@ -50,7 +52,7 @@ jobs:
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
             -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest -DfailIfNoTests=true test
-      - name: Verify exact focused Surefire evidence (27 base and 22 integration tests)
+      - name: Verify exact focused Surefire evidence (27 base and 32 integration tests)
         shell: bash
         run: |
           set -euo pipefail
@@ -60,7 +62,7 @@ jobs:
           base = Path("target/surefire-reports")
           cases = {
               "ActorStateRwLoansTest": 27,
-              "ActorStateSupervisorLoansTest": 22,
+              "ActorStateSupervisorLoansTest": 32,
           }
           for class_name, minimum in cases.items():
               path = base / f"TEST-dev.oreslang.runtime.{class_name}.xml"

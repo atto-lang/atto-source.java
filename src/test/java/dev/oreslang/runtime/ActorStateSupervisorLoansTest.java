@@ -196,6 +196,26 @@ final class ActorStateSupervisorLoansTest {
             return asControl(principal, () -> active.redeem(grant, principal));
         }
 
+        void scopedRead(
+                ActorStateSupervisorLoans active, ActorStateSupervisorLoans.Grant grant,
+                java.util.function.Consumer<ActorStateSupervisorLoans.ScopedScalar> callback)
+                throws Exception {
+            asControl(supervisor, () -> {
+                active.withSupervisorRead(grant, supervisor, callback);
+                return null;
+            });
+        }
+
+        void scopedWrite(
+                ActorStateSupervisorLoans active, ActorStateSupervisorLoans.Grant grant,
+                java.util.function.Consumer<ActorStateSupervisorLoans.ScopedScalar> callback)
+                throws Exception {
+            asControl(supervisor, () -> {
+                active.withSupervisorWrite(grant, supervisor, callback);
+                return null;
+            });
+        }
+
         void release(ActorStateSupervisorLoans.Loan loan) throws Exception {
             asControl(supervisor, () -> { loan.close(); return null; });
         }
@@ -672,6 +692,213 @@ final class ActorStateSupervisorLoansTest {
             assertTrue(revoked.getMessage().contains("revoked"),
                     "a timeout or interruption is not proof of STOP write fencing");
             assertTrue(region.physicallyRetired());
+        }
+    }
+
+
+    @Test
+    void scopedWriteReleasesBeforeNextControlTurnAndOwnerReadsResult() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            fixture.scopedWrite(region, fixture.issue("write"), scope -> {
+                assertEquals(1, region.activeWriters());
+                assertEquals(0L, scope.read());
+                scope.write(101L);
+                assertEquals(101L, scope.read());
+            });
+            assertEquals(0, region.activeWriters(),
+                    "physical writer must unwind before CONTROL dispatch resolves");
+            sendAndDrain(fixture.worker, "scalar-owner-read");
+            assertEquals(101L, fixture.ownerScalarObserved.get());
+
+            var result = new java.util.concurrent.atomic.AtomicLong();
+            fixture.scopedRead(region, fixture.issue("read"), scope ->
+                    result.set(scope.read()));
+            assertEquals(101L, result.get());
+            assertEquals(0, region.activeReaders());
+        }
+    }
+
+    @Test
+    void escapedScopedViewIsInvalidEvenInLaterAuthenticatedControlTurn()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var escaped = new AtomicReference<ActorStateSupervisorLoans.ScopedScalar>();
+            fixture.scopedRead(region, fixture.issue("read"), escaped::set);
+            assertNotNull(escaped.get());
+            assertEquals(0, region.activeReaders());
+            assertThrows(SecurityException.class,
+                    () -> fixture.asControl(
+                            fixture.supervisor, escaped.get()::read));
+            assertThrows(SecurityException.class,
+                    () -> fixture.asControl(
+                            fixture.supervisor,
+                            () -> { escaped.get().write(1L); return null; }));
+        }
+    }
+
+    @Test
+    void scopeCannotMoveToAnotherThreadWhileOriginalControlIsActive()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var rejected = new AtomicReference<Throwable>();
+            fixture.scopedRead(region, fixture.issue("read"), scope -> {
+                var child = Thread.ofPlatform().start(() -> {
+                    try {
+                        scope.read();
+                    } catch (Throwable error) {
+                        rejected.set(error);
+                    }
+                });
+                try {
+                    child.join(3000);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+                assertFalse(child.isAlive());
+                assertEquals(1, region.activeReaders(),
+                        "failed cross-thread access must not release CONTROL owner");
+            });
+            assertInstanceOf(SecurityException.class, rejected.get());
+            assertEquals(0, region.activeReaders());
+        }
+    }
+
+    @Test
+    void readScopeCannotWriteAndMustStillReleaseOnCallbackFailure()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var denied = assertThrows(SecurityException.class,
+                    () -> fixture.scopedRead(region, fixture.issue("read"),
+                            scope -> scope.write(123L)));
+            assertTrue(denied.getMessage().contains("exclusive"));
+            assertEquals(0, region.activeReaders());
+            fixture.scopedRead(region, fixture.issue("read"),
+                    scope -> assertEquals(0L, scope.read()));
+        }
+    }
+
+    @Test
+    void callbackFailureAlwaysReleasesExclusiveScopedWriter() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var fault = assertThrows(IllegalStateException.class,
+                    () -> fixture.scopedWrite(region, fixture.issue("write"), scope -> {
+                        scope.write(333L);
+                        throw new IllegalStateException("user callback injected failure");
+                    }));
+            assertEquals("user callback injected failure", fault.getMessage());
+            assertEquals(0, region.activeWriters());
+            var seen = new java.util.concurrent.atomic.AtomicLong();
+            fixture.scopedRead(region, fixture.issue("read"), scope ->
+                    seen.set(scope.read()));
+            assertEquals(333L, seen.get());
+        }
+    }
+
+    @Test
+    void mismatchedScopedBorrowModeDoesNotConsumeValidGrant() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var grant = fixture.issue("read");
+            assertThrows(SecurityException.class,
+                    () -> fixture.scopedWrite(region, grant,
+                            scope -> fail("read grant must not become writer")));
+            assertEquals(1, region.outstandingGrantCount());
+            fixture.scopedRead(region, grant, scope -> assertEquals(0L, scope.read()));
+            assertEquals(0, region.outstandingGrantCount());
+        }
+    }
+
+    @Test
+    void contendedScopeCancelsWaiterInsteadOfParkingControlCarrier()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var writer = fixture.redeem(region, fixture.issue("write")).join();
+            var blocked = fixture.issue("read");
+            assertThrows(IllegalStateException.class,
+                    () -> fixture.scopedRead(region, blocked,
+                            scope -> fail("queued reader must never execute")));
+            assertEquals(1, region.activeWriters());
+            assertEquals(0, region.pendingCount(),
+                    "failed scoped acquisition must cancel the queued read");
+            fixture.release(writer);
+            fixture.scopedRead(region, fixture.issue("read"),
+                    scope -> assertEquals(0L, scope.read()));
+        }
+    }
+
+    @Test
+    void stopInsideScopedWriterRevokesAccessButPhysicalReleaseRunsInFinally()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            fixture.scopedWrite(region, fixture.issue("write"), scope -> {
+                scope.write(80L);
+                assertTrue(fixture.worker.cancel());
+                assertFalse(fixture.worker.done().isDone());
+                assertThrows(SecurityException.class, scope::read);
+                assertThrows(SecurityException.class, () -> scope.write(81L));
+                assertFalse(region.physicallyRetired());
+            });
+            assertEquals(0, region.activeWriters());
+            assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(region.physicallyRetired());
+        }
+    }
+
+
+    @Test
+    void sameSupervisorButDifferentSimultaneousControlTurnCannotBorrowScopedView()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var rejected = new AtomicReference<Throwable>();
+            fixture.scopedRead(region, fixture.issue("read"), scope -> {
+                var anotherHost = Thread.ofPlatform().start(() -> {
+                    try {
+                        fixture.asControl(fixture.supervisor, scope::read);
+                    } catch (Throwable failure) {
+                        rejected.set(failure);
+                    }
+                });
+                try {
+                    anotherHost.join(4000);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+                assertFalse(anotherHost.isAlive());
+                assertEquals(1, region.activeReaders());
+            });
+            assertInstanceOf(SecurityException.class, rejected.get(),
+                    "same supervisor identity must not impersonate original CONTROL turn");
+            assertEquals(0, region.activeReaders());
+        }
+    }
+
+    @Test
+    void rawFutureLoanAdapterRemainsPackagePrivateNotGuestPublicApi()
+            throws Exception {
+        var raw = ActorStateSupervisorLoans.class.getDeclaredMethod(
+                "redeem",
+                ActorStateSupervisorLoans.Grant.class,
+                ActorRuntime.ActorSupervisor.class);
+        assertFalse(java.lang.reflect.Modifier.isPublic(raw.getModifiers()),
+                "guest or external host callers must not get unscoped loan Futures");
+        for (var name : java.util.List.of("withSupervisorRead", "withSupervisorWrite")) {
+            var method = ActorStateSupervisorLoans.class.getDeclaredMethod(
+                    name,
+                    ActorStateSupervisorLoans.Grant.class,
+                    ActorRuntime.ActorSupervisor.class,
+                    java.util.function.Consumer.class);
+            assertFalse(java.lang.reflect.Modifier.isPublic(method.getModifiers()),
+                    "compiler-only scoped bridge must remain runtime-package-local");
         }
     }
 

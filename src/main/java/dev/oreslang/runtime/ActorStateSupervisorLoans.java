@@ -135,6 +135,112 @@ public final class ActorStateSupervisorLoans {
         }
     }
 
+
+    /**
+     * Scoped primitive access. Constructed only by withSupervisorRead/Write,
+     * never by callers. A captured reference expires before the CONTROL turn
+     * returns and cannot be replayed even on a recycled CONTROL carrier.
+     *
+     * No actor state object, field reference, direct buffer or address escapes.
+     */
+    public final class ScopedScalar {
+        private final Loan loan;
+        private final Object physicalTurn;
+        private boolean active = true;
+
+        private ScopedScalar(Loan loan, Object physicalTurn) {
+            this.loan = Objects.requireNonNull(loan, "loan");
+            this.physicalTurn = Objects.requireNonNull(physicalTurn, "physicalTurn");
+        }
+
+        private void requireActive() {
+            runtime.requireSupervisorStateControlTurn(loan.target, physicalTurn);
+            synchronized (gate) {
+                if (!active) {
+                    throw new SecurityException(
+                            "actor state view escaped its lexical supervisor CONTROL scope");
+                }
+                loan.requireLiveLocked();
+            }
+        }
+
+        public long read() {
+            requireActive();
+            return loan.readScalar();
+        }
+
+        public void write(long value) {
+            requireActive();
+            loan.writeScalar(value);
+        }
+
+        private void invalidate() {
+            synchronized (gate) {
+                active = false;
+            }
+        }
+    }
+
+    /**
+     * Compiler-facing, non-suspending CONTROL read. The grant must be a READ
+     * capability, never an implicit coercion from WRITE. A queued acquisition
+     * aborts instead of parking the CONTROL carrier.
+     */
+    void withSupervisorRead(
+            Grant grant, ActorRuntime.ActorSupervisor supervisor,
+            java.util.function.Consumer<ScopedScalar> operation) {
+        withSupervisorScope(grant, supervisor, ActorStateRwLoans.Access.READ, operation);
+    }
+
+    /**
+     * Compiler-facing, non-suspending exclusive CONTROL write. Physical
+     * release occurs only in our finally after the user callback returns or
+     * throws; the callback cannot close its own loan early.
+     */
+    void withSupervisorWrite(
+            Grant grant, ActorRuntime.ActorSupervisor supervisor,
+            java.util.function.Consumer<ScopedScalar> operation) {
+        withSupervisorScope(grant, supervisor, ActorStateRwLoans.Access.WRITE, operation);
+    }
+
+    private void withSupervisorScope(
+            Grant grant, ActorRuntime.ActorSupervisor supervisor,
+            ActorStateRwLoans.Access required,
+            java.util.function.Consumer<ScopedScalar> operation) {
+        Objects.requireNonNull(operation, "operation");
+        Objects.requireNonNull(grant, "grant");
+        Objects.requireNonNull(supervisor, "supervisor");
+        Object physicalTurn = runtime.captureSupervisorStateControlTurn(supervisor);
+        if (grant.access != required) {
+            throw new SecurityException("supervisor CONTROL loan mode does not match grant");
+        }
+        OresFuture<Loan> pending = redeem(grant, supervisor);
+        if (!pending.isDone()) {
+            // The caller must never park a CONTROL carrier. A cancellation
+            // racing a grant completion may lose the terminal CAS. Recover
+            // the resulting physical loan through its internal close path,
+            // without exposing it to a guest continuation.
+            if (!pending.cancel(false)) {
+                pending.whenCompleteRuntime((loan, failure) -> {
+                    if (loan != null) loan.delegate.close();
+                });
+            }
+            throw new IllegalStateException(
+                    "supervisor CONTROL scope would suspend awaiting state RW admission");
+        }
+        Loan loan = pending.join();
+        ScopedScalar scope = new ScopedScalar(loan, physicalTurn);
+        try {
+            operation.accept(scope);
+        } finally {
+            // Invalidate BEFORE physical release/promotion, including when
+            // the callback throws. A retained handle can never touch the
+            // following owner's state after this point.
+            scope.invalidate();
+            loan.close();
+        }
+    }
+
     /** Only the owning physical actor turn can issue a delegated read. */
     public Grant delegateRead(ActorRuntime.ActorSupervisor supervisor) {
         return delegate(supervisor, ActorStateRwLoans.Access.READ);
@@ -169,7 +275,10 @@ public final class ActorStateSupervisorLoans {
      * identity. Do not expose this adapter to an AttoLang guest or FFI
      * import; compiler and CONTROL-identity lowering remain mandatory.</p>
      */
-    public OresFuture<Loan> redeem(
+    // Trusted legacy host adapter for existing runtime-only tests. Never
+    // lower guest borrows through a free-standing Loan/Future: use one of
+    // the scoped CONTROL methods above to prove physical lexical unwind.
+    OresFuture<Loan> redeem(
             Grant grant, ActorRuntime.ActorSupervisor supervisor) {
         Objects.requireNonNull(grant, "grant");
         Objects.requireNonNull(supervisor, "supervisor");
