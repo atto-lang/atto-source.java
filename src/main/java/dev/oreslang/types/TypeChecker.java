@@ -7686,7 +7686,9 @@ public final class TypeChecker {
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
             for (Type element : tuple.elements()) {
-                result = result == Unknown.INSTANCE ? element : commonType(result, element);
+                result = result == Unknown.INSTANCE
+                        ? element
+                        : collectionElementJoin(result, element);
             }
             return result;
         }

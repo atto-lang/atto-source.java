@@ -4683,7 +4683,7 @@ public final class OwnershipChecker {
             Ast.TypeRef first = concrete.arguments().getFirst();
             return concrete.arguments().stream().allMatch(first::equals)
                     ? first
-                    : Ast.TypeRef.inferred();
+                    : Ast.TypeRef.union(concrete.arguments());
         }
         Ast.TypeRef sequence = sequenceDestructureSourceType(concrete);
         if (!sequence.equals(concrete)) return iterableElementType(sequence, asyncIteration);

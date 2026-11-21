@@ -172,8 +172,8 @@ named_inferred_literal
                 = "infer" "<" IDENT ">" (
                     "struct" "{" [ struct_value_field { "," struct_value_field } ] "}"
                   | "record" "{" [ struct_value_field { "," struct_value_field } ] "}"
-                  | "tuple" ( "{" expression { "," expression } "}"
-                            | "(" expression { "," expression } ")" ) ) ;
+                  | "tuple" ( "{" expression { "," expression } [ "," ] "}"
+                            | "(" expression { "," expression } [ "," ] ")" ) ) ;
 (* The first type IDENT of named_inferred_binding must equal the IDENT after infer<...>.
    Named inference captures a lexical compile-time type alias; it does not create a
    runtime type object. infer struct captures an exact closed struct shape. Record
@@ -375,8 +375,8 @@ typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
 lambda_body     = block | expression ;
 
-tuple_literal   = "tuple" "{" [ argument_list ] "}"
-                | "(" expression "," expression { "," expression } ")" ;
+tuple_literal   = "tuple" "{" [ expression { "," expression } [ "," ] ] "}"
+                | "(" expression "," [ expression { "," expression } [ "," ] ] ")" ;
 (* tuple {...} is the explicit tuple literal. tuple(...) is not tuple syntax:
    it is parsed as an ordinary call. A user-declared callable named tuple wins;
    otherwise the compatibility builtin callable constructs a tuple so existing

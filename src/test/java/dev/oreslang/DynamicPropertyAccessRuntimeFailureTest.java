@@ -315,4 +315,23 @@ final class DynamicPropertyAccessRuntimeFailureTest {
                 "dynamic-structural-record-extra-field.ores",
                 "structural computed field key outside checked domain: z");
     }
+    @Test
+    void dynamicUnknownEntryFieldFailsAtRuntime() {
+        runtimeRejected("""
+                fnc selector(): string { return "missing"; }
+
+                fnc read(Entry<int, int> entry, string key): int {
+                    return entry[key];
+                }
+
+                pub fnc main(): void {
+                    const entry = Entry.of(1, 2);
+                    stdio.println(read(entry, selector()));
+                    return;
+                }
+                """,
+                "dynamic-entry-missing-key.ores",
+                "unknown Entry field key missing");
+    }
+
 }
