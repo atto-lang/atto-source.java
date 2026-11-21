@@ -751,6 +751,8 @@ public final class Parser {
             }
         }
         if (body.isEmpty()) throw error(previous(), "critical actor body cannot be empty");
+        // Static shape checks only. This never authorizes runtime state access.
+        CriticalActorLoanAdmission.check(body, kinds, receiver);
         return new Ast.CriticalActorMethodDecl(
                 type.name(), receiver, name, Ast.Visibility.PRIVATE, parameters,
                 returns, body, kinds);

@@ -99,4 +99,47 @@ final class AttoCriticalActorStaticAdmissionTest {
                 error.getMessage());
     }
 
+
+    @Test
+    void rejectsStateLoanEscapeUnboundedEffectsAndUncheckedCalls() {
+        for (String mutated : new String[] {
+                CRITICAL.replace("issued = s.next_delivery_tag;",
+                        "return s.next_delivery_tag;"),
+                CRITICAL.replace("issued = s.next_delivery_tag;", "issued = s;"),
+                CRITICAL.replace("return issued;",
+                        "let int escaped = s.next_delivery_tag; return issued;"),
+                CRITICAL.replace("using state.write", "using state.read"),
+                CRITICAL.replace("issued = s.next_delivery_tag;", "issued = hostcall();"),
+                CRITICAL.replace("issued = s.next_delivery_tag;", "yield;"),
+                CRITICAL.replace("issued = s.next_delivery_tag;", "defer issued = 1;"),
+                CRITICAL.replace("issued = s.next_delivery_tag;",
+                        "while true do issued = s.next_delivery_tag; done"),
+                CRITICAL.replace("issued = s.next_delivery_tag;",
+                        "using state.write(critical |t| -> { issued = t.next_delivery_tag; });"),
+                CRITICAL.replace("return issued;", "state.read(); return issued;"),
+                CRITICAL.replace("return issued;", "c.close(); return issued;"),
+                CRITICAL.replace("issued = s.next_delivery_tag;",
+                        "let int f = |x| -> { return x; }; issued = s.next_delivery_tag;")
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(HEADER + mutated),
+                    "unsafe critical body must fail admission");
+        }
+    }
+
+    @Test
+    void admitsTwoSequentialExplicitLoansButNeverExecutesThem() {
+        var twoLoans = CRITICAL.replace("return issued;", """
+                using state.write(critical |t| -> {
+                    issued = t.next_delivery_tag;
+                });
+                return issued;
+                """);
+        var parsed = Parser.parse(HEADER + twoLoans);
+        long criticalMethods = parsed.modules().getFirst().declarations().stream()
+                .filter(d -> d instanceof Ast.CriticalActorMethodDecl).count();
+        assertEquals(1, criticalMethods);
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed)).getMessage()
+                .contains("CRITICAL_ACTOR_STATE_LOWERING_UNSUPPORTED"));
+    }
 }
