@@ -50,12 +50,12 @@ public final class NativeIo {
                     "fs.read_text_bounded_async max_bytes must be in 0..16777216");
         }
         Path lexical = lexicalPath(rawPath);
+        // Walk the lexical path before the lexical scope check: permission
+        // normalization canonicalizes existing prefixes and would otherwise
+        // follow (probe behind) a symlinked ancestor first.
+        rejectSymlinkComponents(context, RuntimePermissions.Permission.READ, lexical, "fs.read_text_bounded_async");
         context.requirePermission(RuntimePermissions.Permission.READ,
                 lexical.toString(), "fs.read_text_bounded_async");
-        if (Files.isSymbolicLink(lexical)) {
-            throw new SecurityException(
-                    "fs.read_text_bounded_async refuses symlink: " + lexical);
-        }
         Path path = canonicalExistingPath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.READ,
                 path.toString(), "fs.read_text_bounded_async");
@@ -123,11 +123,12 @@ public final class NativeIo {
         // Validate the caller's lexical scope BEFORE probing file existence,
         // symlinks or canonical paths. An out-of-scope missing path must
         // report permission denial, not leak its filesystem state.
+        // Walk the lexical path before the lexical scope check: permission
+        // normalization canonicalizes existing prefixes and would otherwise
+        // follow (probe behind) a symlinked ancestor first.
+        rejectSymlinkComponents(context, RuntimePermissions.Permission.READ, lexical, "fs.file_size");
         context.requirePermission(RuntimePermissions.Permission.READ,
                 lexical.toString(), "fs.file_size");
-        if (Files.isSymbolicLink(lexical)) {
-            throw new SecurityException("fs.file_size refuses symlink: " + lexical);
-        }
         Path path = canonicalExistingPath(rawPath);
         // A parent may itself be a symlink; never let the lexical grant
         // authorize the resolved destination outside its READ scope.
@@ -224,11 +225,12 @@ public final class NativeIo {
         // Reject out-of-scope destinations before any existence, symlink, or
         // parent-resolution probe. This must hold even when the parent path
         // does not exist or its metadata would otherwise reveal its state.
+        // Walk the lexical path before the lexical scope check: permission
+        // normalization canonicalizes existing prefixes and would otherwise
+        // follow (probe behind) a symlinked ancestor first.
+        rejectSymlinkComponents(context, RuntimePermissions.Permission.WRITE, lexical, "fs.write_text_atomic");
         context.requirePermission(RuntimePermissions.Permission.WRITE,
                 lexical.toString(), "fs.write_text_atomic");
-        if (Files.isSymbolicLink(lexical)) {
-            throw new SecurityException("fs.write_text_atomic refuses symlink: " + lexical);
-        }
         Path parent = lexical.getParent();
         if (parent == null) throw new IllegalArgumentException("atomic write path has no parent");
         Path canonicalParent = realPath(parent);
@@ -581,6 +583,43 @@ public final class NativeIo {
         Path resolved = realPath(cursor);
         for (String segment : tail) resolved = resolved.resolve(segment);
         return resolved.normalize();
+    }
+
+    /**
+     * Fail closed before canonical path resolution when ANY component is a
+     * symlink. In particular, do not probe a restricted target via an
+     * in-scope parent symlink before the resolved-scope permission check.
+     *
+     * Walk root-to-leaf: a leaf-first check could itself traverse a symlinked
+     * ancestor and consult the restricted directory's metadata. isSymbolicLink
+     * always checks the final component without following that component.
+     *
+     * The check is not an atomic path walk. A hostile process concurrently
+     * replacing ancestor directories still requires fd-relative resolution
+     * (openat2 / SecureDirectoryStream) or process isolation.
+     */
+    private static void rejectSymlinkComponents(
+            OresContext context, RuntimePermissions.Permission permission,
+            Path lexical, String operation) {
+        Path prefix = lexical.getRoot();
+        if (prefix == null) {
+            throw new IllegalArgumentException("filesystem path must be absolute");
+        }
+        for (Path component : lexical) {
+            prefix = prefix.resolve(component);
+            if (Files.isSymbolicLink(prefix)) {
+                // The walk is root-to-leaf, so the parent has no symlinked
+                // ancestor: its scope check cannot follow this link. An
+                // out-of-scope parent reports permission denial instead of
+                // disclosing that the component is a symlink.
+                Path linkParent = prefix.getParent();
+                if (linkParent != null) {
+                    context.requirePermission(permission, linkParent.toString(), operation);
+                }
+                throw new SecurityException(
+                        operation + " refuses symlink component: " + prefix);
+            }
+        }
     }
 
     private static Path lexicalPath(String rawPath) {

@@ -1,0 +1,110 @@
+name: Future v2 pinned JVM and native guest execution
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/FutureChainingV2PinnedGuestTest.java'
+      - 'src/main/**'
+      - 'pom.xml'
+      - 'tools/run-future-v2-native-guest.mjs'
+      - '.github/workflows/future-v2-pinned-native-guest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: future-v2-native-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  native-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source commit and independent Git tree before any build
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          expected_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${EXPECTED_COMMIT}" --jq '.tree.sha')"
+          [[ "$expected_tree" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse 'HEAD^{tree}')" = "$expected_tree"
+          git diff --quiet HEAD --
+          test -z "$(git ls-files --others --exclude-standard)"
+          test -z "$(git ls-files --others --ignored --exclude-standard)"
+          printf 'SOURCE_REPO=%s\nSOURCE_COMMIT=%s\nSOURCE_TREE=%s\n' \
+            "$GITHUB_REPOSITORY" "$EXPECTED_COMMIT" "$expected_tree" \
+            | tee "$RUNNER_TEMP/future-v2-source-provenance.txt"
+          echo "tree=$expected_tree" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Source-only gate rejects a missing native compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          if node tools/run-future-v2-native-guest.mjs > "$RUNNER_TEMP/future-v2-missing.out" 2> "$RUNNER_TEMP/future-v2-missing.err"; then
+            echo 'ERROR: unconfigured guest gate falsely passed' >&2
+            exit 1
+          fi
+          grep -F 'FUTURE_V2_GUEST_REJECTED' "$RUNNER_TEMP/future-v2-missing.err"
+          test ! -s "$RUNNER_TEMP/future-v2-missing.out"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ github.token }}
+          cache: maven
+      - name: Actual JVM compiler-backed guest and conformance checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -B -ntp -Dtest=FutureChainingV2PinnedGuestTest -DfailIfNoTests=true test
+          test -s target/surefire-reports/TEST-dev.oreslang.FutureChainingV2PinnedGuestTest.xml
+          grep -E 'tests="8"' target/surefire-reports/TEST-dev.oreslang.FutureChainingV2PinnedGuestTest.xml
+      - name: Build actual GraalVM Native Image from the same source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v native-image
+          native-image --version
+          mvn -B -ntp -Pnative-aot -DskipTests package
+          test -x target/ores-aot
+          test ! -L target/ores-aot
+          sha256sum target/ores-aot | tee "$RUNNER_TEMP/future-v2-native-compiler-sha256.txt"
+          printf 'GRAALVM_NATIVE_IMAGE_VERSION=%s\n' "$(native-image --version)" \
+            >> "$RUNNER_TEMP/future-v2-source-provenance.txt"
+      - name: Check and execute all eight pinned .ores guests in Native Image
+        shell: bash
+        run: |
+          set -euo pipefail
+          compiler="$(realpath target/ores-aot)"
+          digest="$(sha256sum "$compiler" | cut -d ' ' -f 1)"
+          node tools/run-future-v2-native-guest.mjs \
+            --compiler "$compiler" --sha256 "$digest" \
+            | tee "$RUNNER_TEMP/future-v2-native-guest-results.json"
+          grep -F '"status": "NATIVE_GUEST_EXECUTION_OBSERVED_NOT_RELEASE_AUTHORIZED"' \
+            "$RUNNER_TEMP/future-v2-native-guest-results.json"
+      - name: Upload exact-source build and guest execution evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: future-v2-native-guest-evidence
+          path: |
+            ${{ runner.temp }}/future-v2-source-provenance.txt
+            ${{ runner.temp }}/future-v2-native-compiler-sha256.txt
+            ${{ runner.temp }}/future-v2-native-guest-results.json
+            target/surefire-reports/TEST-dev.oreslang.FutureChainingV2PinnedGuestTest.xml
+          retention-days: 7
+          if-no-files-found: warn
