@@ -3401,9 +3401,24 @@ public final class Parser {
                 Ast.Expr index = parseExpression();
                 consume(RBRACKET, "expected ']' after index");
                 expr = new Ast.IndexExpr(expr, index);
+            } else if (isPropagationQuestion()) {
+                // Keep the existing ternary form: 'condition ? yes : no'.
+                // Postfix '?' must be adjacent and followed by a postfix
+                // continuation or expression terminator, not a ternary arm.
+                advance();
+                expr = new Ast.UnaryExpr("?", expr);
             } else break;
         }
         return expr;
+    }
+
+    private boolean isPropagationQuestion() {
+        if (!check(QUESTION) || current == 0 || !adjacent(previous(), peek())
+                || current + 1 >= tokens.size()) return false;
+        Token.Type after = tokens.get(current + 1).type();
+        return after == SEMICOLON || after == RPAREN || after == RBRACKET
+                || after == COMMA || after == RBRACE || after == DOT
+                || after == DOUBLE_COLON || after == EOF;
     }
 
     private List<Ast.TypeRef> parseCallTypeArguments() {

@@ -39,6 +39,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
@@ -928,6 +929,13 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private static SourceFlow throwing(Throwable failure) {
+                // A checked postfix ? is typed early-return control, not an
+                // exception. Carry it through lexical defer/finally exactly
+                // like an explicit return, including after await/resumption.
+                // try/catch must never observe it as a recoverable failure.
+                if (failure instanceof ReturnSignal returned && returned.questionPropagation) {
+                    return returning(returned.value);
+                }
                 return new SourceFlow(
                         SourceFlowKind.THROW,
                         null,
@@ -1737,12 +1745,11 @@ public final class OresEvalRootNode extends RootNode {
                 int index,
                 SourceFlowCont continuation) {
             if (index >= statements.size()) {
-                finishBlock(
-                        task,
-                        env,
-                        defers,
-                        SourceFlow.normal(),
-                        continuation);
+                // runBlock owns defer execution and mutex-guard release.
+                // This statement walker reports a flow exactly once; calling
+                // finishBlock here and then again in runBlock's continuation
+                // would attempt block cleanup twice.
+                continuation.accept(task, SourceFlow.normal());
                 return;
             }
 
@@ -1758,36 +1765,16 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     executeStatement(stmt, env, defers, false);
                 } catch (ReturnSignal returned) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.returning(returned.value),
-                            continuation);
+                    continuation.accept(task, SourceFlow.returning(returned.value));
                     return;
                 } catch (BreakSignal ignored) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.breaking(),
-                            continuation);
+                    continuation.accept(task, SourceFlow.breaking());
                     return;
                 } catch (ContinueSignal ignored) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.continuing(),
-                            continuation);
+                    continuation.accept(task, SourceFlow.continuing());
                     return;
                 } catch (RuntimeException | Error failure) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.throwing(failure),
-                            continuation);
+                    continuation.accept(task, SourceFlow.throwing(failure));
                     return;
                 }
                 // A later source statement or completion callback is not part
@@ -1813,12 +1800,7 @@ public final class OresEvalRootNode extends RootNode {
                                     index + 1,
                                     continuation);
                         } else {
-                            finishBlock(
-                                    task,
-                                    env,
-                                    defers,
-                                    flow,
-                                    continuation);
+                            continuation.accept(task, flow);
                         }
                     });
         }
@@ -1941,6 +1923,27 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
+            // The statement's completion can enter another statement or finish
+            // the entire source task. If that downstream work throws, do not
+            // misreport it as a second completion for the current statement.
+            final AtomicBoolean delivered = new AtomicBoolean();
+            SourceFlowCont once = (t, flow) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "source statement continuation completed more than once");
+                }
+                continuation.accept(t, flow);
+            };
+            runSuspendableStatementDispatch(task, stmt, env, defers, once, delivered);
+        }
+
+        private void runSuspendableStatementDispatch(
+                SourceTask task,
+                Ast.Stmt stmt,
+                Env env,
+                ArrayDeque<Ast.Expr> defers,
+                SourceFlowCont continuation,
+                AtomicBoolean delivered) {
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -2290,6 +2293,10 @@ public final class OresEvalRootNode extends RootNode {
                         "unsupported suspendable statement "
                                 + stmt.getClass().getName());
             } catch (RuntimeException | Error failure) {
+                // The downstream consumer owns any exception after delivery.
+                // In particular, avoid executing catch/finally/defer twice
+                // when the consumer itself terminates with an error.
+                if (delivered.get()) throw failure;
                 continuation.accept(
                         task,
                         SourceFlow.throwing(failure));
@@ -3059,6 +3066,27 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Env env,
                 SourceValueCont continuation) {
+            // A continuation owns its completion after the first delivery.
+            // A downstream callback can synchronously throw while completing
+            // a different source statement (or resuming a waiting Future).
+            // Never reinterpret that throwable as a second expression failure.
+            final AtomicBoolean delivered = new AtomicBoolean();
+            SourceValueCont once = (t, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "source expression continuation completed more than once");
+                }
+                continuation.accept(t, value, failure);
+            };
+            evalSuspendableExprDispatch(task, expr, env, once, delivered);
+        }
+
+        private void evalSuspendableExprDispatch(
+                SourceTask task,
+                Ast.Expr expr,
+                Env env,
+                SourceValueCont continuation,
+                AtomicBoolean delivered) {
             try {
                 if (!expressionContainsPotentialSuspension(
                         expr,
@@ -3219,15 +3247,39 @@ public final class OresEvalRootNode extends RootNode {
                             task,
                             unary.operand(),
                             env,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            failure == null
-                                                    ? unaryValue(
-                                                            unary.operator(),
-                                                            value)
-                                                    : null,
-                                            failure));
+                            (t, value, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                if (unary.operator().equals("?")) {
+                                    // Preserve one evaluation of the operand
+                                    // across pending Future resumptions. Err
+                                    // and None become control-flow, never
+                                    // ordinary guest exceptions or callbacks.
+                                    if (value instanceof OptionValue option) {
+                                        if (!option.present()) {
+                                            continuation.accept(t, null,
+                                                    ReturnSignal.fromQuestion(option));
+                                        } else {
+                                            continuation.accept(t, option.value(), null);
+                                        }
+                                    } else if (value instanceof ResultValue result) {
+                                        if (!result.ok()) {
+                                            continuation.accept(t, null,
+                                                    ReturnSignal.fromQuestion(result));
+                                        } else {
+                                            continuation.accept(t, result.value(), null);
+                                        }
+                                    } else {
+                                        continuation.accept(t, null,
+                                                new IllegalStateException(
+                                                        "postfix ? requires a checked Option/Result value"));
+                                    }
+                                    return;
+                                }
+                                continuation.accept(t, unaryValue(unary.operator(), value), null);
+                            });
                     return;
                 }
 
@@ -3587,6 +3639,10 @@ public final class OresEvalRootNode extends RootNode {
 
                 continuation.accept(task, eval(expr, env), null);
             } catch (RuntimeException | Error failure) {
+                // If delivery already began, the throwable belongs to the
+                // downstream continuation. Reporting it here would call the
+                // same continuation twice, replaying cleanup or callbacks.
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
@@ -3613,19 +3669,25 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.MatchValueArm arm = matched.arms().get(index);
+            final boolean matchedPattern;
             final Env armEnv;
             try {
                 LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
-                if (!patternMatches(arm.pattern(), subject, bindings)) {
-                    evalSuspendableValueMatchArm(
-                            task, matched, subject, parent, index + 1, continuation);
-                    return;
+                matchedPattern = patternMatches(arm.pattern(), subject, bindings);
+                armEnv = matchedPattern ? new Env(parent) : null;
+                if (matchedPattern) {
+                    bindings.forEach((name, value) ->
+                            armEnv.define(name, value, Ast.BindingKind.VAL));
                 }
-                armEnv = new Env(parent);
-                bindings.forEach((name, value) ->
-                        armEnv.define(name, value, Ast.BindingKind.VAL));
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
+            }
+            if (!matchedPattern) {
+                // Recursive arm dispatch is downstream work, not part of the
+                // pattern-matching catch scope.
+                evalSuspendableValueMatchArm(
+                        task, matched, subject, parent, index + 1, continuation);
                 return;
             }
 
@@ -3642,17 +3704,18 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
+                        boolean selected;
                         try {
-                            if (truth(guard)) {
-                                evalSuspendableExpr(
-                                        t, arm.value(), armEnv, continuation);
-                            } else {
-                                evalSuspendableValueMatchArm(
-                                        t, matched, subject, parent,
-                                        index + 1, continuation);
-                            }
+                            selected = truth(guard);
                         } catch (RuntimeException | Error guardFailure) {
                             continuation.accept(t, null, guardFailure);
+                            return;
+                        }
+                        if (selected) {
+                            evalSuspendableExpr(t, arm.value(), armEnv, continuation);
+                        } else {
+                            evalSuspendableValueMatchArm(
+                                    t, matched, subject, parent, index + 1, continuation);
                         }
                     });
         }
@@ -3834,14 +3897,16 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (future.isDone()) {
+                // Join may fail; once the value is published, however, any
+                // downstream failure must not become a second delivery.
+                Object settled;
                 try {
-                    continuation.accept(
-                            task,
-                            future.join(),
-                            null);
+                    settled = future.join();
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, null, failure);
+                    return;
                 }
+                continuation.accept(task, settled, null);
                 return;
             }
 
@@ -4133,14 +4198,14 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
+                        Object owned;
                         try {
-                            continuation.accept(
-                                    t,
-                                    applyRuntimeOwnership(runtime.operation(), value),
-                                    null);
+                            owned = applyRuntimeOwnership(runtime.operation(), value);
                         } catch (RuntimeException | Error ownershipFailure) {
                             continuation.accept(t, null, ownershipFailure);
+                            return;
                         }
+                        continuation.accept(t, owned, null);
                     });
         }
 
@@ -4163,18 +4228,19 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Invocation invocation;
+                                boolean declaredFuture;
                                 try {
-                                    Invocation invocation =
-                                            functionInvocation(direct, values);
-                                    completeSourceInvocation(
-                                            t,
-                                            invocation,
-                                            invocationDeclaresAsync(invocation),
-                                            env,
-                                            continuation);
+                                    invocation = functionInvocation(direct, values);
+                                    declaredFuture = invocationDeclaresAsync(invocation);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                // Callback delivery can transitively finish the
+                                // caller; keep it outside the preparation catch.
+                                completeSourceInvocation(
+                                        t, invocation, declaredFuture, env, continuation);
                             });
                     return;
                 }
@@ -4199,25 +4265,18 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation.accept(t2, null, failure2);
                                             return;
                                         }
+                                        Invocation invocation;
+                                        boolean declaredFuture;
                                         try {
-                                            Invocation invocation =
-                                                    prepareInvocationEvaluated(
-                                                            call,
-                                                            receiver,
-                                                            values,
-                                                            env);
-                                            boolean declaredFuture =
-                                                    invocationDeclaresAsync(
-                                                            invocation);
-                                            completeSourceInvocation(
-                                                    t2,
-                                                    invocation,
-                                                    declaredFuture,
-                                                    env,
-                                                    continuation);
+                                            invocation = prepareInvocationEvaluated(
+                                                    call, receiver, values, env);
+                                            declaredFuture = invocationDeclaresAsync(invocation);
                                         } catch (RuntimeException | Error failure3) {
                                             continuation.accept(t2, null, failure3);
+                                            return;
                                         }
+                                        completeSourceInvocation(
+                                                t2, invocation, declaredFuture, env, continuation);
                                     });
                         });
                 return;
@@ -4267,46 +4326,39 @@ public final class OresEvalRootNode extends RootNode {
                 boolean declaredFuture,
                 Env env,
                 SourceValueCont continuation) {
+            // Catch only guest invocation failures, not errors raised by an
+            // already-invoked downstream continuation. Reporting those as a
+            // second failure would violate once-only SourceTask completion.
+            Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    // A settled Future is a value, not a suspension: do not
-                    // publish Await or relinquish the actor's execution lease.
-                    // In particular, no-yield guards can remain held across
-                    // this already-committed result without re-entering the
-                    // scheduler or running another actor's mailbox turn.
-                    if (future.isDone()) {
-                        Object completed;
-                        try {
-                            completed = future.join();
-                        } catch (RuntimeException | Error completedFailure) {
-                            continuation.accept(task, null, completedFailure);
-                            return;
-                        }
-                        continuation.accept(task, completed, null);
-                        return;
-                    }
-                    if (env.hasLiveMutexGuards()) {
-                        throw new IllegalStateException(
-                                "cannot suspend on an implicit Future while holding a live MutexGuard");
-                    }
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
-                }
+                result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
             }
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                // An already-settled Future is a value, not a suspension.
+                if (future.isDone()) {
+                    Object completed;
+                    try {
+                        completed = future.join();
+                    } catch (RuntimeException | Error completedFailure) {
+                        continuation.accept(task, null, completedFailure);
+                        return;
+                    }
+                    continuation.accept(task, completed, null);
+                    return;
+                }
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "cannot suspend on an implicit Future while holding a live MutexGuard"));
+                    return;
+                }
+                task.suspend(future, (t, value, failure) ->
+                        continuation.accept(t, value, failure));
+                return;
+            }
+            continuation.accept(task, result, null);
         }
 
         private boolean invocationDeclaresAsync(Invocation invocation) {
@@ -4855,8 +4907,50 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
+            // These lightweight runtime exceptions are Oreslang control-flow
+            // tokens, never user-thrown failures. In particular a checked
+            // postfix ? must remain a return even if an untyped/host-entered
+            // path reaches an expression trap boundary. Do not reinterpret it
+            // as None or allow the enclosing function to continue.
+            if (containsSourceControlSignal(failure)) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
+        }
+
+        private boolean isSourceControlSignal(Throwable failure) {
+            return failure instanceof ReturnSignal
+                    || failure instanceof TailCallSignal
+                    || failure instanceof BreakSignal
+                    || failure instanceof ContinueSignal
+                    || failure instanceof ProcessExitSignal;
+        }
+
+        /**
+         * Runtime-control identity survives CompletionException and cleanup
+         * suppression. Do not allow an ordinary-looking wrapper around a
+         * SourceTask/guest control signal to become a trapped None or a
+         * catchable guest failure. Bound both width and depth, consistent with
+         * TrapFailurePolicy's fail-closed exception graph traversal.
+         */
+        private boolean containsSourceControlSignal(Throwable failure) {
+            ArrayDeque<Throwable> pending = new ArrayDeque<>();
+            IdentityHashMap<Throwable, Boolean> visited = new IdentityHashMap<>();
+            pending.addLast(failure);
+            while (!pending.isEmpty()) {
+                if (visited.size() >= 64) return true;
+                Throwable current = pending.removeFirst();
+                if (visited.put(current, Boolean.TRUE) != null
+                        || isSourceControlSignal(current)) {
+                    return true;
+                }
+                if (current.getCause() != null) pending.addLast(current.getCause());
+                for (Throwable suppressed : current.getSuppressed()) {
+                    pending.addLast(suppressed);
+                    if (pending.size() + visited.size() > 64) return true;
+                }
+                if (pending.size() + visited.size() > 64) return true;
+            }
+            return false;
         }
 
         // Cleanup may add suppressed diagnostics but must not replace a
@@ -4874,6 +4968,9 @@ public final class OresEvalRootNode extends RootNode {
         // may handle a denied operation without weakening its authority.
         // Fatal panic and scheduler cancellation remain uncatchable.
         private boolean isGuestCatchableFailure(Throwable failure) {
+            // The explicit try/catch path also must never consume an internal
+            // return/loop/exit signal as a recoverable guest exception.
+            if (containsSourceControlSignal(failure)) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
                     failure, OresPanic.class);
         }
@@ -6255,6 +6352,19 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 Object value = eval(unary.operand(), env);
+                if (unary.operator().equals("?")) {
+                    // Typed source checker restricts this v0 path to synchronous
+                    // Result/Option frames. This is return control, not throw.
+                    if (value instanceof OptionValue option) {
+                        if (!option.present()) throw ReturnSignal.fromQuestion(option);
+                        return option.value();
+                    }
+                    if (value instanceof ResultValue result) {
+                        if (!result.ok()) throw ReturnSignal.fromQuestion(result);
+                        return result.value();
+                    }
+                    throw new IllegalStateException("postfix ? requires a checked Option/Result value");
+                }
                 return switch (unary.operator()) {
                     case "&", "&mut" -> value;
                     case "!" -> !truth(value);
@@ -9188,7 +9298,21 @@ public final class OresEvalRootNode extends RootNode {
 
     private static final class ReturnSignal extends RuntimeException {
         private final Object value;
-        private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
+        private final boolean questionPropagation;
+
+        private ReturnSignal(Object value) {
+            this(value, false);
+        }
+
+        private ReturnSignal(Object value, boolean questionPropagation) {
+            super(null, null, false, false);
+            this.value = value;
+            this.questionPropagation = questionPropagation;
+        }
+
+        private static ReturnSignal fromQuestion(Object failureValue) {
+            return new ReturnSignal(failureValue, true);
+        }
     }
 
     private static final class BreakSignal extends RuntimeException {

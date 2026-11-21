@@ -1,9 +1,13 @@
 # Expression `trap` and `unwrap()` — shared source contract
 
-**Status:** Approved language-design target / **not implemented** as expression syntax.
-The Java/GraalVM frontend currently implements synchronous **callable** `trap`,
-not `trap expression`. The LLVM frontend reserves `trap` and rejects the
-unsupported syntax. This file does not claim executable cross-backend parity.
+**Status:** Java/GraalVM expression-`trap` is present as a **draft,
+unvalidated** frontend/runtime path in [PR #1020](https://github.com/ores-truffle-oreslang/oreslang-source.java/pull/1020).
+It parses, typechecks, and evaluates `trap expr` in both the direct
+interpreter and resumable SourceTask evaluator. These source-code paths
+are **not yet certified** by JDK 25 Maven execution on the exact PR head.
+The LLVM frontend has no proven corresponding lowering. Callable `trap`
+and expression `trap` are distinct syntactic constructs sharing a
+proposed Option-valued control-effect contract.
 
 ## One rule: catch ordinary `throw`, never panic
 
@@ -86,10 +90,46 @@ exactly once. Failure paths must unwind and release any acquired resources
 exactly once. The trap boundary cannot outlive its permitted actor/isolate
 execution domain or silently capture a detached task's exception.
 
-The first implementation should support only synchronous expressions and
-reject suspending/async `trap` expressions until continuation ownership,
-cleanup, and post-`await` effects are proved for both backends. No implicit
-conversion of panic to throw; no global host exception catch.
+The Java SourceTask evaluator now contains an `Ast.TrapExpr` continuation
+path that can encompass `await`, but **that path is provisional** until
+continuation ownership, cleanup, cancellation, double-completion, and
+post-`await` effects pass the JDK 25 exact-tree suite. The current narrow
+async `?` lowering permits a direct binding initializer such as
+`val int x = (trap (await number_future()))?;` when the enclosing
+function returns `Option<int>`. It still rejects nested async `?`
+in callbacks, cleanup, call arguments, and other non-admitted sites.
+No implicit conversion of panic to throw; no global host exception catch.
+
+## `trap` versus postfix `?`
+
+For a Future yielding `Result<int, String>`:
+
+```ores
+val Option<Result<int, String>> captured = trap (await fetch_value());
+val int value = (await fetch_value())?;
+```
+
+The first expression returns `Some(Ok(n))` or `Some(Err(e))`
+for normally fulfilled Futures. An eligible *throw* instead yields
+`None`. It does **not** early-return merely because the payload is
+`Err`. The second expression unwraps `Ok(n)` and returns `Err(e)`
+from the enclosing `Result<..., String>` function; it does **not**
+convert a thrown exception to `None`. Both evaluate their operand
+once, and neither swallows panic, raise, or cancellation.
+
+Composition is deliberate:
+
+```ores
+fnc compute(): Option<int> {
+  val int number = (trap (20 + 2))?;
+  return Some(number + 1);
+}
+```
+
+The `trap` boundary converts eligible exceptions to `None`; then
+`?` propagates that Option failure as an early return. The compiler
+must reject a `?` **inside** `trap` (the opposite nesting) until
+control scopes are proven independent.
 
 ## Conformance gates before calling the syntax implemented
 
