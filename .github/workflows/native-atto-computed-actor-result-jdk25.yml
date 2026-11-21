@@ -1,14 +1,18 @@
-name: Native Atto computed actor result complete-source JVM gate
+name: Native Atto actor async-await and computed result complete-source JVM gate
 on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/compiler/NamespaceActorCriticalIrCompiler.java'
+      - 'src/main/java/dev/oreslang/compiler/NamespaceActorAsyncGuestV1.java'
+      - 'src/main/java/dev/oreslang/OresLanguage.java'
       - 'src/main/java/dev/oreslang/compiler/NamespaceActorUnleasedSpawnV0.java'
       - 'src/test/java/dev/oreslang/NamespaceActorComputedOutputGuestTest.java'
+      - 'src/test/java/dev/oreslang/NamespaceActorAsyncGuestV1Test.java'
       - 'src/test/java/dev/oreslang/compiler/NamespaceActorComputedOutputRuntimeTest.java'
       - 'src/test/java/dev/oreslang/NamespaceActorGuestOutputReadbackTest.java'
       - 'src/test/java/dev/oreslang/compiler/NamespaceActorCheckedOutputTest.java'
       - 'contracts/namespace-actor-state-v1/checked-computed-output-readback.atto'
+      - 'contracts/namespace-actor-state-v1/async-scheduler-actor-result.atto'
       - 'contracts/namespace-actor-state-v1/unleased-source-output-readback.atto'
       - '.github/workflows/native-atto-computed-actor-result-jdk25.yml'
   workflow_dispatch:
@@ -33,9 +37,10 @@ jobs:
           git diff --quiet
           git diff --cached --quiet
           test -s contracts/namespace-actor-state-v1/checked-computed-output-readback.atto
+          test -s contracts/namespace-actor-state-v1/async-scheduler-actor-result.atto
           test -s contracts/namespace-actor-state-v1/unleased-source-output-readback.atto
           printf 'SOURCE_HEAD=%s\nSOURCE_TREE=%s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
-          for f in src/main/java/dev/oreslang/compiler/NamespaceActorCriticalIrCompiler.java src/main/java/dev/oreslang/compiler/NamespaceActorUnleasedSpawnV0.java src/test/java/dev/oreslang/NamespaceActorComputedOutputGuestTest.java src/test/java/dev/oreslang/compiler/NamespaceActorComputedOutputRuntimeTest.java contracts/namespace-actor-state-v1/checked-computed-output-readback.atto; do
+          for f in src/main/java/dev/oreslang/OresLanguage.java src/main/java/dev/oreslang/compiler/NamespaceActorAsyncGuestV1.java src/main/java/dev/oreslang/compiler/NamespaceActorCriticalIrCompiler.java src/main/java/dev/oreslang/compiler/NamespaceActorUnleasedSpawnV0.java src/test/java/dev/oreslang/NamespaceActorComputedOutputGuestTest.java src/test/java/dev/oreslang/compiler/NamespaceActorComputedOutputRuntimeTest.java contracts/namespace-actor-state-v1/checked-computed-output-readback.atto; do
             printf '%s %s\n' "$(git hash-object "$f")" "$f"
           done
       - name: Setup exact GraalVM 25 runtime
@@ -51,7 +56,7 @@ jobs:
           set -euo pipefail
           java -version
           java -version 2>&1 | head -n 1 | grep -q '25'
-          mvn -B -ntp '-P!native-thread-unix' '-Dtest=NamespaceActorComputedOutputRuntimeTest,NamespaceActorComputedOutputGuestTest,NamespaceActorGuestOutputReadbackTest,NamespaceActorCheckedOutputTest,NamespaceActorUnleasedSpawnV0Test,CheckedNamespaceActorContextEvalTest,NamespaceActorCriticalIrCompilerTest,NamespaceActorBootstrapCompilerTest,NamespaceActorScalarCriticalCompilerTest,NamespaceActorHeaderAdmissionTest,NamespaceActorIngressAdmissionTest,NamespaceActorStateAdmissionTest' -DfailIfNoTests=true test 2>&1 | tee /tmp/native-atto-actor-result.log
+          mvn -B -ntp '-P!native-thread-unix' '-Dtest=NamespaceActorAsyncGuestV1Test,NamespaceActorComputedOutputRuntimeTest,NamespaceActorComputedOutputGuestTest,NamespaceActorGuestOutputReadbackTest,NamespaceActorCheckedOutputTest,NamespaceActorUnleasedSpawnV0Test,CheckedNamespaceActorContextEvalTest,NamespaceActorCriticalIrCompilerTest,NamespaceActorBootstrapCompilerTest,NamespaceActorScalarCriticalCompilerTest,NamespaceActorHeaderAdmissionTest,NamespaceActorIngressAdmissionTest,NamespaceActorStateAdmissionTest' -DfailIfNoTests=true test 2>&1 | tee /tmp/native-atto-actor-result.log
           if grep -Eiq 'interpreter[ -]only|fallback interpreter|does not support runtime compilation' /tmp/native-atto-actor-result.log; then
             echo 'Fail closed: interpreter fallback detected in GraalVM actor guest gate' >&2
             exit 1
@@ -79,6 +84,7 @@ jobs:
               fi
             done
           done <<'SUITES'
+          dev.oreslang.NamespaceActorAsyncGuestV1Test
           dev.oreslang.NamespaceActorComputedOutputGuestTest
           dev.oreslang.compiler.NamespaceActorComputedOutputRuntimeTest
           dev.oreslang.NamespaceActorGuestOutputReadbackTest
@@ -92,11 +98,11 @@ jobs:
           dev.oreslang.NamespaceActorIngressAdmissionTest
           dev.oreslang.NamespaceActorStateAdmissionTest
           SUITES
-          test "$total" -ge 99 || { echo "Expected >=99 real focused tests, got $total" >&2; exit 1; }
+          test "$total" -ge 105 || { echo "Expected >=105 real focused tests, got $total" >&2; exit 1; }
           echo "ATTO_NATIVE_ACTOR_EXACT_HEAD_COMPILER_AND_GUEST_TESTS=$total"
       - name: Explicit evidence boundary
         if: always()
         run: |
           echo 'This exact original source-tree JVM workflow is distinct from earlier private selected-blob carrier runs.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'No Native Image, LLVM, Wasm, Forge, .NET, general guest async await, source SupervisorActor or typed ServiceActor is proven by JVM success.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No Native Image, LLVM, Wasm, Forge, .NET, general arbitrary guest actor-expression lowering, source SupervisorActor or typed ServiceActor is proven by JVM success.' >> "$GITHUB_STEP_SUMMARY"
           echo 'A GitHub job that fails with zero executed steps is NOT_EXECUTED, not a compiler failure or test pass.' >> "$GITHUB_STEP_SUMMARY"
