@@ -41,6 +41,18 @@ final class BangExceptionKeywordLexerTest {
     }
 
     @Test
+    void canonicalExceptionalStatementsFailClosedUntilTypedGuestUnwindExists() {
+        for (String keyword : List.of("throw!", "raise!", "panic!")) {
+            String source = "fnc main():int { " + keyword + " new Error(); }";
+            RuntimeException rejected = assertThrows(RuntimeException.class,
+                    () -> Parser.parse(source));
+            assertTrue(rejected.getMessage().contains("typed exceptional effect"),
+                    keyword + " must not silently execute as a host exception: "
+                            + rejected.getMessage());
+        }
+    }
+
+    @Test
     void contiguousExceptionKeywordsAreAtomicWithoutChangingTheirMeaning() {
         List<Token> tokens = new Lexer("trap! call; throw! err; raise! err; panic! err").scan();
         assertEquals(List.of(Token.Type.TRAP, Token.Type.IDENT, Token.Type.SEMICOLON,
