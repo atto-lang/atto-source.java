@@ -1190,6 +1190,11 @@ public final class OresEvalRootNode extends RootNode {
             // task (parent task or awaited caller), re-installed every turn.
             private dev.oreslang.runtime.TaskContext taskContext =
                     dev.oreslang.runtime.TaskContext.current();
+            // Immutable trace context is a separate snapshot. Mutable span
+            // guards and continuation tickets are never carrier-local and
+            // never inherited across child Task boundaries.
+            private dev.oreslang.runtime.TraceContextV1 logicalTraceContext =
+                    dev.oreslang.runtime.TraceContinuationContextV1.current();
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             // The reduction counter and clock belong to the heap-owned
@@ -1268,12 +1273,27 @@ public final class OresEvalRootNode extends RootNode {
                     throws Exception {
                 dev.oreslang.runtime.TaskContext previousContext =
                         dev.oreslang.runtime.TaskContext.install(taskContext);
+                dev.oreslang.runtime.TraceContextV1 previousTrace =
+                        dev.oreslang.runtime.TraceContinuationContextV1.install(
+                                logicalTraceContext);
                 try {
                     return resumeTurn(resume);
                 } finally {
-                    // Bindings entered/exited during this turn stay with the task.
-                    taskContext = dev.oreslang.runtime.TaskContext.current();
-                    dev.oreslang.runtime.TaskContext.install(previousContext);
+                    // Rebind BOTH immutable context snapshots to this heap-owned
+                    // task before restoring the carrier's previous task/trace
+                    // context. Never leak one actor's trace to another turn.
+                    try {
+                        taskContext = dev.oreslang.runtime.TaskContext.current();
+                        logicalTraceContext =
+                                dev.oreslang.runtime.TraceContinuationContextV1.current();
+                    } finally {
+                        try {
+                            dev.oreslang.runtime.TraceContinuationContextV1.install(
+                                    previousTrace);
+                        } finally {
+                            dev.oreslang.runtime.TaskContext.install(previousContext);
+                        }
+                    }
                 }
             }
 
@@ -1964,6 +1984,23 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TaskScopeStmt) {
                 // Scope exit always waits for physical child quiescence.
                 return true;
+            }
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt using) {
+                // The resource initializer is evaluated before alias binding;
+                // its nested body may suspend. Never let the source-task
+                // trampoline silently choose the synchronous statement path
+                // and skip compiler-owned cleanup on an awaited child.
+                return expressionContainsPotentialSuspension(using.resource(), seen)
+                        || using.body().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen));
+            }
+            if (stmt instanceof Ast.UsingBorrowStmt using) {
+                // Keep future transport-loan lowering conservative as well.
+                // A borrow whose body suspends must be checked against the
+                // lexical loan lifetime, never executed as an opaque statement.
+                return expressionContainsPotentialSuspension(using.resource(), seen)
+                        || using.body().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen));
             }
             if (stmt instanceof Ast.IfStmt conditional) {
                 return conditional.branches().stream().anyMatch(

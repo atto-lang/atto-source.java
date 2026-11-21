@@ -472,6 +472,18 @@ public final class OwnershipChecker {
             checkSuspensionBorrows(scope, "task scope exit");
             return;
         }
+        // A source-only OwnershipChecker entry point must not silently skip
+        // a scoped statement which has not yet been lowered into a checked,
+        // non-escaping resource. Compiler normal admission rejects earlier,
+        // but this independent guard protects linked/host evaluator paths.
+        if (stmt instanceof Ast.UsingTelemetrySpanStmt) {
+            throw error("telemetry span ownership requires compiler-authenticated "
+                    + "non-escaping resource and exactly-once scoped cleanup lowering");
+        }
+        if (stmt instanceof Ast.UsingBorrowStmt) {
+            throw error("transport using ownership requires compiler-authenticated "
+                    + "loan lifetime and suspension fencing");
+        }
         if (stmt instanceof Ast.BreakStmt) {
             if (loopDepth == 0) throw error("'break' may only appear inside loop or for");
             return;
@@ -3124,6 +3136,16 @@ public final class OwnershipChecker {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.TaskScopeStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.UsingTelemetrySpanStmt using) {
+                scanExpr(using.resource(), blockLocals, outer, recursiveBinding, captures, false);
+                Set<String> scoped = new HashSet<>(blockLocals);
+                scoped.add(using.binding());
+                scanStatements(using.body(), scoped, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.UsingBorrowStmt using) {
+                scanExpr(using.resource(), blockLocals, outer, recursiveBinding, captures, false);
+                Set<String> scoped = new HashSet<>(blockLocals);
+                scoped.add(using.binding());
+                scanStatements(using.body(), scoped, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.LoopStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.IfStmt s) {
@@ -4086,6 +4108,8 @@ public final class OwnershipChecker {
             if (stmt instanceof Ast.ReturnStmt) return true;
             if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
             if (stmt instanceof Ast.TaskScopeStmt scope && definitelyReturns(scope.body())) return true;
+            if (stmt instanceof Ast.UsingTelemetrySpanStmt using && definitelyReturns(using.body())) return true;
+            if (stmt instanceof Ast.UsingBorrowStmt using && definitelyReturns(using.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional
                     && !conditional.branches().isEmpty()
                     && conditional.branches().stream().allMatch(branch -> definitelyReturns(branch.body()))
