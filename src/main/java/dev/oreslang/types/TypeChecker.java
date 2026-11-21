@@ -5158,20 +5158,32 @@ public final class TypeChecker {
             boolean returnPosition,
             String where) {
         if (returnPosition && type == Primitive.VOID) return;
-        // A typed channel handle is an Ores-owned synchronized transport, not
-        // an actor/mailbox capability. Async tasks may receive the handle when
-        // its payload is concrete, owned and task-safe. Actor boundaries retain
-        // their stricter rule and continue to reject Channel<T> entirely.
-        if (type instanceof Named named && named.name().equals("Channel")
-                && named.arguments().size() == 1
-                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
-            return;
-        }
-        if (type == Primitive.VOID
-                || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
+        if (!isAsyncTaskSafeBoundaryType(type)) {
             throw new IllegalArgumentException(
-                    where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
+                    where + " must be concrete owned task-safe data or a direct "
+                            + "data-only Channel<T> capability; borrows, futures, mutexes, "
+                            + "functions, actor values, nested runtime capabilities, host "
+                            + "capabilities, and unresolved generics cannot cross an async task boundary");
         }
+    }
+
+    /**
+     * Async-task transfer is deliberately narrower than general shared-safe
+     * recursion for capabilities. Channel<T> is admitted only as the direct
+     * boundary value, never hidden inside Option/Result/records/nominal data,
+     * and only when T itself is concrete shared-safe data. Actor boundaries
+     * retain their independent, stricter rule and reject Channel<T> entirely.
+     */
+    private boolean isAsyncTaskSafeBoundaryType(Type type) {
+        if (type == Primitive.VOID) return false;
+        if (type instanceof Named named && named.name().equals("Channel")) {
+            return named.arguments().size() == 1
+                    && isSharedSafe(
+                            named.arguments().getFirst(),
+                            new LinkedHashSet<>(),
+                            Map.of());
+        }
+        return isSharedSafe(type, new LinkedHashSet<>(), Map.of());
     }
 
     private void validateActorCallableBoundaryType(
