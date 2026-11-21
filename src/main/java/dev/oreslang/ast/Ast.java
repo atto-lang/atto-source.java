@@ -62,13 +62,39 @@ public final class Ast {
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
             TypeAliasDecl, StateContainerDecl, VirtualActorDecl, StandaloneActorDecl,
-            ExternalActorMethodDecl { }
+            ExternalActorMethodDecl, ActorStateDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
             java.util.Objects.requireNonNull(name, "state field name");
             java.util.Objects.requireNonNull(type, "state field type");
             java.util.Objects.requireNonNull(initializer, "state field initializer");
+        }
+    }
+
+    /**
+     * A source-level sealed schema ATTACHED to an existing nominal actor.
+     * It is not a new class, actor instance, free mutable binding or a
+     * capability to borrow state. Only compiler-issued critical read/write
+     * loans may eventually access it after typed runtime lowering.
+     */
+    public record ActorStateDecl(String actorName, List<ProtectedStateField> fields)
+            implements Decl {
+        public ActorStateDecl {
+            if (actorName == null || actorName.isBlank()) {
+                throw new IllegalArgumentException("attached actor state requires a nominal actor name");
+            }
+            fields = List.copyOf(fields);
+            if (fields.isEmpty() || fields.size() > 128) {
+                throw new IllegalArgumentException("attached actor state requires 1..128 fields");
+            }
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (ProtectedStateField field : fields) {
+                if (!names.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate attached actor state field '"
+                            + field.name() + "'");
+                }
+            }
         }
     }
 
@@ -174,7 +200,8 @@ public final class Ast {
     public record ExternalActorMethodDecl(
             String actorName, String receiverName, String name,
             Visibility visibility, List<Param> parameters,
-            TypeRef returnType, List<Stmt> body) implements Decl {
+            TypeRef returnType, List<Stmt> body,
+            boolean runtimeIngress, boolean criticalMethod) implements Decl {
         public ExternalActorMethodDecl {
             if (actorName == null || actorName.isBlank()
                     || receiverName == null || receiverName.isBlank()
@@ -186,6 +213,32 @@ public final class Ast {
             java.util.Objects.requireNonNull(returnType, "external method return type");
             parameters = List.copyOf(parameters);
             body = List.copyOf(body);
+            if (runtimeIngress && criticalMethod) {
+                throw new IllegalArgumentException(
+                        "runtime-only external actor ingress cannot also be critical");
+            }
+        }
+
+        /** Preserves the previous 8-field AST constructor. */
+        public ExternalActorMethodDecl(
+                String actorName, String receiverName, String name,
+                Visibility visibility, List<Param> parameters,
+                TypeRef returnType, List<Stmt> body, boolean runtimeIngress) {
+            this(actorName, receiverName, name, visibility,
+                    parameters, returnType, body, runtimeIngress, false);
+        }
+
+        /**
+         * Compatibility for the existing source receiver syntax, which is
+         * NOT an actor runtime-controlled ingress capability by default.
+         * The contextual 'external mtd' marker must be carried explicitly.
+         */
+        public ExternalActorMethodDecl(
+                String actorName, String receiverName, String name,
+                Visibility visibility, List<Param> parameters,
+                TypeRef returnType, List<Stmt> body) {
+            this(actorName, receiverName, name, visibility,
+                    parameters, returnType, body, false, false);
         }
     }
 

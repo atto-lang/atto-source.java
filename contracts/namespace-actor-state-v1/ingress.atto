@@ -1,0 +1,13 @@
+namespace foo;
+
+// Declared actor metadata, not a runtime actor implementation yet.
+declare pub actor Foo;
+
+// Runtime-controlled ingress: private, not callable as an ordinary mtd.
+external mtd (Foo f) init(): void {
+    return;
+}
+
+external mtd (Foo f) receive(ActorMail<int> mail): void {
+    return;
+}

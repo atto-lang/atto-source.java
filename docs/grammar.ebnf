@@ -17,6 +17,8 @@ import_names    = IDENT { "," IDENT } [ "as" IDENT ]
 top_level_item  = annotated_module_decl
                 | contract_decl
                 | actor_decl
+                | declared_actor_decl
+                | attached_actor_state_decl
                 | actor_callable_decl
                 | external_actor_method_decl
                 | callable_decl
@@ -32,6 +34,7 @@ annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type
 
 module_member   = contract_decl
                 | actor_decl
+                | declared_actor_decl
                 | actor_callable_decl
                 | external_actor_method_decl
                 | callable_decl
@@ -56,15 +59,31 @@ actor_callable_decl
                   ( "(" [ param_list ] ")" return_spec block
                   | "=" "|" [ param_list ] "|" "->" [ type_ref ] block ) ;
 
-(* External actor receiver methods are parsed and statically indexed only.
-   Until actor-context/ownership lowering exists, TypeChecker rejects their
-   execution. Canonical receiver-first and legacy name-first spellings have
-   the same AST identity. Neither grants runtime receiver authority. *)
+(* Out-of-line actor methods remain static-only metadata until runtime
+   lowering. 'external mtd' has a distinct private actor-runtime ingress
+   marker, restricted to init():void or receive(ActorMail<T>):void. It is
+   not pub, not a callable guest function and cannot mint actor context. *)
 external_actor_method_decl
-                = "define" visibility "mtd"
+                = ( "define" visibility | "pub" | "private"
+                  | visibility "external" ) "mtd"
                   ( "(" type_ref IDENT ")" callable_name
                   | callable_name "(" type_ref IDENT ")" )
                   "(" [ param_list ] ")" [ (":" | "=>") type_ref ] block ;
+
+(* Header-only nominal actors use 'declare', never 'define actor Foo;'.
+   A declaration is not actor allocation or contract-conformance proof.
+   Visibility MUST follow 'declare'. 'pub declare actor' is a syntax error. *)
+declared_actor_decl
+                = "declare" visibility "actor" IDENT
+                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ] ";" ;
+
+(* Static-only sealed per-activation schema. Body-free nominal actor
+   references must be resolved in one authenticated package + namespace.
+   No field access or critical guest execution is implied by parsing. *)
+attached_actor_state_decl
+                = "define" "state" "on" "actor" IDENT "as"
+                  "{" "let" "int" IDENT ":" [ "-" ] INT ";"
+                  { "let" "int" IDENT ":" [ "-" ] INT ";" } "}" [ ";" ] ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]

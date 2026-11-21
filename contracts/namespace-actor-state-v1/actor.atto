@@ -1,0 +1,6 @@
+namespace foo;
+
+declare pub actor Foo;
+pub mtd (Foo f) bar(): void {
+    return;
+}

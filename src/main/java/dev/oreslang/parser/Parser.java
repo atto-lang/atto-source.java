@@ -118,7 +118,15 @@ public final class Parser {
             }
         }
         String namespace = null;
-        if (match(NAMESPACE)) {
+        // Canonical Atto source header: 'use namespace <flat-name>;'.
+        // 'use' remains contextual, preserving ordinary identifiers elsewhere.
+        boolean canonicalNamespace = isContextualIdentifier("use");
+        if (canonicalNamespace) {
+            advance();
+            consume(NAMESPACE, "file header 'use' must be followed by 'namespace'");
+        }
+        // Retain bare 'namespace x;' for legacy fixtures and compatibility.
+        if (canonicalNamespace || match(NAMESPACE)) {
             namespace = consume(IDENT, "expected flat namespace name").lexeme();
             if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
             consume(SEMICOLON, "namespace declaration must end with ';'");
@@ -135,6 +143,10 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            if (isDeclaredActorHead()) {
+                rootDeclarations.add(parseDeclaredActor(annotations, modifiers));
+                continue;
+            }
             if (isContextualIdentifier("declare")) {
                 rootForwards.add(parseForwardType(annotations, modifiers));
                 continue;
@@ -183,6 +195,10 @@ public final class Parser {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 if (isExternalActorMethodHead()) {
                     rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
+                    continue;
+                }
+                if (isAttachedActorStateHead()) {
+                    rootDeclarations.add(parseAttachedActorState(annotations, modifiers));
                     continue;
                 }
                 if (isProtectedDeclarationHead()) {
@@ -396,6 +412,9 @@ public final class Parser {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
+        if (isDeclaredActorHead()) {
+            return parseDeclaredActor(annotations, modifiers);
+        }
         if (isContextualIdentifier("declare")) {
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
@@ -439,6 +458,9 @@ public final class Parser {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             if (isExternalActorMethodHead()) {
                 return parseExternalActorMethod(annotations, modifiers);
+            }
+            if (isAttachedActorStateHead()) {
+                throw error(peek(), "attached actor state must be declared at namespace file root, not inside a named module");
             }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
@@ -491,6 +513,22 @@ public final class Parser {
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         rejectUnsupportedAcceleratorSyntax();
+        // A critical out-of-line actor method is distinct from runtime-only
+        // external ingress. The AST retains the critical modifier so the
+        // compiler cannot infer mutable authority from method spelling.
+        if (isContextualIdentifier("critical")) {
+            advance();
+            if (!isExternalActorMethodHead()) {
+                throw error(peek(), "critical must be followed by 'mtd (Actor receiver) name(...)'");
+            }
+            return parseExternalActorMethod(annotations, modifiers, false, true);
+        }
+        // Runtime-only actor hooks use an explicit contextual ingress marker.
+        // This marker is separate from public method visibility and does not
+        // grant a guest callable or executable actor permission.
+        if (isActorIngressMethodHead()) {
+            return parseActorIngressMethod(annotations, modifiers);
+        }
         // Allow 'pub mtd (Actor self) method(...)' without a redundant
         // 'define'. Bare 'mtd' stays contextual, not a new global keyword.
         if (modifiers.visibilitySeen && isExternalActorMethodHead()) {
@@ -658,8 +696,45 @@ public final class Parser {
                         && tokens.get(current + 2).type() == LPAREN));
     }
 
+    private boolean isActorIngressMethodHead() {
+        if (!isContextualIdentifier("external")
+                || current + 2 >= tokens.size()
+                || tokens.get(current + 1).type() != IDENT
+                || !tokens.get(current + 1).lexeme().equals("mtd")) {
+            return false;
+        }
+        return tokens.get(current + 2).type() == LPAREN
+                || (current + 3 < tokens.size()
+                    && tokens.get(current + 2).type() == IDENT
+                    && tokens.get(current + 3).type() == LPAREN);
+    }
+
+    private Ast.ExternalActorMethodDecl parseActorIngressMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateOnlyVisibilityModifiers(modifiers, "actor ingress declarations");
+        if (modifiers.visibility == Ast.Visibility.PUBLIC) {
+            throw error(peek(), "external mtd is a private runtime ingress, not a public method");
+        }
+        consumeContextualIdentifier("external", "expected runtime ingress marker");
+        if (!isExternalActorMethodHead()) {
+            throw error(peek(), "external must be followed by 'mtd (Actor receiver) init/receive'");
+        }
+        return parseExternalActorMethod(annotations, modifiers, true);
+    }
+
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
             List<Ast.Annotation> annotations, Modifiers modifiers) {
+        return parseExternalActorMethod(annotations, modifiers, false);
+    }
+
+    private Ast.ExternalActorMethodDecl parseExternalActorMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers, boolean runtimeIngress) {
+        return parseExternalActorMethod(annotations, modifiers, runtimeIngress, false);
+    }
+
+    private Ast.ExternalActorMethodDecl parseExternalActorMethod(
+            List<Ast.Annotation> annotations, Modifiers modifiers,
+            boolean runtimeIngress, boolean criticalMethod) {
         validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
         rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
         rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
@@ -701,7 +776,7 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.ExternalActorMethodDecl(
                 receiverType.name(), receiverName, name,
-                modifiers.visibility, parameters, returns, body);
+                modifiers.visibility, parameters, returns, body, runtimeIngress, criticalMethod);
     }
 
     private Ast.ClassDecl parseClass(
@@ -958,6 +1033,73 @@ public final class Parser {
         return parseActorClass(kind, modifiers.visibility, prefix);
     }
 
+    /**
+     * Contextual spelling: define state on actor Foo as { let int x: 5; }.
+     * The schema only names the actor and contains constant initializers.
+     * It cannot create a mutable guest object or mint critical loan authority.
+     */
+    private boolean isAttachedActorStateHead() {
+        return isContextualIdentifier("state")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals("on")
+                && tokens.get(current + 2).type() == ACTOR;
+    }
+
+    private Ast.ActorStateDecl parseAttachedActorState(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateOnlyVisibilityModifiers(modifiers, "attached actor state");
+        if (modifiers.visibilitySeen) {
+            throw error(peek(), "attached actor state is always private; do not write 'pub' or 'private'");
+        }
+        rejectCallableStructuralAnnotation(annotations, "attached actor state");
+        rejectDiscardedDeclarationAnnotations(annotations, "attached actor state");
+        consumeContextualIdentifier("state", "expected attached actor state declaration");
+        consumeContextualIdentifier("on", "expected 'on' after state");
+        consume(ACTOR, "expected 'actor' after state on");
+        String actorName = consumeTypeDeclarationName("expected nominal actor name after 'state on actor'");
+        consume(AS, "expected 'as' in attached actor state declaration");
+        consume(LBRACE, "expected '{' to start attached actor state");
+        List<Ast.ProtectedStateField> fields = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            consume(LET, "attached actor state fields must begin with 'let'");
+            Ast.TypeRef type = parseTypeRef();
+            if (!type.name().equals("int") || !type.arguments().isEmpty()
+                    || type.isBorrow() || type.inferArguments()) {
+                throw error(previous(), "attached actor state v1 admits only checked signed int fields");
+            }
+            String name = consume(IDENT, "expected attached actor state field name").lexeme();
+            if (name.equals("state") || name.equals("handle_state")) {
+                throw error(previous(), "attached actor state field cannot shadow compiler-owned identifiers");
+            }
+            if (!seen.add(name)) {
+                throw error(previous(), "duplicate attached actor state field '" + name + "'");
+            }
+            consume(COLON, "attached actor state requires ':' followed by a constant initializer");
+            boolean minus = match(MINUS);
+            Token literal = consume(INT, "attached actor state initializer must be a signed integer literal");
+            long checked;
+            try {
+                checked = Long.parseLong((minus ? "-" : "") + literal.lexeme().replace("_", ""));
+            } catch (NumberFormatException invalid) {
+                throw error(literal, "attached actor state int initializer exceeds signed 64-bit range");
+            }
+            consume(SEMICOLON, "attached actor state field requires ';'");
+            fields.add(new Ast.ProtectedStateField(
+                    name, type, new Ast.LiteralExpr(checked)));
+            if (fields.size() > 128) {
+                throw error(previous(), "attached actor state exceeds 128 fields");
+            }
+        }
+        consume(RBRACE, "expected '}' after attached actor state");
+        match(SEMICOLON); // optional terminator after the schema
+        if (fields.isEmpty()) {
+            throw error(previous(), "attached actor state must declare at least one field");
+        }
+        return new Ast.ActorStateDecl(actorName, fields);
+    }
+
     /** Preserve first-class syntax; executable lowering stays type-gated. */
     private boolean isProtectedDeclarationHead() {
         if (current + 1 >= tokens.size()) return false;
@@ -1124,6 +1266,54 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
+    /**
+     * Canonical out-of-line actor declaration. 'declare' remains contextual;
+     * ordinary 'declare type/trait/interface' forwards are unaffected.
+     * This node is nominal-only and does not create an empty actor class.
+     */
+    private boolean isDeclaredActorHead() {
+        if (!isContextualIdentifier("declare")) return false;
+        int index = current + 1;
+        if (index < tokens.size()
+                && (tokens.get(index).type() == PUB
+                    || tokens.get(index).type() == PRIVATE)) {
+            index++;
+        }
+        return index < tokens.size() && tokens.get(index).type() == ACTOR;
+    }
+
+    private Ast.StandaloneActorDecl parseDeclaredActor(
+            List<Ast.Annotation> annotations, Modifiers before) {
+        validateOnlyVisibilityModifiers(before, "declared actors");
+        // Canonical modifier order matches "declare pub type": the visibility
+        // belongs to the declaration after the contextual "declare" token.
+        // Never silently accept "pub declare actor" as an alias.
+        if (before.visibilitySeen) {
+            throw error(peek(), "actor declaration visibility must follow 'declare'; "
+                    + "write 'declare pub actor Foo;' instead of 'pub declare actor Foo;'");
+        }
+        rejectCallableStructuralAnnotation(annotations, "declared actors");
+        rejectDiscardedDeclarationAnnotations(annotations, "declared actors");
+        consumeContextualIdentifier("declare", "expected declared actor");
+        Modifiers after = parseModifiers();
+        validateOnlyVisibilityModifiers(after, "declared actors");
+        Ast.Visibility visibility = after.visibility;
+        consume(ACTOR, "expected actor after declare");
+        String name = consumeTypeDeclarationName("expected nominal actor name");
+        if (check(LT)) {
+            throw error(peek(), "declared actors cannot be generic until witness lowering exists");
+        }
+        if (check(EXTENDS)) {
+            throw error(peek(), "declared actors cannot inherit without verified slot coherence");
+        }
+        List<Ast.TypeRef> contracts = match(IMPLEMENTS, IMPL)
+                ? parseTypeRefList() : List.of();
+        consume(SEMICOLON,
+                "declare actor header must end with ';' and cannot contain inline methods");
+        return new Ast.StandaloneActorDecl(
+                name, null, visibility, Ast.ActorKind.SHARED, contracts);
+    }
+
     private Ast.Decl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
         return parseActorClass(actorKind, visibility, ActorPrefix.DEFAULT);
     }
@@ -1135,19 +1325,11 @@ public final class Parser {
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
-        // A nominal, semicolon-terminated actor may name contract obligations
-        // without defining an implicit runtime actor, empty class or alias.
-        // Actual actor-contract conformance remains a separate checked gate.
+        // A semicolon-only actor is only declared, never defined inline.
+        // Preserve 'define actor Foo as ... end' for full inline implementations.
         if (check(SEMICOLON)) {
-            if (!generics.isEmpty() || !parents.isEmpty()
-                    || actorKind != Ast.ActorKind.SHARED
-                    || prefix.transport() != Ast.ActorTransport.GENERIC || prefix.serial()) {
-                throw error(peek(), "semicolon actor declarations require a plain "
-                        + "non-generic actor without transport or inheritance modifiers");
-            }
-            advance();
-            return new Ast.StandaloneActorDecl(
-                    name, null, visibility, actorKind, interfaces);
+            throw error(peek(), "out-of-line actor declarations use 'declare actor "
+                    + name + ";', not 'define actor " + name + ";'");
         }
 
         // Standalone actor declaration: retain the receiver-binding name in
