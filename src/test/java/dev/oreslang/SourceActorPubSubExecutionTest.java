@@ -151,6 +151,57 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    void canonicalShareBangUsesSameOwnershipAstInsidePortableTryPublish() {
+        // This uses the real compiler Parser, but is NOT a guest try_publish pass.
+        String source = """
+                pub suspends fnc main(): void {
+                  val String event = "ready";
+                  val group = actor.group("payments");
+                  val topic = group.topic<String>("events", "reliable", 1);
+                  val receipt = topic.try_publish(%s);
+                  return;
+                }
+                """;
+        Ast.Program legacy = Parser.parse(source.formatted("rt share event"));
+        assertEquals(legacy, Parser.parse(source.formatted("share! event")));
+        assertEquals(legacy, Parser.parse(source.formatted("share!event")));
+        assertThrows(RuntimeException.class,
+                () -> Parser.parse(source.formatted("share !event")),
+                "split share ! is not an ownership operator");
+
+        for (String spelling : new String[]{
+                "rt share event", "share! event", "share!event"}) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
+                    spelling);
+            assertTrue(error.getMessage().contains("unknown Topic callable member"),
+                    spelling + ": " + error.getMessage());
+        }
+    }
+
+    @Test
+    void canonicalShareBangTypeChecksWithExistingAsyncTopicPublish() {
+        // Topic.publish is already typed; unlike portable try_publish it does
+        // NOT establish all-or-nothing synchronous RELIABLE receipt semantics.
+        String source = """
+                pub suspends fnc main(): void {
+                  val String event = "ready";
+                  val group = actor.group("payments");
+                  val topic = group.topic<String>("events", "reliable", 1);
+                  val future = topic.publish(%s);
+                  return;
+                }
+                """;
+        for (String spelling : new String[]{
+                "rt share event", "share! event", "share!event"}) {
+            org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                    () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
+                    spelling);
+        }
+    }
+
+    @Test
     void portableTryPublishRejectedUntilNativeLowering() throws Exception {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
