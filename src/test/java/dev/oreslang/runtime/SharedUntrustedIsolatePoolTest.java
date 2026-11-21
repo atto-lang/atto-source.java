@@ -11,6 +11,40 @@ import static org.junit.jupiter.api.Assertions.*;
 /** One untrusted Graal isolate for many actor groups, not one per actor. */
 final class SharedUntrustedIsolatePoolTest {
     @Test
+    void retirementFailureMergePreservesVmFatalIdentityAndSuppressedEvidence() {
+        var ordinary = new IllegalStateException("ordinary context close");
+        var fatal = new LinkageError("fatal engine close");
+        Throwable merged = SharedUntrustedIsolatePool.mergeRetirementFailure(
+                ordinary, fatal);
+        assertSame(fatal, merged);
+        assertTrue(java.util.List.of(fatal.getSuppressed()).contains(ordinary));
+
+        var later = new IllegalArgumentException("later sibling");
+        assertSame(fatal, SharedUntrustedIsolatePool.mergeRetirementFailure(
+                merged, later));
+        assertTrue(java.util.List.of(fatal.getSuppressed()).contains(later));
+        assertSame(fatal, assertThrows(LinkageError.class,
+                () -> SharedUntrustedIsolatePool.rethrowRetirementFailure(fatal)));
+    }
+
+    @Test
+    void groupCloseRedactsOrdinaryCauseButNeverDemotesVmFatal() {
+        var secret = new IllegalStateException("guest-private-internal-message");
+        var redacted = SharedUntrustedIsolatePool.sanitizeGroupRetirementFailure(secret);
+        assertEquals("untrusted group retirement failed", redacted.getMessage());
+        assertNull(redacted.getCause());
+        for (Error fatal : new Error[] {
+                new LinkageError("fatal linkage"),
+                new OutOfMemoryError("fatal memory"),
+                new ThreadDeath()
+        }) {
+            assertSame(fatal, assertThrows(fatal.getClass(),
+                    () -> SharedUntrustedIsolatePool.sanitizeGroupRetirementFailure(fatal)),
+                    "a fatal context failure cannot be replaced by an ordinary exception");
+        }
+    }
+
+    @Test
     void boundedPoolSettingsRequireSafeResourceLimits() {
         assertThrows(IllegalArgumentException.class,
                 () -> SharedUntrustedIsolatePool.validateConfiguration(1024, 1));

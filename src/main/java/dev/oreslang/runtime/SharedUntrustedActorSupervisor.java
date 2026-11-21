@@ -307,21 +307,21 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
             snapshot = new ArrayList<>(active);
             owned = ownsPool ? pool : null;
         }
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (Actor actor : snapshot) {
             try { actor.close(); }
-            catch (RuntimeException e) {
-                if (failure == null) failure = e;
-                else failure.addSuppressed(e);
+            catch (RuntimeException | Error error) {
+                failure = SharedUntrustedIsolatePool.mergeRetirementFailure(
+                        failure, error);
             }
         }
         if (owned != null) {
             try { owned.close(); }
-            catch (RuntimeException e) {
-                if (failure == null) failure = e;
-                else failure.addSuppressed(e);
+            catch (RuntimeException | Error error) {
+                failure = SharedUntrustedIsolatePool.mergeRetirementFailure(
+                        failure, error);
             }
         }
-        if (failure != null) throw failure;
+        SharedUntrustedIsolatePool.rethrowRetirementFailure(failure);
     }
 }
