@@ -1162,21 +1162,97 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
                         + "' must be a concrete stateless non-generic middleware class");
             }
-            long nextMethods = middleware.methods().stream()
-                    .filter(m -> m.name().equals("next") && !m.isStatic()).count();
-            if (nextMethods != 1) {
+            // Each protocol selects exactly one hook per invocation. A class
+            // may provide both next_val (unary) and next (stream/around).
+            long nextCount = middleware.methods().stream()
+                    .filter(m -> m.name().equals("next") || m.name().equals("next_val")).count();
+            if (nextCount == 0 || nextCount > 2) {
                 throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
-                        + "' requires exactly one instance next(ctx, next) method");
+                        + "' requires next_val or next; neither may be overloaded");
             }
-            Ast.MethodDecl next = middleware.methods().stream()
-                    .filter(m -> m.name().equals("next") && !m.isStatic()).findFirst().orElseThrow();
-            if (next.parameters().size() != 2
-                    || !next.parameters().get(0).type().name().equals("MiddlewareContext")
-                    || !next.parameters().get(1).type().name().equals("MiddlewareNext")
-                    || !next.returnType().name().equals("MiddlewareOutcome")
-                    || !next.async() || next.isAbstract()) {
+            // Dispatch chooses next_val for unary actors when available;
+            // validating an unused procedural next against unary R would
+            // incorrectly prevent one class from handling both actor roles.
+            boolean selectedValueHook = klass.actorReplyRole() == Ast.ActorReplyRole.UNARY
+                    && middleware.methods().stream().anyMatch(m -> m.name().equals("next_val"));
+            boolean hasValue = false;
+            boolean hasAround = false;
+            for (Ast.MethodDecl method : middleware.methods()) {
+                if (!method.name().equals("next") && !method.name().equals("next_val")) continue;
+                if (method.isStatic() || method.isAbstract() || !method.async()
+                        || !method.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException("middleware hook must be async, concrete, "
+                            + "instance-only and non-generic");
+                }
+                List<Ast.Param> params = method.parameters();
+                if (method.name().equals("next_val")) {
+                    hasValue = true;
+                    boolean correct = params.size() == 2
+                            && params.get(0).type().name().equals("MiddlewareContext")
+                            && params.get(1).type().name().equals("MiddlewareResponseDraft");
+                    Ast.TypeRef result = method.returnType();
+                    if (!correct || !result.name().equals("MiddlewareDecision")
+                            || result.arguments().size() != 1
+                            || result.arguments().getFirst().name().equals("void")
+                            || result.arguments().getFirst().isComplement()) {
+                        throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
+                                + "' requires async next_val(MiddlewareContext, MiddlewareResponseDraft)"
+                                + ": MiddlewareDecision<T>; !void is not a typed middleware decision");
+                    }
+                    if (klass.actorReplyRole() == Ast.ActorReplyRole.UNARY) {
+                        Ast.MethodDecl run = klass.methods().stream()
+                                .filter(m -> !m.isStatic() && m.name().equals("run"))
+                                .findFirst().orElse(null);
+                        if (run != null && !result.arguments().getFirst().equals(run.returnType())) {
+                            throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
+                                    + "' next_val reply type must match unary actor '"
+                                    + klass.name() + ".run' return type exactly");
+                        }
+                    }
+                } else {
+                    hasAround = true;
+                    boolean legacy = params.size() == 2
+                            && params.get(0).type().name().equals("MiddlewareContext")
+                            && params.get(1).type().name().equals("MiddlewareNext");
+                    boolean canonical = params.size() == 3
+                            && params.get(0).type().name().equals("MiddlewareContext")
+                            && params.get(1).type().name().equals("MiddlewareResponseDraft")
+                            && params.get(2).type().name().equals("MiddlewareNext");
+                    Ast.TypeRef result = method.returnType();
+                    if ((!legacy && !canonical)
+                            || !result.name().equals("MiddlewareOutcome")
+                            || result.arguments().size() > 1) {
+                        throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
+                                + "' requires async next(ctx, next) or async next(ctx, res, next)"
+                                + " returning MiddlewareOutcome<T>");
+                    }
+                    if (result.arguments().size() == 1) {
+                        Ast.TypeRef declared = result.arguments().getFirst();
+                        if (declared.isComplement()) {
+                            throw new IllegalArgumentException("middleware next outcome may not use !void");
+                        }
+                        Ast.MethodDecl run = klass.methods().stream()
+                                .filter(m -> !m.isStatic() && m.name().equals("run"))
+                                .findFirst().orElse(null);
+                        if (klass.actorReplyRole() == Ast.ActorReplyRole.UNARY
+                                && !selectedValueHook
+                                && run != null && !declared.equals(run.returnType())) {
+                            throw new IllegalArgumentException("middleware next result type must match unary actor return type");
+                        }
+                        if (klass.actorReplyRole() == Ast.ActorReplyRole.STREAM
+                                && !declared.name().equals("void")) {
+                            throw new IllegalArgumentException("stream middleware next must return MiddlewareOutcome<void>");
+                        }
+                    }
+                }
+            }
+            boolean valueOnly = hasValue && !hasAround;
+            boolean stream = klass.actorReplyRole() == Ast.ActorReplyRole.STREAM
+                    || (klass.actorReplyRole() == Ast.ActorReplyRole.INFER
+                        && klass.methods().stream().noneMatch(m -> m.name().equals("run")));
+            if (stream && valueOnly) {
                 throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
-                        + "' requires async next(MiddlewareContext, MiddlewareNext): MiddlewareOutcome");
+                        + "' has only next_val but stream actors require the next hook");
             }
         }
         // A declaration without a live, runtime-owned middleware chain would
