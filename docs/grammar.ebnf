@@ -76,8 +76,9 @@ actor_method_decl
 
 class_decl      = visibility "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
-                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ ( "implements" | "impl" ) implemented_target { "," implemented_target } ]
                   "as" { class_member } "end" ;
+implemented_target = [ "static" ] type_ref ;
 
 class_member    = field_decl
                 | type_first_class_field_decl
@@ -113,7 +114,7 @@ static_function_decl
                 = { annotation } visibility "static" { "async" | "structural" } "fnc" callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
-contract_decl   = "define" "contract" IDENT [ generic_params ]
+contract_decl   = "define" [ "static" ] "contract" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ] contract_body ;
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
@@ -128,6 +129,9 @@ contract_body   = "{" { contract_member } "}"
 contract_member = { annotation } [ "structural" ] "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" contract_return_spec member_terminator
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
+(* In v1, fields are valid for module contracts. A define static contract is
+   callable-only: field members fail closed until class static storage,
+   initialization, ownership and hot-reload semantics exist. *)
 
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;

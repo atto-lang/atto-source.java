@@ -369,6 +369,7 @@ public final class Ast {
             List<String> genericParameters,
             List<TypeRef> parents,
             List<TypeRef> interfaces,
+            List<TypeRef> staticContracts,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
             List<MethodDecl> methods) implements Decl {
@@ -376,8 +377,18 @@ public final class Ast {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
+            staticContracts = List.copyOf(staticContracts);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Compatibility constructor for AST producers without static-side contracts. */
+        public ClassDecl(
+                String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
+                List<String> genericParameters, List<TypeRef> parents, List<TypeRef> interfaces,
+                List<FieldDecl> fields, ConstructorDecl constructor, List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters, parents,
+                    interfaces, List.of(), fields, constructor, methods);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -386,20 +397,20 @@ public final class Ast {
                          List<TypeRef> interfaces, List<FieldDecl> fields,
                          List<MethodDecl> methods) {
             this(name, Visibility.PRIVATE, isAbstract, actorKind, genericParameters,
-                    parents, interfaces, fields, null, methods);
+                    parents, interfaces, List.of(), fields, null, methods);
         }
 
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<TypeRef> parents, List<TypeRef> interfaces,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
             this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, genericParameters,
-                    parents, interfaces, fields, null, methods);
+                    parents, interfaces, List.of(), fields, null, methods);
         }
 
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
             this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, genericParameters,
-                    List.of(), List.of(), fields, null, methods);
+                    List.of(), List.of(), List.of(), fields, null, methods);
         }
     }
 
@@ -459,17 +470,26 @@ public final class Ast {
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members,
-            boolean moduleContract) implements Decl {
+            boolean moduleContract,
+            boolean staticContract) implements Decl {
         public InterfaceDecl {
+            if (staticContract && !moduleContract) {
+                throw new IllegalArgumentException("static contracts must carry contract identity");
+            }
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
-            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
+            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false, false);
         }
         public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters, List<TypeRef> parents, List<InterfaceMember> members) {
-            this(name, visibility, genericParameters, parents, members, false);
+            this(name, visibility, genericParameters, parents, members, false, false);
+        }
+        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters,
+                             List<TypeRef> parents, List<InterfaceMember> members,
+                             boolean moduleContract) {
+            this(name, visibility, genericParameters, parents, members, moduleContract, false);
         }
     }
 

@@ -155,6 +155,7 @@ final class ImportGraph {
                             && iface.name().equals(name);
                     case CONTRACT -> decl instanceof Ast.InterfaceDecl iface
                             && iface.moduleContract()
+                            && !iface.staticContract()
                             && iface.visibility() == Ast.Visibility.PUBLIC
                             && iface.name().equals(name);
                     case TYPE -> decl instanceof Ast.TypeAliasDecl alias
