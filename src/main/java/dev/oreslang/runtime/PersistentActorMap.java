@@ -8,6 +8,7 @@ import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
@@ -65,6 +66,122 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
         throw new IllegalArgumentException(
                 "persistent actor data requires immutable scalar values or PersistentActorMap; "
                         + "mutable containers, foreign references, and capabilities are forbidden");
+    }
+
+    /**
+     * Different immutable persistent roots are not equal-update shortcuts:
+     * recursive Map.equals can traverse thousands of nested descendants.
+     * Preserve referential O(1) no-ops while bounding mutation work to a
+     * HAMT path copy. Ordinary immutable scalars still compare by value.
+     */
+    private static boolean sameUpdateValue(Object left, Object right) {
+        if (left == right) return true;
+        if (left instanceof PersistentActorMap || right instanceof PersistentActorMap)
+            return false;
+        return Objects.equals(left, right);
+    }
+
+    /**
+     * A persistent root compared with any Map must use an explicit work queue:
+     * delegating to AbstractMap.equals when the other map is ordinary Map.of
+     * still recurses once per nested PersistentActorMap and can overflow.
+     * Map's size/key/value contract is preserved for non-HAMT maps as well.
+     */
+    private record EqualityPair(PersistentActorMap left, Map<?, ?> right) { }
+
+    @Override
+    public boolean equals(Object other) {
+        if (other == this) return true;
+        if (!(other instanceof Map<?, ?> that)) return false;
+        var pending = new ArrayDeque<EqualityPair>();
+        var visited = new IdentityHashMap<PersistentActorMap,
+                IdentityHashMap<Map<?, ?>, Boolean>>();
+        pending.push(new EqualityPair(this, that));
+        while (!pending.isEmpty()) {
+            EqualityPair pair = pending.pop();
+            if (pair.left == pair.right) continue;
+            var matches = visited.computeIfAbsent(pair.left, ignored -> new IdentityHashMap<>());
+            if (matches.put(pair.right, Boolean.TRUE) != null) continue;
+            try {
+                if (pair.left.size() != pair.right.size()) return false;
+                for (Map.Entry<String, Object> entry : pair.left.entrySet()) {
+                    Object rightValue = pair.right.get(entry.getKey());
+                    if (rightValue == null) return false; // Null values cannot be stored.
+                    Object leftValue = entry.getValue();
+                    if (leftValue instanceof PersistentActorMap leftMap
+                            && rightValue instanceof Map<?, ?> rightMap) {
+                        pending.push(new EqualityPair(leftMap, rightMap));
+                    } else if (!Objects.equals(leftValue, rightValue)) {
+                        return false;
+                    }
+                }
+            } catch (ClassCastException | NullPointerException ex) {
+                // Matches AbstractMap.equals for foreign Maps with restrictive
+                // or null-intolerant key lookup implementations.
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static final class HashFrame {
+        final PersistentActorMap map;
+        final Iterator<Map.Entry<String, Object>> entries;
+        Map.Entry<String, Object> waiting;
+        int sum;
+
+        HashFrame(PersistentActorMap map) {
+            this.map = map;
+            this.entries = map.entrySet().iterator();
+        }
+    }
+
+    /** Match Map's entry hash sum, without recursive nested value hashing. */
+    @Override
+    public int hashCode() {
+        var completed = new IdentityHashMap<PersistentActorMap, Integer>();
+        var visiting = new IdentityHashMap<PersistentActorMap, Boolean>();
+        var pending = new ArrayDeque<HashFrame>();
+        visiting.put(this, Boolean.TRUE);
+        pending.push(new HashFrame(this));
+        while (!pending.isEmpty()) {
+            HashFrame frame = pending.peek();
+            if (frame.waiting != null) {
+                PersistentActorMap child = (PersistentActorMap) frame.waiting.getValue();
+                Integer childHash = completed.get(child);
+                if (childHash == null) {
+                    if (visiting.put(child, Boolean.TRUE) != null)
+                        throw new IllegalStateException("cycle in sealed persistent map graph");
+                    pending.push(new HashFrame(child));
+                    continue;
+                }
+                frame.sum += frame.waiting.getKey().hashCode() ^ childHash;
+                frame.waiting = null;
+                continue;
+            }
+            if (!frame.entries.hasNext()) {
+                completed.put(frame.map, frame.sum);
+                visiting.remove(frame.map);
+                pending.pop();
+                continue;
+            }
+            Map.Entry<String, Object> entry = frame.entries.next();
+            Object value = entry.getValue();
+            if (value instanceof PersistentActorMap child) {
+                Integer childHash = completed.get(child);
+                if (childHash == null) {
+                    frame.waiting = entry;
+                    if (visiting.put(child, Boolean.TRUE) != null)
+                        throw new IllegalStateException("cycle in sealed persistent map graph");
+                    pending.push(new HashFrame(child));
+                    continue;
+                }
+                frame.sum += entry.getKey().hashCode() ^ childHash;
+            } else {
+                frame.sum += entry.getKey().hashCode() ^ value.hashCode();
+            }
+        }
+        return completed.get(this);
     }
 
     private static int hash(String key) {
@@ -187,7 +304,7 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
         }
         if (node instanceof Leaf leaf) {
             if (leaf.hash == entry.hash && leaf.key.equals(entry.key)) {
-                return Objects.equals(leaf.value, entry.value) ? node : entry;
+                return sameUpdateValue(leaf.value, entry.value) ? node : entry;
             }
             added.set = true;
             if (leaf.hash == entry.hash) {
@@ -203,7 +320,7 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
             for (int i = 0; i < collision.leaves.length; i++) {
                 Leaf old = collision.leaves[i];
                 if (old.key.equals(entry.key)) {
-                    if (Objects.equals(old.value, entry.value)) return node;
+                    if (sameUpdateValue(old.value, entry.value)) return node;
                     Leaf[] copy = collision.leaves.clone();
                     copy[i] = entry;
                     return new Collision(collision.hash, copy);
