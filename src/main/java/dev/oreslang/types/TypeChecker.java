@@ -739,6 +739,10 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (fn.effects().stateEffect().read() || fn.effects().stateEffect().write()) {
+            throw new IllegalArgumentException(
+                    "module state effects require compiler-enforced actor state loans; not enabled");
+        }
         if (fn.name().endsWith("_blocking") && !fn.suspends())
             throw new IllegalArgumentException(
                     "*_blocking function '" + fn.name() + "' must declare suspends");
@@ -1131,6 +1135,22 @@ public final class TypeChecker {
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
+            // A syntax-correct critical callback is not yet executable.
+            // First reject unsafe read writes, escaped state values, nested
+            // callbacks and unknown effects with a deterministic compile
+            // diagnostic; then retain the strict runtime-admission denial.
+            ActorCriticalLoanPreflight.auditClass(klass);
+            boolean hasSchema = klass.fields().stream().anyMatch(field ->
+                    field.annotations().stream().anyMatch(annotation ->
+                            annotation.name().equals(
+                                    dev.oreslang.parser.Parser.SEALED_STATE_SCHEMA_MARKER)));
+            for (Ast.MethodDecl method : klass.methods()) {
+                Ast.StateEffect effect = method.effects().stateEffect();
+                if ((effect.read() || effect.write()) && !hasSchema) {
+                    throw new IllegalArgumentException(
+                            "state effects require a typed actor state schema and checked loans");
+                }
+            }
             // Parsing state members does not grant legacy field visibility or
             // make a borrowable state view. Until compiler-owned loan lowering
             // and physical arena fencing exist, reject the entire class.
