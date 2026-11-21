@@ -6,6 +6,7 @@ on:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/compiler/DopInvertedScalarCompilerV1.java'
       - 'src/main/java/dev/oreslang/compiler/InvertedSchemaStorageBridge.java'
+      - 'src/main/java/dev/oreslang/compiler/DopInvertedScalarTruffleRootV1.java'
       - 'src/test/java/dev/oreslang/**/*DopInverted*.java'
       - 'src/test/java/dev/oreslang/compiler/InvertedSchemaStorageBridgeTest.java'
       - '.github/workflows/dop-inverted-i64-source-reference.yml'
@@ -65,9 +66,9 @@ jobs:
           java --version
           mvn -B -ntp \
             -DfailIfNoTests=true \
-            -Dtest=DopInvertedGuestAdmissionTest,InvertedSchemaStorageBridgeTest,DopInvertedScalarCompilerV1Test,DopInvertedScalarAdmissionHardeningTest,DopInvertedScalarStateMachineTest,DopInvertedSharedEnvelopeTest \
+            -Dtest=DopInvertedGuestAdmissionTest,InvertedSchemaStorageBridgeTest,DopInvertedScalarCompilerV1Test,DopInvertedScalarAdmissionHardeningTest,DopInvertedScalarStateMachineTest,DopInvertedSharedEnvelopeTest,DopInvertedScalarTruffleRootV1Test \
             test
-      - name: Verify complete six-class executed JUnit XML inventory
+      - name: Verify complete seven-class executed JUnit XML inventory
         shell: bash
         run: |
           set -euo pipefail
@@ -82,6 +83,7 @@ jobs:
               "DopInvertedScalarAdmissionHardeningTest",
               "DopInvertedScalarStateMachineTest",
               "DopInvertedSharedEnvelopeTest",
+              "DopInvertedScalarTruffleRootV1Test",
           }
           reports = sorted(Path("target/surefire-reports").glob("TEST-*.xml"))
           if not reports:

@@ -53,13 +53,20 @@ public final class DopInvertedScalarCompilerV1 {
         public int capacity() { return capacity; }
         public List<Instruction> instructions() { return instructions; }
 
+        // Package-private compiler-owned store factory. The verified plan's
+        // nominal schema stays private, and each execution gets a new owner.
+        // The Truffle root never accepts a raw caller-supplied AST or store.
+        InvertedSchemaStorageBridge openCheckedOwner() {
+            return new InvertedSchemaStorageBridge(schema, capacity);
+        }
+
         /**
          * The plan is verified before publication. Only host reference
          * execution is exposed; this is not the Truffle guest call target.
          * try-with-resources closes and scrubs the bounded owning SoA store.
          */
         public long executeHostReference() {
-            try (var columns = new InvertedSchemaStorageBridge(schema, capacity)) {
+            try (var columns = openCheckedOwner()) {
                 for (Instruction op : instructions) {
                     switch (op.op()) {
                         case PUSH -> columns.push(op.first(), op.second());

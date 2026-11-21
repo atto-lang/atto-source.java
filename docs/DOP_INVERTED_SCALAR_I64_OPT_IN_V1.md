@@ -65,6 +65,37 @@ not yet executed, 12 positive O0/O2 native returns, four real bounds-signal
 checks, and six source negatives. Java has authored JUnit host-reference
 plan/bridge tests but no executed native or guest parity receipts yet.
 
+## Experimental isolated Truffle RootCallTarget (not general guest admission)
+
+The narrow source compiler now provides the explicit API
+`OresCompiler.compileDopInvertedScalarI64TruffleRoot(source)`. It parses
+using `Parser.parseDopInvertedScalarV1` and the **same closed verified plan**
+before creating `DopInvertedScalarTruffleRootV1`. The returned
+`RootCallTarget` has four explicit typed operation-node classes
+(`PushNode`, `WriteNode`, `EraseSwapNode`, `ReadNode`); no source text,
+arbitrary expressions, lexical closures, function values, external type
+dispatch or unchecked ASTs are accepted by those children.
+
+Each `call()` owns a fresh `InvertedSchemaStorageBridge` (separate two-i64
+SoA columns and storage-issued generation-fenced handles). That owner is
+closed on both successful returns and errors. The call target takes **zero**
+arguments; no actor, channel, coroutine, borrow across suspension or foreign
+source namespace can be injected. The same target may be called twice, but
+the underlying mutable owner is never reused between calls.
+
+**Evidence classification:** this is real isolated Truffle
+`RootCallTarget` execution of a **production-parsed restricted verified
+plan**, *backed by Java host storage*. It is **not**
+`OresLanguage.parse(ParsingRequest)` or the full
+`OresEvalRootNode` guest pipeline, is not permitted through the ordinary
+`TypeChecker`/language parser, and is not Graal native-image, zero-GC,
+tenant-safe, actor-safe, AOT, or general compiler parity. Do **not** use this
+as a guest-parity receipt. The original host-reference `Plan.executeHostReference`
+remains for differential checks. The dedicated JUnit class
+`DopInvertedScalarTruffleRootV1Test` has eight authored cases (including 64 independently compiled roots and
+320 repeated root calls) and is
+included in the exact-head CI gate; no hosted execution pass is yet proven.
+
 ## Promotion gates
 
 1. Run the exact-head Java JUnit suite and LLVM production compiler/CTest
