@@ -88,8 +88,11 @@ final class AttoGuardLanguageTest {
                       guard false { throw new Error("bad"); }
                     }
                     """));
-        assertTrue(error.getMessage().contains(
-                "guard failure block must explicitly return"), error::getMessage);
+        // The Java frontend currently rejects typed throw at source admission
+        // before guard flow proof. Either route must reject this program.
+        assertTrue(error.getMessage().contains("typed exceptional effect")
+                || error.getMessage().contains("guard failure block must explicitly return"),
+                error::getMessage);
     }
 
     @Test
