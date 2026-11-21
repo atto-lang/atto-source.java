@@ -2837,6 +2837,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void leaveId(ActorId actorId) {
+            final Runnable subscriptionCleanup;
             synchronized (groupMembershipLock) {
                 if (!members.remove(actorId)) return;
                 Set<ActorGroupId> joined = groupMemberships.get(actorId);
@@ -2844,10 +2845,13 @@ public final class ActorRuntime implements AutoCloseable {
                     joined.remove(id);
                     if (joined.isEmpty()) groupMemberships.remove(actorId);
                 }
-                // Rejoin must not overtake subscription draining for the old
-                // membership and inadvertently inherit a previous channel.
-                eventBus.removeActor(actorId);
+                // Preserve the rejoin fence while detaching/marking the old
+                // subscription closed, but defer callback-capable channel
+                // close/drain until after groupMembershipLock is released.
+                subscriptionCleanup =
+                        eventBus.detachActorSubscriptions(actorId);
             }
+            subscriptionCleanup.run();
         }
 
         private void actorTerminated(ActorId actorId) {
@@ -3608,11 +3612,11 @@ public final class ActorRuntime implements AutoCloseable {
                             createdGroupsByActor.computeIfAbsent(
                                     creator, ignored -> new java.util.HashSet<>()).add(id);
                         }
-                        // Finalization calls unregisterActor() while holding
-                        // ActorCell.lifecycleLock. Never acquire that lock here:
-                        // instead recheck the stop flag after publication. If
-                        // retirement beat group creation's registration, the
-                        // group is closed before it can escape to the caller.
+                        // Never acquire ActorCell.lifecycleLock from group
+                        // admission. Retirement unregisters the actor through a
+                        // separate post-monitor phase; recheck the stop flag
+                        // after publication so a racing retirement cannot let a
+                        // newly created group escape.
                         if (creatorCell != null && creatorCell.stopped.get()) {
                             group.closeFromRuntime();
                             throw new IllegalStateException("group creator stopped during creation");
