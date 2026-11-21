@@ -384,6 +384,47 @@ public final class VirtualActorActivationRegistry implements AutoCloseable {
         }
     }
 
+    /*
+     * Host-internal, LOCAL-only observation. A future supervisor directory must
+     * authenticate the principal and its direct-child scope BEFORE calling this.
+     * This is neither a guest API nor a distributed address/authority lookup.
+     * An unknown ID is never implicitly registered by inspection.
+     */
+    enum LocalPhase { INACTIVE, INITIALIZING, ACTIVE, CLOSED }
+    record LocalObservation(Identity identity, long incarnation,
+                            LocalPhase phase, int admitted) { }
+
+    LocalObservation inspectExistingForHost(Identity requested) {
+        Objects.requireNonNull(requested, "requested");
+        // Caller-supplied IDs are bounded before HashMap hash/equals work.
+        // The VM-local registry's canonical identity is NOT the ActorId v1 wire ABI.
+        if (!domain.equals(requested.domain())
+                || requested.declaration() == null || requested.key() == null
+                || requested.declaration().length() > 128
+                || requested.key().length() > MAX_KEY_BYTES * 4
+                || !Normalizer.isNormalized(requested.key(), Normalizer.Form.NFC)) {
+            return null;
+        }
+        synchronized (monitor) {
+            Slot slot = slots.get(requested);
+            if (slot == null) return null;
+            LocalPhase phase = closed ? LocalPhase.CLOSED
+                    : !slot.active ? LocalPhase.INACTIVE
+                    : slot.published ? LocalPhase.ACTIVE : LocalPhase.INITIALIZING;
+            // An immutable point-in-time value; never a live Slot, Activation,
+            // lease, mailbox, or mutable actor heap reference.
+            return new LocalObservation(slot.identity, slot.incarnation,
+                    phase, slot.outstanding);
+        }
+    }
+
+    LocalObservation inspectForHost(LogicalRef logical) {
+        Objects.requireNonNull(logical, "logical");
+        if (logical.slot.owner != this)
+            throw new IllegalArgumentException("foreign virtual actor logical reference");
+        return inspectExistingForHost(logical.slot.identity);
+    }
+
     public int outstanding(LogicalRef logical) {
         Objects.requireNonNull(logical, "logical");
         synchronized (monitor) {

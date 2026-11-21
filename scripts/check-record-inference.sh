@@ -53,18 +53,60 @@ for program in javac java mvn git; do
   fi
 done
 
+# Git status/diff trust the index. An attacker can set skip-worktree or
+# assume-unchanged and alter a tracked source file without either command
+# noticing. Reject every non-normal entry, including unmerged stages, using
+# NUL-delimited names so embedded whitespace cannot hide a flagged path.
+verify_normal_index_flags() {
+  local entry
+  while IFS= read -r -d '' entry; do
+    if [[ "${entry:0:2}" != "H " ]]; then
+      echo "refusing hidden or unresolved Git index entry (tag ${entry:0:1})" >&2
+      return 1
+    fi
+  done < <(git ls-files -v -z)
+}
+
+if ! verify_normal_index_flags; then
+  echo "refusing pre-admission hidden Git index state" >&2
+  exit 4
+fi
+
+# The entry check rejects all ignored/untracked files. Subsequent Java/Maven
+# commands can legitimately generate ignored build products, but MUST NOT
+# mutate the checked-out source, switch HEAD, or inject unignored files.
+# Check after every stage so a source mutation cannot affect the next stage.
+verify_inputs_unchanged() {
+  local stage="$1"
+  if [[ "$(git rev-parse --show-toplevel)" != "$root" ]] \
+      || [[ "$(git rev-parse --verify HEAD^{commit})" != "$commit_sha" ]] \
+      || [[ "$(git rev-parse --verify HEAD^{tree})" != "$tree_sha" ]] \
+      || ! verify_normal_index_flags \
+      || ! git diff --quiet HEAD -- \
+      || [[ -n "$(git ls-files --others --exclude-standard)" ]] \
+      || [[ -n "$(git ls-files --others --ignored --exclude-standard -- src stdlib scripts examples .mvn .github)" ]]; then
+    echo "refusing changed Git/source inputs after $stage" >&2
+    exit 6
+  fi
+}
+
 echo "Verified Oreslang source Git commit=$commit_sha tree=$tree_sha mode=$mode"
 # For an approved mirror, the source commit may differ, but the full tree SHA
 # must match the trusted source head. Modes/blobs are covered by Git tree IDs.
 bash scripts/check-record-parser.sh
+verify_inputs_unchanged "record parser"
 bash scripts/check-record-frontend.sh
+verify_inputs_unchanged "record frontend"
 bash scripts/check-soa-snapshot.sh
+verify_inputs_unchanged "SoA snapshot"
 
 # Contains GraalVM guest execution, not only AST and host-only smoke tests.
 mvn -B -ntp \
-  -Dtest=InferredRecordBoundaryTest,InferredStructBoundaryTest,DynamicPropertyAccessBoundaryTest,DynamicPropertyAccessRuntimeTest,DynamicPropertyAccessRuntimeFailureTest,CheckedClassViewMetadataTest,PrecheckedProgramLeaseTest,TreeShakerTest,LinkedPublicClassFieldTypesTest,FileRootPublicClassImportTest,InferredRecordRuntimeTest,NamedInferredTypeTest,SoaSnapshotTest \
+  -Dtest=RecordTypeValueContextTest,InferredRecordBoundaryTest,InferredStructBoundaryTest,DynamicPropertyAccessBoundaryTest,DynamicPropertyAccessRuntimeTest,DynamicPropertyAccessRuntimeFailureTest,CheckedClassViewMetadataTest,PrecheckedProgramLeaseTest,TreeShakerTest,LinkedPublicClassFieldTypesTest,FileRootPublicClassImportTest,InferredRecordRuntimeTest,NamedInferredTypeTest,SoaSnapshotTest \
   test
+verify_inputs_unchanged "targeted record JUnit"
 mvn -B -ntp -Dores.runtime.carriers=native verify
+verify_inputs_unchanged "native carrier Maven verify"
 
 echo "Oreslang record Maven verification PASS: commit=$commit_sha tree=$tree_sha"
 # Native Image AOT/hybrid, LLVM, sanitizers and formatter parity require their

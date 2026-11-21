@@ -1,0 +1,101 @@
+# Compiler source-owning repository ONLY. No private source exports.
+# Zero-step/runner_id=0 jobs are admission failures, not conformance evidence.
+name: AttoLang demo multi-file seven-case Java guest
+
+on:
+  pull_request:
+    paths:
+      - 'src/test/java/dev/oreslang/AttoDemoMultifileSevenCaseGuestTest.java'
+      - 'src/test/resources/atto/demo-multifile-v1/**'
+      - 'src/main/java/**'
+      - 'scripts/ci/AttoDemoSevenReceiptVerifier.java'
+      - '.github/workflows/atto-demo-multifile-seven-guest.yml'
+  push:
+    branches:
+      - 'test/atto-demo-multifile-exact-guest-20261110'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-java-guest:
+    name: seven-case-linked-guest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact compiler PR head without persisted credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Set up Java 25 for exact compiler JUnit suite
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: Verify exact shared JUnit receipt verifier and mutation tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:scripts/ci/AttoDemoSevenReceiptVerifier.java)" = "f0b03b060cb0c9566380ea29f323633336f0ce46"
+          mkdir -p "$RUNNER_TEMP/atto-demo-receipt-verify"
+          javac -Xlint:all -Werror -d "$RUNNER_TEMP/atto-demo-receipt-verify" scripts/ci/AttoDemoSevenReceiptVerifier.java
+          java -cp "$RUNNER_TEMP/atto-demo-receipt-verify" AttoDemoSevenReceiptVerifier --self-test
+      - name: Prove exact compiler head and byte-identical demo fixture blobs
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          while read -r expected path; do
+            test "$(git rev-parse "HEAD:$path")" = "$expected"
+            test "$(git ls-tree HEAD "$path" | awk '{print $1}')" = "100644"
+            test -f "$path" && test ! -L "$path"
+          done <<'BLOBS'
+          832f419d104a7463ef3c7f594f680da3b89b0e8d src/test/resources/atto/demo-multifile-v1/.atto.pkg.toml
+          20171e87cebcc7e45cdaa9e2f38f55fd0ad34e17 src/test/resources/atto/demo-multifile-v1/src/math.atto
+          4359a3b0d73d5bee9ba08ecfe761239966f65c77 src/test/resources/atto/demo-multifile-v1/src/main.atto
+          05186ced99795be46e6109f4a3340104041ced62 src/test/resources/atto/demo-multifile-v1/module/contract.atto
+          185fde92ab57c1f74ff1008c50818c454138dd6d src/test/resources/atto/demo-multifile-v1/module/main.atto
+          0a211e118b6f083c080e5f8bab70e88dac3f4c6e src/test/resources/atto/demo-multifile-v1/module/alias-leak.atto
+          584d5e355aece5edde7a8d46c85de1c352d9d9d8 src/test/resources/atto/demo-multifile-v1/negative/missing-helper.atto
+          52e4695ff203469aabed8a51eb32ae362a869c33 src/test/resources/atto/demo-multifile-v1/negative/conflicts.atto
+          e1c649987676abdd1f39d3e0c8e1019feeed2392 src/test/resources/atto/demo-multifile-v1/negative/ambiguous-import.atto
+          3bb95cd473e6b9b9f3203b468e0d4f770b54e1e8 src/test/resources/atto/demo-multifile-v1/negative/ownership-conflict.atto
+          3380f81fd1083be8d6c8e0a3b6f8c114e040b8f8 src/test/resources/atto/demo-multifile-v1/negative/ownership-valid.atto
+          BLOBS
+          echo "ATTO_DEMO_EXACT_FIXTURE_BLOBS_PASS compiler_head=$EXPECTED_HEAD compiler_tree=$(git rev-parse 'HEAD^{tree}')"
+      - name: Run real Java/Graal linked guest seven-case JUnit from clean output
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          # No stale Surefire XML or compiled classes may satisfy a new attempt.
+          # The JVM/Maven exit code and the exact seven-case receipt are BOTH gates.
+          timeout --signal=TERM --kill-after=10s 1080s \
+            mvn -B -ntp -Dstyle.color=never \
+              -Dtest=AttoDemoMultifileSevenCaseGuestTest \
+              -DfailIfNoTests=true clean test
+      - name: Verify exact seven named, non-skipped JUnit guest cases
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          java -cp "$RUNNER_TEMP/atto-demo-receipt-verify" AttoDemoSevenReceiptVerifier "$EXPECTED_HEAD" target/surefire-reports
+          echo "ATTO_DEMO_GUEST_RUN_IDENTITY head=$EXPECTED_HEAD run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT job=$GITHUB_JOB"
+      - name: Preserve compiler-owned JUnit report even if tests fail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atto-demo-multifile-junit
+          path: |
+            target/surefire-reports/TEST-dev.oreslang.AttoDemoMultifileSevenCaseGuestTest.xml
+            target/surefire-reports/dev.oreslang.AttoDemoMultifileSevenCaseGuestTest.txt
+          if-no-files-found: warn
+          retention-days: 7
