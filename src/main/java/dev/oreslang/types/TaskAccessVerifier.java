@@ -143,10 +143,17 @@ final class TaskAccessVerifier {
         return admit(typed.stream().map(TypedClaim::claim).toList());
     }
 
+    private static final class ScopeEpoch { }
+
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
     public static final class Ticket {
+        private final ScopeEpoch scopeEpoch;
         private final long id;
-        private Ticket(long id) { this.id = id; }
+
+        private Ticket(ScopeEpoch scopeEpoch, long id) {
+            this.scopeEpoch = Objects.requireNonNull(scopeEpoch, "scopeEpoch");
+            this.id = id;
+        }
     }
 
     private static final class Child {
@@ -164,6 +171,7 @@ final class TaskAccessVerifier {
     private static final int MAX_CLAIMS_PER_CHILD = 1024;
     private static final int MAX_TRACKED_ALLOCATIONS = 65536;
 
+    private final ScopeEpoch scopeEpoch = new ScopeEpoch();
     private final Map<Ticket, Child> live = new LinkedHashMap<>();
     private final Map<AllocationKey, Long> knownGenerations = new HashMap<>();
     /** Single trusted allocation/trust domain per scope, including READ-only claims. */
@@ -274,7 +282,7 @@ final class TaskAccessVerifier {
             throw new IllegalStateException("TaskScope allocation tracking capacity exceeded");
         }
         if (nextId == Long.MAX_VALUE) throw new IllegalStateException("Task ticket overflow");
-        Ticket ticket = new Ticket(nextId++);
+        Ticket ticket = new Ticket(scopeEpoch, nextId++);
         // Only now commit the scope domain, claims and allocation generations.
         scopeDomain = requestedDomain;
         live.put(ticket, new Child(claims));
@@ -365,8 +373,12 @@ final class TaskAccessVerifier {
     public synchronized int activeChildren() { return live.size(); }
 
     private Child child(Ticket ticket) {
-        Child result = live.get(Objects.requireNonNull(ticket, "ticket"));
-        if (result == null) throw new IllegalArgumentException("stale or foreign Task ticket");
+        Objects.requireNonNull(ticket, "ticket");
+        if (ticket.scopeEpoch != scopeEpoch) {
+            throw new IllegalArgumentException("foreign Task scope epoch");
+        }
+        Child result = live.get(ticket);
+        if (result == null) throw new IllegalArgumentException("stale Task ticket");
         return result;
     }
 }

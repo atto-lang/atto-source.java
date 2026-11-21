@@ -7,6 +7,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -80,12 +81,27 @@ public class TaskScopeTest {
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch release = new CountDownLatch(1);
             AtomicInteger retired = new AtomicInteger();
+            AtomicReference<TaskScope> retiredScope = new AtomicReference<>();
+            AtomicReference<TaskHandle<Integer>> retiredChild = new AtomicReference<>();
 
             TaskHandle<Integer> child = scope.startTask(resume -> {
                 entered.countDown();
                 awaitUninterruptibly(release);
                 return OresScheduler.done(7);
-            }, retired::incrementAndGet);
+            }, new TaskScope.RetirementHook<>() {
+                @Override
+                public void retireNeverStarted(TaskScope actualScope) {
+                    fail("running child must not use never-started retirement");
+                }
+
+                @Override
+                public void retireAfterPhysicalQuiescence(
+                        TaskScope actualScope, TaskHandle<Integer> actualChild) {
+                    retired.incrementAndGet();
+                    retiredScope.set(actualScope);
+                    retiredChild.set(actualChild);
+                }
+            });
 
             assertTrue(entered.await(3, TimeUnit.SECONDS));
             assertTrue(child.cancel("stop"));
@@ -99,6 +115,10 @@ public class TaskScopeTest {
                     child.getDone().get(3, TimeUnit.SECONDS));
             assertEquals(1, retired.get(),
                     "loan retirement hook must fire exactly once from getDone");
+            assertSame(scope, retiredScope.get(),
+                    "retirement must be bound to the exact TaskScope");
+            assertSame(child, retiredChild.get(),
+                    "retirement must be bound to the exact TaskHandle");
 
             scope.seal();
             assertNull(scope.getDone().get(3, TimeUnit.SECONDS));
@@ -114,7 +134,19 @@ public class TaskScopeTest {
                     new IllegalStateException("loan retirement failed");
             TaskHandle<Integer> child = scope.startTask(
                     resume -> OresScheduler.done(3),
-                    () -> { throw retirementFailure; });
+                    new TaskScope.RetirementHook<>() {
+                        @Override
+                        public void retireNeverStarted(TaskScope actualScope) {
+                            fail("completed child must use physical retirement");
+                        }
+
+                        @Override
+                        public void retireAfterPhysicalQuiescence(
+                                TaskScope actualScope, TaskHandle<Integer> actualChild) {
+                            assertSame(scope, actualScope);
+                            throw retirementFailure;
+                        }
+                    });
 
             assertEquals(new TaskHandle.Success<>(3),
                     child.getDone().get(3, TimeUnit.SECONDS));
@@ -345,7 +377,20 @@ public class TaskScopeTest {
         assertThrows(RejectedExecutionException.class,
                 () -> scope.startTask(
                         r -> OresScheduler.done(4),
-                        retired::incrementAndGet));
+                        new TaskScope.RetirementHook<Integer>() {
+                            @Override
+                            public void retireNeverStarted(TaskScope actualScope) {
+                                assertSame(scope, actualScope);
+                                retired.incrementAndGet();
+                            }
+
+                            @Override
+                            public void retireAfterPhysicalQuiescence(
+                                    TaskScope actualScope,
+                                    TaskHandle<Integer> actualChild) {
+                                fail("rejected Task must never reach physical retirement");
+                            }
+                        }));
 
         assertEquals(1, retired.get(),
                 "never-started child must retire its pre-admitted loan once");
@@ -367,7 +412,20 @@ public class TaskScopeTest {
                 RejectedExecutionException.class,
                 () -> scope.startTask(
                         r -> OresScheduler.done(4),
-                        () -> { throw retirementFailure; }));
+                        new TaskScope.RetirementHook<Integer>() {
+                            @Override
+                            public void retireNeverStarted(TaskScope actualScope) {
+                                assertSame(scope, actualScope);
+                                throw retirementFailure;
+                            }
+
+                            @Override
+                            public void retireAfterPhysicalQuiescence(
+                                    TaskScope actualScope,
+                                    TaskHandle<Integer> actualChild) {
+                                fail("rejected Task must never reach physical retirement");
+                            }
+                        }));
 
         assertSame(retirementFailure, scope.retirementFailure());
         assertTrue(java.util.Arrays.asList(admission.getSuppressed())

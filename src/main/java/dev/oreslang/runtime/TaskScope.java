@@ -26,33 +26,57 @@ public final class TaskScope implements AutoCloseable {
     // retired, but we also stop admitting fresh children and revoke siblings.
     private Throwable retirementFailure;
 
+    /**
+     * Trusted compiler/runtime bridge for one pre-admitted memory reservation.
+     * The two lifecycle edges are deliberately distinct: scheduler rejection
+     * proves that no Task ever existed, while physical retirement receives the
+     * exact scope and exact TaskHandle whose getDone() witness fired.
+     */
+    interface RetirementHook<T> {
+        void retireNeverStarted(TaskScope scope);
+        void retireAfterPhysicalQuiescence(TaskScope scope, TaskHandle<T> child);
+    }
+
+    private static final RetirementHook<Object> NOOP_RETIREMENT =
+            new RetirementHook<>() {
+                @Override
+                public void retireNeverStarted(TaskScope scope) { }
+
+                @Override
+                public void retireAfterPhysicalQuiescence(
+                        TaskScope scope, TaskHandle<Object> child) { }
+            };
+
+    @SuppressWarnings("unchecked")
+    private static <T> RetirementHook<T> noopRetirement() {
+        return (RetirementHook<T>) NOOP_RETIREMENT;
+    }
+
     TaskScope(OresScheduler scheduler) {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
     }
 
     /** Atomically reserve a child slot or reject a sealed scope. */
     public <T> TaskHandle<T> startTask(OresScheduler.Task<T> task) {
-        return startTask(task, () -> { });
+        return startTask(task, noopRetirement());
     }
 
     /**
-     * Runtime/compiler-only retirement hook. The callback is invoked from the
-     * child's getDone() completion, never from cancellation request or result
-     * settlement. The sole exception is scheduler admission failure before a
-     * Task exists at all; in that case the reservation is retired on the
-     * never-started path because no guest execution could own it.
+     * Runtime/compiler-only retirement hook. Scheduler rejection and physical
+     * quiescence are separate methods so a never-started reservation cannot be
+     * mistaken for a completed child. The physical path receives this exact
+     * TaskScope and exact TaskHandle, giving the compiler/runtime bridge the
+     * identities it must validate before releasing memory authority.
      *
-     * <p>Package-private by design: guest/source code cannot supply a callback
-     * that manufactures release authority. A callback failure leaves the scope
-     * join slot live (fail closed) rather than publishing premature completion.
+     * <p>Package-private by design: guest/source code cannot supply a hook that
+     * manufactures release authority. A hook failure leaves the scope join slot
+     * live (fail closed) rather than publishing premature completion.
      */
     <T> TaskHandle<T> startTask(
             OresScheduler.Task<T> task,
-            Runnable retireAfterPhysicalQuiescence) {
+            RetirementHook<T> retirementHook) {
         Objects.requireNonNull(task, "task");
-        Objects.requireNonNull(
-                retireAfterPhysicalQuiescence,
-                "physical-quiescence retirement hook");
+        Objects.requireNonNull(retirementHook, "retirement hook");
         synchronized (admissionLock) {
             if (sealed) {
                 throw new RejectedExecutionException("TaskScope is sealed");
@@ -76,7 +100,7 @@ public final class TaskScope implements AutoCloseable {
             // loan before this call, there will be no getDone() callback to
             // retire it. Retire the never-started reservation here.
             try {
-                retireAfterPhysicalQuiescence.run();
+                retirementHook.retireNeverStarted(this);
             } catch (RuntimeException | Error retirementError) {
                 admissionFailure.addSuppressed(retirementError);
                 poisonAfterRetirementFailure(retirementError);
@@ -105,7 +129,7 @@ public final class TaskScope implements AutoCloseable {
             // quiescence plus descendant retirement. Do not move this hook to
             // result(), cancel(), or cancellation-token retirement.
             try {
-                retireAfterPhysicalQuiescence.run();
+                retirementHook.retireAfterPhysicalQuiescence(this, child);
             } catch (RuntimeException | Error retirementError) {
                 poisonAfterRetirementFailure(retirementError);
                 return;
