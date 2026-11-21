@@ -1317,12 +1317,23 @@ public final class TypeChecker {
                             + "'; move the type to another source unit and import it explicitly");
         }
 
-        if (nominalEnums != null
-                && nominalEnums.enums().containsKey(name)) {
+        if (nominalEnums != null && nominalEnums.enums().containsKey(name)) {
+            NominalEnumRegistry.EnumType enumeration = nominalEnums.enums().get(name);
+            // Only a closed nullary enum can be a freely shareable actor value.
+            // The actor may use it without borrowing any same-file mutable
+            // declaration. Preserve the original restriction for payload ADTs.
+            if (enumeration.cases().stream().allMatch(c -> c.payload() == null)) {
+                if (lexicalClassOrigin.actorKind() == Ast.ActorKind.UNTRUSTED) {
+                    throw new IllegalArgumentException(
+                            "untrusted actor '" + lexicalClassOrigin.name()
+                                    + "' requires authenticated export to receive nominal enum '" + name + "'");
+                }
+                return;
+            }
             throw new IllegalArgumentException(
                     "actor '" + lexicalClassOrigin.name()
                             + "' cannot use same-file nominal enum '" + name
-                            + "'; move the enum to another source unit and import it explicitly");
+                            + "' without a closed nullary symbol admission proof");
         }
     }
 
@@ -4987,6 +4998,28 @@ public final class TypeChecker {
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
+        // Named enum values have no pointer-bearing payload only when the
+        // ENTIRE declaration is closed and nullary. A case name alone cannot
+        // elevate payload ADTs or an untrusted actor export.
+        if (named.arguments().isEmpty() && nominalEnums != null) {
+            NominalEnumRegistry.EnumType enumType = nominalEnums.enums().get(named.name());
+            NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(named.name());
+            if (enumType == null && enumCase != null) {
+                enumType = nominalEnums.enums().get(enumCase.owner());
+            }
+            if (enumType != null) {
+                if (actorKind == Ast.ActorKind.UNTRUSTED) {
+                    throw new IllegalArgumentException(
+                            where + " rejects enum symbol without an authenticated untrusted export");
+                }
+                if (enumType.cases().stream().anyMatch(c -> c.payload() != null)) {
+                    throw new IllegalArgumentException(
+                            where + " requires a closed nullary enum; payload ADTs need ownership proofs");
+                }
+                return;
+            }
+        }
+
         if (named.name().equals("SharedMutex")) {
             if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
                 throw new IllegalArgumentException(

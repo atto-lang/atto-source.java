@@ -17,6 +17,7 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.OresEnumSymbol;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -132,6 +133,8 @@ public final class OresEvalRootNode extends RootNode {
         private final OresContext context;
         private final String codeUnitId;
         private final NominalEnumRegistry.Registry nominalEnums;
+        /** Canonical immutable declarations for entirely nullary enum types. */
+        private final Map<String, OresEnumSymbol.Declaration> closedEnumSymbols;
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
@@ -196,6 +199,15 @@ public final class OresEvalRootNode extends RootNode {
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
             this.nominalEnums = NominalEnumRegistry.forProgram(program);
+            Map<String, OresEnumSymbol.Declaration> compiledSymbols = new HashMap<>();
+            for (NominalEnumRegistry.EnumType enumType : nominalEnums.enums().values()) {
+                if (enumType.cases().stream().allMatch(enumCase -> enumCase.payload() == null)) {
+                    compiledSymbols.put(enumType.name(), OresEnumSymbol.declare(
+                            this.codeUnitId, enumType.name(),
+                            enumType.cases().stream().map(NominalEnumRegistry.Case::name).toList()));
+                }
+            }
+            this.closedEnumSymbols = Map.copyOf(compiledSymbols);
             indexImports();
             indexDeclarations();
         }
@@ -4513,6 +4525,7 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof java.math.BigInteger
                     || value instanceof java.math.BigDecimal
                     || value instanceof Enum<?>
+                    || value instanceof OresEnumSymbol
                     || value instanceof java.util.UUID
                     || value instanceof Complex
                     || value instanceof OptionUnwrapError) {
@@ -5704,6 +5717,14 @@ public final class OresEvalRootNode extends RootNode {
                             enumCase.payload(),
                             args.getFirst(),
                             "enum constructor " + enumCase.qualifiedName());
+            // Closed nullary enums are canonical typed symbols shared directly
+            // by actor mail. Payload-bearing/mixed ADTs still follow their
+            // separately ownership-checked representation.
+            OresEnumSymbol.Declaration closed = closedEnumSymbols.get(enumCase.owner());
+            if (closed != null) {
+                if (payload != null) throw new IllegalStateException("closed enum cannot carry payload");
+                return closed.caseNamed(enumCase.name());
+            }
             return new NominalEnumValue(
                     codeUnitId,
                     enumCase.owner(),
@@ -8030,6 +8051,13 @@ public final class OresEvalRootNode extends RootNode {
                 NominalEnumRegistry.Case enumCase =
                         nominalEnums.caseOrNull(name);
                 if (enumCase != null) {
+                    OresEnumSymbol.Declaration closed = closedEnumSymbols.get(enumCase.owner());
+                    if (closed != null) {
+                        return constructor.arguments().isEmpty()
+                                && value instanceof OresEnumSymbol symbol
+                                && symbol.declaration().equals(closed)
+                                && symbol.caseName().equals(enumCase.name());
+                    }
                     if (!(value instanceof NominalEnumValue nominal)
                             || !nominal.ownerUnitId().equals(codeUnitId)
                             || !nominal.enumName().equals(enumCase.owner())
@@ -8254,6 +8282,11 @@ public final class OresEvalRootNode extends RootNode {
             NominalEnumRegistry.EnumType enumeration =
                     nominalEnums.enums().get(name);
             if (enumeration != null) {
+                OresEnumSymbol.Declaration closed = closedEnumSymbols.get(name);
+                if (closed != null) {
+                    return value instanceof OresEnumSymbol symbol
+                            && symbol.declaration().equals(closed);
+                }
                 if (!(value instanceof NominalEnumValue nominal)
                         || !nominal.ownerUnitId().equals(codeUnitId)
                         || !nominal.enumName().equals(name)) {
@@ -8297,6 +8330,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof OresEnumSymbol symbol) return symbol.declaration().enumName();
             if (value instanceof NominalEnumValue nominal) return nominal.enumName();
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
@@ -8432,6 +8466,12 @@ public final class OresEvalRootNode extends RootNode {
                         && right instanceof ActorRuntime.ActorRef<?> b
                         && a.kind() == b.kind()
                         && a.id().equals(b.id());
+            }
+
+            if (left instanceof OresEnumSymbol || right instanceof OresEnumSymbol) {
+                return left instanceof OresEnumSymbol a
+                        && right instanceof OresEnumSymbol b
+                        && a.equals(b);
             }
 
             if (left instanceof NominalEnumValue
@@ -8676,6 +8716,12 @@ public final class OresEvalRootNode extends RootNode {
             NominalEnumRegistry.EnumType enumType =
                     nominalEnums.enums().get(declared.name());
             if (enumType != null) {
+                OresEnumSymbol.Declaration closed = closedEnumSymbols.get(enumType.name());
+                if (closed != null) {
+                    if (value instanceof OresEnumSymbol symbol
+                            && symbol.declaration().equals(closed)) return value;
+                    throw returnTypeMismatch(callable, declared, value);
+                }
                 if (!(value instanceof NominalEnumValue nominal)
                         || !nominal.ownerUnitId().equals(codeUnitId)
                         || !nominal.enumName().equals(enumType.name())) {
@@ -9170,9 +9216,12 @@ public final class OresEvalRootNode extends RootNode {
             String actorTypeName,
             OresObject object)
             implements ActorRuntime.ActorOwnedGuestState {
-        @Override public void retireFromRuntime() {
+        @Override public void retireFromRuntime(
+                ActorRuntime.StateRetirementPermit permit) {
             if (object.actorState != null) {
-                object.actorState.retireFromRuntime(ownerActorId);
+                // The runtime proves quiescence and owner identity before
+                // issuing this one-callback permit. No public state wipe API.
+                permit.retire(object.actorState);
             }
         }
         private SourceActorState {
@@ -9288,7 +9337,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                     || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
-                    || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
+                    || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof OresEnumSymbol || value instanceof java.util.UUID
                     || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
                 return true;
             }
@@ -9629,7 +9678,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (value instanceof OresObject object) {
             for (Object field : object.fields.values()) {
-                if (field != UNINITIALIZED_FIELD
+                if (field != Evaluator.UNINITIALIZED_FIELD
                         && containsMlScalarCapabilityValue(field, seen)) {
                     return true;
                 }

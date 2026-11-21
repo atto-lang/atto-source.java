@@ -1,0 +1,14 @@
+define enum Light as
+  Red
+  Green: int
+end
+
+define actor LightEcho as
+  receive(ActorMail<Light> mail): void {
+    return;
+  }
+end
+
+pub routine main(): void {
+  return;
+}

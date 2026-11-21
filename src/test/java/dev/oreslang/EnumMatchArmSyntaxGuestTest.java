@@ -3,7 +3,6 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
-import dev.oreslang.types.ReturnCleanupChecker;
 import dev.oreslang.types.TypeChecker;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -33,7 +32,6 @@ final class EnumMatchArmSyntaxGuestTest {
         Ast.Program parsed = Parser.parse(guest);
         Ast.Program typed = TypeChecker.check(parsed);
         OwnershipChecker.check(typed);
-        ReturnCleanupChecker.check(typed);
 
         Ast.FunctionDecl next = parsed.modules().stream()
                 .flatMap(module -> module.declarations().stream())

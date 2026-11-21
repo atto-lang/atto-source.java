@@ -159,7 +159,7 @@ final class SealedActorMlScalarPublicationTest {
                         return null;
                     });
 
-                    assertTrue(state.critical(true, write -> write.publishScalars(first)));
+                    assertTrue(Boolean.TRUE.equals(state.critical(true, write -> write.publishScalars(first))));
                     state.critical(false, read -> {
                         assertEquals(2L, read.read("version"));
                         assertEquals(4L, read.read("weight"));
@@ -218,7 +218,7 @@ final class SealedActorMlScalarPublicationTest {
                     assertThrows(IllegalStateException.class,
                             () -> state.critical(true,
                                     write -> write.publishScalars(delayed)));
-                    assertEquals(78L, state.critical(false, read -> read.read("weight")));
+                    assertEquals(78L, ((Number) state.critical(false, read -> read.read("weight"))).longValue());
 
                     var retrySnapshot = state.critical(false,
                             read -> read.snapshotScalars("version", "weight", "optimizer"));
@@ -238,9 +238,9 @@ final class SealedActorMlScalarPublicationTest {
                             Map.of("version", 3L, "weight", 98L));
                     assertThrows(SecurityException.class,
                             () -> state.critical(true, write -> write.publishScalars(foreign)));
-                    assertTrue(state.critical(true, write -> write.publishScalars(retry)));
-                    assertEquals(3L, state.critical(false, read -> read.read("version")));
-                    assertEquals(3L, state.critical(false, read -> read.read("weight")));
+                    assertTrue(Boolean.TRUE.equals(state.critical(true, write -> write.publishScalars(retry))));
+                    assertEquals(3L, ((Number) state.critical(false, read -> read.read("version"))).longValue());
+                    assertEquals(3L, ((Number) state.critical(false, read -> read.read("weight"))).longValue());
 
                     var exhausted = new SealedActorState(context.self().id(),
                             Map.of("version", "int", "weight", "int"),

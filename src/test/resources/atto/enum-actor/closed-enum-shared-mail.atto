@@ -1,0 +1,26 @@
+// Real same-process .atto compiler/actor mailbox regression.
+define enum Light as
+  Red
+  Green
+  Yellow
+end
+
+define actor LightEcho as
+  receive(ActorMail<Light> mail): void {
+    self.send(mail.value);
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn LightEcho();
+  await worker.get_ready();
+  worker.send(Light.Green);
+  val result = (await worker.outputs.next()).value.unwrap();
+  if result.value == Light.Green; do
+    stdio.println("LIGHT_ENUM_SHARED_MAIL_PASS");
+  fi
+  await worker.get_done();
+  return;
+}
