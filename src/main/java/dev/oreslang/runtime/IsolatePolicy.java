@@ -33,6 +33,7 @@ public record IsolatePolicy(
         ACTOR_SHARE_READONLY,
         SHARED_MEMORY,
         NETWORK,
+        NETWORK_RAW,
         FILESYSTEM_READ,
         FILESYSTEM_WRITE,
         ENVIRONMENT,
@@ -56,6 +57,9 @@ public record IsolatePolicy(
         if (maxWallTime.isNegative() || maxWallTime.isZero()) throw new IllegalArgumentException("maxWallTime must be positive");
         if (adversarial && capabilities.contains(Capability.THREAD_CREATE)) {
             throw new IllegalArgumentException("adversarial isolates cannot grant THREAD_CREATE");
+        }
+        if (adversarial && capabilities.contains(Capability.NETWORK_RAW)) {
+            throw new IllegalArgumentException("adversarial isolates cannot grant NETWORK_RAW");
         }
     }
 
