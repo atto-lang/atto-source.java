@@ -80,6 +80,22 @@ policy and signature code. Repo JUnit regression is staged as
 `SevSnpReportV1Test` but remains **NOT_EXECUTED** until verified on its
 exact current head.
 
+## Offline VCEK endorsement validation (M2 staging)
+
+`SevSnpVcekEndorsement` uses Java's X.509 PKIX path validator, SHA-256
+ARK fingerprint matching, and required VCEK + ASK CRLs. It checks
+Family-19h AMD VCEK structVersion, TCB component OIDs and the 64-byte
+CHIP_ID, then verifies the signed quote with the certified VCEK key.
+Missing issuer CRLs or a guest-provided fake root cannot create an
+authentic vendor attestation. Supported scope is deliberately **VCEK
+Family 19h only**; VLEK and Turin remain unsupported.
+
+This is offline crypto staging, not deployment/product trust-root
+provisioning, a live SNP quote request, or an attestation-bound TLS
+secret broker. `TenantIsolateManager.open_confidential_tenant_vm`
+still denies every request. Added regression
+`SevSnpVcekEndorsementTest` has no exact-head JUnit execution claim.
+
 ## Test
 
 `mvn -Dtest=TenantIsolateManagerTest test` (requires the repository toolchain).
