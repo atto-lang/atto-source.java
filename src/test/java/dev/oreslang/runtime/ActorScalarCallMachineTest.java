@@ -243,18 +243,15 @@ final class ActorScalarCallMachineTest {
         assertInstanceOf(IllegalStateException.class, result.failure());
         assertTrue(result.poisoned());
     }
-    @Test void operandUnderflowFailsClosed() throws Exception {
-        Outcome result = run(p(fn("underflow", 0, 0, x(RET))), 0, List.of(), () -> { });
-        assertInstanceOf(IllegalStateException.class, result.failure());
-        assertTrue(result.poisoned());
+    @Test void operandUnderflowFailsClosed() {
+        assertThrows(IllegalArgumentException.class,
+                () -> p(fn("underflow", 0, 0, x(RET))));
     }
-    @Test void boolReturnFromIntFunctionFailsClosed() throws Exception {
-        Outcome result = run(p(fn("badReturn", 0, 0,
+    @Test void boolReturnFromIntFunctionFailsClosed() {
+        assertThrows(IllegalArgumentException.class, () -> p(fn("badReturn", 0, 0,
                 new ActorScalarCallMachine.Instruction(
                         ActorScalarCallMachine.Op.CONST_BOOL, 0, 1),
-                x(RET))), 0, List.of(), () -> { });
-        assertInstanceOf(IllegalStateException.class, result.failure());
-        assertTrue(result.poisoned());
+                x(RET))));
     }
     @Test void hostCannotMintActorScalarFrameWithoutActorTurn() {
         assertThrows(SecurityException.class,
@@ -378,37 +375,27 @@ final class ActorScalarCallMachineTest {
         assertEquals(1, checkpoints.get());
     }
 
-    @Test void integerArithmeticRejectsBooleanTagInsteadOfCoercing() throws Exception {
-        Outcome result = run(p(fn("bad-int", 0, 0,
+    @Test void integerArithmeticRejectsBooleanTagInsteadOfCoercing() {
+        assertThrows(IllegalArgumentException.class, () -> p(fn("bad-int", 0, 0,
                 new ActorScalarCallMachine.Instruction(
                         ActorScalarCallMachine.Op.CONST_BOOL, 0, 1),
-                c(1), x(ActorScalarCallMachine.Op.ADD), x(RET))),
-                0, List.of(), () -> { });
-        assertInstanceOf(IllegalStateException.class, result.failure());
-        assertTrue(result.poisoned());
+                c(1), x(ActorScalarCallMachine.Op.ADD), x(RET))));
     }
 
-    @Test void mixedScalarEqualityFailsClosedInsteadOfReturningJvmFalse()
-            throws Exception {
-        Outcome result = run(p(fn("mixed", 0, 0, c(1),
+    @Test void mixedScalarEqualityFailsClosedInsteadOfReturningJvmFalse() {
+        assertThrows(IllegalArgumentException.class, () -> p(fn("mixed", 0, 0, c(1),
                 new ActorScalarCallMachine.Instruction(
                         ActorScalarCallMachine.Op.CONST_BOOL, 0, 1),
-                x(ActorScalarCallMachine.Op.EQ), c(3), x(RET))),
-                0, List.of(), () -> { });
-        assertInstanceOf(IllegalStateException.class, result.failure());
-        assertTrue(result.poisoned());
+                x(ActorScalarCallMachine.Op.EQ), c(3), x(RET))));
     }
 
-    @Test void booleanPassedToAnIntCalleeFailsClosed() throws Exception {
-        var program = p(
+    @Test void booleanPassedToAnIntCalleeFailsClosed() {
+        assertThrows(IllegalArgumentException.class, () -> p(
                 fn("root", 0, 0,
                         new ActorScalarCallMachine.Instruction(
                                 ActorScalarCallMachine.Op.CONST_BOOL, 0, 1),
                         x(ActorScalarCallMachine.Op.CALL, 1), x(RET)),
-                fn("callee", 1, 1, x(LOAD, 0), x(RET)));
-        Outcome result = run(program, 0, List.of(), () -> { });
-        assertInstanceOf(IllegalStateException.class, result.failure());
-        assertTrue(result.poisoned());
+                fn("callee", 1, 1, x(LOAD, 0), x(RET))));
     }
 
     @Test void equalBooleanTagsUseTypedEqualityWithoutImplicitIntConversion()
