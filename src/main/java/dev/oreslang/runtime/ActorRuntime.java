@@ -490,6 +490,12 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, Set<ActorGroupId>> createdGroupsByActor =
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
+    // Opt-in JVM FFM native root-control summary. The managed actor registry,
+    // dispatch queues, and per-turn objects remain JVM-managed in this profile.
+    private static final long NATIVE_CONTROL_ROOT_BYTES = 32L + 12L;
+    private final Object nativeControlCounterLock = new Object();
+    private ControlPlaneArena32 nativeControlArena;
+    private long nativeControlRoot;
     private final AtomicBoolean closed = new AtomicBoolean();
     /** Distinct from admission sealing: dispatcher stop must still occur later. */
     private final AtomicBoolean dispatchersShutdown = new AtomicBoolean();
@@ -871,6 +877,67 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public int actorCount() { return actorCount.get(); }
+
+    /**
+     * Supervisor-only opt-in control-plane root counter. This does not replace
+     * the JVM scheduler or claim an allocation-free compiled Atto guest.
+     * Activation requires an empty runtime, reserves the native payload and
+     * metadata against the existing aggregate heap policy, and fails closed.
+     */
+    public void enableNativeControlCounters() {
+        requireSupervisorContext("enable native CONTROL counters");
+        synchronized (nativeControlCounterLock) {
+            if (closed.get() || actorCount.get() != 0 || nativeControlArena != null)
+                throw new IllegalStateException(
+                        "native control counters require one fresh, open actor runtime");
+            reserveSharedRuntimeBytes(NATIVE_CONTROL_ROOT_BYTES, "native root CONTROL metadata");
+            ControlPlaneArena32 created = null;
+            try {
+                created = new ControlPlaneArena32(1);
+                long witness = created.allocate();
+                created.writeI64(witness, 0, 0L); // admitted actor reservations
+                nativeControlRoot = witness;
+                nativeControlArena = created;
+            } catch (RuntimeException | Error failure) {
+                if (created != null) created.close();
+                releaseSharedRuntimeBytes(NATIVE_CONTROL_ROOT_BYTES);
+                throw failure;
+            }
+        }
+    }
+
+    public long nativeControlReservedBytes() {
+        synchronized (nativeControlCounterLock) {
+            return nativeControlArena == null ? 0L : NATIVE_CONTROL_ROOT_BYTES;
+        }
+    }
+
+    public long nativeControlActorReservations() {
+        synchronized (nativeControlCounterLock) {
+            if (nativeControlArena == null)
+                throw new IllegalStateException("native CONTROL counter not active");
+            return nativeControlArena.readI64(nativeControlRoot, 0);
+        }
+    }
+
+    private void publishNativeActorCount() {
+        synchronized (nativeControlCounterLock) {
+            if (nativeControlArena != null)
+                nativeControlArena.writeI64(nativeControlRoot, 0, actorCount.get());
+        }
+    }
+
+    private void retireNativeControlCounters() {
+        synchronized (nativeControlCounterLock) {
+            if (nativeControlArena == null) return;
+            // Called only AFTER actor/carrier quiescence; never close while a
+            // physical actor finalizer may be updating its native summary.
+            nativeControlArena.writeI64(nativeControlRoot, 0, 0L);
+            nativeControlArena.close();
+            nativeControlArena = null;
+            nativeControlRoot = 0L;
+        }
+    }
 
     /**
      * Compiler/runtime hook for fair static-select sites.
@@ -5058,6 +5125,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 actorCount.decrementAndGet();
+                publishNativeActorCount(); // rollback must not strand a native reservation
                 throw failure;
             }
         }
@@ -5330,7 +5398,15 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
             }
-            if (actorCount.compareAndSet(current, current + 1)) return;
+            if (actorCount.compareAndSet(current, current + 1)) {
+                try {
+                    publishNativeActorCount();
+                } catch (RuntimeException | Error failure) {
+                    actorCount.decrementAndGet(); // reservation never reached admission
+                    throw failure;
+                }
+                return;
+            }
         }
     }
 
@@ -5372,6 +5448,7 @@ public final class ActorRuntime implements AutoCloseable {
                 actorCount.incrementAndGet();
                 throw new IllegalStateException("actor count accounting underflow");
             }
+            publishNativeActorCount();
         }
         if (deregistrationFailure != null) {
             if (deregistrationFailure instanceof RuntimeException runtime) throw runtime;
@@ -7416,9 +7493,13 @@ public final class ActorRuntime implements AutoCloseable {
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
-        sharedMemoryBytes.set(0L);
         actors.clear();
         actorCount.set(0);
+        // This edge occurs only after all actor finalizers and dispatch carriers
+        // quiesced. Failed/partial close leaves native authority live rather
+        // than freeing backing still reachable by a carrier.
+        retireNativeControlCounters();
+        sharedMemoryBytes.set(0L);
         if (policyCleanupFailure != null) throw policyCleanupFailure;
     }
 
