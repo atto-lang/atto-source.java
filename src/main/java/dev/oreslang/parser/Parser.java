@@ -3437,14 +3437,36 @@ public final class Parser {
         consume(ELSE, "maybe v1 requires exhaustive 'else' failure arms");
 
         List<Ast.MatchArm> handlers = new ArrayList<>();
+        boolean seenErr = false;
+        boolean seenNone = false;
+        boolean seenWildcard = false;
         while (!check(END) && !check(EOF)) {
-            // Old match-arm examples prefix variants with contextual 'on'.
-            // V1 maybe also accepts this spelling without changing catch semantics.
+            // Legacy match-arm examples may prefix variants with contextual
+            // 'on'. Never allow a previous wildcard to swallow later arms.
+            if (seenWildcard) {
+                throw error(peek(), "maybe else wildcard '_' must be the final arm");
+            }
             matchContextualIdentifier("on");
             Ast.Pattern pattern = parsePattern();
-            if (!maybeFailureVariant(pattern, "Err")
-                    && !maybeFailureVariant(pattern, "None")
-                    && !(pattern instanceof Ast.WildcardPattern)) {
+            if (pattern instanceof Ast.ConstructorPattern constructor) {
+                if (constructor.constructor().equals("Err")) {
+                    if (constructor.arguments().size() != 1) {
+                        throw error(previous(), "maybe Err handler requires exactly one payload pattern");
+                    }
+                    if (seenErr) throw error(previous(), "duplicate maybe Err failure arm");
+                    seenErr = true;
+                } else if (constructor.constructor().equals("None")) {
+                    if (!constructor.arguments().isEmpty()) {
+                        throw error(previous(), "maybe None handler must not bind a payload");
+                    }
+                    if (seenNone) throw error(previous(), "duplicate maybe None failure arm");
+                    seenNone = true;
+                } else {
+                    throw error(previous(), "maybe else requires Err(...), None, or _ failure pattern");
+                }
+            } else if (pattern instanceof Ast.WildcardPattern) {
+                seenWildcard = true;
+            } else {
                 throw error(previous(), "maybe else requires Err(...), None, or _ failure pattern");
             }
             consume(ARROW, "maybe failure arms require '->'");
