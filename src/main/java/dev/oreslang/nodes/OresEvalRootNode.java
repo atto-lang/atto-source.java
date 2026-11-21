@@ -1413,15 +1413,25 @@ public final class OresEvalRootNode extends RootNode {
                         taskLaunchAuthority, "source Task launch authority");
             }
 
+            // Logical stack position of this heap-held frame (spec ch. 25):
+            // a call-launched task continues its caller's stack at the depth
+            // charged at launch; a `task {}` block starts a new stack at 0.
+            private int logicalDepth;
+            private int logicalQuota = dev.oreslang.runtime.LogicalStackQuota.heapFrames();
+            private Ast.Expr pendingTailReturn;
+
             @Override
             public OresScheduler.Step<Object> resume(
                     OresScheduler.Resume resume)
                     throws Exception {
                 dev.oreslang.runtime.TaskContext previousContext =
                         dev.oreslang.runtime.TaskContext.install(taskContext);
+                dev.oreslang.runtime.LogicalStackQuota.HeapTurn heapTurn =
+                        dev.oreslang.runtime.LogicalStackQuota.enterHeapTurn(logicalDepth, logicalQuota);
                 try {
                     return resumeTurn(resume);
                 } finally {
+                    dev.oreslang.runtime.LogicalStackQuota.exitHeapTurn(heapTurn);
                     // Bindings entered/exited during this turn stay with the task.
                     taskContext = dev.oreslang.runtime.TaskContext.current();
                     dev.oreslang.runtime.TaskContext.install(previousContext);
@@ -1823,10 +1833,22 @@ public final class OresEvalRootNode extends RootNode {
             return launchId;
         }
 
+        /**
+         * A source call that runs as a continuation is still one frame of
+         * the caller's logical stack: charge it before the task exists, so
+         * unbounded recursion fails with LogicalStackOverflowException at
+         * the quota instead of exhausting the heap.
+         */
+        private void chargeHeapCallFrame(SourceTask task) {
+            task.logicalQuota = dev.oreslang.runtime.LogicalStackQuota.heapCallQuota();
+            task.logicalDepth = dev.oreslang.runtime.LogicalStackQuota.chargeHeapCall();
+        }
+
         private OresFuture<Object> startSourceFunctionTask(
                 Ast.FunctionDecl function,
                 List<?> arguments) {
             SourceTask task = new SourceTask(function, arguments);
+            chargeHeapCallFrame(task);
             OresFuture<Object> future;
             if (ActorRuntime.inActorExecution()) {
                 future = context.actors().startActorTask(task);
@@ -1937,6 +1959,7 @@ public final class OresEvalRootNode extends RootNode {
                 OresObject receiver,
                 List<?> arguments) {
             SourceTask task = new SourceTask(method, receiver, arguments);
+            chargeHeapCallFrame(task);
             OresFuture<Object> future;
             if (ActorRuntime.inActorExecution()) {
                 future = context.actors().startActorTask(task);
@@ -2868,6 +2891,10 @@ public final class OresEvalRootNode extends RootNode {
                     if (returned.value() == null) {
                         continuation.accept(task, SourceFlow.returning(null));
                     } else {
+                        // `return f(...)` with no pending defer: f's heap frame
+                        // takes this frame's logical depth (a tail call).
+                        task.pendingTailReturn = defers.isEmpty() && !env.hasLiveMutexGuards()
+                                ? returned.value() : null;
                         evalSuspendableExpr(
                                 task,
                                 returned.value(),
@@ -5519,6 +5546,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            // Claim a tail-position mark only for this exact call (not for
+            // calls nested in its arguments): its heap frame inherits the
+            // caller's logical depth instead of adding one.
+            final boolean tail = isTailPositionCall(task.pendingTailReturn, call);
+            if (tail) task.pendingTailReturn = null;
             rejectUnloweredNamedArguments(call.arguments(), "suspendable call");
             if (call.origin() == Ast.CallOrigin.VALUE_PIPE_ARGUMENT
                     && call.callee() instanceof Ast.LambdaExpr) {
@@ -5544,7 +5576,7 @@ public final class OresEvalRootNode extends RootNode {
                                             Invocation invocation = invokableInvocation(
                                                     callable, inlinePipelineLambdaArguments(call, values));
                                             completeSourceInvocation(
-                                                    t2, invocation, false, env, continuation);
+                                                    t2, invocation, false, env, continuation, tail);
                                         } catch (RuntimeException | Error callFailure) {
                                             continuation.accept(t2, null, callFailure);
                                         }
@@ -5605,7 +5637,7 @@ public final class OresEvalRootNode extends RootNode {
                                 // A declared async/Future export remains a
                                 // Future value and must require explicit await.
                                 completeSourceInvocation(
-                                        t, invocation, declaredFuture, env, continuation);
+                                        t, invocation, declaredFuture, env, continuation, tail);
                             });
                     return;
                 }
@@ -5631,7 +5663,7 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 completeSourceInvocation(
-                                        t, invocation, declaredFuture, env, continuation);
+                                        t, invocation, declaredFuture, env, continuation, tail);
                             });
                     return;
                 }
@@ -5667,7 +5699,7 @@ public final class OresEvalRootNode extends RootNode {
                                             return;
                                         }
                                         completeSourceInvocation(
-                                                t2, invocation, declaredFuture, env, continuation);
+                                                t2, invocation, declaredFuture, env, continuation, tail);
                                     });
                         });
                 return;
@@ -5706,9 +5738,19 @@ public final class OresEvalRootNode extends RootNode {
                                             invocation,
                                             false,
                                             env,
-                                            continuation);
+                                            continuation,
+                                            tail);
                                 });
                     });
+        }
+
+        /** Whether {@code call} is in tail position of a returned expression: the expression itself, or a branch of a returned conditional. */
+        private static boolean isTailPositionCall(Ast.Expr returned, Ast.CallExpr call) {
+            if (returned == null) return false;
+            if (returned == call) return true;
+            return returned instanceof Ast.ConditionalExpr conditional
+                    && (isTailPositionCall(conditional.whenTrue(), call)
+                            || isTailPositionCall(conditional.whenFalse(), call));
         }
 
         private void completeSourceInvocation(
@@ -5717,12 +5759,27 @@ public final class OresEvalRootNode extends RootNode {
                 boolean declaredFuture,
                 Env env,
                 SourceValueCont continuation) {
+            completeSourceInvocation(task, invocation, declaredFuture, env, continuation, false);
+        }
+
+        private void completeSourceInvocation(
+                SourceTask task,
+                Invocation invocation,
+                boolean declaredFuture,
+                Env env,
+                SourceValueCont continuation,
+                boolean tail) {
             // Separate callee exceptions from consumer exceptions. Dispatching
             // the consumer within an invocation catch would deliver a failure
             // twice if downstream threw during synchronous completion.
             Object result;
             try {
-                result = invoke(invocation);
+                if (tail) dev.oreslang.runtime.LogicalStackQuota.markTailCall();
+                try {
+                    result = invoke(invocation);
+                } finally {
+                    if (tail) dev.oreslang.runtime.LogicalStackQuota.clearTailCall();
+                }
             } catch (RuntimeException | Error failure) {
                 task.dispatchImmediateSourceCallback(
                         () -> continuation.accept(task, null, failure));
