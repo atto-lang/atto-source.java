@@ -3791,7 +3791,9 @@ public final class Parser {
         // '<-' is a declaration marker, never the start of generic type
         // arguments. Keep LT+MINUS as separate lexer tokens to preserve
         // the old expression meaning of a<-b (a < -b).
-        if (!isAdjacentReturnFirstArrow() && match(LT)) {
+        // Likewise '<<' is the channel read of `val name: T << source;`: a
+        // type argument list never starts with '<'.
+        if (!isAdjacentReturnFirstArrow() && !checkAdjacentPair(LT) && match(LT)) {
             if (match(GT)) {
                 infer = true;
             } else if (name.equals("Fnc") || name.equals("Function")) {
@@ -4427,21 +4429,72 @@ public final class Parser {
         }
 
         Ast.Expr expression = parseExpression();
-        consumeExpressionStatementTerminator(expression, "expression statement should end with ';'");
-        // Canonical directional channel writes: the arrow points at the
-        // destination channel (`ch << value`, `value >> ch`). A discarded
-        // shift has no observable meaning, so statement position is unambiguous.
-        if (expression instanceof Ast.BinaryExpr arrow) {
-            if (arrow.operator().equals("<<")) {
-                return new Ast.ExprStmt(new Ast.ChannelOpExpr(Ast.ChannelOperation.WRITE,
-                        Ast.WaitMode.BLOCKING, arrow.left(), arrow.right()));
-            }
-            if (arrow.operator().equals(">>")) {
-                return new Ast.ExprStmt(new Ast.ChannelOpExpr(Ast.ChannelOperation.WRITE,
-                        Ast.WaitMode.BLOCKING, arrow.right(), arrow.left()));
-            }
+        if (checkIoReadBinder()) return parseSourceFirstChannelRead(expression);
+        if (expression instanceof Ast.BinaryExpr write && write.operator().equals("<<")) {
+            // `sink << value;` is exactly `writech sink, value;`. A chained or
+            // nested `<<` stays a BinaryExpr and the checker rejects it.
+            expression = Ast.IoShorthand.write(write.left(), write.right());
         }
+        consumeExpressionStatementTerminator(expression, "expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
+    }
+
+    /** At {@code >> val|let|const}: a read that declares its binding (never a shift). */
+    private boolean checkIoReadBinder() {
+        return checkAdjacentPair(GT)
+                && current + 2 < tokens.size()
+                && !(tokens.get(current + 2).type() == GT && adjacent(tokens.get(current + 1), tokens.get(current + 2)))
+                && isBindingKind(tokens.get(current + 2).type());
+    }
+
+    /** The token after this binding name starts {@code <<} (not {@code <<<}). */
+    private boolean nameIsFollowedByIoDeclarationRead() {
+        current++;
+        try {
+            return checkIoDeclarationRead();
+        } finally {
+            current--;
+        }
+    }
+
+    /** At {@code <<} but not {@code <<<}: the declaration-first read {@code val name << source;}. */
+    private boolean checkIoDeclarationRead() {
+        return checkAdjacentPair(LT)
+                && !(current + 2 < tokens.size() && tokens.get(current + 2).type() == LT
+                        && adjacent(tokens.get(current + 1), tokens.get(current + 2)));
+    }
+
+    private IllegalArgumentException constChannelRead(Token at) {
+        return error(at, "E_CONST_EFFECT: a runtime channel read cannot initialize 'const'"
+                + " (const is compile-time); use 'val' or 'let'");
+    }
+
+    /**
+     * {@code source >> val name;}, {@code source >> let name: T;} or
+     * {@code source >> val T name;}: exactly {@code val name = readch source;}.
+     */
+    private Ast.Stmt parseSourceFirstChannelRead(Ast.Expr source) {
+        advance();
+        advance(); // >>
+        if (check(CONST)) throw constChannelRead(peek());
+        Ast.BindingKind kind = parseBindingKind();
+        boolean mutableReferent = parseReferentMutability(kind);
+        Ast.TypeRef type = null;
+        String name;
+        if (check(IDENT) && checkNext(COLON)) {
+            name = advance().lexeme();
+            consume(COLON, "expected ':' after read binding name");
+            type = parseTypeRef();
+        } else if (check(IDENT) && (checkNext(SEMICOLON) || current + 1 >= tokens.size()
+                || tokens.get(current + 1).type() == RBRACE)) {
+            name = advance().lexeme();
+        } else {
+            type = parseTypeRef();
+            name = consume(IDENT, "expected read binding name after '>> val|let'").lexeme();
+        }
+        Ast.Expr read = Ast.IoShorthand.read(source);
+        consumeExpressionStatementTerminator(read, "channel read should end with ';'");
+        return new Ast.BindingStmt(kind, type, name, read, mutableReferent);
     }
 
     private boolean looksLikeImmediateChannelExpression() {
@@ -5138,6 +5191,8 @@ public final class Parser {
         }
         if (functionShorthand) {
             name = consume(IDENT, "expected function binding name").lexeme();
+        } else if (check(IDENT) && nameIsFollowedByIoDeclarationRead()) {
+            name = advance().lexeme(); // `val name << source;`
         } else if (looksLikeNamedCallableBindingSignature()) {
             name = advance().lexeme();
             type = parseNamedCallableBindingSignature();
@@ -5156,6 +5211,15 @@ public final class Parser {
                 throw error(previous(), "type metadata annotations require an explicit declared type");
             }
             type = applyTypeMetadataAnnotations(type, annotations, true);
+        }
+        if (!functionShorthand && checkIoDeclarationRead()) {
+            // Declaration-first read: exactly `val name = readch source;`.
+            if (kind == Ast.BindingKind.CONST) throw constChannelRead(peek());
+            advance();
+            advance(); // <<
+            Ast.Expr read = Ast.IoShorthand.read(parseExpression());
+            consumeExpressionStatementTerminator(read, "channel read should end with ';'");
+            return new Ast.BindingStmt(kind, type, name, read, mutableReferent);
         }
         consume(EQUAL, "binding requires initializer");
         String inferredTypeName = null;
@@ -6580,6 +6644,7 @@ public final class Parser {
     private Ast.Expr parseComparison() {
         Ast.Expr expr = parseShift();
         while (true) {
+            if (checkIoReadBinder()) break; // `source >> val name;`, not `>` twice
             if (match(LT, LTE, GT, GTE)) {
                 String op = previous().lexeme();
                 expr = new Ast.BinaryExpr(op, expr, parseShift());
@@ -6626,8 +6691,14 @@ public final class Parser {
         while (true) {
             String op;
             if (matchAdjacentTriple(GT)) op = ">>>";
-            // `<<<` is the canonical left shift; a bare `<<` is the channel write.
-            else if (matchAdjacentTriple(LT)) op = "<<";
+            else if (matchAdjacentTriple(LT)) op = "<<<";
+            // Arithmetic (sign-filling) right shift is the contextual infix word
+            // `ashr` (atto-spec bitwise-and-stream-operators-v1).
+            else if (isContextualIdentifier("ashr")) { advance(); op = "ashr"; }
+            // `source >> val name;` belongs to the enclosing statement.
+            else if (checkIoReadBinder()) break;
+            // `<<` and `>>` are channel I/O (Ast.IoShorthand), never shifts: the
+            // statement parser desugars them and the checker rejects any other use.
             else if (matchAdjacentPair(LT)) op = "<<";
             else if (matchAdjacentPair(GT)) {
                 // Canonical postfix channel read: `(ch >>)`.

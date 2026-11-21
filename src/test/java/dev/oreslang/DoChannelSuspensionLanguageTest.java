@@ -116,11 +116,12 @@ final class DoChannelSuspensionLanguageTest {
     }
 
     @Test
-    void numericShiftOperatorsRemainNumeric() throws Exception {
+    void numericShiftsAreTripleArrowsAndAshr() throws Exception {
+        // `<<` and `>>` are channel I/O; shifts are `<<<`, `>>>` and `ashr`.
         assertEquals("8|4", run("""
                 pub routine main(): void {
-                  val int a = 1 << 3;
-                  val int b = a >> 1;
+                  val int a = 1 <<< 3;
+                  val int b = a ashr 1;
                   stdio.stdout.write(a);
                   stdio.stdout.write("|");
                   stdio.stdout.write(b);

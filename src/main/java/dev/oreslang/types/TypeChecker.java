@@ -3569,6 +3569,14 @@ public final class TypeChecker {
                         "typed pipe ports are compatible, but ActorStream runtime "
                         + "with bounded delivery/startup/cancellation is not implemented yet");
             }
+            if (Ast.IoShorthand.isDirectionOperator(binary.operator())) {
+                // The parser desugars the I/O statements; a `<<`/`>>` left in an
+                // expression is a nested, chained or would-be shift use.
+                throw new IllegalArgumentException("'" + binary.operator()
+                        + "' is channel I/O, only valid as a statement: 'sink << value;',"
+                        + " 'source >> val name;' or 'val name << source;'."
+                        + " Chains and nested uses are rejected; use '<<<', '>>>' or 'ashr' for bit shifts");
+            }
             Type left = typeOf(binary.left(), env, generics, self);
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -3587,7 +3595,7 @@ public final class TypeChecker {
                     requireAssignable(right, Primitive.BOOL, "logical operand");
                     yield Primitive.BOOL;
                 }
-                case "&", "|", "^", "<<", ">>", ">>>" -> {
+                case "&", "|", "^", "<<<", ">>>", "ashr" -> {
                     requireInteger(left, "bitwise left operand");
                     requireInteger(right, "bitwise right operand");
                     yield Primitive.INT;
@@ -5992,8 +6000,8 @@ public final class TypeChecker {
                     "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
-            Type streamTarget = typeOf(channelOp.channel(), env, generics, self);
-            if (streamTarget instanceof Named stream && stream.name().startsWith("stdio.")) {
+            Type sink = typeOf(channelOp.channel(), env, generics, self);
+            if (sink instanceof Named stream && stream.name().startsWith("stdio.")) {
                 // stdio streams are line channels: write a value to stdout/stderr,
                 // read one line (string) from stdin.
                 boolean write = channelOp.operation() == Ast.ChannelOperation.WRITE;
@@ -6008,8 +6016,12 @@ public final class TypeChecker {
                 throw new IllegalArgumentException((write ? "writech" : "readch")
                         + " is not supported on " + stream.name());
             }
+            if (Ast.IoShorthand.isShorthandWrite(channelOp) && !isChannelType(sink)) {
+                throw new IllegalArgumentException(
+                        "'<<' writes to a Channel<T> sink; got " + sink + ". Use '<<<' for a bit shift");
+            }
             Type element = channelElementType(
-                    typeOf(channelOp.channel(), env, generics, self),
+                    sink,
                     channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
@@ -6396,6 +6408,13 @@ public final class TypeChecker {
             return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
+    }
+
+    private boolean isChannelType(Type type) {
+        Type resolved = deref(type);
+        return resolved == Unknown.INSTANCE
+                || resolved instanceof Named named && named.name().equals("Channel")
+                        && named.arguments().size() == 1;
     }
 
     private Type channelElementType(Type channel, String where) {

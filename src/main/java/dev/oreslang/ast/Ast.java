@@ -1761,6 +1761,69 @@ public final class Ast {
      * cached type metadata from retaining abandoned compilation units.
      * Runtime reads fail closed for ASTs that never passed type checking.
      */
+    /**
+     * Channel I/O direction shorthand (atto-spec io-direction-shorthand-v1).
+     * The parser desugars {@code sink << value;} to {@code writech sink, value}
+     * and {@code source >> val name;} / {@code val name << source;} to a binding
+     * initialized by {@code readch source}, so the shorthand has exactly the
+     * suspension, backpressure, cancellation and ownership rules of the explicit
+     * spelling. A read always declares a fresh {@code val}/{@code let} binding.
+     * This side table only remembers which writes were spelled {@code <<}, so a
+     * non-channel sink gets a diagnostic that points at the bit-shift spelling.
+     * {@code <<} and {@code >>} are never integer shifts: those are
+     * {@code <<<}, {@code >>>} and {@code ashr}.
+     */
+    public static final class IoShorthand {
+        private IoShorthand() { }
+
+        private static final java.lang.ref.ReferenceQueue<ChannelOpExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Set<Key> WRITES = new java.util.HashSet<>();
+
+        private static final class Key extends java.lang.ref.WeakReference<ChannelOpExpr> {
+            private final int hash;
+            private Key(ChannelOpExpr write, java.lang.ref.ReferenceQueue<ChannelOpExpr> queue) {
+                super(write, queue);
+                hash = System.identityHashCode(write);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof Key key)) return false;
+                ChannelOpExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        /** {@code sink << value;} as the blocking writech it means. */
+        public static synchronized ChannelOpExpr write(Expr sink, Expr value) {
+            expunge();
+            ChannelOpExpr write = new ChannelOpExpr(ChannelOperation.WRITE, WaitMode.BLOCKING, sink, value);
+            WRITES.add(new Key(write, CLEARED));
+            return write;
+        }
+
+        /** {@code source >> val name;} and {@code val name << source;} read with readch. */
+        public static ChannelOpExpr read(Expr source) {
+            return new ChannelOpExpr(ChannelOperation.READ, WaitMode.BLOCKING, source, null);
+        }
+
+        public static synchronized boolean isShorthandWrite(ChannelOpExpr write) {
+            expunge();
+            return WRITES.contains(new Key(write, null));
+        }
+
+        public static boolean isDirectionOperator(String operator) {
+            return "<<".equals(operator) || ">>".equals(operator);
+        }
+
+        private static void expunge() {
+            for (java.lang.ref.Reference<? extends ChannelOpExpr> cleared; (cleared = CLEARED.poll()) != null; ) {
+                WRITES.remove(cleared);
+            }
+        }
+    }
+
     public static final class CheckedOptionDepth {
         private CheckedOptionDepth() { }
 

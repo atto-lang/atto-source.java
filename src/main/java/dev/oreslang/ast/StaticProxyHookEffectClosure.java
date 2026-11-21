@@ -28,7 +28,7 @@ final class StaticProxyHookEffectClosure {
     private static final Set<String> SAFE_BINARY_OPERATORS = Set.of(
             "+", "-", "*", "eq", "neq", "==", "!=",
             "<", ">", "<=", ">=", "and", "or", "&&", "||",
-            "&", "|", "^", "<<", ">>");
+            "&", "|", "^", "<<<", ">>>", "ashr");
     private static final Set<String> SAFE_UNARY_OPERATORS =
             Set.of("+", "-", "!", "not", "~");
 
