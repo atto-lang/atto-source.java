@@ -39,6 +39,8 @@ public final class HotReloadManager implements AutoCloseable {
     // One HotReloadManager owns one app-wide UNTRUSTED pool; concurrent owners
     // fail closed under SharedUntrustedIsolatePool's singleton admission.
     private SharedUntrustedIsolatePool untrustedPool;
+    private boolean ownsUntrustedPool = true;
+    private boolean closed;
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
@@ -74,6 +76,21 @@ public final class HotReloadManager implements AutoCloseable {
                 executionProfile);
     }
 
+    /**
+     * Reuses the application's ONE existing untrusted Engine. The caller owns
+     * the pool; this manager closes only Contexts/generations it created.
+     * No second Engine can be constructed by this factory.
+     */
+    public static HotReloadManager forUntrustedActors(
+            IsolatePolicy supervisorPolicy,
+            ExecutionProfile executionProfile,
+            SharedUntrustedIsolatePool sharedPool) {
+        HotReloadManager manager = forUntrustedActors(supervisorPolicy, executionProfile);
+        manager.untrustedPool = java.util.Objects.requireNonNull(sharedPool, "sharedPool");
+        manager.ownsUntrustedPool = false;
+        return manager;
+    }
+
     public IsolatePolicy supervisorPolicy() { return supervisorPolicy; }
     public IsolatePolicy guestPolicy() { return guestPolicy; }
 
@@ -81,6 +98,7 @@ public final class HotReloadManager implements AutoCloseable {
      * Validates and stages a new generation without executing its entrypoint.
      */
     public synchronized Generation load(String name, String sourceText) {
+        if (closed) throw new IllegalStateException("hot loader is closed");
         validateAdmissionInputs(name, sourceText);
         // NEVER parse or type-check attacker-supplied source in the trusted
         // bootstrap JVM. The isolated Context will parse/link/capability-check
@@ -98,6 +116,7 @@ public final class HotReloadManager implements AutoCloseable {
      * isolate because authority belongs to the runtime policy, not the cache.
      */
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
+        if (closed) throw new IllegalStateException("hot loader is closed");
         java.util.Objects.requireNonNull(unit, "unit");
         validateAdmissionInputs(unit.unitId(), unit.sourceText());
         if (guestPolicy.adversarial()) {
@@ -179,8 +198,21 @@ public final class HotReloadManager implements AutoCloseable {
 
     public synchronized Generation loadAndStart(String name, String sourceText) {
         Generation generation = load(name, sourceText);
-        generation.start();
-        return generation;
+        try {
+            generation.start();
+            return generation;
+        } catch (RuntimeException | Error failure) {
+            // Do not let rejected user source accumulate generations after
+            // their Contexts have already been physically retired. A failed
+            // Context close instead retains a tombstone via retire().
+            try {
+                retire(generation.id());
+            } catch (RuntimeException | Error cleanup) {
+                failure.addSuppressed(new IllegalStateException(
+                        "failed generation retirement was not confirmed"));
+            }
+            throw failure;
+        }
     }
 
     /** Last generation staged, retained for compatibility with the single-unit API. */
@@ -197,11 +229,15 @@ public final class HotReloadManager implements AutoCloseable {
 
     /** Explicit retirement permits old actors/requests to drain before teardown. */
     public synchronized void retire(long generationId) {
-        Generation generation = generations.remove(generationId);
+        Generation generation = generations.get(generationId);
         if (generation != null) {
+            // The generation becomes undiscoverable immediately, but its
+            // resource reservation stays counted until Context.close(true)
+            // actually succeeds. Failed teardown is a fenced tombstone.
             active.compareAndSet(generation, null);
             activeByCodeUnit.remove(generation.codeUnitId(), generation);
             generation.close();
+            generations.remove(generationId, generation);
         }
     }
 
@@ -209,19 +245,22 @@ public final class HotReloadManager implements AutoCloseable {
 
     @Override
     public synchronized void close() {
+        closed = true;
         RuntimeException failure = null;
-        for (Generation generation : generations.values()) {
+        for (var entry : new java.util.ArrayList<>(generations.entrySet())) {
             try {
-                generation.close();
+                entry.getValue().close();
+                generations.remove(entry.getKey(), entry.getValue());
             } catch (RuntimeException error) {
+                // An unsuccessful close stays reserved, even if guest code
+                // was already fenced from all supervisor APIs.
                 if (failure == null) failure = error;
                 else failure.addSuppressed(error);
             }
         }
-        generations.clear();
         activeByCodeUnit.clear();
         active.set(null);
-        if (untrustedPool != null) {
+        if (untrustedPool != null && ownsUntrustedPool) {
             try {
                 untrustedPool.close();
                 untrustedPool = null;
@@ -255,6 +294,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
+        private final VerifiedCloseFence closeFence;
 
         private Generation(long id, String codeUnitId, String sha256,
                            Context context, Source source,
@@ -267,6 +307,10 @@ public final class HotReloadManager implements AutoCloseable {
             this.group = group;
             this.source = source;
             this.executionProfile = executionProfile;
+            this.closeFence = new VerifiedCloseFence(() -> {
+                if (this.group != null) this.group.close();
+                else this.context.close(true);
+            });
         }
 
         public long id() { return id; }
@@ -286,15 +330,19 @@ public final class HotReloadManager implements AutoCloseable {
             if (closed.get()) throw new IllegalStateException("generation is closed");
             if (!started.compareAndSet(false, true)) throw new IllegalStateException("generation already started");
             if (group != null) {
-                try {
-                    // Untrusted actor hot-loading is not authorization to run
-                    // an arbitrary top-level main with the group's long-lived
-                    // cumulative CPU budget. Link and initialize only; actor
-                    // messages are admitted separately through the isolated
-                    // source actor control plane with per-actor turn quotas.
+                try (GuestAdmissionDeadline admission = new GuestAdmissionDeadline(
+                        java.time.Duration.ofSeconds(30), group::close)) {
+                    // Untrusted actor hot-loading must not execute arbitrary
+                    // top-level main under the long Context CPU quota.
+                    // Parse/link/static initialization is also time bounded:
+                    // an infinite initializer triggers Context.close(true)
+                    // from outside the guest execution monitor.
                     Value parsed = context.parse(source);
                     parsed.execute(dev.oreslang.nodes.OresEvalRootNode.LINK_ONLY_COMMAND);
                     parsed.execute(dev.oreslang.nodes.OresEvalRootNode.INIT_ONLY_COMMAND);
+                    if (!admission.commitIfLive()) {
+                        throw new IllegalStateException("untrusted hot-load admission deadline expired");
+                    }
                     return null;
                 } catch (RuntimeException guestFailure) {
                     try { close(); } catch (RuntimeException ignored) {
@@ -315,10 +363,8 @@ public final class HotReloadManager implements AutoCloseable {
 
         @Override
         public void close() {
-            if (closed.compareAndSet(false, true)) {
-                if (group != null) group.close();
-                else context.close(true);
-            }
+            closed.set(true);
+            closeFence.awaitConfirmedClose("hot generation Context");
         }
     }
 }

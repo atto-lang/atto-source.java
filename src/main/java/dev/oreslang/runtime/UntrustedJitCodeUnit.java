@@ -105,6 +105,15 @@ public final class UntrustedJitCodeUnit implements AutoCloseable {
         }
     }
 
+    /**
+     * Host-side invalidation after the supervisor has closed this actor's
+     * Context. Does not acquire the guest Context monitor or execute code.
+     * A malicious guest cannot prevent its host-issued revocation.
+     */
+    void fenceAfterContextClose() {
+        closed.set(true);
+    }
+
     /** No object graphs, handles, byte buffers or Java callbacks may enter. */
     public static Object copyScalar(Object value) {
         return UntrustedJitScalarTransport.copyScalar(value);

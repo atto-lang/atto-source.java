@@ -132,7 +132,24 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
     public final class Group implements AutoCloseable {
         private final Context context;
         private volatile boolean groupClosed;
-        private Group(Context context) { this.context = context; }
+        // Exactly-once close task: contenders cannot return a false success
+        // while another thread still executes Context.close(true).
+        private final VerifiedCloseFence closeFence;
+        private Group(Context context) {
+            this.context = context;
+            this.closeFence = new VerifiedCloseFence(() -> {
+                try {
+                    this.context.close(true);
+                    // Only a verified Context.close may release group capacity.
+                    synchronized (SharedUntrustedIsolatePool.this) {
+                        groups.remove(this);
+                    }
+                } catch (RuntimeException | Error error) {
+                    // No guest exception or native cause chain reaches the host.
+                    throw new IllegalStateException("untrusted group retirement failed");
+                }
+            });
+        }
 
         /** Host adapter entrypoint; actual actor routing must be supplied separately. */
         public synchronized Context contextForSupervisor() {
@@ -142,30 +159,28 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
 
         @Override
         public void close() {
-            synchronized (SharedUntrustedIsolatePool.this) {
-                if (groupClosed) return;
-                groupClosed = true;
-            }
-            // Do not take the group monitor: a currently executing guest call
-            // holds it. Context.close(true) must be able to interrupt that call.
-            // Keep the group counted until physical context close finishes.
-            context.close(true);
-            // Only a confirmed close can release group capacity. If close
-            // failed, retain the exhausted slot until pool retirement.
-            synchronized (SharedUntrustedIsolatePool.this) {
-                groups.remove(this);
-            }
+            // Fence admission immediately, without acquiring the execution
+            // monitor held by a possibly stuck guest. FutureTask serializes
+            // closing; every concurrent caller awaits the same completion.
+            groupClosed = true;
+            closeFence.awaitConfirmedClose("untrusted Context");
         }
     }
 
+    private final VerifiedCloseFence engineCloseFence =
+            new VerifiedCloseFence(this::retirePhysicalIsolate);
+
     @Override
     public void close() {
+        // An independent contender cannot report successful pool retirement
+        // while the first caller is still closing guest Contexts/Engine.
+        synchronized (this) { closed = true; }
+        engineCloseFence.awaitConfirmedClose("shared untrusted Engine");
+    }
+
+    private void retirePhysicalIsolate() {
         Set<Group> snapshot;
-        synchronized (this) {
-            if (closed) return;
-            closed = true;
-            snapshot = Set.copyOf(groups);
-        }
+        synchronized (this) { snapshot = Set.copyOf(groups); }
         RuntimeException failure = null;
         for (Group group : snapshot) {
             try {
@@ -177,13 +192,17 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         }
         try {
             engine.close(true);
-            // A failed close may leave a live native isolate behind; keep the
-            // slot fenced in that case rather than admitting a second one.
-            ISOLATE_SLOT.set(false);
-        } catch (RuntimeException error) {
-            if (failure == null) failure = error;
-            else failure.addSuppressed(error);
+        } catch (RuntimeException | Error error) {
+            if (failure == null) {
+                failure = new IllegalStateException(
+                        "untrusted Engine close could not be confirmed");
+            }
         }
+        // A successful Engine.close alone is not sufficient: one failed
+        // Context close leaves its native/guest lifetime unproven. The
+        // process-global slot must remain denied until ALL close fences
+        // were confirmed, otherwise a second isolate can be admitted.
         if (failure != null) throw failure;
+        ISOLATE_SLOT.set(false);
     }
 }

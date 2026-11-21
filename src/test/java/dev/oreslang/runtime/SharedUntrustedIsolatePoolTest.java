@@ -118,6 +118,31 @@ final class SharedUntrustedIsolatePoolTest {
         }
     }
 
+    @Test
+    void closedUntrustedLoaderRejectsNewGenerationsBeforeIsolateAllocation() {
+        HotReloadManager loader = HotReloadManager.forUntrustedActors(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit());
+        loader.close();
+        assertThrows(IllegalStateException.class, () ->
+                loader.load("a.ores", "pub routine main(): void { return; }"));
+        loader.close(); // exactly-once close is idempotent
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void rejectedGuestSourceDoesNotExhaustGenerationQuotaAfterConfirmedClose() {
+        try (HotReloadManager loader = HotReloadManager.forUntrustedActors(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            for (int i = 0; i < 12; i++) {
+                assertThrows(IllegalStateException.class, () -> loader.loadAndStart(
+                        "bad.ores", "pub routine main(): void {"),
+                        "invalid source must fail inside isolated guest");
+                assertEquals(0, loader.liveGenerations(),
+                        "only verified, fully closed generations release capacity");
+            }
+        }
+    }
+
     /**
      * Run on a real GraalVM runner with an Oreslang language-isolate image.
      * It must NEVER pass by silently switching to the host JVM interpreter.

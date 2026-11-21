@@ -414,6 +414,36 @@ public final class ActorRuntime implements AutoCloseable {
     private volatile ForceCancellationHook forceCancellationHook =
             request -> false;
 
+
+    /**
+     * A shared Graal/Truffle ActorRuntime cannot provide a separate physical
+     * garbage collector for each actor, regardless of scheduling domain.
+     * The separate UNTRUSTED Engine is one collector for all guest actors.
+     */
+    public enum HeapIsolationRequirement {
+        ALLOW_SHARED_JVM,
+        REQUIRE_INDEPENDENT_COLLECTOR;
+
+        public static HeapIsolationRequirement fromApplicationArguments(String[] args) {
+            Objects.requireNonNull(args, "application arguments");
+            HeapIsolationRequirement result = ALLOW_SHARED_JVM;
+            boolean seen = false;
+            for (String arg : args) {
+                if (!arg.startsWith("--ores-actor-heaps=")) continue;
+                if (seen) throw new IllegalArgumentException("duplicate --ores-actor-heaps setting");
+                seen = true;
+                result = switch (arg.substring("--ores-actor-heaps=".length())) {
+                    case "shared-jvm" -> ALLOW_SHARED_JVM;
+                    case "independent" -> REQUIRE_INDEPENDENT_COLLECTOR;
+                    default -> throw new IllegalArgumentException(
+                            "actor heap mode must be shared-jvm or independent");
+                };
+            }
+            return result;
+        }
+    }
+
+    private final HeapIsolationRequirement heapIsolationRequirement;
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
@@ -464,7 +494,25 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, controlDispatcher,
+                HeapIsolationRequirement.ALLOW_SHARED_JVM);
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            HeapIsolationRequirement requirement) {
+        this(policyCeiling, DispatcherConfig.defaults(), TurnExecutor.direct(),
+                ControlDispatcher.unavailable(), requirement);
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            HeapIsolationRequirement requirement) {
         long poolsPerf = CorePerf.start();
+        this.heapIsolationRequirement = Objects.requireNonNull(requirement, "requirement");
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
@@ -498,6 +546,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+    public HeapIsolationRequirement heapIsolationRequirement() {
+        return heapIsolationRequirement;
+    }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
@@ -4212,6 +4263,16 @@ public final class ActorRuntime implements AutoCloseable {
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
+        if (heapIsolationRequirement == HeapIsolationRequirement.REQUIRE_INDEPENDENT_COLLECTOR) {
+            // The default trusted host and a pooled untrusted Graal Engine do
+            // NOT promise a separate collector per actor. Reject before actor
+            // cell or factory allocation. The explicit process-isolation tier
+            // must be selected separately if this guarantee is required.
+            throw new IllegalStateException(
+                    "independent per-actor GC heap required for " + kind
+                    + ": this ActorRuntime shares one collector; "
+                    + "the pooled UNTRUSTED Engine also shares one collector");
+        }
         if ((behaviorFactory == null) == (codeExecutor == null)) {
             throw new IllegalArgumentException(
                     "actor spawn requires exactly one behavior factory or source-code executor");

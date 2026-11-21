@@ -110,7 +110,9 @@ public final class OresContext implements AutoCloseable {
                     isolatePolicy,
                     ActorRuntime.DispatcherConfig.defaults(),
                     this::executeActorTurn,
-                    vm::executeControl);
+                    vm::executeControl,
+                    ActorRuntime.HeapIsolationRequirement.fromApplicationArguments(
+                            env.getApplicationArguments()));
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             actors.setActorExitHook(gc::retireActorDomain);
@@ -426,6 +428,8 @@ public final class OresContext implements AutoCloseable {
         // All actors in this OresContext share its managed guest heap, even
         // when the context itself runs inside a Graal polyglot isolate.
         // Per-actor physical collector isolation is not implemented here.
+        descriptor.put("actor_heap_admission",
+                actors.heapIsolationRequirement().name().toLowerCase(java.util.Locale.ROOT));
         descriptor.put("actor_heap_backend", "shared_truffle_context");
         descriptor.put("actor_heap_independently_collectable", false);
         descriptor.put("actor_gc_operation", "host_cleanup_only");
