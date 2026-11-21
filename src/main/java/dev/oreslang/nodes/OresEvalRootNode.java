@@ -8801,6 +8801,11 @@ public final class OresEvalRootNode extends RootNode {
                     return null;
                 }
                 if (runtime.operation().equals("typeof")) return typeInfoOf(value);
+                if (runtime.operation().equals("detach")) {
+                    // `do task`: the root program joins detached tasks before shutdown.
+                    context.registerDetachedTask(value);
+                    return null;
+                }
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {

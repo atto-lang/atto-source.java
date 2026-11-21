@@ -4440,6 +4440,13 @@ public final class Parser {
                 throw error(peek(),
                         "do nb readch/writech would discard a pending Future; bind or await it");
             }
+            if (isContextualIdentifier("task") && checkNext(LBRACE)) {
+                // `do task { ... };` explicitly detaches a void task: the
+                // statement discards its Future by declaration, not by accident.
+                Ast.Expr detached = parseExpression();
+                consumeExpressionStatementTerminator(detached, "do task should end with ';'");
+                return new Ast.ExprStmt(new Ast.RuntimeCallExpr("detach", List.of(detached)));
+            }
             throw error(previous(),
                     "'do' requires match, switch, readch, writech, or a braced select");
         }
@@ -8147,6 +8154,21 @@ public final class Parser {
         java.util.Set<String> seen = new java.util.HashSet<>();
         for (Ast.Annotation annotation : annotations) {
             String name = annotation.name();
+            // Checked class annotations: @Deprecated("why") warns at every
+            // construction; @Serializable requires serializable field types.
+            if (name.equals("Deprecated")) {
+                if (annotation.arguments().size() > 1 || (annotation.arguments().size() == 1
+                        && !annotation.arguments().getFirst().isStringLiteral()) || !seen.add(name)) {
+                    throw error(previous(), "@Deprecated takes at most one string reason");
+                }
+                continue;
+            }
+            if (name.equals("Serializable")) {
+                if (!annotation.arguments().isEmpty() || !seen.add(name)) {
+                    throw error(previous(), "@Serializable takes no arguments");
+                }
+                continue;
+            }
             if (!List.of("NoCopy", "WarnOnCopy", "Copyable").contains(name)) {
                 throw error(previous(), "@" + name + " on class declarations would be silently discarded; unsupported annotation");
             }

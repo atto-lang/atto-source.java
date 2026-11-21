@@ -1862,6 +1862,11 @@ public final class OwnershipChecker {
                     checkExpr(argument, scope, true);
                     yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
                 }
+                case "detach" -> {
+                    // The detached task owns its captures exactly like any task.
+                    checkExpr(argument, scope, true);
+                    yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
                 case "typeof" -> {
                     // Observes the operand's runtime type; never consumes it.
                     checkExpr(argument, scope, false);

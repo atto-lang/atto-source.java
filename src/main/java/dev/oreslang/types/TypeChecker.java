@@ -335,6 +335,7 @@ public final class TypeChecker {
         checker.collect(program);
         checker.validateSealedHierarchies();
         checker.validateDeclaredEffects(program);
+        checker.validateSerializableClasses();
         checker.validate(program);
         CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
@@ -501,6 +502,7 @@ public final class TypeChecker {
         }
         checker.validateSealedHierarchies();
         checker.validateDeclaredEffects(program);
+        checker.validateSerializableClasses();
         checker.validate(program);
         CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
@@ -3797,6 +3799,14 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
+            if (runtime.operation().equals("detach")) {
+                Type detached = runtime.arguments().size() == 1
+                        ? typeOf(runtime.arguments().getFirst(), env, generics, self) : null;
+                if (!(detached instanceof Named future && future.name().equals("Future"))) {
+                    throw new IllegalArgumentException("do task detaches only a task Future");
+                }
+                return Primitive.VOID;
+            }
             if (runtime.operation().equals("typeof")) {
                 if (runtime.arguments().size() != 1) throw new IllegalArgumentException("typeof expects one operand");
                 typeOf(runtime.arguments().getFirst(), env, generics, self);
@@ -5930,6 +5940,10 @@ public final class TypeChecker {
                         + "' cannot be constructed with new; actor instances must be created through the actor runtime");
             }
 
+            klass.annotations().stream().filter(a -> a.name().equals("Deprecated")).findFirst()
+                    .ifPresent(deprecated -> warnings.add("W_DEPRECATED: class '" + klass.name() + "' is deprecated"
+                            + (deprecated.arguments().isEmpty() ? ""
+                                : ": " + deprecated.arguments().getFirst().stringLiteralValue())));
             Named nominal;
             if (created.type().inferArguments()) {
                 if (!created.type().arguments().isEmpty()) {
@@ -11520,6 +11534,38 @@ public final class TypeChecker {
                         + "' on " + owner + " must name Error or a declared Error subclass");
             }
         }
+    }
+
+    /** @Serializable classes may only hold serializable values (checked, not inert). */
+    private void validateSerializableClasses() {
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            if (klass.annotations().stream().noneMatch(a -> a.name().equals("Serializable"))) continue;
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException("@Serializable cannot annotate actor '" + klass.name() + "'");
+            }
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (!serializableTypeRef(field.type(), new java.util.HashSet<>())) {
+                    throw new IllegalArgumentException("@Serializable class '" + klass.name()
+                            + "' field '" + field.name() + "' has a non-serializable type");
+                }
+            }
+        }
+    }
+
+    private boolean serializableTypeRef(Ast.TypeRef type, Set<String> visiting) {
+        if (type == null || type.isBorrow()) return false;
+        String name = type.name();
+        if (Set.of("int", "float", "bool", "string", "decimal").contains(name)) return true;
+        if (Set.of("Option", "List", "Array").contains(name) && type.arguments().size() == 1) {
+            return serializableTypeRef(type.arguments().getFirst(), visiting);
+        }
+        if (name.equals("Map") && type.arguments().size() == 2) {
+            return serializableTypeRef(type.arguments().get(0), visiting)
+                    && serializableTypeRef(type.arguments().get(1), visiting);
+        }
+        Ast.ClassDecl nested = findClass(name);
+        return nested != null && type.arguments().isEmpty() && visiting.add(name)
+                && nested.annotations().stream().anyMatch(a -> a.name().equals("Serializable"));
     }
 
     private void validateSealedHierarchies() {

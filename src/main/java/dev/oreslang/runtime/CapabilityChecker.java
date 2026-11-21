@@ -443,7 +443,7 @@ public final class CapabilityChecker {
                 return;
             }
             if (!Set.of("copy", "take", "borrow", "share", "cooperate", "fail",
-                    "throw", "raise", "panic", "recover", "typeof").contains(runtime.operation())) {
+                    "throw", "raise", "panic", "recover", "typeof", "detach").contains(runtime.operation())) {
                 throw new SecurityException(
                         "runtime intrinsic 'rt " + runtime.operation() + "' is not admitted on this compiler head");
             }
