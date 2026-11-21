@@ -8818,6 +8818,17 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new ActorFrameArena.BudgetExceeded(
                                 "actor-owned frame byte quota exhausted");
                     }
+                    // A single physical actor turn may process multiple
+                    // mailbox messages. A guest-call lease cannot cross even
+                    // this *per-envelope* boundary: quarantine before the
+                    // next user mail, SourceTask or continuation dispatch.
+                    // The physical-turn finally retains a second defensive
+                    // cleanup for abrupt exceptions before this checkpoint.
+                    if (GuestCallDepthGuard.quarantineLeakedActorTurnScope(
+                            guestStack, frameArena)) {
+                        throw new IllegalStateException(
+                                "actor guest call stack leaked across mailbox delivery");
+                    }
                     // A source receive that suspended is not processed until
                     // its continuation completes; the continuation marks it.
                     if (!envelope.isContinuation() && !sourceReceiveSuspended) {
@@ -8837,11 +8848,29 @@ public final class ActorRuntime implements AutoCloseable {
                 // failure. The actor was already marked stopped by the
                 // supervisor/cancel path; finally/endTurn completes teardown.
                 if (!(failure instanceof ActorCancellationSignal)) {
-                    // Fail-stop supervision for ordinary actor failures. Fatal
-                    // VM errors are cleaned up and then rethrown.
-                    fail(failure);
+                    if (failure instanceof StackOverflowError && turnActive) {
+                        // Only a fully admitted physical actor turn may use this
+                        // catch. The recursive JVM guest path can still
+                        // exhaust the carrier stack before an explicit budget
+                        // guard fires. Once Java has unwound back here, fence
+                        // the ENTIRE actor incarnation before cleanup or any
+                        // next mailbox delivery. Do not rethrow this particular
+                        // VM error into the shared dispatcher/carrier.
+                        //
+                        // This is best-effort JVM recovery, not a claim of
+                        // process isolation for arbitrary JNI/native failures.
+                        guestStack.poison();
+                        frameArena.poisonFromGuestGuard();
+                        fail(new ActorStackOverflowException());
+                    } else {
+                        // All other VM failures retain the existing fatal
+                        // propagation policy; no process-corrupting Error is
+                        // silently classified as recoverable actor overflow.
+                        fail(failure);
+                    }
                 }
-                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof VirtualMachineError fatal
+                        && !(fatal instanceof StackOverflowError && turnActive)) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
@@ -8863,7 +8892,24 @@ public final class ActorRuntime implements AutoCloseable {
                     ActorTurnWatchdog.Lease lease = watchdogLease;
                     watchdogLease = null;
                     if (lease != null) lease.close();
-                    if (turnActive) endTurn();
+                    try {
+                        // A malformed/unwound host guest call may leave its
+                        // ThreadLocal Scope alive after a StackOverflowError.
+                        // Revoke it *before* this shared carrier is released.
+                        // Otherwise sibling B could inherit A's stack lease
+                        // and be poisoned when it enters GuestCallDepthGuard.
+                        if (GuestCallDepthGuard.quarantineLeakedActorTurnScope(
+                                guestStack, frameArena)) {
+                            fail(new IllegalStateException(
+                                    "actor physical turn exited with an active guest stack lease"));
+                        }
+                    } catch (RuntimeException leakedScopeFailure) {
+                        fail(leakedScopeFailure);
+                    } finally {
+                        // An invariant failure while releasing stale frames
+                        // must never skip actor turn/capability release.
+                        if (turnActive) endTurn();
+                    }
                 } finally {
                     // endTurn itself is a fail-closed invariant check and may
                     // throw; never strand actor authority on a reused carrier.

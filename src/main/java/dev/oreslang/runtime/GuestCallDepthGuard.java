@@ -188,6 +188,50 @@ public final class GuestCallDepthGuard {
         return scope;
     }
 
+    /**
+     * Physical actor TURN exit fence, not a guest instruction. No synchronous
+     * invocation Scope may survive a physical carrier turn or migrate to
+     * another actor scheduled on the same worker.
+     *
+     * @return true if an unfinished scope was found and quarantined. The
+     *         caller MUST fail the owning actor; silently continuing would
+     *         let a later actor inherit a stale ThreadLocal lease.
+     */
+    static boolean quarantineLeakedActorTurnScope(
+            ActorGuestStack expectedStack, ActorFrameArena expectedArena) {
+        Scope leaked = CURRENT.get();
+        if (leaked == null) return false;
+        // Revoke the carrier authority BEFORE touching an actor's frame store.
+        // Even when arena cleanup fails, the next actor never inherits it.
+        CURRENT.remove();
+        if (leaked.actorStack != null) leaked.actorStack.poison();
+        if (leaked.arena != null) leaked.arena.poisonFromGuestGuard();
+        if (leaked.actorStack != expectedStack || leaked.arena != expectedArena) {
+            // Do not poison the healthy current actor's arena simply because
+            // a different incarnation left its ThreadLocal on this worker.
+            throw new IllegalStateException(
+                    "foreign actor guest-call scope escaped its carrier turn");
+        }
+        try {
+            if (leaked.actorStack != null) {
+                // Restore the owning actor's logical charge to zero even
+                // when guest finally/leave did not run. An already-poisoned
+                // ActorGuestStack still permits exact-depth release.
+                for (int depth = leaked.depth; depth > 0; depth--) {
+                    leaked.actorStack.releaseFrame(depth);
+                }
+            }
+        } finally {
+            if (leaked.arena != null) {
+                // Always reclaim and zeroize bytes even if logical depth
+                // was corrupt. Use the ORIGINAL execution identity, never
+                // a later actor's shared carrier/arena.
+                leaked.arena.cancel(leaked.execution);
+            }
+        }
+        return true;
+    }
+
     /** Pop the actor-owned frame before releasing its logical guest charge. */
     public static void leave(int enteredDepth) {
         Scope scope = CURRENT.get();
