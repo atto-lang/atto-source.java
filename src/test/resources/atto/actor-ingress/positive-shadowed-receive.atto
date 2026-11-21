@@ -1,0 +1,7 @@
+define actor Worker as
+  receive(ActorMail<String> mail): void {
+    val receive = || -> { return; };
+    receive();
+    return;
+  }
+end

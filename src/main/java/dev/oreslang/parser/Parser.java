@@ -136,7 +136,11 @@ public final class Parser {
             Modifiers modifiers = parseModifiers();
 
             if (isContextualIdentifier("declare")) {
-                rootForwards.add(parseForwardType(annotations, modifiers));
+                if (looksLikeDeclaredActorHead()) {
+                    rootDeclarations.add(parseDeclaredActor(annotations, modifiers));
+                } else {
+                    rootForwards.add(parseForwardType(annotations, modifiers));
+                }
                 continue;
             }
 
@@ -397,6 +401,9 @@ public final class Parser {
         Modifiers modifiers = parseModifiers();
 
         if (isContextualIdentifier("declare")) {
+            if (looksLikeDeclaredActorHead()) {
+                return parseDeclaredActor(annotations, modifiers);
+            }
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
             return null;
@@ -643,12 +650,21 @@ public final class Parser {
                 returnType, annotations, body, specs, effects);
     }
 
-    /** Contextual mtd only counts as a source receiver declaration in a define head. */
+    /** Contextual external mtd and legacy mtd both accept receiver-first declarations. */
     private boolean isExternalActorMethodHead() {
-        return isContextualIdentifier("mtd")
-                && current + 2 < tokens.size()
-                && tokens.get(current + 1).type() == IDENT
-                && tokens.get(current + 2).type() == LPAREN;
+        int head = current;
+        if (head < tokens.size() && tokens.get(head).type() == IDENT
+                && tokens.get(head).lexeme().equals("external")) {
+            head++;
+        }
+        return head < tokens.size()
+                && tokens.get(head).type() == IDENT
+                && tokens.get(head).lexeme().equals("mtd")
+                && head + 1 < tokens.size()
+                && (tokens.get(head + 1).type() == LPAREN
+                    || (head + 2 < tokens.size()
+                        && tokens.get(head + 1).type() == IDENT
+                        && tokens.get(head + 2).type() == LPAREN));
     }
 
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
@@ -656,12 +672,15 @@ public final class Parser {
         validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
         rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
         rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
+        // Keep external contextual: it marks runtime ingress, not source visibility.
+        boolean runtimeEntrypoint = matchContextualIdentifier("external");
         consumeContextualIdentifier("mtd", "expected external receiver method declaration");
-        String name = consumeCallableName("expected external actor method name");
-        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
-                "on_recover").contains(name)) {
-            throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
-        }
+        // The canonical form is 'define mtd (Worker w) update(...): void'.
+        // Keep the earlier 'define mtd update(Worker w)(...): void' as
+        // a compatibility spelling; both produce one identical typed AST.
+        boolean receiverFirst = check(LPAREN);
+        String name = receiverFirst ? null
+                : consumeCallableName("expected external actor method name");
         consume(LPAREN, "external receiver method requires '(Actor receiver)'");
         Ast.TypeRef receiverType = parseTypeRef();
         if (receiverType.inferArguments() || !receiverType.arguments().isEmpty()
@@ -670,6 +689,13 @@ public final class Parser {
         }
         String receiverName = consume(IDENT, "expected external receiver binding name").lexeme();
         consume(RPAREN, "expected ')' after external actor receiver");
+        if (receiverFirst) {
+            name = consumeCallableName("expected external actor method name after receiver");
+        }
+        if (java.util.Set.of("handle_state", "on_panic", "on_throw", "on_raise",
+                "on_recover").contains(name)) {
+            throw error(previous(), "external actor receiver cannot declare compiler-owned or CONTROL hooks");
+        }
         consume(LPAREN, "expected '(' before external receiver method parameters");
         List<Ast.Param> parameters = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after external receiver method parameters");
@@ -686,7 +712,7 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.ExternalActorMethodDecl(
                 receiverType.name(), receiverName, name,
-                modifiers.visibility, parameters, returns, body);
+                modifiers.visibility, parameters, returns, body, runtimeEntrypoint);
     }
 
     private Ast.ClassDecl parseClass(
@@ -1721,6 +1747,60 @@ public final class Parser {
             throw error(name, "'_' cannot be used as a declared type name");
         }
         return name.lexeme();
+    }
+
+    /**
+     * A declared actor is a nominal (non-executable) actor identity whose
+     * methods may be attached by a verified source namespace binder.
+     *
+     * 'declare actor A;' differs from an unresolved 'declare type T;':
+     * it is a complete nominal declaration, not a promise to define the
+     * same type later in this source file.
+     */
+    private boolean looksLikeDeclaredActorHead() {
+        if (!isContextualIdentifier("declare")) return false;
+        int candidate = current + 1;
+        // Route malformed actor-modifier combinations through the actor gate
+        // rather than through the unrelated 'declare type' forward parser.
+        // This is a LOOKAHEAD ONLY; parseModifiers still validates duplicates.
+        while (candidate < tokens.size()) {
+            Token token = tokens.get(candidate);
+            if (token.type() == PUB || token.type() == PRIVATE
+                    || token.type() == ASYNC || token.type() == SUSPENDS
+                    || token.type() == GENERATOR || token.type() == NLEX
+                    || token.type() == TRAP || token.type() == STATIC
+                    || token.type() == ABSTRACT || token.type() == UNTRUSTED
+                    || token.type() == SHARED
+                    || (token.type() == IDENT
+                        && (token.lexeme().equals("shared")
+                            || token.lexeme().equals("structural")))) {
+                candidate++;
+            } else {
+                break;
+            }
+        }
+        return candidate < tokens.size() && tokens.get(candidate).type() == ACTOR;
+    }
+
+    private Ast.StandaloneActorDecl parseDeclaredActor(
+            List<Ast.Annotation> annotations, Modifiers before) {
+        Token marker = advance(); // contextual 'declare'
+        if (!annotations.isEmpty() || before.visibilitySeen || before.async
+                || before.suspends || before.generator || before.structural
+                || before.nonLexical || before.trapped || before.isStatic
+                || before.isAbstract || before.shared || before.untrusted) {
+            throw error(marker,
+                    "declare actor accepts visibility only after 'declare', before 'actor'");
+        }
+        Modifiers after = parseModifiers();
+        validateOnlyVisibilityModifiers(after, "declared actors");
+        consume(ACTOR, "expected actor after declare");
+        String name = consumeTypeDeclarationName("expected declared actor name");
+        consume(SEMICOLON,
+                "declare actor requires a plain nongeneric nominal actor name "
+                        + "followed by ';'; actor bodies, inheritance and receiver aliases "
+                        + "are not part of this declaration");
+        return new Ast.StandaloneActorDecl(name, after.visibility, Ast.ActorKind.SHARED);
     }
 
     private ForwardType parseForwardType(List<Ast.Annotation> annotations, Modifiers before) {

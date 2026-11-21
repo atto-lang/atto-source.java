@@ -1,0 +1,14 @@
+namespace foo;
+
+define actor Bar as
+  make_call(): void {
+    do_x();
+    do_y();
+    return;
+  }
+  receive(ActorMail<int> m): void { return; }
+end
+
+define mtd (Bar b) do_x(): void {
+  return;
+}

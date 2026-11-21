@@ -132,11 +132,18 @@ public final class Ast {
     public record StandaloneActorDecl(
             String name, String receiverName, Visibility visibility, ActorKind actorKind)
             implements Decl {
+        /** Canonical 'declare actor Name;' has no arbitrary receiver alias. */
+        public StandaloneActorDecl(String name, Visibility visibility, ActorKind actorKind) {
+            this(name, null, visibility, actorKind);
+        }
+
         public StandaloneActorDecl {
-            if (name == null || name.isBlank() || receiverName == null
-                    || receiverName.isBlank() || name.equals(receiverName)) {
+            if (name == null || name.isBlank()
+                    || (receiverName != null && (receiverName.isBlank()
+                            || name.equals(receiverName)))) {
                 throw new IllegalArgumentException(
-                        "standalone actor requires distinct nominal type and receiver binding names");
+                        "standalone actor requires a nominal name and, when supplied, "
+                                + "a distinct nonempty legacy receiver alias");
             }
             java.util.Objects.requireNonNull(visibility, "standalone actor visibility");
             if (actorKind != ActorKind.SHARED) {
@@ -155,7 +162,17 @@ public final class Ast {
     public record ExternalActorMethodDecl(
             String actorName, String receiverName, String name,
             Visibility visibility, List<Param> parameters,
-            TypeRef returnType, List<Stmt> body) implements Decl {
+            TypeRef returnType, List<Stmt> body,
+            boolean runtimeEntrypoint) implements Decl {
+        /** Compatibility for pre-external-marker mtd bodies: static-only. */
+        public ExternalActorMethodDecl(
+                String actorName, String receiverName, String name,
+                Visibility visibility, List<Param> parameters,
+                TypeRef returnType, List<Stmt> body) {
+            this(actorName, receiverName, name, visibility,
+                    parameters, returnType, body, false);
+        }
+
         public ExternalActorMethodDecl {
             if (actorName == null || actorName.isBlank()
                     || receiverName == null || receiverName.isBlank()
