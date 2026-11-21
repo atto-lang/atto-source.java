@@ -1227,6 +1227,147 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * A compiler-owned fixed-key primitive state map. This is not a guest
+     * Java Map and must never be installed in ordinary class fields.
+     * A view is valid only for the authenticated owning actor's synchronous
+     * callback on its scheduler-owned lane.
+     *
+     * This is a Java runtime building block, NOT yet source-level
+     * self.handle_state lowering or multi-reader actor scheduling.
+     */
+    public static final class ActorStateMap implements ActorOwnedGuestState {
+        private final ActorRuntime runtime;
+        private final ActorId owner;
+        private final java.util.LinkedHashMap<String, Long> values;
+        private boolean loanActive;
+
+        private ActorStateMap(ActorRuntime runtime, ActorId owner, Map<String, Long> initial) {
+            this.runtime = runtime;
+            this.owner = owner;
+            Objects.requireNonNull(initial, "actor initial state");
+            if (initial.size() > 64) {
+                throw new IllegalArgumentException("actor state exceeds 64 fixed keys");
+            }
+            this.values = new java.util.LinkedHashMap<>();
+            for (var entry : initial.entrySet()) {
+                String name = Objects.requireNonNull(entry.getKey(), "state key");
+                if (!name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                    throw new IllegalArgumentException("invalid actor state key");
+                }
+                this.values.put(name, Objects.requireNonNull(entry.getValue(), "state value"));
+            }
+        }
+
+        @Override public ActorId ownerActorId() { return owner; }
+
+        /** Neither guest nor a completion thread can acquire an actor state loan. */
+        private void requireOwner() {
+            if (currentActorRuntime() != runtime || !currentActorId().filter(owner::equals).isPresent()) {
+                throw new IllegalStateException("actor state requires an authenticated owner execution turn");
+            }
+        }
+
+        @FunctionalInterface
+        public interface ReadAction {
+            long apply(ReadLoan loan);
+        }
+
+        @FunctionalInterface
+        public interface WriteAction {
+            long apply(WriteLoan loan);
+        }
+
+        public static class ReadLoan {
+            private final ActorStateMap state;
+            private final Thread carrier;
+            protected final Map<String, Long> snapshot;
+            private volatile boolean active = true;
+
+            private ReadLoan(ActorStateMap state, Map<String, Long> snapshot) {
+                this.state = state;
+                this.carrier = Thread.currentThread();
+                this.snapshot = snapshot;
+            }
+
+            protected final void requireActive() {
+                if (!active || Thread.currentThread() != carrier) {
+                    throw new IllegalStateException("actor state loan expired or crossed a carrier boundary");
+                }
+                state.requireOwner();
+            }
+
+            public final long get(String key) {
+                requireActive();
+                Long value = snapshot.get(key);
+                if (value == null) throw new IllegalArgumentException("unknown actor state key");
+                return value;
+            }
+
+            private void expire() { active = false; }
+        }
+
+        public static final class WriteLoan extends ReadLoan {
+            private WriteLoan(ActorStateMap state, Map<String, Long> snapshot) {
+                super(state, snapshot);
+            }
+
+            public void set(String key, long value) {
+                requireActive();
+                if (!snapshot.containsKey(key))
+                    throw new IllegalArgumentException("unknown actor state key");
+                snapshot.put(key, value);
+            }
+        }
+
+        /** Read-only by default; returns only a copied primitive. */
+        public synchronized long read(ReadAction body) {
+            requireOwner();
+            Objects.requireNonNull(body, "read callback");
+            if (loanActive) throw new IllegalStateException("nested actor state loans are forbidden");
+            loanActive = true;
+            ReadLoan loan = new ReadLoan(this, new java.util.LinkedHashMap<>(values));
+            try {
+                return body.apply(loan);
+            } finally {
+                loan.expire();
+                loanActive = false;
+            }
+        }
+
+        /** Exclusive, synchronous loan. Commit only after successful callback. */
+        public synchronized long write(WriteAction body) {
+            requireOwner();
+            Objects.requireNonNull(body, "write callback");
+            if (loanActive) throw new IllegalStateException("nested actor state loans are forbidden");
+            loanActive = true;
+            WriteLoan loan = new WriteLoan(this, new java.util.LinkedHashMap<>(values));
+            try {
+                long result = body.apply(loan);
+                values.clear();
+                values.putAll(((ReadLoan) loan).snapshot);
+                return result;
+            } finally {
+                ((ReadLoan) loan).expire();
+                loanActive = false;
+            }
+        }
+    }
+
+    /**
+     * Only the current actor's initialization/receive turn can create this
+     * unforgeable owner-bound state object. No public constructor or ambient
+     * shared mutable map is exposed to user code.
+     */
+    public ActorStateMap createCurrentActorState(Map<String, Long> initial) {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || currentActorRuntime() != this
+                || !currentActorId().filter(cell.ref.id()::equals).isPresent()) {
+            throw new IllegalStateException("state allocation requires an owning actor turn");
+        }
+        return new ActorStateMap(this, cell.ref.id(), initial);
+    }
+
+    /**
      * Constrained compiler/interpreter bridge for source actor classes.
      *
      * <p>The executor is shared code, not actor state. It must be bound to one
