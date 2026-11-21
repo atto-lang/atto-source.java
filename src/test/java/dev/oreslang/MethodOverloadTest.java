@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -1169,6 +1170,154 @@ final class MethodOverloadTest {
                         pub interface Child extends Left, Right { }
                         """)));
         assertTrue(error.getMessage().contains("incompatible generic arity"), error::getMessage);
+    }
+
+
+    @Test
+    void checkedInstanceCallsPublishIdentityKeyedImmutableMethodBindings() {
+        Ast.Program checked = TypeChecker.checkTypes(Parser.parse("""
+                define module m
+                  define class C as
+                    pub pick(int value): int { return value; }
+                  end
+                end
+                pub routine main(): void {
+                  val c = new m.C();
+                  c.pick(3);
+                  c.pick(3);
+                }
+                """));
+        var bindings = checked.boundMethodCalls();
+        assertEquals(2, bindings.size(),
+                "two structurally identical source calls need distinct declaration bindings");
+        var calls = new java.util.ArrayList<>(bindings.keySet());
+        assertNotSame(calls.get(0), calls.get(1));
+        assertEquals(calls.get(0), calls.get(1),
+                "identity indexing must survive structural AST equality");
+        for (var binding : bindings.values()) {
+            assertEquals("C", binding.staticReceiver().name());
+            assertEquals("pick", binding.declaredMethod().name());
+            assertEquals(1, binding.declaredMethod().arity());
+        }
+        assertThrows(UnsupportedOperationException.class, bindings::clear);
+        var copied = new Ast.Program(checked.namespace(), checked.imports(),
+                checked.modules(), checked.boundDirectCalls(), bindings);
+        assertEquals(2, copied.boundMethodCalls().size());
+    }
+
+    @Test
+    void compilerBoundArityMethodCallsStillExecuteInheritedOverrides() throws Exception {
+        assertEquals("413", run("""
+                define module m
+                  define class Base as
+                    pub pick(): int { return 4; }
+                    pub pick(int value): int { return value; }
+                  end
+                  define class Child extends Base as
+                    pub pick(int value): int { return value + 10; }
+                  end
+                end
+                pub routine main(): void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.pick());
+                  stdio.stdout.write(child.pick(3));
+                }
+                """));
+    }
+
+    @Test
+    void methodBindingMetadataRejectsNullsAndForeignDeclarationIdentities() {
+        Ast.Program checked = TypeChecker.checkTypes(Parser.parse("""
+                define module m
+                  define class C as
+                    pub pick(int value): int { return value; }
+                  end
+                end
+                pub routine main(): void {
+                  val c = new m.C();
+                  c.pick(3);
+                }
+                """));
+        assertEquals(1, checked.boundMethodCalls().size());
+        var existing = checked.boundMethodCalls().entrySet().iterator().next();
+        var call = existing.getKey();
+        var binding = existing.getValue();
+        assertEquals("pick", binding.slot().name());
+        assertEquals(1, binding.slot().arity());
+        var entries =
+                new java.util.IdentityHashMap<Ast.CallExpr, Ast.MethodCallBinding>();
+        entries.put(call, null);
+        assertThrows(NullPointerException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+
+        entries.clear();
+        entries.put(null, binding);
+        assertThrows(NullPointerException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+
+        entries.clear();
+        var foreignOwner = new Ast.ClassDecl("C", Ast.Visibility.PRIVATE,
+                false, Ast.ActorKind.NONE, java.util.List.of(),
+                java.util.List.of(), java.util.List.of(),
+                java.util.List.of(), null, binding.staticReceiver().methods());
+        entries.put(call, new Ast.MethodCallBinding(
+                foreignOwner, binding.declaredMethod()));
+        var foreign = assertThrows(IllegalArgumentException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+        assertTrue(foreign.getMessage().contains("foreign declaration"),
+                foreign::getMessage);
+
+        entries.clear();
+        Ast.MethodDecl original = binding.declaredMethod();
+        Ast.MethodDecl structurallyEqualMethod = new Ast.MethodDecl(
+                original.name(), original.visibility(), original.isStatic(),
+                original.isAbstract(), original.async(), original.suspends(),
+                original.structural(), original.explicitReceiverType(),
+                original.genericParameters(), original.parameters(),
+                original.returnType(), original.annotations(), original.body());
+        assertNotSame(original, structurallyEqualMethod);
+        assertEquals(original, structurallyEqualMethod);
+        entries.put(call, new Ast.MethodCallBinding(
+                binding.staticReceiver(), structurallyEqualMethod));
+        foreign = assertThrows(IllegalArgumentException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+        assertTrue(foreign.getMessage().contains("foreign declaration"),
+                foreign::getMessage);
+
+        entries.clear();
+        var sourceMember = (Ast.MemberExpr) call.callee();
+        var wrongCallee = new Ast.CallExpr(
+                new Ast.MemberExpr(sourceMember.receiver(), "notPick"),
+                call.arguments());
+        entries.put(wrongCallee, binding);
+        var mismatched = assertThrows(IllegalArgumentException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+        assertTrue(mismatched.getMessage().contains("does not match"),
+                mismatched::getMessage);
+
+        entries.clear();
+        var wrongArity = new Ast.CallExpr(
+                new Ast.MemberExpr(sourceMember.receiver(), sourceMember.member()),
+                java.util.List.of());
+        entries.put(wrongArity, binding);
+        var mismatchedArity = assertThrows(IllegalArgumentException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+        assertTrue(mismatchedArity.getMessage().contains("arity differs"),
+                mismatchedArity::getMessage);
+
+        entries.clear();
+        entries.put(call, binding);
+        Ast.Program valid = new Ast.Program(checked.namespace(), checked.imports(),
+                checked.modules(), checked.boundDirectCalls(), entries);
+        entries.clear();
+        assertEquals(1, valid.boundMethodCalls().size(),
+                "published call-site bindings must not retain mutable input maps");
     }
 
     private static String run(String program) throws Exception {

@@ -4154,6 +4154,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env env) {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
+            requireBoundInstanceReceiver(call, receiver);
 
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
@@ -4198,10 +4199,8 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 Ast.MethodDecl method =
-                        object.owner.findMethod(
-                                object.klass,
-                                CallableSelector.instance(member.member(), args.size()),
-                                new LinkedHashSet<>());
+                        preboundMethod(
+                                call, object, member.member(), args.size());
                 if (method != null) {
                     object.owner.requireClassMemberVisible(
                             method.visibility(),
@@ -5454,7 +5453,9 @@ public final class OresEvalRootNode extends RootNode {
                     return key.substring(0, key.length() - suffix.length());
                 }
             }
-            return Parser.ROOT_MODULE;
+            // A fabricated ClassDecl must never be treated as a root-module
+            // declaration merely because it was not found in this code image.
+            return null;
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
@@ -5471,6 +5472,7 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
+                requireBoundInstanceReceiver(call, receiver);
 
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
@@ -5514,8 +5516,8 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of());
                     }
 
-                    Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
+                    Ast.MethodDecl method = preboundMethod(
+                            call, object, methodCall.member(), args.size());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -7598,6 +7600,90 @@ public final class OresEvalRootNode extends RootNode {
             }
             seen.remove(klass);
             return null;
+        }
+
+        private void requireBoundInstanceReceiver(
+                Ast.CallExpr call, Object receiver) {
+            // The compiler selected an instance method on an ordinary class.
+            // Never silently reinterpret that declaration as a static
+            // namespace, callable field, foreign host value, or actor.
+            if (program.boundMethodCalls().containsKey(call)
+                    && (!(receiver instanceof OresObject object)
+                        || object.klass.actorKind() != Ast.ActorKind.NONE)) {
+                throw new IllegalStateException(
+                        "compiler-bound instance call received a non-object receiver");
+            }
+        }
+
+        /**
+         * Existing executable ABI: name + arity. The compiler-selected
+         * declaration is checked against that exact virtual slot and the
+         * receiver ancestry before ordinary polymorphic dispatch.
+         * No runtime argument value or enum tag is used as a discriminator.
+         */
+        private Ast.MethodDecl preboundMethod(
+                Ast.CallExpr call, OresObject receiver, String name, int arity) {
+            CallableSelector selector = CallableSelector.instance(name, arity);
+            // The call expression belongs to this caller's compiler image.
+            // The runtime object's method table belongs to receiver.owner.
+            // Looking up the binding on the receiver's evaluator loses it
+            // when the call crosses a linked code-image boundary.
+            Ast.MethodCallBinding binding = program.boundMethodCalls().get(call);
+            if (binding != null && !selector.equals(binding.slot())) {
+                throw new IllegalStateException(
+                        "compiler-bound method slot differs from the call site");
+            }
+            Ast.MethodDecl dynamic = receiver.owner.findMethod(
+                    receiver.klass, selector, new LinkedHashSet<>());
+            if (binding == null) return dynamic;
+            // Cross-image method bindings require a verified immutable type
+            // identity bridge. Never downgrade a bound call to arity lookup.
+            if (receiver.owner != this) {
+                throw new IllegalStateException(
+                        "compiler-bound method call cannot cross code images without a linked type identity");
+            }
+            Ast.ClassDecl staticReceiver = binding.staticReceiver();
+            Ast.MethodDecl declared = binding.declaredMethod();
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    || staticReceiver.actorKind() != Ast.ActorKind.NONE
+                    || classOwner(staticReceiver) == null
+                    || methodOwners.get(declared) == null
+                    || declared.isStatic()
+                    || !selector.matches(declared)
+                    || findMethod(staticReceiver, selector, new LinkedHashSet<>()) != declared
+                    || !isNominalSubclassOf(receiver.klass, staticReceiver,
+                            new LinkedHashSet<>())) {
+                throw new IllegalStateException(
+                        "compiler-bound method call is not valid for this code image and receiver");
+            }
+            if (dynamic == null) {
+                throw new IllegalStateException(
+                        "concrete receiver lost compiler-bound method slot");
+            }
+            return dynamic;
+        }
+
+        private boolean isNominalSubclassOf(
+                Ast.ClassDecl concrete, Ast.ClassDecl declared,
+                Set<Ast.ClassDecl> visiting) {
+            if (concrete == declared) return true;
+            if (visiting.size() >= 128 || !visiting.add(concrete)) {
+                throw new IllegalArgumentException(
+                        "invalid or cyclic compiler-bound receiver ancestry");
+            }
+            try {
+                for (Ast.TypeRef parentRef : concrete.parents()) {
+                    if (parentRef.name().equals("Object")
+                            || parentRef.name().equals("List")) continue;
+                    Ast.ClassDecl parent = findClass(parentRef.name());
+                    if (parent != null && isNominalSubclassOf(parent, declared, visiting)) {
+                        return true;
+                    }
+                }
+                return false;
+            } finally {
+                visiting.remove(concrete);
+            }
         }
 
         private Ast.MethodDecl findMethod(

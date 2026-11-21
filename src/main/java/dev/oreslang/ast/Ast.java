@@ -5,19 +5,101 @@ import java.util.List;
 public final class Ast {
     private Ast() { }
 
+    /**
+     * An identity-bound instance method call selected by the type checker.
+     * For now, the executable method ABI remains name + arity; nominal slots
+     * require a separately verified immutable slot and runtime ABI upgrade.
+     * The static receiver is declaration identity, not a runtime name.
+     */
+    public record MethodCallBinding(ClassDecl staticReceiver, MethodDecl declaredMethod) {
+        public MethodCallBinding {
+            java.util.Objects.requireNonNull(staticReceiver, "static method receiver");
+            java.util.Objects.requireNonNull(declaredMethod, "selected method");
+            if (declaredMethod.isStatic()) {
+                throw new IllegalArgumentException("instance method binding cannot target static fnc");
+            }
+        }
+
+        /** The *current* executable slot identity is fixed at type-check time.
+         * Future enum-specific slots require an ABI upgrade rather than
+         * reinterpreting argument types in the evaluator. */
+        public CallableSelector slot() {
+            return CallableSelector.of(declaredMethod);
+        }
+    }
+
     public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules,
-                          java.util.Map<CallExpr, FunctionDecl> boundDirectCalls) {
+                          java.util.Map<CallExpr, FunctionDecl> boundDirectCalls,
+                          java.util.Map<CallExpr, MethodCallBinding> boundMethodCalls) {
         public Program {
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
-            // AST records have *structural* equality: two syntactically equal
-            // call expressions must NOT share a binding by Map.equals/hashCode.
-            // Preserve identity keys and publish an immutable snapshot.
+            // Malformed externally constructed metadata must fail closed:
+            // IdentityHashMap accepts null values, and the evaluator would
+            // otherwise interpret a null binding as "not compiler-bound".
+            java.util.Objects.requireNonNull(boundDirectCalls, "direct call bindings");
+            java.util.Objects.requireNonNull(boundMethodCalls, "method call bindings");
+            for (var binding : boundDirectCalls.entrySet()) {
+                java.util.Objects.requireNonNull(binding.getKey(), "direct call site");
+                java.util.Objects.requireNonNull(binding.getValue(), "direct call target");
+            }
+            if (!boundMethodCalls.isEmpty()) {
+                var classes = java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<ClassDecl, Boolean>());
+                var methods = java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<MethodDecl, Boolean>());
+                for (ModuleDecl module : modules) {
+                    for (Decl declaration : module.declarations()) {
+                        if (declaration instanceof ClassDecl owner) {
+                            classes.add(owner);
+                            methods.addAll(owner.methods());
+                        }
+                    }
+                }
+                for (var entry : boundMethodCalls.entrySet()) {
+                    java.util.Objects.requireNonNull(entry.getKey(), "method call site");
+                    MethodCallBinding binding = java.util.Objects.requireNonNull(
+                            entry.getValue(), "method call target");
+                    if (!classes.contains(binding.staticReceiver())
+                            || !methods.contains(binding.declaredMethod())) {
+                        throw new IllegalArgumentException(
+                                "compiler-bound method call references a foreign declaration");
+                    }
+                    if (!(entry.getKey().callee() instanceof MemberExpr member)
+                            || !member.member().equals(binding.slot().name())) {
+                        throw new IllegalArgumentException(
+                                "compiler-bound method call site does not match its selected slot");
+                    }
+                    // Spreads have a separately checked expansion arity, but
+                    // ordinary calls expose an exact syntactic argument count.
+                    // Reject forged metadata before it reaches the evaluator.
+                    boolean hasSpread = entry.getKey().arguments().stream()
+                            .anyMatch(SpreadExpr.class::isInstance);
+                    if (!hasSpread
+                            && entry.getKey().arguments().size() != binding.slot().arity()) {
+                        throw new IllegalArgumentException(
+                                "compiler-bound method call arity differs from selected slot");
+                    }
+                    if (binding.staticReceiver().actorKind() != ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor entrypoints cannot enter ordinary method call bindings");
+                    }
+                }
+            }
+            // AST records have structural equality: equal-looking call
+            // expressions from different call sites must not share a binding.
             boundDirectCalls = java.util.Collections.unmodifiableMap(
                     new java.util.IdentityHashMap<>(boundDirectCalls));
+            boundMethodCalls = java.util.Collections.unmodifiableMap(
+                    new java.util.IdentityHashMap<>(boundMethodCalls));
+        }
+        /** Keep all existing parser/compiler program construction sites working. */
+        public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules,
+                       java.util.Map<CallExpr, FunctionDecl> boundDirectCalls) {
+            this(namespace, imports, modules, boundDirectCalls, java.util.Map.of());
         }
         public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
-            this(namespace, imports, modules, java.util.Map.of());
+            this(namespace, imports, modules, java.util.Map.of(), java.util.Map.of());
         }
         public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
