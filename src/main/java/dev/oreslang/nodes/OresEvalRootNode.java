@@ -3077,6 +3077,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation) {
             try {
+                rejectUnloweredStructuredExpr(expr);
                 if (!expressionContainsPotentialSuspension(
                         expr,
                         java.util.Collections.newSetFromMap(
@@ -4166,6 +4167,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            rejectUnloweredStructuredExpr(call);
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -6107,7 +6109,56 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        /**
+         * Defense in depth for interpreter callers that receive ASTs from an
+         * already-admitted program. These source forms have syntax/AST identity
+         * but no executable ABI or single-evaluation ownership lowering.
+         * Reject a complete call/constructor BEFORE evaluating its callee
+         * or any arguments; in particular, a forged named call must not run
+         * effectful arguments before reaching a late unsupported-expression error.
+         */
+        private static boolean hasNamedArgs(List<Ast.Expr> arguments) {
+            // This gate runs on the hot interpreter path. Do not allocate a
+            // Stream/lambda for ordinary calls that contain no named arguments.
+            for (Ast.Expr argument : arguments) {
+                if (argument instanceof Ast.NamedArgumentExpr) return true;
+            }
+            return false;
+        }
+
+        private void rejectUnloweredStructuredExpr(Ast.Expr expr) {
+            if (expr instanceof Ast.NamedArgumentExpr) {
+                throw new IllegalArgumentException(
+                        "named value arguments require checked declaration-bound invocation lowering");
+            }
+            if (expr instanceof Ast.TypeSpecializationExpr) {
+                throw new IllegalArgumentException(
+                        "generic type-member syntax requires checked nominal type specialization lowering");
+            }
+            if (expr instanceof Ast.CompoundAssignExpr) {
+                throw new IllegalArgumentException(
+                        "compound assignment requires single-evaluation write and borrow lowering");
+            }
+            if (expr instanceof Ast.CallExpr call) {
+                if (hasNamedArgs(call.arguments())) {
+                    throw new IllegalArgumentException(
+                            "named value arguments require checked declaration-bound invocation lowering");
+                }
+                if (call.callee() instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.TypeSpecializationExpr) {
+                    throw new IllegalArgumentException(
+                            "generic type-member syntax requires checked nominal type specialization lowering");
+                }
+            }
+            if (expr instanceof Ast.NewExpr created
+                    && hasNamedArgs(created.arguments())) {
+                throw new IllegalArgumentException(
+                        "named value arguments require checked declaration-bound invocation lowering");
+            }
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
+            rejectUnloweredStructuredExpr(expr);
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {

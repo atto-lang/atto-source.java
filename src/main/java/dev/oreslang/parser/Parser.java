@@ -3084,11 +3084,15 @@ public final class Parser {
 
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parseConditional();
-        if (match(EQUAL)) {
+        if (match(EQUAL, PLUS_EQUAL)) {
+            Token assignment = previous();
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
-                throw error(previous(), "assignment target must be a local, field, or index");
+                throw error(assignment, "assignment target must be a local, field, or index");
             }
-            return new Ast.AssignExpr(expr, parseAssignment());
+            Ast.Expr value = parseAssignment();
+            return assignment.type() == PLUS_EQUAL
+                    ? new Ast.CompoundAssignExpr(expr, "+", value)
+                    : new Ast.AssignExpr(expr, value);
         }
         return expr;
     }
@@ -3382,7 +3386,15 @@ public final class Parser {
     private Ast.Expr parsePostfix() {
         Ast.Expr expr = parsePrimary();
         while (true) {
-            if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
+            if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentMember()) {
+                // Type specialization belongs to the receiver, not to new(...).
+                // A later semantic pass must resolve this as a nominal type.
+                List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
+                if (typeArguments.isEmpty()) {
+                    throw error(previous(), "type-member specialization requires at least one type argument");
+                }
+                expr = new Ast.TypeSpecializationExpr(expr, typeArguments);
+            } else if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
@@ -3430,17 +3442,25 @@ public final class Parser {
     }
 
     private boolean looksLikeTypeArgumentCall() {
-        return looksLikeTypeArgumentCallAt(current);
+        return looksLikeTypeArgumentSuffixAt(current, LPAREN);
+    }
+
+    private boolean looksLikeTypeArgumentMember() {
+        return looksLikeTypeArgumentSuffixAt(current, DOT);
     }
 
     private boolean looksLikeTypeArgumentCallAt(int startIndex) {
+        return looksLikeTypeArgumentSuffixAt(startIndex, LPAREN);
+    }
+
+    private boolean looksLikeTypeArgumentSuffixAt(int startIndex, Token.Type suffix) {
         int depth = 0;
         for (int i = startIndex; i < tokens.size(); i++) {
             Token.Type type = tokens.get(i).type();
             if (type == LT) depth++;
             else if (type == GT) {
                 depth--;
-                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == LPAREN;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == suffix;
                 if (depth < 0) return false;
             } else if (type == SEMICOLON || type == QUESTION || type == COLON || type == EOF
                     || (type == EQUAL && (depth == 0 || i == 0
@@ -3587,7 +3607,7 @@ public final class Parser {
         if (match(SPAWN)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after actor type");
-            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+            List<Ast.Expr> args = parseConstructorArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after actor spawn arguments");
             // Keep actor creation semantically distinct from ordinary class construction.
             // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
@@ -3597,7 +3617,7 @@ public final class Parser {
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
-            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+            List<Ast.Expr> args = parseConstructorArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
@@ -3811,11 +3831,39 @@ public final class Parser {
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
         if (check(terminator)) return List.of();
         List<Ast.Expr> args = new ArrayList<>();
+        java.util.Set<String> labels = new java.util.HashSet<>();
+        boolean namedSeen = false;
+        boolean spreadSeen = false;
         do {
             boolean spread = match(ELLIPSIS);
-            Ast.Expr argument = parseExpression();
-            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+            if (check(IDENT) && checkNext(COLON)) {
+                if (spread || spreadSeen) {
+                    throw error(peek(), "named arguments cannot mix with argument spreads");
+                }
+                String label = advance().lexeme();
+                consume(COLON, "expected ':' after named call argument");
+                if (!labels.add(label)) {
+                    throw error(previous(), "duplicate named call argument '" + label + "'");
+                }
+                namedSeen = true;
+                args.add(new Ast.NamedArgumentExpr(label, parseExpression()));
+            } else {
+                if (namedSeen) {
+                    throw error(peek(), "positional arguments cannot follow named arguments");
+                }
+                Ast.Expr argument = parseExpression();
+                if (spread) spreadSeen = true;
+                args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+            }
         } while (match(COMMA));
+        return args;
+    }
+
+    private List<Ast.Expr> parseConstructorArgumentsUntil(Token.Type terminator) {
+        List<Ast.Expr> args = parseCallArgumentsUntil(terminator);
+        if (args.stream().anyMatch(arg -> arg instanceof Ast.SpreadExpr)) {
+            throw error(peek(), "constructor/spawn argument spreads are not supported");
+        }
         return args;
     }
 
@@ -3944,6 +3992,15 @@ public final class Parser {
         }
         if (expression instanceof Ast.AssignExpr assign) {
             return containsExpressionBodyLambda(assign.target()) || containsExpressionBodyLambda(assign.value());
+        }
+        if (expression instanceof Ast.CompoundAssignExpr assign) {
+            return containsExpressionBodyLambda(assign.target()) || containsExpressionBodyLambda(assign.value());
+        }
+        if (expression instanceof Ast.NamedArgumentExpr named) {
+            return containsExpressionBodyLambda(named.value());
+        }
+        if (expression instanceof Ast.TypeSpecializationExpr specialized) {
+            return containsExpressionBodyLambda(specialized.typeName());
         }
         if (expression instanceof Ast.ConditionalExpr conditional) {
             return containsExpressionBodyLambda(conditional.condition())

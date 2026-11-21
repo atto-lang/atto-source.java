@@ -857,6 +857,17 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.NamedArgumentExpr
+                || (expr instanceof Ast.NewExpr created
+                    && created.arguments().stream().anyMatch(arg -> arg instanceof Ast.NamedArgumentExpr))) {
+            throw error("named value arguments require checked declaration-bound invocation lowering");
+        }
+        if (expr instanceof Ast.TypeSpecializationExpr) {
+            throw error("generic type-member syntax requires checked nominal type specialization lowering");
+        }
+        if (expr instanceof Ast.CompoundAssignExpr) {
+            throw error("compound assignment requires single-evaluation write and borrow lowering");
+        }
         if (expr instanceof Ast.MatchExpr match) {
             ValueInfo subject = checkExpr(match.subject(), scope, false);
             VarState source = match.subject() instanceof Ast.NameExpr name
@@ -1336,6 +1347,13 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.arguments().stream().anyMatch(arg -> arg instanceof Ast.NamedArgumentExpr)) {
+            throw error("named value arguments require checked declaration-bound invocation lowering");
+        }
+        if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.TypeSpecializationExpr) {
+            throw error("generic type-member syntax requires checked nominal type specialization lowering");
+        }
         // A constructor owns an unpublished, incompletely initialized object.
         // Calling any instance method on self can transitively read absent
         // fields, publish the receiver or invoke suspension. No transitive

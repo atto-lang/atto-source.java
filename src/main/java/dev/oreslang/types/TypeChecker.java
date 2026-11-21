@@ -2053,6 +2053,17 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.NamedArgumentExpr
+                || (expr instanceof Ast.NewExpr created
+                    && created.arguments().stream().anyMatch(arg -> arg instanceof Ast.NamedArgumentExpr))) {
+            throw new IllegalArgumentException("named value arguments require checked declaration-bound invocation lowering");
+        }
+        if (expr instanceof Ast.TypeSpecializationExpr) {
+            throw new IllegalArgumentException("generic type-member syntax requires checked nominal type specialization lowering");
+        }
+        if (expr instanceof Ast.CompoundAssignExpr) {
+            throw new IllegalArgumentException("compound assignment requires single-evaluation write and borrow lowering");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
@@ -2382,6 +2393,13 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.arguments().stream().anyMatch(arg -> arg instanceof Ast.NamedArgumentExpr)) {
+                throw new IllegalArgumentException("named value arguments require checked declaration-bound invocation lowering");
+            }
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.TypeSpecializationExpr) {
+                throw new IllegalArgumentException("generic type-member syntax requires checked nominal type specialization lowering");
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
