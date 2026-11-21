@@ -1007,7 +1007,8 @@ public final class TreeShaker {
             if (declaration instanceof Ast.ClassDecl klass) {
                 return klass.visibility() == Ast.Visibility.PUBLIC;
             }
-            return declaration instanceof Ast.TypeAliasDecl;
+            return declaration instanceof Ast.TypeAliasDecl
+                    || declaration instanceof Ast.EnumDecl;
         }
 
         private void mark(String id) {
@@ -1023,7 +1024,8 @@ public final class TreeShaker {
                             || declaration instanceof Ast.FunctionDecl fn
                                     && fn.visibility() == Ast.Visibility.PUBLIC
                             || declaration instanceof Ast.FieldDecl field
-                                    && field.visibility() == Ast.Visibility.PUBLIC;
+                                    && field.visibility() == Ast.Visibility.PUBLIC
+                            || declaration instanceof Ast.EnumDecl;
                     if (!exposed) continue;
                     String name = declarationName(declaration);
                     if (name != null) mark(qualify(module.name(), name));
@@ -1105,6 +1107,12 @@ public final class TreeShaker {
             }
             if (declaration instanceof Ast.TypeAliasDecl alias) {
                 scanType(alias.target());
+                return;
+            }
+            if (declaration instanceof Ast.EnumDecl enumeration) {
+                for (Ast.EnumCase variant : enumeration.cases()) {
+                    scanType(variant.payload());
+                }
             }
         }
 
@@ -1235,6 +1243,15 @@ public final class TreeShaker {
                         mark(qualified);
                         return;
                     }
+                    String namespaceSymbol = resolveSymbol(namespace.name(), false);
+                    if (namespaceSymbol != null) {
+                        Symbol candidate = symbols.get(namespaceSymbol);
+                        if (candidate != null
+                                && candidate.declaration() instanceof Ast.EnumDecl) {
+                            mark(namespaceSymbol);
+                            return;
+                        }
+                    }
                     if (!moduleNames.contains(namespace.name())) {
                         externalBindings.add(namespace.name());
                     }
@@ -1343,6 +1360,13 @@ public final class TreeShaker {
             } else if (pattern instanceof Ast.TuplePattern tuple) {
                 for (Ast.Pattern nested : tuple.elements()) scanPatternTypes(nested);
             } else if (pattern instanceof Ast.ConstructorPattern constructor) {
+                int dot = constructor.constructor().lastIndexOf('.');
+                if (dot > 0) {
+                    String owner = constructor.constructor().substring(0, dot);
+                    String internal = resolveSymbol(owner, false);
+                    if (internal != null) mark(internal);
+                    else externalBindings.add(firstSegment(owner));
+                }
                 for (Ast.Pattern nested : constructor.arguments()) scanPatternTypes(nested);
             }
         }
@@ -1427,6 +1451,7 @@ public final class TreeShaker {
             if (declaration instanceof Ast.InterfaceDecl iface) return iface.name();
             if (declaration instanceof Ast.FieldDecl field) return field.name();
             if (declaration instanceof Ast.TypeAliasDecl alias) return alias.name();
+            if (declaration instanceof Ast.EnumDecl enumeration) return enumeration.name();
             return null;
         }
 

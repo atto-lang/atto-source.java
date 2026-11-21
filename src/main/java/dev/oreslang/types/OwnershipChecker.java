@@ -46,9 +46,12 @@ public final class OwnershipChecker {
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.EnumDecl> enums = new HashMap<>();
+    private final IdentityHashMap<Ast.EnumDecl, String> enumOwners = new IdentityHashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousEnums = new HashSet<>();
     private int mutexCriticalSectionDepth;
     private int actorStateLoanDepth;
     private final java.util.ArrayDeque<String> actorStateLoanNames =
@@ -76,7 +79,12 @@ public final class OwnershipChecker {
                                 + "' is reserved by the sealed actor scalar publication API");
                     }
                     index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
-                } else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                } else if (decl instanceof Ast.EnumDecl enumeration) {
+                    index(enums, ambiguousEnums, module.name(), enumeration.name(), enumeration);
+                    enumOwners.put(enumeration, module.name());
+                }
             }
         }
     }
@@ -1290,6 +1298,49 @@ public final class OwnershipChecker {
             }
         }
 
+        if (call.callee() instanceof Ast.MemberExpr enumCall
+                && enumCall.receiver() instanceof Ast.NameExpr enumName
+                && scope.lookup(enumName.name()) == null) {
+            Ast.EnumDecl enumeration = findEnum(enumName.name());
+            if (enumeration != null) {
+                Ast.EnumCase variant = enumCase(enumeration, enumCall.member());
+                if (variant == null) {
+                    throw error("unknown enum case "
+                            + enumName.name() + "." + enumCall.member());
+                }
+                int expected = variant.payload() == null ? 0 : 1;
+                if (call.arguments().size() != expected) {
+                    throw error("enum constructor "
+                            + enumName.name() + "." + enumCall.member()
+                            + " expects " + expected + " argument(s)");
+                }
+                ValueKind kind = ValueKind.COPY;
+                if (expected == 1) {
+                    ValueInfo payload = checkExpr(
+                            call.arguments().getFirst(), scope, true);
+                    if (containsMlScalarCapabilityType(payload.type)) {
+                        throw error("enum payload cannot retain actor scalar "
+                                + "snapshot/publication capabilities");
+                    }
+                    if (payload.kind == ValueKind.IMM_BORROW
+                            || payload.kind == ValueKind.MUT_BORROW
+                            || (payload.type != null && payload.type.isBorrow())) {
+                        throw error("enum payload cannot store a borrow");
+                    }
+                    if (containsMutexGuardType(payload.type)) {
+                        throw error("enum payload cannot store MutexGuard");
+                    }
+                    kind = payload.kind == ValueKind.COPY
+                            ? ValueKind.COPY
+                            : ValueKind.MOVE_ONLY;
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.simple(qualifiedEnumName(enumeration)),
+                        kind,
+                        null);
+            }
+        }
+
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -2402,6 +2453,20 @@ public final class OwnershipChecker {
         if (constructor.equals("Err") && subjectType.name().equals("Result") && subjectType.arguments().size() == 2) {
             return List.of(subjectType.arguments().get(1));
         }
+
+        int dot = constructor.lastIndexOf('.');
+        if (dot > 0 && dot < constructor.length() - 1) {
+            Ast.EnumDecl enumeration = findEnum(constructor.substring(0, dot));
+            if (enumeration == null
+                    || !subjectType.name().equals(qualifiedEnumName(enumeration))) {
+                return List.of();
+            }
+            Ast.EnumCase variant =
+                    enumCase(enumeration, constructor.substring(dot + 1));
+            if (variant != null && variant.payload() != null) {
+                return List.of(variant.payload());
+            }
+        }
         return List.of();
     }
 
@@ -2812,6 +2877,27 @@ public final class OwnershipChecker {
     private Ast.ClassDecl findClass(String name) {
         if (ambiguousClasses.contains(name)) return null;
         return classes.get(name);
+    }
+
+    private Ast.EnumDecl findEnum(String name) {
+        if (ambiguousEnums.contains(name)) {
+            throw error("ambiguous enum '" + name + "'; qualify it with its module");
+        }
+        return enums.get(name);
+    }
+
+    private String qualifiedEnumName(Ast.EnumDecl enumeration) {
+        String owner = enumOwners.get(enumeration);
+        return owner == null || owner.equals(Parser.ROOT_MODULE)
+                ? enumeration.name()
+                : owner + "." + enumeration.name();
+    }
+
+    private Ast.EnumCase enumCase(Ast.EnumDecl enumeration, String name) {
+        for (Ast.EnumCase variant : enumeration.cases()) {
+            if (variant.name().equals(name)) return variant;
+        }
+        return null;
     }
 
     private VarState ownershipRoot(VarState state) {
@@ -3265,18 +3351,51 @@ public final class OwnershipChecker {
     }
 
     private boolean isCopyType(Ast.TypeRef type) {
+        return isCopyType(type, new HashSet<>());
+    }
+
+    private boolean isCopyType(Ast.TypeRef type, Set<String> visitingEnums) {
         if (type == null || type.isBorrow()) return false;
-        if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
-        if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        if (type.isUnion()) {
+            return type.arguments().stream()
+                    .allMatch(argument -> isCopyType(argument, visitingEnums));
+        }
+        if (type.isTupleType()) {
+            return type.arguments().stream()
+                    .allMatch(argument -> isCopyType(argument, visitingEnums));
+        }
+
+        Ast.EnumDecl enumeration = findEnum(type.name());
+        if (enumeration != null) {
+            String identity = qualifiedEnumName(enumeration);
+            if (!visitingEnums.add(identity)) {
+                // Directly recursive value enums are not proven finite/copyable
+                // by this minimal ADT slice.
+                return false;
+            }
+            try {
+                for (Ast.EnumCase variant : enumeration.cases()) {
+                    if (variant.payload() != null
+                            && !isCopyType(variant.payload(), visitingEnums)) {
+                        return false;
+                    }
+                }
+                return true;
+            } finally {
+                visitingEnums.remove(identity);
+            }
+        }
+
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
                     "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
-            case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
+            case "Option" -> type.arguments().size() == 1
+                    && isCopyType(type.arguments().getFirst(), visitingEnums);
             case "Result" -> type.arguments().size() == 2
-                    && isCopyType(type.arguments().get(0))
-                    && isCopyType(type.arguments().get(1));
+                    && isCopyType(type.arguments().get(0), visitingEnums)
+                    && isCopyType(type.arguments().get(1), visitingEnums);
             default -> false;
         };
     }

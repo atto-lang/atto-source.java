@@ -3,7 +3,10 @@ package dev.oreslang.types;
 import dev.oreslang.ast.Ast;
 import java.lang.reflect.RecordComponent;
 import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -23,9 +26,30 @@ public final class DeclaredEffectVerifier {
             "prepare_scalar_publication",
             "publish_scalar_publication");
 
-    private DeclaredEffectVerifier() { }
+    private final Map<String, Ast.EnumDecl> enums = new HashMap<>();
+    private final Set<String> ambiguousEnums = new HashSet<>();
+    private Set<String> currentBindings = Set.of();
+
+    private DeclaredEffectVerifier(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.EnumDecl enumeration)) continue;
+                enums.put(module.name() + "." + enumeration.name(), enumeration);
+                Ast.EnumDecl prior = enums.putIfAbsent(
+                        enumeration.name(), enumeration);
+                if (prior != null && prior != enumeration) {
+                    enums.remove(enumeration.name());
+                    ambiguousEnums.add(enumeration.name());
+                }
+            }
+        }
+    }
 
     public static void verify(Ast.Program program) {
+        new DeclaredEffectVerifier(program).verifyProgram(program);
+    }
+
+    private void verifyProgram(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
@@ -38,7 +62,12 @@ public final class DeclaredEffectVerifier {
                             function.parameters(), function.name());
                     rejectReservedMlBindings(
                             function.body(), function.name());
-                    check(function.name(), function.annotations(), function.body(), false);
+                    check(
+                            function.name(),
+                            function.annotations(),
+                            function.body(),
+                            false,
+                            collectBoundNames(function.parameters(), function.body()));
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.MethodDecl method : klass.methods()) {
                         rejectReservedMlBindings(
@@ -50,15 +79,24 @@ public final class DeclaredEffectVerifier {
                             throw new IllegalArgumentException(
                                     "static actor method cannot acquire a sealed instance state loan");
                         }
-                        check(klass.name() + "." + method.name(), method.annotations(),
-                                method.body(), klass.serial() && !method.isStatic());
+                        check(
+                                klass.name() + "." + method.name(),
+                                method.annotations(),
+                                method.body(),
+                                klass.serial() && !method.isStatic(),
+                                collectBoundNames(method.parameters(), method.body()));
                     }
                 }
             }
         }
     }
 
-    private static void check(String name, List<Ast.Annotation> annotations, Object body, boolean serial) {
+    private void check(
+            String name,
+            List<Ast.Annotation> annotations,
+            Object body,
+            boolean serial,
+            Set<String> bindings) {
         Ast.Annotation with = null;
         for (Ast.Annotation annotation : annotations) {
             if (annotation.name().equals("$requires$")) {
@@ -92,7 +130,13 @@ public final class DeclaredEffectVerifier {
                 .map(Ast.TypeRef::name).toList());
         EnumSet<FunctionEffects.Effect> inferred =
                 EnumSet.noneOf(FunctionEffects.Effect.class);
-        collect(body, inferred, null, name, serial);
+        Set<String> previousBindings = currentBindings;
+        currentBindings = bindings;
+        try {
+            collect(body, inferred, null, name, serial);
+        } finally {
+            currentBindings = previousBindings;
+        }
 
         // A no_alloc/no_block guarantee requires absence of those operations
         // in the *transitive* effect graph. This conservative first pass rejects
@@ -132,6 +176,14 @@ public final class DeclaredEffectVerifier {
             bound = binding.name();
         } else if (node instanceof Ast.ForOfStmt loop) {
             bound = loop.bindingName();
+        } else if (node instanceof Ast.SelectArm arm) {
+            bound = arm.bindingName();
+        } else if (node instanceof Ast.BindingPattern pattern) {
+            bound = pattern.name();
+        } else if (node instanceof Ast.TypePattern pattern) {
+            bound = pattern.binding();
+        } else if (node instanceof Ast.StructuralPattern pattern) {
+            bound = pattern.binding();
         }
         if (bound != null && ML_SCALAR_INTRINSICS.contains(bound)) {
             throw new IllegalArgumentException(
@@ -154,6 +206,61 @@ public final class DeclaredEffectVerifier {
                 } catch (ReflectiveOperationException e) {
                     throw new IllegalStateException(
                             "cannot inspect sealed ML intrinsic bindings", e);
+                }
+            }
+        }
+    }
+
+    private Ast.EnumDecl findEnum(String name) {
+        if (ambiguousEnums.contains(name)) {
+            throw new IllegalArgumentException(
+                    "ambiguous enum '" + name + "' in effect verification");
+        }
+        return enums.get(name);
+    }
+
+    private static Set<String> collectBoundNames(Object... roots) {
+        Set<String> result = new HashSet<>();
+        for (Object root : roots) collectBoundNames(root, result);
+        return Set.copyOf(result);
+    }
+
+    private static void collectBoundNames(Object node, Set<String> names) {
+        if (node == null) return;
+        if (node instanceof Ast.Param parameter) {
+            names.add(parameter.name());
+        } else if (node instanceof Ast.BindingStmt binding) {
+            names.add(binding.name());
+        } else if (node instanceof Ast.DestructureBinding binding
+                && !binding.isDiscard()) {
+            names.add(binding.name());
+        } else if (node instanceof Ast.ForOfStmt loop) {
+            names.add(loop.bindingName());
+        } else if (node instanceof Ast.SelectArm arm) {
+            if (arm.bindingName() != null) names.add(arm.bindingName());
+        } else if (node instanceof Ast.BindingPattern pattern) {
+            names.add(pattern.name());
+        } else if (node instanceof Ast.TypePattern pattern) {
+            if (pattern.binding() != null) names.add(pattern.binding());
+        } else if (node instanceof Ast.StructuralPattern pattern) {
+            if (pattern.binding() != null) names.add(pattern.binding());
+        } else if (node instanceof Ast.TryStmt attempted) {
+            if (attempted.errorName() != null) names.add(attempted.errorName());
+        }
+        if (node instanceof Iterable<?> items) {
+            for (Object item : items) collectBoundNames(item, names);
+            return;
+        }
+        if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    collectBoundNames(
+                            component.getAccessor().invoke(record),
+                            names);
+                } catch (ReflectiveOperationException e) {
+                    throw new IllegalStateException(
+                            "cannot inspect effect-scope bindings", e);
                 }
             }
         }
@@ -184,8 +291,8 @@ public final class DeclaredEffectVerifier {
         return false;
     }
 
-    private static void collect(Object node, Set<FunctionEffects.Effect> effects,
-                                String stateAccess, String callableName, boolean serial) {
+    private void collect(Object node, Set<FunctionEffects.Effect> effects,
+                         String stateAccess, String callableName, boolean serial) {
         if (node == null) return;
         if (node instanceof Ast.CallExpr call) {
             if (call.callee() instanceof Ast.MemberExpr member
@@ -261,6 +368,56 @@ public final class DeclaredEffectVerifier {
                     effects.add(FunctionEffects.Effect.STATE_READ);
                     effects.add(FunctionEffects.Effect.STATE_WRITE);
                     collect(call.arguments().get(1), effects, stateAccess, callableName, serial);
+                    return;
+                }
+                if ((name.equals("Some")
+                                || name.equals("Ok")
+                                || name.equals("Err"))
+                        && !currentBindings.contains(name)) {
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                name + " expects exactly one value");
+                    }
+                    collect(
+                            call.arguments().getFirst(),
+                            effects,
+                            stateAccess,
+                            callableName,
+                            serial);
+                    return;
+                }
+            }
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr namespace
+                    && !currentBindings.contains(namespace.name())) {
+                Ast.EnumDecl enumeration = findEnum(namespace.name());
+                if (enumeration != null) {
+                    Ast.EnumCase variant = null;
+                    for (Ast.EnumCase candidate : enumeration.cases()) {
+                        if (candidate.name().equals(member.member())) {
+                            variant = candidate;
+                            break;
+                        }
+                    }
+                    if (variant == null) {
+                        throw new IllegalArgumentException(
+                                "unknown enum case "
+                                        + namespace.name() + "." + member.member()
+                                        + " in " + callableName);
+                    }
+                    int expected = variant.payload() == null ? 0 : 1;
+                    if (call.arguments().size() != expected) {
+                        throw new IllegalArgumentException(
+                                "enum constructor "
+                                        + namespace.name() + "." + member.member()
+                                        + " expects " + expected + " argument(s)");
+                    }
+                    collect(
+                            call.arguments(),
+                            effects,
+                            stateAccess,
+                            callableName,
+                            serial);
                     return;
                 }
             }

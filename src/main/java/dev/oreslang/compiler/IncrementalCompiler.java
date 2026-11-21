@@ -231,6 +231,20 @@ public final class IncrementalCompiler {
             abi.append('=').append(typeRef(alias.target())).append('\n');
             return;
         }
+        if (decl instanceof Ast.EnumDecl enumeration) {
+            abi.append("enum ").append(enumeration.name()).append('\n');
+            for (Ast.EnumCase variant : enumeration.cases()) {
+                abi.append(" enum-case ")
+                        .append(variant.name())
+                        .append('#').append(variant.tag())
+                        .append(':')
+                        .append(variant.payload() == null
+                                ? "<none>"
+                                : typeRef(variant.payload()))
+                        .append('\n');
+            }
+            return;
+        }
         if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
             abi.append("binding ").append(field.bindingKind()).append(' ')
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))

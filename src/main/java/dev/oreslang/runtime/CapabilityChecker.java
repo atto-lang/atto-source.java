@@ -56,6 +56,8 @@ public final class CapabilityChecker {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.TypeAliasDecl alias) {
                     index(aliases, ambiguousAliases, module.name(), alias.name(), alias);
+                } else if (declaration instanceof Ast.EnumDecl enumeration) {
+                    index(enums, ambiguousEnums, module.name(), enumeration.name(), enumeration);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                 } else if (declaration instanceof Ast.FunctionDecl fn) {
@@ -92,6 +94,10 @@ public final class CapabilityChecker {
 
     private Ast.TypeAliasDecl findAlias(String name) {
         return ambiguousAliases.contains(name) ? null : aliases.get(name);
+    }
+
+    private Ast.EnumDecl findEnum(String name) {
+        return ambiguousEnums.contains(name) ? null : enums.get(name);
     }
 
     private Ast.ClassDecl findClass(String name) {
@@ -214,6 +220,10 @@ public final class CapabilityChecker {
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
                 } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     checkType(alias.target(), policy);
+                } else if (declaration instanceof Ast.EnumDecl enumeration) {
+                    for (Ast.EnumCase variant : enumeration.cases()) {
+                        checkType(variant.payload(), policy);
+                    }
                 }
             }
         }
@@ -272,6 +282,17 @@ public final class CapabilityChecker {
                 checkType(alias.target(), policy);
             } finally {
                 typeExpansionStack.remove(alias);
+            }
+        }
+
+        Ast.EnumDecl enumeration = findEnum(type.name());
+        if (enumeration != null && typeExpansionStack.add(enumeration)) {
+            try {
+                for (Ast.EnumCase variant : enumeration.cases()) {
+                    checkType(variant.payload(), policy);
+                }
+            } finally {
+                typeExpansionStack.remove(enumeration);
             }
         }
 

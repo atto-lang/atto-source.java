@@ -55,22 +55,26 @@ public final class TypeChecker {
             Ast.InterfaceFunctionDecl function) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
+    private record EnumVariant(Ast.EnumDecl owner, Ast.EnumCase variant) { }
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+    private final Map<String, Ast.EnumDecl> enums = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.TypeAliasDecl, String> typeAliasOwners = new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.EnumDecl, String> enumOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
+    private final Set<String> ambiguousEnums = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
@@ -138,6 +142,7 @@ public final class TypeChecker {
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+                else if (declaration instanceof Ast.EnumDecl enumeration) localNames.add(enumeration.name());
             }
         }
 
@@ -176,6 +181,9 @@ public final class TypeChecker {
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
+                } else if (decl instanceof Ast.EnumDecl enumeration) {
+                    putQualified(enums, ambiguousEnums, module.name(), enumeration.name(), enumeration, "enum");
+                    enumOwners.put(enumeration, module.name());
                 }
             }
         }
@@ -244,6 +252,7 @@ public final class TypeChecker {
                         Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
                         resolve(alias.target(), aliasGenerics, null);
                     }
+                    else if (decl instanceof Ast.EnumDecl enumeration) validateEnum(enumeration);
                     else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
                 }
             } finally {
@@ -266,6 +275,9 @@ public final class TypeChecker {
             } else if (decl instanceof Ast.FieldDecl field) {
                 name = field.name();
                 category = "binding";
+            } else if (decl instanceof Ast.EnumDecl enumeration) {
+                name = enumeration.name();
+                category = "enum";
             } else {
                 continue; // interfaces and aliases occupy the type namespace
             }
@@ -2008,6 +2020,10 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            Type enumConstructor =
+                    typeEnumConstructor(call, env, generics, self);
+            if (enumConstructor != null) return enumConstructor;
+
             Type mlScalarIntrinsic =
                     typeMlScalarIntrinsic(call, env, generics, self);
             if (mlScalarIntrinsic != null) return mlScalarIntrinsic;
@@ -5148,6 +5164,41 @@ public final class TypeChecker {
             return;
         }
         if (pattern instanceof Ast.ConstructorPattern constructor) {
+            EnumVariant enumVariant = enumVariant(constructor.constructor());
+            if (enumVariant != null) {
+                Ast.EnumDecl subjectEnum = enumForType(subject);
+                if (subjectEnum == null
+                        || !qualifiedEnumName(subjectEnum)
+                                .equals(qualifiedEnumName(enumVariant.owner()))) {
+                    throw new IllegalArgumentException(
+                            "enum case " + constructor.constructor()
+                                    + " is not in match subject domain " + subject);
+                }
+                int expected = enumVariant.variant().payload() == null ? 0 : 1;
+                if (constructor.arguments().size() != expected) {
+                    throw new IllegalArgumentException(
+                            "enum case pattern " + constructor.constructor()
+                                    + " expects " + expected
+                                    + " payload pattern(s), got "
+                                    + constructor.arguments().size());
+                }
+                if (expected == 1) {
+                    Type payload = deref(resolve(
+                            enumVariant.variant().payload(), generics, self));
+                    checkPattern(
+                            constructor.arguments().getFirst(),
+                            payload,
+                            bindings,
+                            generics,
+                            self);
+                }
+                return;
+            }
+            if (constructor.constructor().contains(".")) {
+                throw new IllegalArgumentException(
+                        "unknown enum case in match pattern "
+                                + constructor.constructor());
+            }
             if (!(subject instanceof Named named)) {
                 throw new IllegalArgumentException("constructor pattern " + constructor.constructor() + " requires a sum/constructor type, got " + subject);
             }
@@ -5337,6 +5388,13 @@ public final class TypeChecker {
         }
         if (left instanceof Ast.ConstructorPattern a && right instanceof Ast.ConstructorPattern b) {
             if (!a.constructor().equals(b.constructor())) {
+                EnumVariant av = enumVariant(a.constructor());
+                EnumVariant bv = enumVariant(b.constructor());
+                if (av != null && bv != null
+                        && qualifiedEnumName(av.owner())
+                                .equals(qualifiedEnumName(bv.owner()))) {
+                    return true;
+                }
                 if ((a.constructor().equals("Some") && b.constructor().equals("None"))
                         || (a.constructor().equals("None") && b.constructor().equals("Some"))
                         || (a.constructor().equals("Ok") && b.constructor().equals("Err"))
@@ -5413,6 +5471,35 @@ public final class TypeChecker {
             }
             return yes && no;
         }
+        Ast.EnumDecl enumeration = enumForType(subject);
+        if (enumeration != null) {
+            for (Ast.EnumCase variant : enumeration.cases()) {
+                String qualified = enumeration.name() + "." + variant.name();
+                boolean covered = false;
+                for (Ast.MatchArm arm : arms) {
+                    if (arm.guard() != null
+                            || !(arm.pattern() instanceof Ast.ConstructorPattern constructor)
+                            || !constructor.constructor().equals(qualified)) {
+                        continue;
+                    }
+                    if (variant.payload() == null) {
+                        covered = constructor.arguments().isEmpty();
+                    } else if (constructor.arguments().size() == 1) {
+                        Type payload = deref(resolve(
+                                variant.payload(), generics, self));
+                        covered = patternCoversType(
+                                constructor.arguments().getFirst(),
+                                payload,
+                                generics,
+                                self);
+                    }
+                    if (covered) break;
+                }
+                if (!covered) return false;
+            }
+            return true;
+        }
+
         if (subject instanceof Named named && named.name().equals("Option")) {
             boolean some = false, none = false;
             for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
@@ -5467,6 +5554,26 @@ public final class TypeChecker {
                 && literal.value() instanceof String value) {
             return stringLiteral.value().equals(value);
         }
+        if (pattern instanceof Ast.ConstructorPattern constructor) {
+            EnumVariant variant = enumVariant(constructor.constructor());
+            Ast.EnumDecl subjectEnum = enumForType(subject);
+            if (variant == null || subjectEnum == null
+                    || !qualifiedEnumName(subjectEnum)
+                            .equals(qualifiedEnumName(variant.owner()))) {
+                return false;
+            }
+            if (variant.variant().payload() == null) {
+                return constructor.arguments().isEmpty();
+            }
+            if (constructor.arguments().size() != 1) return false;
+            Type payload = deref(resolve(
+                    variant.variant().payload(), generics, self));
+            return patternCoversType(
+                    constructor.arguments().getFirst(),
+                    payload,
+                    generics,
+                    self);
+        }
         return false;
     }
 
@@ -5493,6 +5600,13 @@ public final class TypeChecker {
         }
 
         if (a instanceof Named an && b instanceof Named bn) {
+            Ast.EnumDecl aEnum = findEnum(an.name());
+            Ast.EnumDecl bEnum = findEnum(bn.name());
+            if (aEnum != null || bEnum != null) {
+                return aEnum != null
+                        && bEnum != null
+                        && qualifiedEnumName(aEnum).equals(qualifiedEnumName(bEnum));
+            }
             boolean aNominal = findClass(an.name()) != null || findInterface(an.name()) != null;
             boolean bNominal = findClass(bn.name()) != null || findInterface(bn.name()) != null;
             if (aNominal && bNominal) {
@@ -7554,6 +7668,14 @@ public final class TypeChecker {
                 yield new Function(args.subList(0, args.size() - 1), args.getLast());
             }
             default -> {
+                Ast.EnumDecl knownEnum = findEnum(ref.name());
+                if (knownEnum != null) {
+                    if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "enum type '" + ref.name() + "' is not generic");
+                    }
+                    yield new Named(qualifiedEnumName(knownEnum), List.of());
+                }
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
@@ -7880,6 +8002,121 @@ public final class TypeChecker {
     private Ast.TypeAliasDecl findTypeAlias(String name) {
         if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias '" + name + "'; qualify it with its module");
         return typeAliases.get(name);
+    }
+
+    private Ast.EnumDecl findEnum(String name) {
+        if (ambiguousEnums.contains(name)) {
+            throw new IllegalArgumentException(
+                    "ambiguous enum name '" + name + "'; qualify it with its module");
+        }
+        return enums.get(name);
+    }
+
+    private String qualifiedEnumName(Ast.EnumDecl enumeration) {
+        String owner = enumOwners.get(enumeration);
+        return owner == null || owner.equals(Parser.ROOT_MODULE)
+                ? enumeration.name()
+                : owner + "." + enumeration.name();
+    }
+
+    private EnumVariant enumVariant(String qualifiedCase) {
+        int dot = qualifiedCase.lastIndexOf('.');
+        if (dot <= 0 || dot == qualifiedCase.length() - 1) return null;
+        Ast.EnumDecl enumeration = findEnum(qualifiedCase.substring(0, dot));
+        if (enumeration == null) return null;
+        String caseName = qualifiedCase.substring(dot + 1);
+        for (Ast.EnumCase variant : enumeration.cases()) {
+            if (variant.name().equals(caseName)) {
+                return new EnumVariant(enumeration, variant);
+            }
+        }
+        return null;
+    }
+
+    private Ast.EnumDecl enumForType(Type type) {
+        if (!(type instanceof Named named) || !named.arguments().isEmpty()) return null;
+        Ast.EnumDecl direct = findEnum(named.name());
+        if (direct != null && qualifiedEnumName(direct).equals(named.name())) return direct;
+        for (Ast.EnumDecl enumeration : enumOwners.keySet()) {
+            if (qualifiedEnumName(enumeration).equals(named.name())) return enumeration;
+        }
+        return null;
+    }
+
+    private void validateEnum(Ast.EnumDecl enumeration) {
+        if (enumeration.cases().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "enum '" + enumeration.name() + "' must declare at least one case");
+        }
+        Set<String> names = new HashSet<>();
+        Set<Integer> tags = new HashSet<>();
+        int previousTag = 0;
+        for (Ast.EnumCase variant : enumeration.cases()) {
+            if (!names.add(variant.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate enum case "
+                                + enumeration.name() + "." + variant.name());
+            }
+            if (variant.tag() <= 0 || variant.tag() <= previousTag
+                    || !tags.add(variant.tag())) {
+                throw new IllegalArgumentException(
+                        "enum '" + enumeration.name()
+                                + "' requires unique positive monotonically increasing tags");
+            }
+            previousTag = variant.tag();
+            if (variant.payload() != null) {
+                Type payload = resolve(variant.payload(), Set.of(), null);
+                if (payload == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            "enum case '" + enumeration.name() + "." + variant.name()
+                                    + "' cannot carry void");
+                }
+            }
+        }
+    }
+
+    private Type typeEnumConstructor(
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr ownerName)
+                || env.lookup(ownerName.name()) != null) {
+            return null;
+        }
+        Ast.EnumDecl enumeration = findEnum(ownerName.name());
+        if (enumeration == null) return null;
+
+        Ast.EnumCase variant = null;
+        for (Ast.EnumCase candidate : enumeration.cases()) {
+            if (candidate.name().equals(member.member())) {
+                variant = candidate;
+                break;
+            }
+        }
+        if (variant == null) {
+            throw new IllegalArgumentException(
+                    "unknown enum case " + ownerName.name() + "." + member.member());
+        }
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException("enum constructors do not accept type arguments");
+        }
+        int expected = variant.payload() == null ? 0 : 1;
+        if (call.arguments().size() != expected) {
+            throw new IllegalArgumentException(
+                    "enum constructor " + ownerName.name() + "." + variant.name()
+                            + " expects " + expected + " argument(s)");
+        }
+        if (expected == 1) {
+            Type actual = typeOf(call.arguments().getFirst(), env, generics, self);
+            Type payload = resolve(variant.payload(), generics, self);
+            requireAssignable(
+                    actual,
+                    payload,
+                    "payload for " + ownerName.name() + "." + variant.name());
+        }
+        return new Named(qualifiedEnumName(enumeration), List.of());
     }
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
