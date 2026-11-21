@@ -820,10 +820,18 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
+            return invoke(initial, null, null);
+        }
+
+        private Object invoke(
+                Invocation initial,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             Invocation current = initial;
             int tailHops = 0;
             while (true) {
-                Object result = current.owner().executeRaw(current);
+                Object result = current.owner().executeRaw(
+                        current, taskScope, taskScopeParent);
                 if (!(result instanceof TailCall tail)) return result;
                 current = tail.invocation();
                 tailHops++;
@@ -834,23 +842,40 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object executeRaw(Invocation invocation) {
+            return executeRaw(invocation, null, null);
+        }
+
+        private Object executeRaw(
+                Invocation invocation,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             return switch (invocation.kind()) {
                 case FUNCTION -> callFunctionRaw(
                         (Ast.FunctionDecl) invocation.target(),
-                        invocation.arguments());
+                        invocation.arguments(),
+                        taskScope,
+                        taskScopeParent);
                 case FUNCTION_BODY -> callFunctionBodyRaw(
                         (Ast.FunctionDecl) invocation.target(),
-                        invocation.arguments());
+                        invocation.arguments(),
+                        taskScope,
+                        taskScopeParent);
                 case METHOD -> callMethodRaw(
                         (OresObject) invocation.receiver(),
                         (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
+                        invocation.arguments(),
+                        taskScope,
+                        taskScopeParent);
                 case STATIC_FUNCTION -> callStaticFunctionRaw(
                         (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
+                        invocation.arguments(),
+                        taskScope,
+                        taskScopeParent);
                 case STATIC_FUNCTION_BODY -> callStaticFunctionBodyRaw(
                         (Ast.MethodDecl) invocation.target(),
-                        invocation.arguments());
+                        invocation.arguments(),
+                        taskScope,
+                        taskScopeParent);
                 case INVOKABLE -> ((Invokable) invocation.target()).call(invocation.arguments());
             };
         }
@@ -885,6 +910,10 @@ public final class OresEvalRootNode extends RootNode {
             if (callable instanceof StaticFunctionValue function) {
                 return function.owner.prepareStaticValueInvocation(
                         function.klass, function.functionName, objectArguments(args), function.accessClass);
+            }
+            if (callable instanceof SourceFunctionValue function) {
+                return function.owner.functionInvocation(
+                        function.function, objectArguments(args));
             }
             return new Invocation(this, InvocationKind.INVOKABLE, null, callable, objectArguments(args));
         }
@@ -1016,6 +1045,7 @@ public final class OresEvalRootNode extends RootNode {
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
             private final List<?> arguments;
+            private TaskScope inheritedTaskScope;
             private TaskScope.Registration scopeRegistration;
             private final Object taskScopeLock = new Object();
             private final Set<TaskScope> activeTaskScopes =
@@ -1188,6 +1218,11 @@ public final class OresEvalRootNode extends RootNode {
                                 function != null
                                         ? "function " + function.name()
                                         : "method " + method.name());
+                    }
+
+                    if (inheritedTaskScope != null) {
+                        params.taskScope = inheritedTaskScope;
+                        params.taskScopeParent = scopeRegistration;
                     }
 
                     List<Ast.Stmt> body =
@@ -1365,18 +1400,18 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceFunctionTask(
                 Ast.FunctionDecl function,
                 List<?> arguments) {
-            SourceTask task = new SourceTask(function, arguments);
-            OresFuture<Object> future;
-            if (ActorRuntime.inActorExecution()) {
-                future = context.actors().startActorTask(task);
-                context.actors().ownCurrentActorFuture(future);
-            } else {
-                OresScheduler current = OresScheduler.current();
-                future = (current != null
-                        ? current
-                        : context.vm().rootScheduler()).start(task);
-            }
-            return future;
+            return startSourceFunctionTask(function, arguments, null, null);
+        }
+
+        private OresFuture<Object> startSourceFunctionTask(
+                Ast.FunctionDecl function,
+                List<?> arguments,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
+            return startSourceCallableTask(
+                    new SourceTask(function, arguments),
+                    taskScope,
+                    taskScopeParent);
         }
 
         private OresFuture<Object> startSourceBlockTask(
@@ -1531,16 +1566,77 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl method,
                 OresObject receiver,
                 List<?> arguments) {
-            SourceTask task = new SourceTask(method, receiver, arguments);
-            OresFuture<Object> future;
-            if (ActorRuntime.inActorExecution()) {
-                future = context.actors().startActorTask(task);
-                context.actors().ownCurrentActorFuture(future);
+            return startSourceMethodTask(
+                    method, receiver, arguments, null, null);
+        }
+
+        private OresFuture<Object> startSourceMethodTask(
+                Ast.MethodDecl method,
+                OresObject receiver,
+                List<?> arguments,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
+            return startSourceCallableTask(
+                    new SourceTask(method, receiver, arguments),
+                    taskScope,
+                    taskScopeParent);
+        }
+
+        private OresFuture<Object> startSourceCallableTask(
+                SourceTask task,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
+            Objects.requireNonNull(task, "source callable Task");
+            if (taskScope != null && ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "scoped callable Task execution inside actors is disabled until actor quota/hot-reload integration is proven");
+            }
+
+            final TaskScope.Registration child;
+            if (taskScope == null) {
+                child = null;
             } else {
-                OresScheduler current = OresScheduler.current();
-                future = (current != null
-                        ? current
-                        : context.vm().rootScheduler()).start(task);
+                // The helper itself is a structured child. This is essential
+                // for async helpers that are not immediately awaited: scope
+                // close must still revoke/join the helper before reclamation.
+                child = taskScope.reserve(taskScopeParent);
+                task.inheritedTaskScope = taskScope;
+                task.scopeRegistration = child;
+            }
+
+            final OresFuture<Object> future;
+            try {
+                if (ActorRuntime.inActorExecution()) {
+                    future = context.actors().startActorTask(task);
+                    context.actors().ownCurrentActorFuture(future);
+                } else {
+                    OresScheduler current = OresScheduler.current();
+                    OresScheduler scheduler =
+                            current != null
+                                    ? current
+                                    : context.vm().rootScheduler();
+                    future = child == null
+                            ? scheduler.start(task)
+                            : scheduler.startCompilerAdmittedTask(
+                                    task,
+                                    child::quiesced,
+                                    child::terminalReady);
+                }
+            } catch (RuntimeException | Error failure) {
+                if (child != null) child.failedAdmission(failure);
+                throw failure;
+            }
+
+            if (child != null) {
+                try {
+                    child.attach(future);
+                } catch (RuntimeException | Error attachFailure) {
+                    // A scheduler Future already owns physical retirement.
+                    // Cancellation is the only safe rollback; never reclassify
+                    // this as a never-started admission.
+                    future.cancel(false);
+                    throw attachFailure;
+                }
             }
             return future;
         }
@@ -4561,7 +4657,10 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation) {
             try {
-                Object result = invoke(invocation);
+                Object result = invoke(
+                        invocation,
+                        env.taskScope,
+                        env.taskScopeParent);
                 if (result instanceof OresFuture<?> future
                         && !declaredFuture) {
                     // A settled Future is a value, not a suspension: do not
@@ -4902,6 +5001,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionRaw(Ast.FunctionDecl fn, List<Object> args) {
+            return callFunctionRaw(fn, args, null, null);
+        }
+
+        private Object callFunctionRaw(
+                Ast.FunctionDecl fn,
+                List<Object> args,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             if (fn.name().equals("init")) {
                 throw new IllegalStateException(
                         "init is a lifecycle hook and cannot be invoked directly; startup runs it exactly once");
@@ -4931,14 +5038,19 @@ public final class OresEvalRootNode extends RootNode {
             if (fn.actorKind() == Ast.ActorKind.NONE) {
                 // Imported calls may select the scheduler path. Keep the trap
                 // wrapper around that path as well as direct execution.
-                if (fn.trapped()) return callFunctionBodyRaw(fn, normalized);
+                if (fn.trapped()) {
+                    return callFunctionBodyRaw(
+                            fn, normalized, taskScope, taskScopeParent);
+                }
                 if (fn.async() || functionContainsPotentialSuspension(fn)) {
                     OresFuture<Object> future =
                             startSourceFunctionTask(
                                     fn,
                                     fn.async()
                                             ? detachAsyncArguments(normalized, fn.parameters())
-                                            : normalized);
+                                            : normalized,
+                                    taskScope,
+                                    taskScopeParent);
 
                     if (fn.async()) {
                         return future;
@@ -4950,7 +5062,8 @@ public final class OresEvalRootNode extends RootNode {
                     return returnSourceTaskResult(future, false);
                 }
 
-                return callFunctionBodyRaw(fn, normalized);
+                return callFunctionBodyRaw(
+                        fn, normalized, taskScope, taskScopeParent);
             }
 
             if (ActorRuntime.inActorExecution()) {
@@ -5143,12 +5256,24 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
+            return callFunctionBodyRaw(fn, args, null, null);
+        }
+
+        private Object callFunctionBodyRaw(
+                Ast.FunctionDecl fn,
+                List<?> args,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             if (!fn.trapped() || functionContainsPotentialSuspension(fn)) {
                 // SourceTask owns the trap boundary for scheduled execution.
-                return callFunctionBodyUnchecked(fn, args);
+                return callFunctionBodyUnchecked(
+                        fn, args, taskScope, taskScopeParent);
             }
             try {
-                return new OptionValue(true, callFunctionBodyUnchecked(fn, args));
+                return new OptionValue(
+                        true,
+                        callFunctionBodyUnchecked(
+                                fn, args, taskScope, taskScopeParent));
             } catch (RuntimeException failure) {
                 if (!isTrappableFailure(failure)) throw failure;
                 // trap is deliberately lossy: ordinary guest/runtime failure
@@ -5181,18 +5306,37 @@ public final class OresEvalRootNode extends RootNode {
                     failure, OresPanic.class);
         }
 
-        private Object callFunctionBodyUnchecked(Ast.FunctionDecl fn, List<?> args) {
+        private Object callFunctionBodyUnchecked(
+                Ast.FunctionDecl fn,
+                List<?> args) {
+            return callFunctionBodyUnchecked(fn, args, null, null);
+        }
+
+        private Object callFunctionBodyUnchecked(
+                Ast.FunctionDecl fn,
+                List<?> args,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             if (fn.async() || functionContainsPotentialSuspension(fn)) {
                 OresFuture<Object> future =
                         startSourceFunctionTask(
                                 fn,
                                 fn.async()
                                         ? detachAsyncArguments(args, fn.parameters())
-                                        : args);
+                                        : args,
+                                taskScope,
+                                taskScopeParent);
                 return returnSourceTaskResult(future, fn.async());
             }
 
-            Env env = new Env(null, fn.nonLexical(), null, null, declarationModules.get(fn));
+            Env env = new Env(
+                    null,
+                    fn.nonLexical(),
+                    null,
+                    null,
+                    declarationModules.get(fn));
+            env.taskScope = taskScope;
+            env.taskScopeParent = taskScopeParent;
             bindCallableArguments(env, fn.parameters(), args, "function " + fn.name());
             try {
                 // A trap boundary must survive tail-call lowering. Treat it as a
@@ -5264,18 +5408,37 @@ public final class OresEvalRootNode extends RootNode {
             return invoke(methodInvocation(receiver, method, args));
         }
 
-        private Object callMethodRaw(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+        private Object callMethodRaw(
+                OresObject receiver,
+                Ast.MethodDecl method,
+                List<?> args) {
+            return callMethodRaw(receiver, method, args, null, null);
+        }
+
+        private Object callMethodRaw(
+                OresObject receiver,
+                Ast.MethodDecl method,
+                List<?> args,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             if (args.size() != method.parameters().size()) {
                 throw new IllegalArgumentException(
                         "method " + method.name() + " arity mismatch");
             }
             if (method.async() || methodContainsPotentialSuspension(method)) {
                 OresFuture<Object> future =
-                        startSourceMethodTask(method, receiver, args);
+                        startSourceMethodTask(
+                                method,
+                                receiver,
+                                args,
+                                taskScope,
+                                taskScopeParent);
                 return returnSourceTaskResult(future, method.async());
             }
             if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null, false, declaringClass(method));
+            env.taskScope = taskScope;
+            env.taskScopeParent = taskScopeParent;
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             bindCallableArguments(env, method.parameters(), args, "method " + method.name());
             try {
@@ -6489,7 +6652,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                    return new SourceFunctionValue(this, fn);
                 }
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
@@ -7742,6 +7905,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callStaticFunctionRaw(Ast.MethodDecl fn, List<?> args) {
+            return callStaticFunctionRaw(fn, args, null, null);
+        }
+
+        private Object callStaticFunctionRaw(
+                Ast.MethodDecl fn,
+                List<?> args,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             if (!fn.isStatic()) {
                 throw new IllegalArgumentException(
                         "not a static class function: " + fn.name());
@@ -7757,14 +7928,29 @@ public final class OresEvalRootNode extends RootNode {
                                 null,
                                 fn.async()
                                         ? detachAsyncArguments(args, fn.parameters())
-                                        : args);
+                                        : args,
+                                taskScope,
+                                taskScopeParent);
                 return returnSourceTaskResult(future, fn.async());
             }
-            return callStaticFunctionBodyRaw(fn, args);
+            return callStaticFunctionBodyRaw(
+                    fn, args, taskScope, taskScopeParent);
         }
 
-        private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
+        private Object callStaticFunctionBodyRaw(
+                Ast.MethodDecl fn,
+                List<?> args) {
+            return callStaticFunctionBodyRaw(fn, args, null, null);
+        }
+
+        private Object callStaticFunctionBodyRaw(
+                Ast.MethodDecl fn,
+                List<?> args,
+                TaskScope taskScope,
+                TaskScope.Registration taskScopeParent) {
             Env env = new Env(null, false, declaringClass(fn));
+            env.taskScope = taskScope;
+            env.taskScopeParent = taskScopeParent;
             bindCallableArguments(env, fn.parameters(), args, "static function " + fn.name());
             try {
                 executeBlock(fn.body(), env);
@@ -7794,6 +7980,29 @@ public final class OresEvalRootNode extends RootNode {
          * is captured; only the owning class and shared static slot family are
          * retained.  Invocation arity selects the closed-world static selector.
          */
+        /**
+         * Reified first-class source fnc. Keeping declaration identity here
+         * lets invokableInvocation recover a normal FUNCTION invocation so
+         * lexical TaskScope lineage is not erased by an opaque Java lambda.
+         */
+        private static final class SourceFunctionValue implements TailInvokable {
+            private final Evaluator owner;
+            private final Ast.FunctionDecl function;
+
+            private SourceFunctionValue(
+                    Evaluator owner,
+                    Ast.FunctionDecl function) {
+                this.owner = Objects.requireNonNull(owner, "function owner");
+                this.function = Objects.requireNonNull(function, "function");
+            }
+
+            @Override
+            public Object call(List<Object> arguments) {
+                return owner.invoke(
+                        owner.functionInvocation(function, arguments));
+            }
+        }
+
         private static final class StaticFunctionValue implements Invokable {
             private final Evaluator owner;
             private final Ast.ClassDecl klass;
@@ -7915,7 +8124,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    yield tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                    yield new SourceFunctionValue(this, fn);
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
@@ -7966,7 +8175,7 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' must be specialized by a direct call; "
                                     + "polymorphic function values are not supported yet");
                 }
-                return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                return new SourceFunctionValue(this, fn);
             }
             for (Ast.ModuleDecl candidate : program.modules()) {
                 for (Ast.Decl decl : candidate.declarations()) {
@@ -8155,7 +8364,7 @@ public final class OresEvalRootNode extends RootNode {
                                     + "' must be specialized by a direct call; "
                                     + "polymorphic function values are not supported yet");
                 }
-                return tailCallable(args -> callFunctionRaw(fn, objectArguments(args)));
+                return new SourceFunctionValue(this, fn);
             }
 
             for (Ast.Decl decl : module.declarations()) {
