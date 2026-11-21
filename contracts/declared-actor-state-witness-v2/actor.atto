@@ -1,0 +1,2 @@
+namespace foo;
+declare pub actor Foo implements ActorXYZ;

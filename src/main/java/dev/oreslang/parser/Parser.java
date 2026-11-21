@@ -1618,8 +1618,38 @@ public final class Parser {
             }
 
             if (actorContract) {
-                throw error(peek(),
-                        "actor contracts accept only mtd signatures; fields and other members are forbidden");
+                // These are requirements on the compiler-owned ATTACHED sealed
+                // actor state schema, never exposed trait fields or a private
+                // actor-state borrowing capability. Explicit let/val prevents
+                // an ordinary interface field from being mistaken for storage.
+                validateNoModifiers(memberModifiers, "actor state requirements");
+                if (!memberAnnotations.isEmpty()) {
+                    throw error(previous(),
+                            "actor state requirements cannot attach unverified annotations");
+                }
+                if (!isBindingKind(peek().type())) {
+                    throw error(peek(),
+                            "actor contract state requirement must start with 'let' or 'val'");
+                }
+                Ast.BindingKind requiredKind = parseBindingKind();
+                if (requiredKind != Ast.BindingKind.LET
+                        && requiredKind != Ast.BindingKind.VAL) {
+                    throw error(previous(),
+                            "actor contract state requirement must use let or val");
+                }
+                boolean mutableReferent = parseReferentMutability(requiredKind);
+                if (mutableReferent && requiredKind == Ast.BindingKind.LET) {
+                    throw error(previous(),
+                            "actor state requirement cannot grant mutable referent access");
+                }
+                Ast.TypeRef requiredType = parseTypeRef();
+                String requiredName = consume(IDENT,
+                        "expected attached actor state field name").lexeme();
+                consumeMemberTerminator(terminator,
+                        "actor state requirement must end with ';'");
+                members.add(new Ast.InterfaceFieldDecl(
+                        requiredName, requiredType, requiredKind, mutableReferent));
+                continue;
             }
             validateNoModifiers(memberModifiers, "interface fields");
             if (!memberAnnotations.isEmpty()) {
