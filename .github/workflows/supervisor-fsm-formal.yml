@@ -1,0 +1,65 @@
+name: Supervisor lifecycle formal FSM
+on:
+  pull_request:
+    paths:
+      - 'formal/supervision/**'
+      - 'src/main/java/dev/oreslang/runtime/SupervisorLifecycleFsm.java'
+      - 'src/main/java/dev/oreslang/runtime/SupervisorShutdownTree.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorLifecycleFsmOracle.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorLifecycleFsmIntegrationTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorDefaultChildScopeTest.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorShutdownDeadlineFenceTest.java'
+      - '.github/workflows/supervisor-fsm-formal.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Supervisor runtime regression tests
+        run: >-
+          mvn -B -Dmaven.compiler.release=25
+          -Dtest=SupervisorLifecycleFsmIntegrationTest,SupervisorShutdownTreeTest,ActorDefaultChildScopeTest,SupervisorShutdownDeadlineFenceTest test
+  reducer-and-tlc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Exhaustive Java reducer oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/supervisor-formal
+          javac --release 21 -Xlint:all -d target/supervisor-formal \
+            src/main/java/dev/oreslang/runtime/SupervisorLifecycleFsm.java \
+            src/test/java/dev/oreslang/runtime/SupervisorLifecycleFsmOracle.java
+          java -ea -Xmx512m -cp target/supervisor-formal \
+            dev.oreslang.runtime.SupervisorLifecycleFsmOracle
+      - name: TLA+ safety invariant model check
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --retry-delay 2 \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.1/tla2tools.jar \
+            -o /tmp/tla2tools.jar
+          echo "9416f74257aa50f250776db34964db7ec99e9883  /tmp/tla2tools.jar" | sha1sum --check -
+          cd formal/supervision
+          java -XX:+UseParallelGC -Xmx1024m -cp /tmp/tla2tools.jar \
+            tlc2.TLC -workers 2 -config SupervisorTree.cfg SupervisorTree.tla
+          java -XX:+UseParallelGC -Xmx1024m -cp /tmp/tla2tools.jar \
+            tlc2.TLC -workers 2 -config SupervisorTreeDepth3.cfg SupervisorTree.tla
