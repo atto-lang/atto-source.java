@@ -34,9 +34,60 @@ public final class IncrementalCompiler {
         return compile(sources, Map.of());
     }
 
+    /**
+     * Opt-in checked compilation with real, bounded parser diagnostics.
+     * Inspect all independent source units before building a single artifact.
+     * If any syntax issue is found, discard ALL recovered ASTs and fail before
+     * import linking, semantic lowering, or cache mutation.
+     *
+     * Later phases can report one independent root failure per source unit;
+     * within-unit type/effect/ownership recovery is still fail-fast.
+     */
+    public synchronized BuildResult compileWithDiagnostics(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            int maxErrors) {
+        java.util.Objects.requireNonNull(sources, "sources");
+        java.util.Objects.requireNonNull(importResolutions, "importResolutions");
+        DiagnosticCollector collector = new DiagnosticCollector(maxErrors);
+        java.util.TreeMap<String, String> ordered = new java.util.TreeMap<>();
+        for (Map.Entry<String, String> entry : sources.entrySet()) {
+            String unitId = normalizeUnitId(entry.getKey());
+            String previous = ordered.putIfAbsent(
+                    unitId, java.util.Objects.requireNonNull(entry.getValue(), "source text"));
+            if (previous != null)
+                throw new IllegalArgumentException("duplicate source unit '" + unitId + "'");
+        }
+        for (Map.Entry<String, String> source : ordered.entrySet()) {
+            Parser.collectSyntaxDiagnostics(source.getValue(), source.getKey(), collector);
+            if (collector.atLimit()) {
+                collector.markDiscoveryIncomplete();
+                break;
+            }
+        }
+        if (!collector.diagnostics().isEmpty()) {
+            throw new CompilationDiagnosticsException(collector);
+        }
+        // Stable semantic visit order; avoid preserving caller map iteration
+        // order when deciding which five source units fail.
+        return compileInternal(ordered, importResolutions, collector);
+    }
+
+    public synchronized BuildResult compileWithDiagnostics(
+            Map<String, String> sources, int maxErrors) {
+        return compileWithDiagnostics(sources, Map.of(), maxErrors);
+    }
+
     public synchronized BuildResult compile(
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
+        return compileInternal(sources, importResolutions, null);
+    }
+
+    private BuildResult compileInternal(
+            Map<String, String> sources,
+            Map<String, Map<String, String>> importResolutions,
+            DiagnosticCollector diagnostics) {
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
         if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
 
@@ -129,8 +180,26 @@ public final class IncrementalCompiler {
                 Ast.Program sourceProgram = parsed.get(id);
                 String moduleName = sourceProgram.modules().size() == 1
                         ? sourceProgram.modules().get(0).name() : "";
-                throw new SourceUnitDiagnosticException(
-                        id, moduleName, sourceProgram.namespace(), invalid);
+                if (diagnostics == null)
+                    throw new SourceUnitDiagnosticException(
+                            id, moduleName, sourceProgram.namespace(), invalid);
+                // The current type/ownership checkers lack compiler-owned
+                // spans and cannot recover within one unit. Do not extract a
+                // fake position from exception text. Record an explicitly
+                // unpositioned unit-level primary error and keep checking
+                // *independent* units; a poisoned program is never emitted.
+                diagnostics.add(new DiagnosticCollector.Diagnostic(
+                        "ORES-CHECK-001", DiagnosticCollector.Phase.CHECK,
+                        new DiagnosticCollector.Span(id, 1, 1, 1, 1),
+                        "semantic check failed (exact source span unavailable): "
+                                + invalid.getMessage(),
+                        "unit-semantic-check", List.of(),
+                        "exact type/borrow/effect location pending checker integration"));
+                if (diagnostics.atLimit()) {
+                    diagnostics.markDiscoveryIncomplete();
+                    break;
+                }
+                continue;
             }
             CompiledUnit unit = new CompiledUnit(
                     id,
@@ -145,6 +214,8 @@ public final class IncrementalCompiler {
             rebuilt.add(id);
         }
 
+        if (diagnostics != null && !diagnostics.diagnostics().isEmpty())
+            throw new CompilationDiagnosticsException(diagnostics);
         cache.keySet().retainAll(normalized.keySet());
         cache.putAll(next);
         return new BuildResult(

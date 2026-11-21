@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.DiagnosticCollector;
+import dev.oreslang.compiler.CompilationDiagnosticsException;
 import dev.oreslang.compiler.SourceUnitDiagnosticException;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.imports.ImportRules;
@@ -52,6 +54,54 @@ public final class LinkedProgramRunner {
             Path entryFile,
             Map<String, String> environment) throws IOException {
         return validate(entryFile, environment, null, PermissionCheckMode.COMPILE);
+    }
+
+    /**
+     * Parser-recovering compiler check with a bounded primary-error budget.
+     * Only verified imported source files are traversed, using the same source
+     * admission and import rules as ordinary validation. No recovered partial
+     * program may reach type checking, Java compilation or guest execution.
+     */
+    public static IncrementalCompiler.BuildResult validateWithDiagnostics(
+            Path entryFile,
+            Map<String, String> environment,
+            IsolatePolicy policy,
+            PermissionCheckMode permissionCheckMode,
+            int maxErrors) throws IOException {
+        Path entry = entryFile.toAbsolutePath().normalize();
+        if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
+        DiagnosticCollector diagnostics = new DiagnosticCollector(maxErrors);
+        OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+        LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
+        LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
+        collectImportClosure(entry, units, projectConfig, importResolutions,
+                new SourceAdmissionBudget(), 0, diagnostics);
+        if (!diagnostics.diagnostics().isEmpty())
+            throw new CompilationDiagnosticsException(diagnostics);
+        ensureJavaEntryContainsOres(entry, units);
+
+        if (policy != null) {
+            boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
+            if (hasJavaSource) {
+                policy.require(IsolatePolicy.Capability.JAVA_SOURCE_INTEROP, "mixed Java/Ores source islands");
+                policy.require(IsolatePolicy.Capability.JAVA_INTEROP, "mixed Java/Ores object interop");
+                if (policy.adversarial())
+                    throw new SecurityException("mixed Java/Ores source islands are disabled for adversarial isolates");
+            }
+        }
+
+        Map<String, String> sources = oresSources(units);
+        IncrementalCompiler.BuildResult build =
+                new IncrementalCompiler().compileWithDiagnostics(sources, importResolutions, maxErrors);
+        Map<String, Ast.Program> programs = parsePrograms(sources);
+        if (policy != null) {
+            for (Ast.Program program : programs.values())
+                CapabilityChecker.check(program, policy, permissionCheckMode);
+        }
+        try (MixedJavaCompiler.Compilation ignored =
+                MixedJavaCompiler.compile(new ArrayList<>(units.values()), programs)) {
+            return build;
+        }
     }
 
     public static IncrementalCompiler.BuildResult validate(
@@ -378,6 +428,21 @@ public final class LinkedProgramRunner {
             Map<String, Map<String, String>> importResolutions,
             SourceAdmissionBudget budget,
             int depth) throws IOException {
+        collectImportClosure(unit, units, projectConfig, importResolutions, budget, depth, null);
+    }
+
+    private static void collectImportClosure(
+            Path unit,
+            Map<String, MixedSourceUnit> units,
+            OresProjectConfig projectConfig,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth,
+            DiagnosticCollector diagnostics) throws IOException {
+        if (diagnostics != null && diagnostics.atLimit()) {
+            diagnostics.markDiscoveryIncomplete();
+            return;
+        }
         Path normalized = unit.toAbsolutePath().normalize();
         String id = unitId(normalized);
         if (units.containsKey(id)) return;
@@ -392,11 +457,18 @@ public final class LinkedProgramRunner {
 
         final Ast.Program program;
         try {
+            if (diagnostics != null
+                    && Parser.collectSyntaxDiagnostics(mixed.oresSource(), id, diagnostics))
+                return; // Unsafe partial AST: never import, type-check, or compile it.
             program = Parser.parse(mixed.oresSource());
         } catch (IllegalArgumentException malformedSource) {
             throw new SourceUnitDiagnosticException(id, "", "", malformedSource);
         }
         for (Ast.ImportDecl imported : program.imports()) {
+            if (diagnostics != null && diagnostics.atLimit()) {
+                diagnostics.markDiscoveryIncomplete();
+                break;
+            }
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
 
@@ -429,7 +501,7 @@ public final class LinkedProgramRunner {
             String targetId = unitId(resolvedTarget);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
             collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
-                    budget, depth + 1);
+                    budget, depth + 1, diagnostics);
         }
     }
 

@@ -1,6 +1,10 @@
 package dev.oreslang.parser;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.DiagnosticCollector;
+import dev.oreslang.compiler.DiagnosticCollector.Diagnostic;
+import dev.oreslang.compiler.DiagnosticCollector.Phase;
+import dev.oreslang.compiler.DiagnosticCollector.Span;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -21,6 +25,95 @@ public final class Parser {
     private final List<Token> tokens;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
+    // Opt-in parser-only recovery; normal parse() remains fail-fast.
+    private DiagnosticCollector recoveryCollector;
+    private String recoveryUnitId;
+    private int recoveryErrors;
+    private static final int MAX_RECOVERY_SCAN_TOKENS = 100_000;
+
+    private static final class ParseFailure extends IllegalArgumentException {
+        final Token sourceToken;
+        ParseFailure(Token token, String message) {
+            super(message);
+            this.sourceToken = token;
+        }
+    }
+
+    private static final class RecoveryStopped extends RuntimeException {
+        private RecoveryStopped() { super(null, null, false, false); }
+    }
+
+    /**
+     * Collect real parser failures from independent braced declarations. The
+     * partial AST is discarded, never type-checked, run, or used for emission.
+     * When a declaration has no safely matched brace boundary, stop recovery
+     * rather than guess and accidentally parse a nested statement as a sibling.
+     *
+     * @return true only when at least one genuine parser failure was recorded
+     */
+    public static boolean collectSyntaxDiagnostics(
+            String source, String unitId, DiagnosticCollector collector) {
+        java.util.Objects.requireNonNull(collector, "collector");
+        java.util.Objects.requireNonNull(unitId, "unitId");
+        Parser parser = new Parser(new Lexer(source).scan());
+        parser.recoveryCollector = collector;
+        parser.recoveryUnitId = unitId;
+        try {
+            parser.parseProgram();
+        } catch (RecoveryStopped halted) {
+            collector.markDiscoveryIncomplete();
+        } catch (ParseFailure fatal) {
+            parser.recordParseFailure(fatal);
+            collector.markDiscoveryIncomplete();
+        }
+        return parser.recoveryErrors > 0;
+    }
+
+    private void recordParseFailure(ParseFailure failure) {
+        Token at = failure.sourceToken;
+        String raw = failure.getMessage();
+        // Position is owned by the parser token, not extracted from raw stderr.
+        String description = raw == null ? "syntax failure" : raw;
+        String prefix = "Oreslang parse error at " + at.line() + ":" + at.column() + ": ";
+        if (description.startsWith(prefix)) description = description.substring(prefix.length());
+        recoveryErrors++;
+        recoveryCollector.add(new Diagnostic(
+                "ORES-PARSE-001", Phase.PARSE,
+                new Span(recoveryUnitId, at.line(), at.column(), at.line(), at.column()),
+                description, "parse-token-" + current + "-" + recoveryErrors,
+                List.of(), ""));
+    }
+
+    /**
+     * Only advance past a declaration with an already-open, properly closed
+     * brace body. Lexer tokens (rather than source-string scanning) protect
+     * braces occurring inside comments and quoted literals.
+     */
+    private boolean synchronizeBracedDeclaration(int start) {
+        int depth = 0;
+        boolean enteredBody = false;
+        for (int i = start; i < current; i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LBRACE) { depth++; enteredBody = true; }
+            else if (type == RBRACE) depth--;
+        }
+        if (!enteredBody || depth <= 0) return false;
+        int scanned = 0;
+        while (!check(EOF) && scanned++ < MAX_RECOVERY_SCAN_TOKENS) {
+            Token.Type type = peek().type();
+            if (type == LBRACE) depth++;
+            else if (type == RBRACE) depth--;
+            advance();
+            if (depth == 0) return true;
+        }
+        return false;
+    }
+
+    private void recoverOrStop(ParseFailure failure, int declarationStart) {
+        recordParseFailure(failure);
+        if (recoveryCollector.atLimit() || !synchronizeBracedDeclaration(declarationStart))
+            throw new RecoveryStopped();
+    }
     private boolean suppressRefinementOperators;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
@@ -111,6 +204,8 @@ public final class Parser {
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
         while (!check(EOF)) {
+            int declarationStart = current;
+            try {
             rejectUnsupportedAcceleratorSyntax();
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
@@ -221,13 +316,18 @@ public final class Parser {
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
             if (declaration == null) throw error(peek(), "expected module or top-level declaration");
             rootDeclarations.add(declaration);
+            } catch (ParseFailure failure) {
+                if (recoveryCollector == null) throw failure;
+                recoverOrStop(failure, declarationStart);
+            }
         }
 
-        validateForwardTypes(rootForwards, rootDeclarations, "file root");
+        if (recoveryErrors == 0) validateForwardTypes(rootForwards, rootDeclarations, "file root");
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
-        if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
+        if (modules.isEmpty() && recoveryErrors == 0)
+            throw error(peek(), "a source file must define at least one module or top-level declaration");
         return new Ast.Program(namespace, imports, modules);
     }
 
@@ -319,11 +419,18 @@ public final class Parser {
         moduleForwards = forwards;
         try {
             while (!check(END) && !check(EOF)) {
-                Ast.Decl declaration = parseModuleMember();
-                if (declaration != null) declarations.add(declaration);
+                int declarationStart = current;
+                try {
+                    Ast.Decl declaration = parseModuleMember();
+                    if (declaration != null) declarations.add(declaration);
+                } catch (ParseFailure failure) {
+                    if (recoveryCollector == null) throw failure;
+                    recoverOrStop(failure, declarationStart);
+                }
             }
             consume(END, "expected 'end' to close module " + name);
-            validateForwardTypes(forwards, declarations, "module " + name);
+            if (recoveryErrors == 0)
+                validateForwardTypes(forwards, declarations, "module " + name);
         } finally {
             moduleForwards = enclosing;
         }
@@ -4844,7 +4951,7 @@ public final class Parser {
     private Token previous() { return tokens.get(current - 1); }
 
     private IllegalArgumentException error(Token token, String message) {
-        return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
+        return new ParseFailure(token, "Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
     private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
