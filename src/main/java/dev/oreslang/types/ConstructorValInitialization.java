@@ -41,31 +41,27 @@ public final class ConstructorValInitialization {
         // self. Ownership checks must not be the only protection: run the
         // constructor expression walker independently for every constructor.
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
-            State normalExit = block(constructor.body(), new State(fixed), required, klass.name());
+            State normalExit = block(constructor.body(), new State(required, fixed), required, klass.name());
             if (normalExit != null) requireComplete(normalExit, required, klass.name());
         }
     }
 
+
+    /** Mutable local cursor over immutable backend-neutral assignment intervals. */
     private static final class State {
-        final LinkedHashSet<String> must;
-        final LinkedHashSet<String> may;
+        ConstructorFlowState flow;
         final Set<String> fixed;
-
-        State(Set<String> fixed) {
-            this.must = new LinkedHashSet<>();
-            this.may = new LinkedHashSet<>();
-            this.fixed = Set.copyOf(fixed);
+        State(Set<String> required, Set<String> fixed) {
+            this(ConstructorFlowState.blank(required), Set.copyOf(fixed));
         }
-
-        State(Set<String> must, Set<String> may, Set<String> fixed) {
-            this.must = new LinkedHashSet<>(must);
-            this.may = new LinkedHashSet<>(may);
+        State(ConstructorFlowState flow, Set<String> fixed) {
+            this.flow = flow;
             this.fixed = fixed;
         }
-
-        State copy() {
-            return new State(must, may, fixed);
-        }
+        State copy() { return new State(flow, fixed); }
+        boolean initialized(String field) { return flow.definitelyInitialized(field); }
+        boolean maybeInitialized(String field) { return flow.maybeInitialized(field); }
+        void write(String field) { flow = flow.write(field); }
     }
 
     /** A null state has no normal continuation (every path returned). */
@@ -84,11 +80,10 @@ public final class ConstructorValInitialization {
                 String field = uninitializedFieldTarget(assignment.target(), required);
                 // RHS executes before the slot is written: reject reads of a missing slot.
                 scan(assignment.value(), state, required, klass);
-                if (state.fixed.contains(field) && state.may.contains(field)) {
+                if (state.fixed.contains(field) && state.maybeInitialized(field)) {
                     throw error(klass, field, "is immutable; may be initialized more than once");
                 }
-                state.may.add(field);
-                state.must.add(field);
+                state.write(field);
             } else {
                 scan(expression.expression(), state, required, klass);
             }
@@ -135,6 +130,39 @@ public final class ConstructorValInitialization {
             if (defaultExit != null) normalExits.add(defaultExit);
             return merge(normalExits);
         }
+        if (stmt instanceof Ast.MatchStmt matched) {
+            scan(matched.subject(), state, required, klass);
+            List<State> normalExits = new ArrayList<>();
+            boolean catchAll = false;
+            for (Ast.MatchArm arm : matched.arms()) {
+                scan(arm.guard(), state, required, klass);
+                State exit = block(arm.body(), state.copy(), required, klass);
+                if (exit != null) normalExits.add(exit);
+                if (arm.guard() == null && (arm.pattern() instanceof Ast.WildcardPattern
+                        || arm.pattern() instanceof Ast.BindingPattern)) catchAll = true;
+            }
+            if (!catchAll) normalExits.add(state);
+            return merge(normalExits);
+        }
+        if (stmt instanceof Ast.ForOfStmt loop && loop.asyncIteration()) {
+            throw constructionSuspension(klass, "async iteration");
+        }
+        if (stmt instanceof Ast.ForOfDestructureStmt loop && loop.asyncIteration()) {
+            throw constructionSuspension(klass, "async iteration");
+        }
+        if (stmt instanceof Ast.SelectStmt select && select.mode() == Ast.WaitMode.BLOCKING) {
+            throw constructionSuspension(klass, "blocking select");
+        }
+        if (stmt instanceof Ast.DeferStmt defer) {
+            requireComplete(state, required, klass);
+            if (defer.expression() instanceof Ast.LambdaExpr lambda) {
+                scan(lambda.expressionBody(), state, required, klass, true);
+                scan(lambda.blockBody(), state, required, klass, true);
+            } else {
+                scan(defer.expression(), state, required, klass, true);
+            }
+            return state;
+        }
 
         // Until the frontend has a sound CFG for loop backedges, exceptional
         // completion, deferred cleanup and detached arms, initialize before
@@ -148,15 +176,14 @@ public final class ConstructorValInitialization {
         if (states.isEmpty()) return null;
         State joined = states.getFirst().copy();
         for (int i = 1; i < states.size(); i++) {
-            joined.must.retainAll(states.get(i).must);
-            joined.may.addAll(states.get(i).may);
+            joined.flow = joined.flow.join(states.get(i).flow);
         }
         return joined;
     }
 
     private static void requireComplete(State state, Set<String> required, String klass) {
         for (String field : required) {
-            if (!state.must.contains(field)) {
+            if (!state.initialized(field)) {
                 throw new IllegalArgumentException("constructor for " + klass
                         + " did not initialize field '" + field + "' on every normal path");
             }
@@ -179,11 +206,14 @@ public final class ConstructorValInitialization {
      * newly introduced AST forms must be handled instead of silently skipped.
      */
     private static void scan(Object node, State state, Set<String> required, String klass) {
+        scan(node, state, required, klass, true);
+    }
+    private static void scan(Object node, State state, Set<String> required, String klass, boolean immediate) {
         if (node == null) return;
         if (node instanceof Ast.AssignExpr assignment) {
             String field = uninitializedFieldTarget(assignment.target(), required);
             if (field != null
-                    && (state.fixed.contains(field) || !state.must.contains(field))) {
+                    && (state.fixed.contains(field) || !state.initialized(field))) {
                 throw error(klass, field,
                         "must be assigned directly in a constructor statement, not through a nested expression or callback");
             }
@@ -192,7 +222,7 @@ public final class ConstructorValInitialization {
                 && member.receiver() instanceof Ast.NameExpr receiver
                 && receiver.name().equals("self")) {
             // A direct field projection is not publication of the receiver itself.
-            if (required.contains(member.member()) && !state.must.contains(member.member())) {
+            if (required.contains(member.member()) && !state.initialized(member.member())) {
                 throw error(klass, member.member(), "is read before constructor initialization");
             }
             return;
@@ -205,207 +235,225 @@ public final class ConstructorValInitialization {
                     "constructor for '" + klass + "': partially initialized self cannot escape");
         }
         if (node instanceof Iterable<?> values) {
-            for (Object value : values) scan(value, state, required, klass);
+            for (Object value : values) scan(value, state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.LiteralExpr || node instanceof Ast.NameExpr
                 || node instanceof Ast.BreakStmt || node instanceof Ast.ContinueStmt) return;
         if (node instanceof Ast.BinaryExpr item) {
-            scan(item.left(), state, required, klass);
-            scan(item.right(), state, required, klass);
+            scan(item.left(), state, required, klass, immediate);
+            scan(item.right(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.UnaryExpr item) {
-            scan(item.operand(), state, required, klass);
+            scan(item.operand(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ConditionalExpr item) {
-            scan(item.condition(), state, required, klass);
-            scan(item.whenTrue(), state, required, klass);
-            scan(item.whenFalse(), state, required, klass);
+            scan(item.condition(), state, required, klass, immediate);
+            scan(item.whenTrue(), state, required, klass, immediate);
+            scan(item.whenFalse(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.MatchExpr item) {
-            scan(item.subject(), state, required, klass);
-            scan(item.arms(), state, required, klass);
+            scan(item.subject(), state, required, klass, immediate);
+            scan(item.arms(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.MatchValueArm item) {
-            scan(item.guard(), state, required, klass);
-            scan(item.value(), state, required, klass);
+            scan(item.guard(), state, required, klass, immediate);
+            scan(item.value(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.TypeTestExpr item) {
-            scan(item.value(), state, required, klass);
+            scan(item.value(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.PatternTestExpr item) {
-            scan(item.value(), state, required, klass);
+            scan(item.value(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.CastExpr item) {
-            scan(item.value(), state, required, klass);
+            scan(item.value(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.SpreadExpr item) {
-            scan(item.expression(), state, required, klass);
+            scan(item.expression(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.CallExpr item) {
-            scan(item.callee(), state, required, klass);
-            scan(item.arguments(), state, required, klass);
+            scan(item.callee(), state, required, klass, immediate);
+            scan(item.arguments(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.RuntimeCallExpr item) {
-            scan(item.arguments(), state, required, klass);
+            scan(item.arguments(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.IndexExpr item) {
-            scan(item.receiver(), state, required, klass);
-            scan(item.index(), state, required, klass);
+            scan(item.receiver(), state, required, klass, immediate);
+            scan(item.index(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.NewExpr item) {
-            scan(item.arguments(), state, required, klass);
+            scan(item.arguments(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.AwaitExpr item) {
-            scan(item.expression(), state, required, klass);
+            if (immediate) throw constructionSuspension(klass, "await");
+            scan(item.expression(), state, required, klass, false);
             return;
         }
         if (node instanceof Ast.TrapExpr item) {
-            scan(item.expression(), state, required, klass);
+            scan(item.expression(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ChannelOpExpr item) {
-            scan(item.channel(), state, required, klass);
-            scan(item.value(), state, required, klass);
-            scan(item.callbackBody(), state, required, klass);
+            if (immediate && item.mode() == Ast.WaitMode.BLOCKING) {
+                throw constructionSuspension(klass, "blocking channel operation");
+            }
+            scan(item.channel(), state, required, klass, immediate);
+            scan(item.value(), state, required, klass, immediate);
+            scan(item.callbackBody(), state, required, klass, false);
             return;
         }
         if (node instanceof Ast.DynamicSelectExpr item) {
-            scan(item.cases(), state, required, klass);
+            if (immediate && item.mode() == Ast.WaitMode.BLOCKING) {
+                throw constructionSuspension(klass, "blocking dynamic select");
+            }
+            scan(item.cases(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ListExpr item) {
-            scan(item.elements(), state, required, klass);
+            scan(item.elements(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.TupleExpr item) {
-            scan(item.elements(), state, required, klass);
+            scan(item.elements(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ObjectExpr item) {
-            scan(item.fields(), state, required, klass);
+            scan(item.fields(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ObjectField item) {
-            scan(item.value(), state, required, klass);
+            scan(item.value(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.LambdaExpr item) {
-            scan(item.expressionBody(), state, required, klass);
-            scan(item.blockBody(), state, required, klass);
+            scan(item.expressionBody(), state, required, klass, false);
+            scan(item.blockBody(), state, required, klass, false);
             return;
         }
         if (node instanceof Ast.BindingStmt item) {
-            scan(item.initializer(), state, required, klass);
+            scan(item.initializer(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.DestructureStmt item) {
-            scan(item.initializer(), state, required, klass);
+            scan(item.initializer(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ExprStmt item) {
-            scan(item.expression(), state, required, klass);
+            scan(item.expression(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ReturnStmt item) {
-            scan(item.value(), state, required, klass);
+            scan(item.value(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.YieldStmt item) {
-            scan(item.value(), state, required, klass);
+            scan(item.value(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.DeferStmt item) {
-            scan(item.expression(), state, required, klass);
+            scan(item.expression(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.BlockStmt item) {
-            scan(item.body(), state, required, klass);
+            scan(item.body(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.IfStmt item) {
-            scan(item.branches(), state, required, klass);
-            scan(item.elseBody(), state, required, klass);
+            scan(item.branches(), state, required, klass, immediate);
+            scan(item.elseBody(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.IfBranch item) {
-            scan(item.condition(), state, required, klass);
-            scan(item.body(), state, required, klass);
+            scan(item.condition(), state, required, klass, immediate);
+            scan(item.body(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.MatchStmt item) {
-            scan(item.subject(), state, required, klass);
-            scan(item.arms(), state, required, klass);
+            scan(item.subject(), state, required, klass, immediate);
+            scan(item.arms(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.MatchArm item) {
-            scan(item.guard(), state, required, klass);
-            scan(item.body(), state, required, klass);
+            scan(item.guard(), state, required, klass, immediate);
+            scan(item.body(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.SwitchStmt item) {
-            scan(item.subject(), state, required, klass);
-            scan(item.cases(), state, required, klass);
-            scan(item.defaultBody(), state, required, klass);
+            scan(item.subject(), state, required, klass, immediate);
+            scan(item.cases(), state, required, klass, immediate);
+            scan(item.defaultBody(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.SwitchCase item) {
-            scan(item.constants(), state, required, klass);
-            scan(item.body(), state, required, klass);
+            scan(item.constants(), state, required, klass, immediate);
+            scan(item.body(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.TryStmt item) {
-            scan(item.body(), state, required, klass);
-            scan(item.catchBody(), state, required, klass);
-            scan(item.finallyBody(), state, required, klass);
+            scan(item.body(), state, required, klass, immediate);
+            scan(item.catchBody(), state, required, klass, immediate);
+            scan(item.finallyBody(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ForOfStmt item) {
-            scan(item.iterable(), state, required, klass);
-            scan(item.body(), state, required, klass);
+            if (immediate && item.asyncIteration()) throw constructionSuspension(klass, "async iteration");
+            scan(item.iterable(), state, required, klass, immediate);
+            scan(item.body(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ForOfDestructureStmt item) {
-            scan(item.iterable(), state, required, klass);
-            scan(item.body(), state, required, klass);
+            if (immediate && item.asyncIteration()) throw constructionSuspension(klass, "async iteration");
+            scan(item.iterable(), state, required, klass, immediate);
+            scan(item.body(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.ForStmt item) {
-            scan(item.initializer(), state, required, klass);
-            scan(item.condition(), state, required, klass);
-            scan(item.update(), state, required, klass);
-            scan(item.body(), state, required, klass);
+            scan(item.initializer(), state, required, klass, immediate);
+            scan(item.condition(), state, required, klass, immediate);
+            scan(item.update(), state, required, klass, immediate);
+            scan(item.body(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.LoopStmt item) {
-            scan(item.body(), state, required, klass);
+            scan(item.body(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.SelectStmt item) {
-            scan(item.arms(), state, required, klass);
+            if (immediate && item.mode() == Ast.WaitMode.BLOCKING) {
+                throw constructionSuspension(klass, "blocking select");
+            }
+            scan(item.arms(), state, required, klass, immediate);
             return;
         }
         if (node instanceof Ast.SelectArm item) {
-            scan(item.channel(), state, required, klass);
-            scan(item.value(), state, required, klass);
-            scan(item.body(), state, required, klass);
+            scan(item.channel(), state, required, klass, immediate);
+            scan(item.value(), state, required, klass, immediate);
+            scan(item.body(), state, required, klass, immediate);
             return;
         }
         throw new IllegalArgumentException("unhandled AST node in constructor val analysis: " + node.getClass().getName());
 
+    }
+
+    private static IllegalArgumentException constructionSuspension(String klass, String operation) {
+        return new IllegalArgumentException("constructor for '" + klass
+                + "' cannot suspend through " + operation
+                + "; construction-scoped self must not cross a scheduler boundary");
     }
 
     private static IllegalArgumentException error(String klass, String field, String message) {

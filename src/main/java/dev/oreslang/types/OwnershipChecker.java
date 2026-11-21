@@ -1735,27 +1735,49 @@ public final class OwnershipChecker {
 
         ValueInfo callee = checkExpr(call.callee(), scope, false);
         Ast.TypeRef callableType = callee.type;
-        if (callableType != null && !callableType.isBorrow()
-                && (callableType.name().equals("Any") || callableType.name().equals("AnyCallable"))) {
-            throw error(callableType.name()
+        Ast.TypeRef callableView = callableType != null && callableType.isBorrow()
+                ? callableType.borrowedTarget() : callableType;
+        if (callableView != null
+                && (callableView.name().equals("Any") || callableView.name().equals("AnyCallable"))) {
+            throw error(callableView.name()
                     + " has no statically known callable signature and cannot be invoked directly");
         }
-        if (callableType != null
-                && !callableType.isBorrow()
-                && (callableType.name().equals("Fnc") || callableType.name().equals("Function"))
-                && !callableType.arguments().isEmpty()) {
-            int parameterCount = callableType.arguments().size() - 1;
+        if (callableView != null
+                && (callableView.name().equals("Fnc") || callableView.name().equals("Function"))
+                && !callableView.arguments().isEmpty()) {
+            int parameterCount = callableView.arguments().size() - 1;
             if (parameterCount == call.arguments().size()) {
+                VarState constructionCallLoan = null;
                 for (int i = 0; i < call.arguments().size(); i++) {
-                    ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
+                    Ast.Expr argumentExpr = call.arguments().get(i);
+                    Ast.TypeRef parameterType = callableView.arguments().get(i);
+                    ValueInfo argument;
+                    if (argumentExpr instanceof Ast.LambdaExpr lambda
+                            && isBorrowedCallable(parameterType)
+                            && !parameterType.mutableBorrow()) {
+                        VarState captureRoot = constructionSelfCaptureRoot(argumentExpr, scope);
+                        if (captureRoot != null && constructionCallLoan != null) {
+                            throw error("first-class call cannot hold overlapping construction self callback borrows");
+                        }
+                        argument = checkLambda(
+                                lambda, scope, null,
+                                false, false, initializingClass != null);
+                        if (captureRoot != null) {
+                            beginPersistentBorrow(captureRoot, true);
+                            constructionCallLoan = ownershipRoot(captureRoot);
+                        }
+                    } else {
+                        argument = checkExpr(argumentExpr, scope, false);
+                    }
                     if (containsMutexGuardType(argument.type)) {
                         throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
                     }
-                    if (argument.kind == ValueKind.MUT_BORROW) {
+                    if (argument.kind == ValueKind.MUT_BORROW
+                            && !parameterType.isBorrow()) {
                         throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
                     }
                 }
-                Ast.TypeRef result = callableType.arguments().getLast();
+                Ast.TypeRef result = callableView.arguments().getLast();
                 return new ValueInfo(result, kindOfType(result), null);
             }
         }
@@ -1894,9 +1916,19 @@ public final class OwnershipChecker {
 
                 if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
                 Ast.Param param = params.get(parameterIndex);
+                VarState constructionLoanOwner =
+                        isBorrowedCallable(param.type())
+                                && !param.type().mutableBorrow()
+                                ? constructionSelfCaptureRoot(argument, scope)
+                                : null;
                 VarState loanOwner = param.type().isBorrow()
                         ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
+                if (constructionLoanOwner != null
+                        && invocationLoans.containsKey(ownershipRoot(constructionLoanOwner))) {
+                    throw error(callable + " has overlapping construction self callback borrows at position "
+                            + (parameterIndex + 1));
+                }
                 if (loanOwner != null) {
                     Boolean previous = invocationLoans.get(loanOwner);
                     if (previous != null && (previous || mutable)) {
@@ -1905,6 +1937,12 @@ public final class OwnershipChecker {
                     }
                 }
                 checkArgument(argument, param, scope, callable, parameterIndex + 1);
+                if (constructionLoanOwner != null) {
+                    beginPersistentBorrow(constructionLoanOwner, true);
+                    activeLoans.add(new CallArgumentLoan(
+                            ownershipRoot(constructionLoanOwner), true));
+                    invocationLoans.put(ownershipRoot(constructionLoanOwner), true);
+                }
                 if (loanOwner != null) {
                     // Borrowed arguments remain live until the call completes,
                     // including forwarded incoming &mut parameters. Their
@@ -1991,6 +2029,18 @@ public final class OwnershipChecker {
         }
         if (param.type().isBorrow()) {
             boolean mutable = param.type().mutableBorrow();
+            if (!mutable
+                    && arg instanceof Ast.LambdaExpr lambda
+                    && isBorrowedCallable(param.type())) {
+                ValueInfo temporary = checkLambda(
+                        lambda, scope, null,
+                        false, false, initializingClass != null);
+                if (containsMutexGuardType(temporary.type)) {
+                    throw error(callable + " argument " + position
+                            + " cannot lend a guard-bearing callable");
+                }
+                return;
+            }
             if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                 if (mutable && !unary.operator().equals("&mut")) {
                     throw error(callable + " argument " + position + " requires rt borrow mut");
@@ -2022,9 +2072,21 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        if (isBorrowValue(argument) || argument.type.isBorrow()) {
+            throw error(callable + " argument " + position
+                    + " cannot erase a borrow into an owned parameter; use an explicit borrowed parameter");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
+    }
+
+    private boolean isBorrowedCallable(Ast.TypeRef type) {
+        if (type == null || !type.isBorrow() || type.arguments().size() != 1) return false;
+        Ast.TypeRef target = type.borrowedTarget();
+        return !target.isBorrow()
+                && (target.name().equals("Fnc") || target.name().equals("Function"))
+                && !target.arguments().isEmpty();
     }
 
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
@@ -2296,6 +2358,18 @@ public final class OwnershipChecker {
             String recursiveBinding,
             boolean allowActorSelfCapture,
             boolean deferredCleanup) {
+        return checkLambda(
+                lambda, outer, recursiveBinding,
+                allowActorSelfCapture, deferredCleanup, false);
+    }
+
+    private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture,
+            boolean deferredCleanup,
+            boolean allowConstructionBorrowCapture) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
@@ -2313,6 +2387,17 @@ public final class OwnershipChecker {
                     // the mailbox is already sealed, the actor stays alive until
                     // cleanup finishes, and no later receive turn can overlap it.
                     // Preserve self as a non-escapable borrow inside this one closure.
+                    closure.define(
+                            capture.name,
+                            new VarState(source.type, false, source.kind, Origin.CAPTURE));
+                    continue;
+                }
+                if (allowConstructionBorrowCapture
+                        && initializingClass != null
+                        && capture.name.equals("self")
+                        && source.kind == ValueKind.MUT_BORROW
+                        && source.type.isBorrow()
+                        && source.type.mutableBorrow()) {
                     closure.define(
                             capture.name,
                             new VarState(source.type, false, source.kind, Origin.CAPTURE));
@@ -2344,9 +2429,10 @@ public final class OwnershipChecker {
         Ast.ClassDecl previousInitializingClass = initializingClass;
         loopDepth = 0;
         discardingSelectReturn = false;
-        // Closures may execute after the class constructor returns; their
-        // bodies cannot write fixed slots through the ctor-only exception.
-        initializingClass = null;
+        // Ordinary closures may execute after construction and therefore
+        // lose constructor authority. Invocation-scoped borrowed callables
+        // retain the construction context while their body is validated.
+        if (!allowConstructionBorrowCapture) initializingClass = null;
         try {
             if (lambda.expressionBody() != null) {
                 // An expression body has return-value ownership semantics even
@@ -2367,6 +2453,23 @@ public final class OwnershipChecker {
             closure.close();
         }
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
+    }
+
+    private VarState constructionSelfCaptureRoot(Ast.Expr expression, Scope scope) {
+        if (initializingClass == null || !(expression instanceof Ast.LambdaExpr lambda)
+                || lambda.nonLexical()) {
+            return null;
+        }
+        Capture capture = collectCaptures(lambda, scope, null).values.get("self");
+        if (capture == null) return null;
+        VarState source = capture.source();
+        if (source.kind != ValueKind.MUT_BORROW
+                || source.type == null
+                || !source.type.isBorrow()
+                || !source.type.mutableBorrow()) {
+            return null;
+        }
+        return ownershipRoot(source);
     }
 
     private CaptureSet collectCaptures(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {

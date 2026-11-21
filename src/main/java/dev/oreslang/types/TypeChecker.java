@@ -3186,11 +3186,12 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
-            if (callee == AnyCallable.INSTANCE) {
+            Type callableView = callee instanceof Borrow borrow ? borrow.target() : callee;
+            if (callableView == AnyCallable.INSTANCE) {
                 throw new IllegalArgumentException(
                         "AnyCallable proves only that a value is callable; its signature is erased and must be narrowed before invocation");
             }
-            if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
+            if (!(callableView instanceof Function fn)) return Unknown.INSTANCE;
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
                             call.arguments(), env, generics, self,
@@ -4556,9 +4557,25 @@ public final class TypeChecker {
 
 
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
-        if (argument instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
+        Type lambdaExpected = inlineBorrowedCallableTarget(argument, expected);
+        if (argument instanceof Ast.LambdaExpr lambda && lambdaExpected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
         }
+    }
+
+    /**
+     * A freshly created lambda can be lent directly to an immutable borrowed
+     * callable parameter. The borrow is scoped to this invocation; named
+     * callable values still need an explicit borrow expression.
+     */
+    private Type inlineBorrowedCallableTarget(Ast.Expr argument, Type expected) {
+        if (argument instanceof Ast.LambdaExpr
+                && expected instanceof Borrow borrow
+                && !borrow.mutable()
+                && borrow.target() instanceof Function) {
+            return borrow.target();
+        }
+        return expected;
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
@@ -7331,9 +7348,20 @@ public final class TypeChecker {
             Env env,
             Set<String> generics,
             Type self) {
-        return argument.expression() == null
-                ? argument.staticType()
-                : typeOfAgainstExpected(argument.expression(), expected, env, generics, self);
+        if (argument.expression() == null) return argument.staticType();
+
+        Type contextualExpected = inlineBorrowedCallableTarget(argument.expression(), expected);
+        Type actual = typeOfAgainstExpected(
+                argument.expression(), contextualExpected, env, generics, self);
+
+        // Preserve the call-boundary lifetime in the semantic type so the
+        // ordinary assignability checks still prove Borrow<Callable> exactly.
+        if (contextualExpected != expected
+                && expected instanceof Borrow borrow
+                && actual instanceof Function) {
+            return new Borrow(actual, borrow.mutable());
+        }
+        return actual;
     }
 
     private Type checkGenericCallable(
