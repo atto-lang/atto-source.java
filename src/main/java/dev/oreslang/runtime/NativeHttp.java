@@ -179,9 +179,37 @@ public final class NativeHttp implements AutoCloseable {
         if (exchange == null) throw new IllegalStateException("unknown or already claimed HTTP transfer");
         synchronized (exchange.state) {
             exchange.checkOwner();
+            // Checking ActorId ownership alone is insufficient: the same
+            // pooled actor may have accepted another request on a later mail.
+            // Validate against the actual delivered token before consuming it.
+            if (ActorRuntime.inActorExecution()) {
+                context.actors().requireCurrentHttpTransferToken(token);
+            }
             if (!transfers.remove(token, exchange)) throw new IllegalStateException("HTTP transfer already claimed");
+            // Bind the exchange to an admitted logical user-mail receive.
+            // If admission fails, restore the *same* one-shot transfer ticket:
+            // otherwise a foreign/late continuation could consume a token
+            // without ever acquiring the exchange or closing the request.
+            final long earlierClaimNanos = exchange.state.claimedNanos;
             exchange.state.ticket = null;
             exchange.state.claimedNanos = System.nanoTime();
+            try {
+                if (ActorRuntime.inActorExecution()) {
+                    context.actors().bindCurrentHttpExchange(exchange);
+                }
+            } catch (RuntimeException | Error rejected) {
+                exchange.state.ticket = token;
+                exchange.state.claimedNanos = earlierClaimNanos;
+                if (transfers.putIfAbsent(token, exchange) != null) {
+                    throw new IllegalStateException(
+                            "HTTP transfer rollback lost exclusive ticket identity", rejected);
+                }
+                throw rejected;
+            }
+            // The immutable first-mail admission was consumed; the claimed
+            // exchange is now guarded by ActorCell.activeMail plus its own
+            // generation and owner checks, never by the transfer token alone.
+            context.actors().retirePendingHttpTransfer(token);
             CorePerf.elapsed(CorePerf.HTTP_CLAIM, exchange.state.spawnNanos, exchange.state.claimedNanos);
             return exchange;
         }
@@ -423,7 +451,11 @@ public final class NativeHttp implements AutoCloseable {
             // subsequent mail still waits for the current receive to finish.
             synchronized (this) {
                 if (!transportClosed || (poolWorker == null && actor != null && !actor.done().isDone())) return;
-                if (ticket != null) { transfers.remove(ticket); ticket = null; }
+                if (ticket != null) {
+                    transfers.remove(ticket);
+                    context.actors().retirePendingHttpTransfer(ticket);
+                    ticket = null;
+                }
                 if (deadline != null) deadline.cancel(false);
             }
             if (server.active.remove(this)) {
@@ -453,6 +485,13 @@ public final class NativeHttp implements AutoCloseable {
             if (state.terminal) throw new IllegalStateException("HTTP exchange is closed");
             if (generation != state.generation || !owner.equals(state.owner)) throw new IllegalStateException("HTTP exchange has moved");
             if (!owner.equals(NativeHttp.this.owner())) throw new SecurityException("HTTP exchange belongs to another execution domain");
+            // Once claimed, this exchange is bound to one logical user-mail
+            // receive, not to all later messages delivered to the same actor.
+            // Before claim, the pending transfer token is still outstanding.
+            if (ActorRuntime.inActorExecution() && state.ticket == null
+                    && state.claimedNanos != 0L) {
+                context.actors().requireCurrentHttpExchange(this);
+            }
         }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
             synchronized (state) {
@@ -461,13 +500,48 @@ public final class NativeHttp implements AutoCloseable {
                 if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
                 if (!context.actors().isAlive(destination)) throw new IllegalStateException("destination actor is not alive");
                 if (destination.kind() == ActorRuntime.ActorKind.UNTRUSTED) throw new SecurityException("HTTP exchange transfer to untrusted actors is not supported");
-                state.movedNanos = System.nanoTime();
-                state.generation++; state.owner = destination.id(); state.actor = destination;
-                String token = UUID.randomUUID().toString(); state.ticket = token;
-                Exchange moved = new Exchange(state, destination.id(), state.generation);
-                transfers.put(token, moved);
-                if (state.poolWorker == null) destination.done().whenCompleteRuntime((ignored, failure) -> state.abort(500));
-                return token;
+                // Prepare the next incarnation before mutating the exchange.
+                // Registering the one-shot mail origin can reject a runtime
+                // that closed between isAlive() and this transfer. Such a
+                // failure must NOT strand State with a moved owner/ticket.
+                if (state.generation == Long.MAX_VALUE)
+                    throw new IllegalStateException("HTTP exchange generation exhausted");
+                final long previousMovedNanos = state.movedNanos;
+                final long previousGeneration = state.generation;
+                final Object previousOwner = state.owner;
+                final ActorRuntime.ActorRef<?> previousActor = state.actor;
+                final String previousTicket = state.ticket;
+                final long nextGeneration = previousGeneration + 1;
+                final String token = UUID.randomUUID().toString();
+                final Exchange moved = new Exchange(state, destination.id(), nextGeneration);
+                // This registration uses no ActorCell lifecycle monitor while
+                // holding State. The ticket is not known to any sender yet.
+                context.actors().registerPendingHttpTransfer(token, destination);
+                boolean published = false;
+                try {
+                    state.movedNanos = System.nanoTime();
+                    state.generation = nextGeneration;
+                    state.owner = destination.id();
+                    state.actor = destination;
+                    state.ticket = token;
+                    if (transfers.putIfAbsent(token, moved) != null)
+                        throw new IllegalStateException("HTTP transfer ticket collision");
+                    if (state.poolWorker == null)
+                        destination.done().whenCompleteRuntime(
+                            (ignored, failure) -> state.abort(500));
+                    published = true;
+                    return token;
+                } finally {
+                    if (!published) {
+                        transfers.remove(token, moved);
+                        context.actors().retirePendingHttpTransfer(token);
+                        state.movedNanos = previousMovedNanos;
+                        state.generation = previousGeneration;
+                        state.owner = previousOwner;
+                        state.actor = previousActor;
+                        state.ticket = previousTicket;
+                    }
+                }
             }
         }
         private void supervisorMetadata() {
@@ -771,6 +845,10 @@ public final class NativeHttp implements AutoCloseable {
         for (Server server : List.copyOf(servers)) server.close();
         for (Handler pool : pools) pool.stopPool();
         pools.clear();
-        timers.shutdownNow(); io.shutdownNow(); transfers.clear();
+        timers.shutdownNow(); io.shutdownNow();
+        for (String token : transfers.keySet()) {
+            context.actors().retirePendingHttpTransfer(token);
+        }
+        transfers.clear();
     }
 }

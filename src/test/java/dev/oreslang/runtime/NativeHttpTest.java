@@ -21,15 +21,38 @@ class NativeHttpTest {
             define actor Worker as
               val String actor_identity = process.unique_id();
               receive(ActorMail<String> mail): void {
+                let bool unbound_denied = false;
+                try { val before = http.current_request_id; }
+                catch (err) { unbound_denied = true; }
                 val request = http.claim(mail.value);
+                if !unbound_denied; then
+                  await request.respond(500, "text/plain", "ambient request inherited across actor receives");
+                  return;
+                fi
                 if request.has_request_local("trace_id"); then
                   await request.respond(500, "text/plain", "leaked from previous request");
                   return;
                 fi
                 request.set_header("X-Actor-Identity", self.actor_identity);
                 val original = request.request_id;
+                if http.current_request_id != original; then
+                  await request.respond(500, "text/plain", "missing admitted request binding");
+                  return;
+                fi
                 request.set_request_local("trace_id", original);
                 val text = await request.body_text();
+                if http.current_request_id != original; then
+                  await request.respond(500, "text/plain", "request binding lost across await");
+                  return;
+                fi
+                if !http.has_current_request_local("trace_id"); then
+                  await request.respond(500, "text/plain", "current request local missing");
+                  return;
+                fi
+                if http.current_request_local("trace_id") != original; then
+                  await request.respond(500, "text/plain", "wrong logical request context");
+                  return;
+                fi
                 if request.request_local("trace_id") != original; then
                   await request.respond(500, "text/plain", "context changed across await");
                   return;
@@ -71,6 +94,72 @@ class NativeHttpTest {
                     "pooled worker must retain actor-local identity across distinct requests");
         });
         assertTrue(output.endsWith("1\n2\n"), output);
+    }
+
+
+    @Test
+    @org.junit.jupiter.api.Timeout(90)
+    void requestBindingIsolatedAcrossThreeSevenFifteenConcurrentClients() throws Exception {
+        for (int concurrency : List.of(3, 7, 15)) {
+            String program = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    val id = http.current_request_id;
+                    request.set_request_local("id", id);
+                    val body = await request.body_text();
+                    if http.current_request_id != id; then
+                      await request.respond(409, "text/plain", "wrong logical request");
+                      return;
+                    fi
+                    if !http.has_current_request_local("id"); then
+                      await request.respond(409, "text/plain", "missing request binding");
+                      return;
+                    fi
+                    if http.current_request_local("id") != id; then
+                      await request.respond(409, "text/plain", "request-local leak");
+                      return;
+                    fi
+                    await request.respond(200, "text/plain", id);
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, %d, 1024, 5000);
+                  val pool = http.handler("Worker").pooled(3);
+                  stdio.println(server.port);
+                  for (let int i = 0; i < %d; i = i + 1) {
+                    val request = await server.accept();
+                    pool.dispatch(rt borrow mut request);
+                  }
+                  await server.shutdown(3000);
+                  return;
+                }
+                """.formatted(concurrency, concurrency);
+            run(program, port -> {
+                try (ExecutorService clients = Executors.newFixedThreadPool(concurrency)) {
+                    CountDownLatch start = new CountDownLatch(1);
+                    List<Future<HttpResponse<String>>> results = new java.util.ArrayList<>();
+                    for (int i = 0; i < concurrency; i++) {
+                        results.add(clients.submit(() -> {
+                            if (!start.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("client start barrier expired");
+                            }
+                            return request(port, "POST", "/", "payload");
+                        }));
+                    }
+                    start.countDown();
+                    var ids = new java.util.HashSet<String>();
+                    for (Future<HttpResponse<String>> next : results) {
+                        HttpResponse<String> response = next.get(10, TimeUnit.SECONDS);
+                        assertEquals(200, response.statusCode(), response.body());
+                        assertTrue(ids.add(response.body()),
+                                "concurrent HTTP clients must have distinct logical request contexts");
+                    }
+                    assertEquals(concurrency, ids.size());
+                }
+            });
+        }
     }
 
     @org.junit.jupiter.api.RepeatedTest(5)

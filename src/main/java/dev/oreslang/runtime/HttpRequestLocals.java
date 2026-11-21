@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -30,11 +29,46 @@ final class HttpRequestLocals {
         }
     }
 
+    /**
+     * Strict UTF-8 length from validated UTF-16 code units, without allocating
+     * a temporary encoded byte array. String.getBytes(UTF_8) silently replaces
+     * unpaired surrogates, so it is NOT suitable for a security/identity
+     * conformance boundary shared with LLVM native UTF-8 validation.
+     */
+    private static int strictUtf8Bytes(String text) {
+        int count = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char unit = text.charAt(i);
+            if (unit <= 0x7f) {
+                count += 1;
+            } else if (unit <= 0x7ff) {
+                count += 2;
+            } else if (Character.isHighSurrogate(unit)) {
+                if (i + 1 >= text.length()
+                        || !Character.isLowSurrogate(text.charAt(i + 1))) {
+                    throw new IllegalArgumentException(
+                            "unpaired UTF-16 high surrogate in request local value");
+                }
+                i++;
+                count += 4;
+            } else if (Character.isLowSurrogate(unit)) {
+                throw new IllegalArgumentException(
+                        "unpaired UTF-16 low surrogate in request local value");
+            } else {
+                count += 3;
+            }
+            // Stop before integer overflow or unbounded scans. Oversized
+            // values are rejected atomically by the enclosing set() call.
+            if (count > MAX_VALUE_BYTES) return count;
+        }
+        return count;
+    }
+
     synchronized void set(String key, String value) {
         validateKey(key);
         Objects.requireNonNull(value, "request local value");
         requireOpen();
-        int bytes = value.getBytes(StandardCharsets.UTF_8).length;
+        int bytes = strictUtf8Bytes(value);
         if (bytes > MAX_VALUE_BYTES) {
             throw new IllegalArgumentException("request local value exceeds byte limit");
         }
@@ -42,7 +76,7 @@ final class HttpRequestLocals {
         if (previous == null && values.size() >= MAX_ENTRIES) {
             throw new IllegalStateException("request local slot capacity exhausted");
         }
-        int priorBytes = previous == null ? 0 : previous.getBytes(StandardCharsets.UTF_8).length;
+        int priorBytes = previous == null ? 0 : strictUtf8Bytes(previous);
         if (usedBytes - priorBytes + bytes > MAX_TOTAL_BYTES) {
             throw new IllegalStateException("request local byte budget exhausted");
         }

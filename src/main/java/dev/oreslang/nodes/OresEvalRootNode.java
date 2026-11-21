@@ -8069,6 +8069,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof HttpFacade http) {
                 return switch (name) {
+                    case "current_request_id" -> context.actors().currentHttpExchange().requestId();
+                    case "current_request_local" -> (Invokable) args ->
+                            context.actors().currentHttpExchange()
+                                    .requestLocal(requireStringArg(args, "http.current_request_local"));
+                    case "has_current_request_local" -> (Invokable) args ->
+                            context.actors().currentHttpExchange()
+                                    .hasRequestLocal(requireStringArg(args, "http.has_current_request_local"));
                     case "handler" -> (Invokable) args -> {
                         String type = requireStringArg(args, "http.handler");
                         Ast.ClassDecl declaration = requireLocalActorClass(type);
