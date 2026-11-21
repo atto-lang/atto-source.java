@@ -615,6 +615,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     private static void requireBlockingAllowed() {
         if (ActorRuntime.inActorExecution()
+                || ActorRuntime.isActorCarrierThread()
+                || ActorRuntime.inActorGroupMailmanExecution()
                 || OresScheduler.current() != null
                 || OresScheduler.isSchedulerCarrierThread()) {
             throw new IllegalStateException(

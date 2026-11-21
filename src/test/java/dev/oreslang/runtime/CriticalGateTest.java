@@ -38,11 +38,17 @@ final class CriticalGateTest {
         last.close();
     }
 
-    @Test void settledTaskCompletionReleasesWithoutReEnteringGuestCode() {
+    @Test void physicallyRetiredTaskReleasesWithoutReEnteringGuestCode() {
         CriticalGate gate = new CriticalGate();
         CriticalGate.Ticket owner = gate.newTicket();
-        owner.enterAsync();
-        owner.releaseOnCompletion(OresFuture.completed(42));
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> completed = scheduler.startWithPhysicalRetirement(
+                    resume -> {
+                        assertTrue(owner.enterAsync().isDone());
+                        return OresScheduler.done(42);
+                    }, owner::close);
+            assertEquals(42, completed.join().intValue());
+        }
         assertFalse(gate.held());
         assertThrows(IllegalStateException.class, owner::enterAsync);
     }
