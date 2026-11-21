@@ -79,13 +79,16 @@ public final class AsyncNativeIo implements AutoCloseable {
         final long generation;
         final AutoCloseable resource;
         final ActorRuntime.ActorId registeredBy;
+        final ActorPermissionScope.PhysicalLease physicalLease;
         int active;
         boolean unregistered;
         ResourceLeaseState(long generation, AutoCloseable resource,
-                ActorRuntime.ActorId registeredBy) {
+                ActorRuntime.ActorId registeredBy,
+                ActorPermissionScope.PhysicalLease physicalLease) {
             this.generation = generation;
             this.resource = resource;
             this.registeredBy = registeredBy;
+            this.physicalLease = physicalLease;
         }
     }
 
@@ -96,11 +99,14 @@ public final class AsyncNativeIo implements AutoCloseable {
     final class IoLoan implements AutoCloseable {
         private final ResourceLeaseState lease;
         private final IoLoanIdentity identity;
+        private final ActorPermissionScope.PhysicalLease physicalLease;
         private final AtomicBoolean released = new AtomicBoolean();
 
-        private IoLoan(ResourceLeaseState lease, IoLoanIdentity identity) {
+        private IoLoan(ResourceLeaseState lease, IoLoanIdentity identity,
+                ActorPermissionScope.PhysicalLease physicalLease) {
             this.lease = lease;
             this.identity = identity;
+            this.physicalLease = physicalLease;
         }
 
         IoLoanIdentity identity() { return identity; }
@@ -110,6 +116,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 throw new IllegalStateException("duplicate physical I/O loan receipt");
             }
             ActorRuntime.ActorId retireActor;
+            ActorPermissionScope.PhysicalLease registrationLease = null;
             synchronized (AsyncNativeIo.this) {
                 if (resourceLoans.get(lease.resource) != lease
                         || lease.generation != identity.resourceGeneration()
@@ -123,11 +130,18 @@ public final class AsyncNativeIo implements AutoCloseable {
                 if (lease.active == 0 && lease.unregistered) {
                     resourceLoans.remove(lease.resource);
                     deferredUnregister.remove(lease.resource);
+                    registrationLease = lease.physicalLease;
                 }
                 retireActor = decrementActorOperationLocked(identity.actorId());
                 AsyncNativeIo.this.notifyAll();
             }
             notifyActorRetirement(retireActor);
+            // Callback retirement is part of physical ownership. A corrupt
+            // receipt quarantines the scope rather than forging a drain.
+            if (incompleteReceipt == null) {
+                if (physicalLease != null) physicalLease.close();
+                if (registrationLease != null) registrationLease.close();
+            }
         }
     }
 
@@ -145,11 +159,14 @@ public final class AsyncNativeIo implements AutoCloseable {
         // Enforce revocation at the actual physical-loan boundary, including
         // calls from a worker whose earlier admission captured this actor.
         ActorRuntime.requireCurrentActorAuthorityActive("borrow native I/O resource");
+        ActorPermissionScope.PhysicalLease physicalLease =
+                ActorRuntime.capturePhysicalIoLease("borrow native I/O resource");
         ActorRuntime.ActorId actorId = currentOwnerActor();
         state.active++;
         incrementActorOperationLocked(actorId);
         return new IoLoan(state, new IoLoanIdentity(
-                state.generation, nextLoanGeneration.incrementAndGet(), actorId));
+                state.generation, nextLoanGeneration.incrementAndGet(), actorId),
+                physicalLease);
     }
 
     int outstandingActorOperations(ActorRuntime.ActorId id) {
@@ -263,11 +280,13 @@ public final class AsyncNativeIo implements AutoCloseable {
         // Nested native-I/O admissions inherit the same immutable chain.
         ActorRuntime.NativeIoAuthority ioAuthority =
                 ActorRuntime.captureNativeIoAuthority();
+        ActorPermissionScope.PhysicalLease physicalLease =
+                ActorRuntime.capturePhysicalIoLease("admit native I/O " + operation);
         ActorRuntime.ActorId admittedActor = ioAuthority == null
                 ? ActorRuntime.currentActorId().orElse(null)
                 : ioAuthority.actorId();
         Operation<T> op = new Operation<>(
-                operation, work, result, admitted, admittedActor, ioAuthority);
+                operation, work, result, admitted, admittedActor, ioAuthority, physicalLease);
         admitted.add(op); // Reserve before publishing work to any executor.
         incrementActorOperationLocked(op.admittedActor);
         long queuedAt = CorePerf.start();
@@ -279,7 +298,17 @@ public final class AsyncNativeIo implements AutoCloseable {
             admitted.remove(op);
             decrementActorOperationLocked(op.admittedActor);
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
-            result.failFromRuntime(failure);
+            try {
+                result.failFromRuntime(failure);
+            } catch (RuntimeException | Error notificationFailure) {
+                // A failed terminal callback has not supplied a trustworthy
+                // physical retirement receipt. Quarantine instead of
+                // publishing a misleading delegated-scope drain.
+                recordIncomplete(notificationFailure);
+                throw notificationFailure;
+            } finally {
+                if (physicalLease != null && incompleteReceipt == null) physicalLease.close();
+            }
         }
         return result;
     }
@@ -291,13 +320,16 @@ public final class AsyncNativeIo implements AutoCloseable {
         private final Set<Operation<?>> owner;
         private final ActorRuntime.ActorId admittedActor;
         private final ActorRuntime.NativeIoAuthority ioAuthority;
+        private final ActorPermissionScope.PhysicalLease physicalLease;
         private final AtomicReference<OperationState> state =
                 new AtomicReference<>(OperationState.ADMITTED);
         private long queuedAt;
 
         private Operation(String operation, Callable<T> work, OresFuture<T> completion,
                 Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor,
-                ActorRuntime.NativeIoAuthority ioAuthority) {
+                ActorRuntime.NativeIoAuthority ioAuthority,
+                ActorPermissionScope.PhysicalLease physicalLease) {
+            this.physicalLease = physicalLease;
             this.operation = operation;
             this.work = work;
             this.completion = completion;
@@ -363,7 +395,11 @@ public final class AsyncNativeIo implements AutoCloseable {
                         executingWorker.remove();
                     }
                 }
-                notifyActorRetirement(retireActor);
+                try {
+                    notifyActorRetirement(retireActor);
+                } finally {
+                    if (physicalLease != null && incompleteReceipt == null) physicalLease.close();
+                }
             }
             if (failure instanceof VirtualMachineError fatal) throw fatal;
             if (failure instanceof ThreadDeath fatal) throw fatal;
@@ -402,7 +438,11 @@ public final class AsyncNativeIo implements AutoCloseable {
                         }
                         // Runtime lifecycle notifications are host control work,
                         // never executed while carrying an actor's I/O-only scope.
-                        notifyActorRetirement(retireActor);
+                        try {
+                            notifyActorRetirement(retireActor);
+                        } finally {
+                            if (physicalLease != null && incompleteReceipt == null) physicalLease.close();
+                        }
                     }
                 });
             } catch (RuntimeException | Error startFailure) {
@@ -457,7 +497,12 @@ public final class AsyncNativeIo implements AutoCloseable {
             resources.add(resource);
             resourceLoans.put(resource, new ResourceLeaseState(
                     nextResourceGeneration.incrementAndGet(), resource,
-                    currentOwnerActor()));
+                    currentOwnerActor(), null));
+            // This late handle never obtained a new (already-sealed)
+            // delegated physical lease. Its eventual close is not a valid
+            // per-scope retirement witness: quarantine the delegated scope
+            // instead of publishing a false completed drain.
+            ActorRuntime.quarantineCurrentPhysicalDrain();
             throw new IllegalStateException("I/O context closed");
         }
         // Check AFTER the closed-path quarantine branch: a resource created
@@ -466,10 +511,12 @@ public final class AsyncNativeIo implements AutoCloseable {
         // In the normal open path, reject revoked actor/worker authority
         // before publishing a new native resource to the context.
         ActorRuntime.requireCurrentActorAuthorityActive("register native I/O resource");
+        ActorPermissionScope.PhysicalLease physicalLease =
+                ActorRuntime.capturePhysicalIoLease("register native I/O resource");
         resources.add(resource);
         resourceLoans.put(resource, new ResourceLeaseState(
                 nextResourceGeneration.incrementAndGet(), resource,
-                currentOwnerActor()));
+                currentOwnerActor(), physicalLease));
     }
 
     synchronized void unregister(AutoCloseable resource) {
@@ -481,6 +528,11 @@ public final class AsyncNativeIo implements AutoCloseable {
             deferredUnregister.add(resource);
         } else {
             resourceLoans.remove(resource);
+            // Unregister means the physical owner has been closed or
+            // explicitly transferred to the host. All active loans are done.
+            if (state.physicalLease != null && incompleteReceipt == null) {
+                state.physicalLease.close();
+            }
         }
     }
 
@@ -610,7 +662,17 @@ public final class AsyncNativeIo implements AutoCloseable {
                 for (AutoCloseable resource : closing) {
                     try {
                         resource.close();
-                        synchronized (this) { resources.remove(resource); }
+                        synchronized (this) {
+                            resources.remove(resource);
+                            // Shutdown joins all workers and active loans
+                            // before closing handles; release the registration
+                            // receipt only after physical close succeeded.
+                            ResourceLeaseState owner = resourceLoans.remove(resource);
+                            if (owner != null && owner.physicalLease != null
+                                    && incompleteReceipt == null) {
+                                owner.physicalLease.close();
+                            }
+                        }
                     } catch (Exception failure) {
                         if (closeFailure == null) closeFailure = failure;
                         else if (closeFailure != failure) closeFailure.addSuppressed(failure);

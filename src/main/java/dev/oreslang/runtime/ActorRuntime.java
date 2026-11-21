@@ -126,6 +126,12 @@ public final class ActorRuntime implements AutoCloseable {
             // immediately before invoking any admitted native I/O callable.
             scope.requireActive(operation);
         }
+        ActorPermissionScope.PhysicalLease acquirePhysicalLease(String operation) {
+            return scope.acquirePhysicalLease(operation);
+        }
+        void quarantinePhysicalDrain() {
+            scope.quarantinePhysicalDrain();
+        }
         void requireCapability(IsolatePolicy.Capability capability, String operation) {
             coarsePolicy.require(capability, operation);
         }
@@ -254,6 +260,26 @@ public final class ActorRuntime implements AutoCloseable {
      * a new loan or publish a new handle even if it holds a stale reference
      * to this context-owned AsyncNativeIo.
      */
+    /**
+     * Fail closed when already-running work creates a native handle after
+     * shutdown sealed admissions. The exception path must keep the handle
+     * quarantined, so no scope may claim physical quiescence prematurely.
+     */
+    static void quarantineCurrentPhysicalDrain() {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) turn.permissionScope().quarantinePhysicalDrain();
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.quarantinePhysicalDrain();
+    }
+
+    /** Captures an accounting lease for the actual physical worker/resource lifetime. */
+    static ActorPermissionScope.PhysicalLease capturePhysicalIoLease(String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) return turn.permissionScope().acquirePhysicalLease(operation);
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        return io == null ? null : io.acquirePhysicalLease(operation);
+    }
+
     static void requireCurrentActorAuthorityActive(String operation) {
         ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
         if (turn != null) turn.permissionScope().requireActive(operation);
@@ -4646,6 +4672,27 @@ public final class ActorRuntime implements AutoCloseable {
      * including async native I/O workers. It cannot interrupt an OS operation
      * which has already passed its final authorization check.
      */
+    /** Receipt identifies a sealed delegated scope whose tracked native I/O has drained. */
+    public record PermissionDrainReceipt(long scopeSerial) { }
+
+    /**
+     * Nonblocking and issuer-only. The receipt cannot attest to unrelated
+     * external handles or undo an OS operation already committed to the kernel.
+     * The operation/loan counters include every descendant delegated scope.
+     */
+    public Optional<PermissionDrainReceipt> tryPermissionDrainReceipt(
+            PermissionDelegation delegation) {
+        requireCallerRuntimeAffinity("inspect actor permission revocation drain");
+        requireNotActorGroupMailman("inspect actor permission revocation drain");
+        ActorCell<?> issuer = currentActor.get();
+        if (issuer == null || delegation == null || delegation.runtime != this
+                || !delegation.parentId.equals(issuer.ref.id())) {
+            throw new SecurityException("only the issuing actor may inspect delegation drain");
+        }
+        return delegation.scope.tryDrainReceipt()
+                .map(receipt -> new PermissionDrainReceipt(receipt.scopeSerial()));
+    }
+
     public boolean revokePermissions(PermissionDelegation delegation) {
         requireCallerRuntimeAffinity("revoke actor permission delegation");
         requireNotActorGroupMailman("revoke actor permission delegation");

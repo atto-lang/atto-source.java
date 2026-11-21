@@ -38,6 +38,9 @@ final class PhysicalIoLoanRevocationTest {
         final AtomicReference<OresFuture<Boolean>> result = new AtomicReference<>();
         final AtomicReference<Throwable> error = new AtomicReference<>();
         final AtomicReference<ActorRuntime.PermissionDelegation> token = new AtomicReference<>();
+        final java.util.concurrent.BlockingQueue<java.util.Optional<ActorRuntime.PermissionDrainReceipt>> receipts =
+                new java.util.concurrent.LinkedBlockingQueue<>();
+        volatile boolean pendingAtRevocation;
         volatile boolean revokedOnce;
         volatile boolean borrowDenied;
         volatile boolean registerDenied;
@@ -106,6 +109,11 @@ final class PhysicalIoLoanRevocationTest {
                                 } else if ("revoke".equals(message)) {
                                     probe.revokedOnce = actor.runtime()
                                             .revokePermissions(probe.token.get());
+                                    probe.pendingAtRevocation = actor.runtime()
+                                            .tryPermissionDrainReceipt(probe.token.get()).isEmpty();
+                                } else if ("receipt".equals(message)) {
+                                    probe.receipts.add(actor.runtime()
+                                            .tryPermissionDrainReceipt(probe.token.get()));
                                 }
                             } catch (Throwable failure) {
                                 probe.error.compareAndSet(null, failure);
@@ -121,11 +129,30 @@ final class PhysicalIoLoanRevocationTest {
                     parent.send("revoke");
                     assertTrue(probe.revoked.await(5, TimeUnit.SECONDS));
                     assertTrue(probe.revokedOnce);
+                    assertTrue(probe.pendingAtRevocation,
+                            "physical worker must block early revocation receipt");
+                    assertThrows(SecurityException.class,
+                            () -> runtime.tryPermissionDrainReceipt(probe.token.get()),
+                            "host may not impersonate the issuing actor");
                     probe.workerRelease.countDown();
                     assertNotNull(probe.result.get());
                     assertTrue(probe.result.get().get(5, TimeUnit.SECONDS));
                     assertTrue(probe.borrowDenied);
                     assertTrue(probe.registerDenied);
+                    // Future terminal state may precede final callback/physical
+                    // receipt. Query the actual issuing actor until it sees a
+                    // stable, nonblocking drain receipt; no CONTROL thread waits.
+                    ActorRuntime.PermissionDrainReceipt receipt = null;
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (receipt == null && System.nanoTime() < deadline) {
+                        parent.send("receipt");
+                        var polled = probe.receipts.poll(1, TimeUnit.SECONDS);
+                        assertNotNull(polled, "issuer receipt query did not complete");
+                        receipt = polled.orElse(null);
+                        if (receipt == null) Thread.sleep(5);
+                    }
+                    assertNotNull(receipt, "delegation drain remained unretired");
+                    assertTrue(receipt.scopeSerial() > 0);
                     // A rejected borrow may not decrement a nonexistent loan.
                     try (var hostLoan = probe.io.borrow(probe.registered)) {
                         assertNotNull(hostLoan.identity());
