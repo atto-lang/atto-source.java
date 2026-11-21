@@ -36,11 +36,15 @@ suites=(
   dev.oreslang.runtime.ActorGroupMembershipMonitorTest
   dev.oreslang.runtime.ActorGroupAtomicMonitorRegistrationTest
   dev.oreslang.runtime.ActorEventBusDetachedTeardownTest
+  dev.oreslang.runtime.ProcessGroupRegistryTest
+  dev.oreslang.runtime.ProcessGroupRegistryRetirementTest
+  dev.oreslang.runtime.ProcessGroupRegistryReentrantNameReuseTest
+  dev.oreslang.runtime.ActorEventBusMembershipChurnTest
   dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest
   dev.oreslang.runtime.SourceActorPubSubTest
 )
 # Maven's selection is explicit, while reports are checked by full class name.
-selection="SourceActorPubSubExecutionTest,PubSubGuestIsolationGateTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorGroupMembershipMonitorTest,ActorGroupAtomicMonitorRegistrationTest,ActorEventBusDetachedTeardownTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
+selection="SourceActorPubSubExecutionTest,PubSubGuestIsolationGateTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorGroupMembershipMonitorTest,ActorGroupAtomicMonitorRegistrationTest,ActorEventBusDetachedTeardownTest,ProcessGroupRegistryTest,ProcessGroupRegistryRetirementTest,ProcessGroupRegistryReentrantNameReuseTest,ActorEventBusMembershipChurnTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
 mvn -B -ntp -Dores.runtime.carriers=native \
   "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true test
 
@@ -71,6 +75,28 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 expected = {
+    "dev.oreslang.runtime.ProcessGroupRegistryTest": {
+        "duplicateJoinIsIdempotentAndExplicitLeaveReclaimsName",
+        "namedGroupOutlivesFirstMemberAndNeverOwnsMemberLifecycle",
+        "groupNameCardinalityIsBoundedAndReclaimed",
+        "actorCannotDeleteOrCloseRegistryAndCannotCrossRuntimeBoundary",
+        "actorCannotEnumerateGroupItDidNotJoin",
+    },
+    "dev.oreslang.runtime.ProcessGroupRegistryRetirementTest": {
+        "managerDeleteCompletesPendingReadAfterRegistryMonitorIsReleased",
+        "lastMemberLeaveDoesNotInvokeCallbackUnderRegistryMonitor",
+        "deletedGroupCannotRetireSameNameReplacement",
+    },
+    "dev.oreslang.runtime.ProcessGroupRegistryReentrantNameReuseTest": {
+        "pendingReadCallbackCanRecreateSameNameWhileOldGroupIsClosing",
+        "staleHandleAfterDeleteAndRecreateCannotRetireReplacement",
+        "concurrentDeleteAndJoinNeverResurrectDetachedEntry",
+        "registryAndMembershipTokensCannotCrossActorMessageOrFrozenDataBoundary",
+    },
+    "dev.oreslang.runtime.ActorEventBusMembershipChurnTest": {
+        "thirtyTwoLeaveRejoinCyclesReclaimSubscriptionCreditExactlyOnce",
+        "queuedReliableWriteSettlesOnRevocationWithoutCreditUnderflow",
+    },
     "dev.oreslang.runtime.ActorGroupAtomicMonitorRegistrationTest": {
         "registrationAndConcurrentJoinProvideEitherBaselineOrNextRevision",
         "invalidCapacityNeverAllocatesSnapshotOrMembershipMonitor",

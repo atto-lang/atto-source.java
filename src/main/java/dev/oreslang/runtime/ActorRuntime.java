@@ -3526,6 +3526,30 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorGroupId id() { return id; }
 
+        /**
+         * Internal pg registry authority only: no creator, manager or guest
+         * capability is implicitly granted to a group member.
+         */
+        ActorGroupJoinCapability runtimeJoinCapability() {
+            synchronized (authorityLock) {
+                requireOpen();
+                return new ActorGroupJoinCapability(id, joinSecret);
+            }
+        }
+
+        /** Registry retirement is trusted runtime cleanup, never guest delete. */
+        void runtimeClose() {
+            closeFromRuntime();
+        }
+
+        int runtimeMemberCount() {
+            return groupClosed.get() ? 0 : members.size();
+        }
+
+        boolean runtimeContains(ActorId actorId) {
+            return isMember(actorId);
+        }
+
         /** Public identity only; this does not expose the supervisor capability. */
         public SupervisorId supervisorId() {
             requireObserver("inspect ActorGroup supervisor");
@@ -5163,12 +5187,26 @@ public final class ActorRuntime implements AutoCloseable {
         return createActorGroupInternal(supervisor);
     }
 
+    /**
+     * Local ProcessGroupRegistry constructs runtime-owned groups with no
+     * creator auto-membership and no actor lifecycle ownership. All user
+     * membership remains controlled by normal join-capability admission.
+     */
+    ActorGroup createRuntimeOwnedActorGroup() {
+        return createActorGroupInternal(rootSupervisor, true);
+    }
+
     private ActorGroup createActorGroupInternal(ActorSupervisor supervisor) {
+        return createActorGroupInternal(supervisor, false);
+    }
+
+    private ActorGroup createActorGroupInternal(
+            ActorSupervisor supervisor, boolean runtimeOwned) {
         requireCallerRuntimeAffinity("create an ActorGroup");
         requireNotActorGroupMailman("create an ActorGroup");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
-        ActorId creator = currentActorId().orElse(null);
+        ActorId creator = runtimeOwned ? null : currentActorId().orElse(null);
         IsolatePolicy creatorPolicy =
                 currentActorPolicy() == null ? policyCeiling : currentActorPolicy();
         if (creator != null && !actors.containsKey(creator)) {
@@ -6450,6 +6488,13 @@ public final class ActorRuntime implements AutoCloseable {
         return cell != null
                 && !cell.stopped.get()
                 && cell.ref.address().equals(address);
+    }
+
+    /** Internal local discovery; never transfers lifecycle authority. */
+    ActorRef<?> resolveLocalActorRef(ActorId actorId) {
+        Objects.requireNonNull(actorId, "actorId");
+        ActorCell<?> cell = actors.get(actorId);
+        return cell == null || cell.stopped.get() ? null : cell.ref;
     }
 
     public boolean isAlive(ActorRef<?> ref) {
@@ -7916,6 +7961,8 @@ public final class ActorRuntime implements AutoCloseable {
                     "actor lifecycle capabilities are execution-domain local and cannot cross actor mailboxes");
         }
         if (value instanceof ActorRuntime.ActorGroup
+                || value instanceof ProcessGroupRegistry
+                || value instanceof ProcessGroupRegistry.Membership<?>
                 || value instanceof ActorEventBus
                 || value instanceof ActorEventBus.Subscription<?>
                 || value instanceof ActorRuntime.ActorGroup.MembershipMonitor
@@ -8016,6 +8063,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof ActorRuntime.ActorGroup.MembershipMonitor
+                || value instanceof ProcessGroupRegistry
+                || value instanceof ProcessGroupRegistry.Membership<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
