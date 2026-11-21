@@ -30,16 +30,26 @@ public final class OresTaskScope {
         CLOSED
     }
 
+    private static final class ScopeEpoch { }
+
     private static final class Child {
+        private final ScopeEpoch scopeEpoch;
         private volatile OresFuture<?> future;
-        private Runnable retireAfterPhysicalDone = () -> { };
+        private OresScheduler.CompilerTaskRetirement compilerRetirement;
+        private OresScheduler.CompilerTaskHandle<?> compilerHandle;
         // Guarded by the enclosing scope lock.
         private boolean quiescent;
         private boolean terminal;
+        private boolean neverStarted;
         private boolean retirementClaimed;
+
+        private Child(ScopeEpoch scopeEpoch) {
+            this.scopeEpoch = Objects.requireNonNull(scopeEpoch, "scope epoch");
+        }
     }
 
     private final OresScheduler scheduler;
+    private final ScopeEpoch scopeEpoch = new ScopeEpoch();
     private final Consumer<OresTaskScope> onClosed;
     private final Object lock = new Object();
     private final Set<Child> children =
@@ -92,30 +102,89 @@ public final class OresTaskScope {
     public <T> OresFuture<T> forkCompilerAdmitted(
             OresScheduler.Task<T> task,
             Runnable retireAfterPhysicalDone) {
+        Objects.requireNonNull(retireAfterPhysicalDone,
+                "physical Task retirement");
+        AtomicRetirement adapter = new AtomicRetirement(retireAfterPhysicalDone);
+        return forkCompilerAdmitted(task, adapter);
+    }
+
+    public <T> OresFuture<T> forkCompilerAdmitted(
+            OresScheduler.Task<T> task,
+            OresScheduler.CompilerTaskRetirement retirement) {
         Objects.requireNonNull(task, "task");
-        Objects.requireNonNull(
-                retireAfterPhysicalDone, "physical Task retirement");
+        Objects.requireNonNull(retirement, "compiler Task retirement");
         synchronized (lock) {
             if (state != State.OPEN) {
                 throw new IllegalStateException("Task scope is already sealed");
             }
 
-            Child child = new Child();
-            child.retireAfterPhysicalDone = retireAfterPhysicalDone;
+            Child child = new Child(scopeEpoch);
+            child.compilerRetirement = retirement;
             children.add(child);
+            OresScheduler.CompilerTaskRetirement scopeBoundRetirement =
+                    new OresScheduler.CompilerTaskRetirement() {
+                        @Override
+                        public void bind(
+                                OresScheduler.CompilerTaskHandle<?> handle) {
+                            bindCompilerChild(child, handle);
+                            retirement.bind(handle);
+                        }
+
+                        @Override
+                        public void retireNeverStarted(
+                                OresScheduler.CompilerTaskHandle<?> handle) {
+                            childQuiescent(child, handle, true);
+                        }
+
+                        @Override
+                        public void retireAfterPhysicalQuiescence(
+                                OresScheduler.CompilerTaskHandle<?> handle) {
+                            childQuiescent(child, handle, false);
+                        }
+                    };
             final OresFuture<T> future;
             try {
-                future = scheduler.start(
+                future = scheduler.startCompilerAdmittedTask(
                         task,
-                        () -> childQuiescent(child),
+                        new OresScheduler.CompilerTaskRetirement() {
+                            @Override
+                            public void bind(
+                                    OresScheduler.CompilerTaskHandle<?> handle) {
+                                scopeBoundRetirement.bind(handle);
+                            }
+
+                            @Override
+                            public void retireNeverStarted(
+                                    OresScheduler.CompilerTaskHandle<?> handle) {
+                                scopeBoundRetirement.retireNeverStarted(handle);
+                            }
+
+                            @Override
+                            public void retireAfterPhysicalQuiescence(
+                                    OresScheduler.CompilerTaskHandle<?> handle) {
+                                scopeBoundRetirement
+                                        .retireAfterPhysicalQuiescence(handle);
+                            }
+                        },
                         () -> childTerminal(child));
             } catch (RuntimeException | Error failure) {
-                children.remove(child);
-                try {
-                    retireAfterPhysicalDone.run();
-                } catch (RuntimeException | Error retirementFailure) {
-                    failure.addSuppressed(retirementFailure);
+                // No executable child can exist when startCompilerAdmittedTask
+                // throws. If bind() never published an exact handle, remove the
+                // purely local placeholder and leave the caller-owned transfer
+                // unbound. If bind() partially accepted the exact handle before
+                // failing, explicitly drive the never-started path: success
+                // rolls the authority back, while retirement failure poisons
+                // the scope and pins the child fail-closed.
+                if (child.compilerHandle == null) {
+                    children.remove(child);
+                    throw failure;
                 }
+                if (!child.quiescent) {
+                    child.quiescent = true;
+                    child.neverStarted = true;
+                }
+                child.terminal = true;
+                retireChildIfReady(child);
                 throw failure;
             }
 
@@ -227,9 +296,47 @@ public final class OresTaskScope {
         }
     }
 
-    private void childQuiescent(Child child) {
+    private void bindCompilerChild(
+            Child child,
+            OresScheduler.CompilerTaskHandle<?> handle) {
+        Objects.requireNonNull(handle, "compiler Task child");
         synchronized (lock) {
+            requireCurrentScope(child);
+            if (child.compilerHandle != null) {
+                throw new IllegalStateException(
+                        "structured Task child compiler handle bound twice");
+            }
+            child.compilerHandle = handle;
+        }
+    }
+
+    private OresScheduler.CompilerTaskHandle<?> requireCompilerHandle(
+            Child child) {
+        synchronized (lock) {
+            requireCurrentScope(child);
+            return Objects.requireNonNull(
+                    child.compilerHandle,
+                    "structured Task child missing compiler handle");
+        }
+    }
+
+    private void childQuiescent(
+            Child child,
+            OresScheduler.CompilerTaskHandle<?> handle,
+            boolean neverStarted) {
+        Objects.requireNonNull(handle, "compiler Task child");
+        synchronized (lock) {
+            requireCurrentScope(child);
+            if (child.compilerHandle != handle) {
+                throw new IllegalStateException(
+                        "compiler retirement belongs to a different exact Task child");
+            }
+            if (child.quiescent) {
+                throw new IllegalStateException(
+                        "compiler Task child reported quiescence more than once");
+            }
             child.quiescent = true;
+            child.neverStarted = neverStarted;
         }
         retireChildIfReady(child);
     }
@@ -242,19 +349,32 @@ public final class OresTaskScope {
     }
 
     private void retireChildIfReady(Child child) {
-        Runnable retirement = null;
+        OresScheduler.CompilerTaskRetirement retirement = null;
+        OresScheduler.CompilerTaskHandle<?> handle = null;
+        boolean neverStarted = false;
         synchronized (lock) {
+            requireCurrentScope(child);
             if (child.quiescent && child.terminal
                     && !child.retirementClaimed
                     && children.contains(child)) {
                 child.retirementClaimed = true;
-                retirement = child.retireAfterPhysicalDone;
+                retirement = Objects.requireNonNull(
+                        child.compilerRetirement,
+                        "structured Task child missing compiler retirement");
+                handle = Objects.requireNonNull(
+                        child.compilerHandle,
+                        "structured Task child missing compiler handle");
+                neverStarted = child.neverStarted;
             }
         }
         if (retirement == null) return;
 
         try {
-            retirement.run();
+            if (neverStarted) {
+                retirement.retireNeverStarted(handle);
+            } else {
+                retirement.retireAfterPhysicalQuiescence(handle);
+            }
         } catch (RuntimeException | Error failure) {
             java.util.ArrayList<OresFuture<?>> cancel =
                     new java.util.ArrayList<>();
@@ -288,6 +408,62 @@ public final class OresTaskScope {
             }
         }
         if (complete) completeDrain();
+    }
+
+    private void requireCurrentScope(Child child) {
+        Objects.requireNonNull(child, "structured Task child");
+        if (child.scopeEpoch != scopeEpoch) {
+            throw new IllegalStateException(
+                    "structured Task child belongs to a different scope epoch");
+        }
+    }
+
+    private static final class AtomicRetirement
+            implements OresScheduler.CompilerTaskRetirement {
+        private final Runnable retirement;
+        private final java.util.concurrent.atomic.AtomicBoolean retired =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        private final java.util.concurrent.atomic.AtomicReference<
+                OresScheduler.CompilerTaskHandle<?>> bound =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        private AtomicRetirement(Runnable retirement) {
+            this.retirement = Objects.requireNonNull(
+                    retirement, "physical Task retirement");
+        }
+
+        @Override
+        public void bind(OresScheduler.CompilerTaskHandle<?> child) {
+            Objects.requireNonNull(child, "compiler Task child");
+            if (!bound.compareAndSet(null, child)) {
+                throw new IllegalStateException(
+                        "structured compiler Task child bound more than once");
+            }
+        }
+
+        @Override
+        public void retireNeverStarted(
+                OresScheduler.CompilerTaskHandle<?> child) {
+            retire(child);
+        }
+
+        @Override
+        public void retireAfterPhysicalQuiescence(
+                OresScheduler.CompilerTaskHandle<?> child) {
+            retire(child);
+        }
+
+        private void retire(OresScheduler.CompilerTaskHandle<?> child) {
+            if (bound.get() != child) {
+                throw new IllegalStateException(
+                        "structured retirement belongs to a different exact Task child");
+            }
+            if (!retired.compareAndSet(false, true)) {
+                throw new IllegalStateException(
+                        "structured compiler Task child retired more than once");
+            }
+            retirement.run();
+        }
     }
 
     private void completeDrain() {

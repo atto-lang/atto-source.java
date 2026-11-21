@@ -97,8 +97,13 @@ public final class TaskAdmissionProof {
     }
 
     private List<AdmittedTransfer> transfersForIdentity(Object boundary) {
+        Objects.requireNonNull(boundary, "boundary");
         List<AdmittedTransfer> result = byBoundary.get(boundary);
-        return result == null ? List.of() : result;
+        if (result == null) {
+            throw new IllegalArgumentException(
+                    "no Task admission proof for exact AST boundary");
+        }
+        return result;
     }
 
     public List<AdmittedTransfer> requireFor(

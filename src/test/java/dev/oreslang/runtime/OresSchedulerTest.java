@@ -551,4 +551,149 @@ final class OresSchedulerTest {
     }
 
 
+
+    @Test
+    void exactCompilerChildUsesPhysicalRetirementAfterGuestEntry()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> bound =
+                    new AtomicReference<>();
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> physical =
+                    new AtomicReference<>();
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> never =
+                    new AtomicReference<>();
+
+            OresFuture<Integer> task = scheduler.startCompilerAdmittedTask(
+                    resume -> OresScheduler.done(42),
+                    new OresScheduler.CompilerTaskRetirement() {
+                        @Override
+                        public void bind(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            assertTrue(bound.compareAndSet(null, child));
+                        }
+
+                        @Override
+                        public void retireNeverStarted(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            never.set(child);
+                        }
+
+                        @Override
+                        public void retireAfterPhysicalQuiescence(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            physical.set(child);
+                        }
+                    });
+
+            assertEquals(42, task.get(5, TimeUnit.SECONDS));
+            assertNotNull(bound.get());
+            assertSame(bound.get(), physical.get(),
+                    "physical retirement must carry the exact bound child token");
+            assertNull(never.get(),
+                    "a Task that entered guest code must not use never-started retirement");
+        }
+    }
+
+    @Test
+    void exactCompilerChildUsesNeverStartedRetirementOnClosedScheduler() {
+        OresScheduler scheduler = new OresScheduler(1);
+        scheduler.close();
+
+        AtomicReference<OresScheduler.CompilerTaskHandle<?>> bound =
+                new AtomicReference<>();
+        AtomicReference<OresScheduler.CompilerTaskHandle<?>> never =
+                new AtomicReference<>();
+        AtomicReference<OresScheduler.CompilerTaskHandle<?>> physical =
+                new AtomicReference<>();
+
+        assertThrows(
+                java.util.concurrent.RejectedExecutionException.class,
+                () -> scheduler.startCompilerAdmittedTask(
+                        resume -> OresScheduler.done(1),
+                        new OresScheduler.CompilerTaskRetirement() {
+                            @Override
+                            public void bind(
+                                    OresScheduler.CompilerTaskHandle<?> child) {
+                                assertTrue(bound.compareAndSet(null, child));
+                            }
+
+                            @Override
+                            public void retireNeverStarted(
+                                    OresScheduler.CompilerTaskHandle<?> child) {
+                                never.set(child);
+                            }
+
+                            @Override
+                            public void retireAfterPhysicalQuiescence(
+                                    OresScheduler.CompilerTaskHandle<?> child) {
+                                physical.set(child);
+                            }
+                        }));
+
+        assertNotNull(bound.get());
+        assertSame(bound.get(), never.get(),
+                "never-started retirement must carry the exact bound child token");
+        assertNull(physical.get(),
+                "closed-scheduler rejection must not manufacture physical execution");
+    }
+
+    @Test
+    void compilerChildTokensAreUniqueAcrossAdmissions() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> first =
+                    new AtomicReference<>();
+            AtomicReference<OresScheduler.CompilerTaskHandle<?>> second =
+                    new AtomicReference<>();
+
+            OresScheduler.CompilerTaskRetirement firstRetirement =
+                    new OresScheduler.CompilerTaskRetirement() {
+                        @Override
+                        public void bind(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            first.set(child);
+                        }
+                        @Override
+                        public void retireNeverStarted(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            assertSame(first.get(), child);
+                        }
+                        @Override
+                        public void retireAfterPhysicalQuiescence(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            assertSame(first.get(), child);
+                        }
+                    };
+            OresScheduler.CompilerTaskRetirement secondRetirement =
+                    new OresScheduler.CompilerTaskRetirement() {
+                        @Override
+                        public void bind(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            second.set(child);
+                        }
+                        @Override
+                        public void retireNeverStarted(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            assertSame(second.get(), child);
+                        }
+                        @Override
+                        public void retireAfterPhysicalQuiescence(
+                                OresScheduler.CompilerTaskHandle<?> child) {
+                            assertSame(second.get(), child);
+                        }
+                    };
+
+            OresFuture<Integer> a = scheduler.startCompilerAdmittedTask(
+                    resume -> OresScheduler.done(1), firstRetirement);
+            OresFuture<Integer> b = scheduler.startCompilerAdmittedTask(
+                    resume -> OresScheduler.done(2), secondRetirement);
+
+            assertEquals(1, a.get(5, TimeUnit.SECONDS));
+            assertEquals(2, b.get(5, TimeUnit.SECONDS));
+            assertNotNull(first.get());
+            assertNotNull(second.get());
+            assertNotSame(first.get(), second.get(),
+                    "distinct admissions must never share a compiler child token");
+        }
+    }
+
 }

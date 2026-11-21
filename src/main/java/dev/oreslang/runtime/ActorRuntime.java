@@ -1683,9 +1683,54 @@ public final class ActorRuntime implements AutoCloseable {
     public <T> OresFuture<T> startActorTask(
             OresScheduler.Task<T> task,
             Runnable retireAfterPhysicalDone) {
-        Objects.requireNonNull(task, "task");
         Objects.requireNonNull(
                 retireAfterPhysicalDone, "physical Task retirement");
+        java.util.concurrent.atomic.AtomicReference<
+                OresScheduler.CompilerTaskHandle<?>> bound =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicBoolean retired = new AtomicBoolean();
+        return startActorTask(task, new OresScheduler.CompilerTaskRetirement() {
+            @Override
+            public void bind(OresScheduler.CompilerTaskHandle<?> child) {
+                Objects.requireNonNull(child, "compiler Task child");
+                if (!bound.compareAndSet(null, child)) {
+                    throw new IllegalStateException(
+                            "actor compiler Task child bound more than once");
+                }
+            }
+
+            @Override
+            public void retireNeverStarted(
+                    OresScheduler.CompilerTaskHandle<?> child) {
+                retireExact(child);
+            }
+
+            @Override
+            public void retireAfterPhysicalQuiescence(
+                    OresScheduler.CompilerTaskHandle<?> child) {
+                retireExact(child);
+            }
+
+            private void retireExact(
+                    OresScheduler.CompilerTaskHandle<?> child) {
+                if (bound.get() != child) {
+                    throw new IllegalStateException(
+                            "actor retirement belongs to a different exact Task child");
+                }
+                if (!retired.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "actor compiler Task child retired more than once");
+                }
+                retireAfterPhysicalDone.run();
+            }
+        });
+    }
+
+    public <T> OresFuture<T> startActorTask(
+            OresScheduler.Task<T> task,
+            OresScheduler.CompilerTaskRetirement retirement) {
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(retirement, "compiler Task retirement");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
@@ -1693,7 +1738,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (cell.kind != ActorKind.UNTRUSTED) {
             return cell.sourceScheduler().startCompilerAdmittedTask(
-                    task, retireAfterPhysicalDone);
+                    task, retirement);
         }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
@@ -1765,25 +1810,70 @@ public final class ActorRuntime implements AutoCloseable {
                 releaseTimedAdmissionOnce.run();
             }
         };
+
+        java.util.concurrent.atomic.AtomicReference<
+                OresScheduler.CompilerTaskHandle<?>> bound =
+                new java.util.concurrent.atomic.AtomicReference<>();
         AtomicBoolean released = new AtomicBoolean();
-        Runnable retireOnce = () -> {
-            if (released.compareAndSet(false, true)) {
-                retireUntrustedCompilerTransfer(
-                        retireAfterPhysicalDone,
-                        () -> releaseUntrustedSourceTask(cell, quota),
-                        () -> {
-                            physicalQuiescenceConfirmed.set(true);
-                            releaseTimedWhenSafe.run();
-                        });
-            }
-        };
+        OresScheduler.CompilerTaskRetirement quotaBoundRetirement =
+                new OresScheduler.CompilerTaskRetirement() {
+                    @Override
+                    public void bind(
+                            OresScheduler.CompilerTaskHandle<?> child) {
+                        retirement.bind(child);
+                        if (!bound.compareAndSet(null, child)) {
+                            throw new IllegalStateException(
+                                    "untrusted compiler Task child bound more than once");
+                        }
+                    }
+
+                    @Override
+                    public void retireNeverStarted(
+                            OresScheduler.CompilerTaskHandle<?> child) {
+                        retireExact(child, true);
+                    }
+
+                    @Override
+                    public void retireAfterPhysicalQuiescence(
+                            OresScheduler.CompilerTaskHandle<?> child) {
+                        retireExact(child, false);
+                    }
+
+                    private void retireExact(
+                            OresScheduler.CompilerTaskHandle<?> child,
+                            boolean neverStarted) {
+                        if (bound.get() != child) {
+                            throw new IllegalStateException(
+                                    "untrusted retirement belongs to a different exact Task child");
+                        }
+                        if (!released.compareAndSet(false, true)) {
+                            throw new IllegalStateException(
+                                    "untrusted compiler Task child retired more than once");
+                        }
+                        retireUntrustedCompilerTransfer(
+                                () -> {
+                                    if (neverStarted) {
+                                        retirement.retireNeverStarted(child);
+                                    } else {
+                                        retirement.retireAfterPhysicalQuiescence(child);
+                                    }
+                                },
+                                () -> releaseUntrustedSourceTask(cell, quota),
+                                () -> {
+                                    physicalQuiescenceConfirmed.set(true);
+                                    releaseTimedWhenSafe.run();
+                                });
+                    }
+                };
+
         Runnable notificationsDrained = () -> {
             terminalSubscribersDrained.set(true);
             releaseTimedWhenSafe.run();
         };
         OresFuture<T> future;
         try {
-            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
+            future = cell.sourceScheduler()
+                    .startCompilerAdmittedTaskWithWallDeadline(resume -> {
                 UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
                 CURRENT_UNTRUSTED_QUOTA.set(quota);
                 boolean entered = false;
@@ -1802,25 +1892,32 @@ public final class ActorRuntime implements AutoCloseable {
                         else CURRENT_UNTRUSTED_QUOTA.set(previous);
                     }
                 }
-            }, retireOnce, quota.remainingWallNanos(),
+            }, quotaBoundRetirement, quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                             "untrusted logical task exceeded wall-time budget while suspended"),
                     notificationsDrained);
         } catch (RuntimeException | Error failure) {
-            // No task was admitted. Release the pre-reserved quota slot.
-            // The scheduler's own retirement callback also claims this
-            // once, including a failure published before start() returns.
-            try {
-                retireOnce.run();
-            } finally {
+            if (bound.get() == null) {
+                // Binding failed before any exact scheduler child could own
+                // the compiler transfer. Roll back runtime quota reservations;
+                // the caller still owns the unbound transfer lease.
+                releaseUntrustedSourceTask(cell, quota);
+                releaseTimedAdmissionOnce.run();
+            } else if (physicalQuiescenceConfirmed.get()) {
+                // Preadmission rejection has no Future subscriber drain. Once
+                // exact never-started retirement succeeded, release the timed
+                // admission directly.
                 releaseTimedAdmissionOnce.run();
             }
+            // If exact compiler retirement failed, leave both logical/timed
+            // quota authority pinned. The scheduler attaches that failure as
+            // suppressed evidence to the admission exception.
             throw failure;
         }
         // A caller may cancel the Future while the source turn is still
-        // executing. The scheduler invokes retireOnce ONLY after guest
-        // carrier quiescence, not merely when the Future settles.
+        // executing. The scheduler invokes the exact retirement transition
+        // only after guest carrier quiescence, not merely Future settlement.
         return future;
     }
 

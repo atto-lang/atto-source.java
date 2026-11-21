@@ -156,13 +156,31 @@ public final class TaskTransferProvenance {
     }
 
     private List<Transfer> transfersForIdentity(Object boundary) {
+        Objects.requireNonNull(boundary, "boundary");
+        if (!sealed) {
+            throw new IllegalStateException(
+                    "Task transfer provenance must be sealed before lookup");
+        }
         List<Transfer> transfers = byBoundary.get(boundary);
-        return transfers == null ? List.of() : transfers;
+        if (transfers == null) {
+            throw new IllegalArgumentException(
+                    "no Task transfer provenance for exact AST boundary");
+        }
+        return transfers;
     }
 
     LexicalTypeContext lexicalContextForIdentity(Object boundary) {
+        Objects.requireNonNull(boundary, "boundary");
+        if (!sealed) {
+            throw new IllegalStateException(
+                    "Task transfer provenance must be sealed before lookup");
+        }
+        if (!byBoundary.containsKey(boundary)) {
+            throw new IllegalArgumentException(
+                    "no Task transfer provenance for exact AST boundary");
+        }
         LexicalTypeContext context = lexicalContextByBoundary.get(boundary);
-        if (context == null && byBoundary.containsKey(boundary)) {
+        if (context == null) {
             throw new IllegalStateException(
                     "Task transfer provenance lost lexical context");
         }

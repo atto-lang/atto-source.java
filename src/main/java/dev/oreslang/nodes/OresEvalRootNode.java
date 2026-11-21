@@ -1310,25 +1310,21 @@ public final class OresEvalRootNode extends RootNode {
             TaskTransferLease lease = TaskTransferLease.retain(admitted, captured);
             try {
                 return startSourceBlockTask(
-                        task.body(), captured, lease::retire);
+                        task.body(), captured, lease);
             } catch (RuntimeException | Error failure) {
-                // No runtime child can own the transfer after a pre-admission
-                // lowering failure.
-                lease.retire();
+                // Only a failure before exact runtime-child binding may retire
+                // locally. Once bind() succeeds, scheduler/scope/actor physical
+                // lifecycle owns the lease and this catch must not launder an
+                // early release.
+                lease.abortIfUnbound();
                 throw failure;
             }
         }
 
         private OresFuture<Object> startSourceBlockTask(
                 List<Ast.Stmt> body,
-                Env env) {
-            return startSourceBlockTask(body, env, () -> { });
-        }
-
-        private OresFuture<Object> startSourceBlockTask(
-                List<Ast.Stmt> body,
                 Env env,
-                Runnable retireAfterPhysicalDone) {
+                OresScheduler.CompilerTaskRetirement retirement) {
             SourceTask task = new SourceTask(body);
             // Lexically snapshot at spawn time. Captured owned values were
             // consumed by the compile-time ownership pass; no borrowed or
@@ -1343,26 +1339,33 @@ public final class OresEvalRootNode extends RootNode {
                             "nb scope inside actor execution is not enabled until actor quota/hot-reload integration is proven");
                 }
                 return structuredScope.forkCompilerAdmitted(
-                        task, retireAfterPhysicalDone);
+                        task, retirement);
             }
             if (ActorRuntime.inActorExecution()) {
                 OresFuture<Object> future =
                         context.actors().startActorTask(
-                                task, retireAfterPhysicalDone);
+                                task, retirement);
                 context.actors().ownCurrentActorFuture(future);
                 return future;
             }
             OresScheduler current = OresScheduler.current();
             return (current != null ? current : context.vm().rootScheduler())
                     .startCompilerAdmittedTask(
-                            task, retireAfterPhysicalDone);
+                            task, retirement);
         }
 
-        private static final class TaskTransferLease {
+        private static final class TaskTransferLease
+                implements OresScheduler.CompilerTaskRetirement {
+            private enum Phase {
+                UNBOUND,
+                BOUND,
+                RETIRED
+            }
+
             private final java.util.concurrent.atomic.AtomicReference<List<Object>>
                     retained;
-            private final java.util.concurrent.atomic.AtomicBoolean retired =
-                    new java.util.concurrent.atomic.AtomicBoolean();
+            private Phase phase = Phase.UNBOUND;
+            private OresScheduler.CompilerTaskHandle<?> exactChild;
 
             private TaskTransferLease(List<Object> retained) {
                 this.retained =
@@ -1391,10 +1394,50 @@ public final class OresEvalRootNode extends RootNode {
                 return new TaskTransferLease(values);
             }
 
-            private void retire() {
-                if (retired.compareAndSet(false, true)) {
-                    retained.set(List.of());
+            @Override
+            public synchronized void bind(
+                    OresScheduler.CompilerTaskHandle<?> child) {
+                Objects.requireNonNull(child, "compiler Task child");
+                if (phase != Phase.UNBOUND || exactChild != null) {
+                    throw new IllegalStateException(
+                            "Task transfer lease bound more than once");
                 }
+                exactChild = child;
+                phase = Phase.BOUND;
+            }
+
+            @Override
+            public void retireNeverStarted(
+                    OresScheduler.CompilerTaskHandle<?> child) {
+                retireExact(child);
+            }
+
+            @Override
+            public void retireAfterPhysicalQuiescence(
+                    OresScheduler.CompilerTaskHandle<?> child) {
+                retireExact(child);
+            }
+
+            private synchronized void retireExact(
+                    OresScheduler.CompilerTaskHandle<?> child) {
+                Objects.requireNonNull(child, "compiler Task child");
+                if (phase != Phase.BOUND || exactChild != child) {
+                    throw new IllegalStateException(
+                            "Task transfer retirement does not match the exact bound child");
+                }
+                phase = Phase.RETIRED;
+                retained.set(List.of());
+            }
+
+            private synchronized void abortIfUnbound() {
+                if (phase == Phase.BOUND) {
+                    return;
+                }
+                if (phase == Phase.RETIRED) {
+                    return;
+                }
+                phase = Phase.RETIRED;
+                retained.set(List.of());
             }
         }
 

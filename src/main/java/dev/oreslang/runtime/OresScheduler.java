@@ -97,6 +97,39 @@ public final class OresScheduler implements AutoCloseable {
         Step<T> resume(Resume resume) throws Exception;
     }
 
+    /**
+     * Opaque identity for one exact compiler-admitted scheduler child.
+     *
+     * <p>The constructor is private: guest/host callers cannot manufacture a
+     * lookalike child token. Identity comparison is intentionally by object
+     * reference, while the hidden scheduler epoch prevents cross-scheduler
+     * token reuse even if a future implementation adds numeric child ids.</p>
+     */
+    public static final class CompilerTaskHandle<T> {
+        private final Object schedulerEpoch;
+        private final Object runnerIdentity;
+
+        private CompilerTaskHandle(Object schedulerEpoch, Object runnerIdentity) {
+            this.schedulerEpoch = Objects.requireNonNull(
+                    schedulerEpoch, "scheduler epoch");
+            this.runnerIdentity = Objects.requireNonNull(
+                    runnerIdentity, "runner identity");
+        }
+    }
+
+    /**
+     * Compiler/runtime-only ownership retirement protocol.
+     *
+     * <p>bind() happens before executable admission. Exactly one terminal
+     * retirement path then follows: never-started or physical-quiescence.
+     * The same opaque child handle must be presented on every transition.</p>
+     */
+    public interface CompilerTaskRetirement {
+        void bind(CompilerTaskHandle<?> child);
+        void retireNeverStarted(CompilerTaskHandle<?> child);
+        void retireAfterPhysicalQuiescence(CompilerTaskHandle<?> child);
+    }
+
     /** Result of one resumable task turn. */
     public sealed interface Step<T> permits Done, Await, Cooperate { }
 
@@ -179,6 +212,8 @@ public final class OresScheduler implements AutoCloseable {
     private final ExecutorService ownedExecutor;
     private final TurnExecutor turnExecutor;
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
+    /** Exact lifetime namespace for opaque compiler child handles. */
+    private final Object compilerTaskEpoch = new Object();
     /** Linearizes new task admission with scheduler shutdown. */
     private final Object taskAdmissionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -416,18 +451,57 @@ public final class OresScheduler implements AutoCloseable {
         Objects.requireNonNull(retireAfterPhysicalDone,
                 "physical Task retirement");
         AtomicBoolean retired = new AtomicBoolean();
-        Runnable retireOnce = () -> {
-            if (retired.compareAndSet(false, true)) {
+        AtomicReference<CompilerTaskHandle<?>> bound = new AtomicReference<>();
+        return startCompilerAdmittedTask(task, new CompilerTaskRetirement() {
+            @Override
+            public void bind(CompilerTaskHandle<?> child) {
+                Objects.requireNonNull(child, "compiler Task child");
+                if (!bound.compareAndSet(null, child)) {
+                    throw new IllegalStateException(
+                            "compiler Task child bound more than once");
+                }
+            }
+
+            @Override
+            public void retireNeverStarted(CompilerTaskHandle<?> child) {
+                retireExact(child);
+            }
+
+            @Override
+            public void retireAfterPhysicalQuiescence(
+                    CompilerTaskHandle<?> child) {
+                retireExact(child);
+            }
+
+            private void retireExact(CompilerTaskHandle<?> child) {
+                if (bound.get() != child) {
+                    throw new IllegalStateException(
+                            "compiler retirement belongs to a different exact Task child");
+                }
+                if (!retired.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "compiler Task child retired more than once");
+                }
                 retireAfterPhysicalDone.run();
             }
-        };
-        try {
-            return start(task, retireOnce);
-        } catch (RuntimeException | Error admissionFailure) {
-            // No scheduler child exists if admission itself throws.
-            retireOnce.run();
-            throw admissionFailure;
-        }
+        });
+    }
+
+    public <T> OresFuture<T> startCompilerAdmittedTask(
+            Task<T> task,
+            CompilerTaskRetirement retirement) {
+        return startCompilerAdmittedTask(task, retirement, () -> { });
+    }
+
+    <T> OresFuture<T> startCompilerAdmittedTask(
+            Task<T> task,
+            CompilerTaskRetirement retirement,
+            Runnable onTerminalReady) {
+        Objects.requireNonNull(retirement, "compiler Task retirement");
+        Objects.requireNonNull(onTerminalReady, "terminal-ready hook");
+        return startAdmitted(
+                task, () -> { }, onTerminalReady,
+                null, 0L, () -> { }, retirement);
     }
 
     /**
@@ -448,7 +522,7 @@ public final class OresScheduler implements AutoCloseable {
     <T> OresFuture<T> start(
             Task<T> task, Runnable onQuiescent, Runnable onTerminalReady) {
         return startAdmitted(task, onQuiescent, onTerminalReady,
-                null, 0L, () -> { });
+                null, 0L, () -> { }, null);
     }
 
     /**
@@ -471,13 +545,28 @@ public final class OresScheduler implements AutoCloseable {
         Objects.requireNonNull(deadlineFailure, "deadlineFailure");
         Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
         return startAdmitted(task, onQuiescent, () -> { }, deadlineFailure,
-                Math.max(0L, remainingNanos), onNotificationDrained);
+                Math.max(0L, remainingNanos), onNotificationDrained, null);
+    }
+
+    <T> OresFuture<T> startCompilerAdmittedTaskWithWallDeadline(
+            Task<T> task,
+            CompilerTaskRetirement retirement,
+            long remainingNanos,
+            Throwable deadlineFailure,
+            Runnable onNotificationDrained) {
+        Objects.requireNonNull(retirement, "compiler Task retirement");
+        Objects.requireNonNull(deadlineFailure, "deadlineFailure");
+        Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
+        return startAdmitted(
+                task, () -> { }, () -> { }, deadlineFailure,
+                Math.max(0L, remainingNanos), onNotificationDrained, retirement);
     }
 
     private <T> OresFuture<T> startAdmitted(
             Task<T> task, Runnable onQuiescent, Runnable onTerminalReady,
             Throwable deadlineFailure, long remainingNanos,
-            Runnable onNotificationDrained) {
+            Runnable onNotificationDrained,
+            CompilerTaskRetirement compilerRetirement) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(onQuiescent, "onQuiescent");
         Objects.requireNonNull(onTerminalReady, "onTerminalReady");
@@ -486,22 +575,28 @@ public final class OresScheduler implements AutoCloseable {
         // NOT hold the lock while handing work to an arbitrary executor.
         // Shutdown must still cancel this task if enqueue blocks or rejects.
         TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent,
-                onTerminalReady, deadlineFailure != null, onNotificationDrained);
-        synchronized (taskAdmissionLock) {
-            ensureOpen();
-            if (deadlineFailure != null) {
-                if (!WALL_DEADLINE_ADMISSIONS.tryAcquire()) {
-                    throw new RejectedExecutionException(
-                            "global source wall-deadline admission is full");
+                onTerminalReady, deadlineFailure != null, onNotificationDrained,
+                compilerRetirement);
+        try {
+            synchronized (taskAdmissionLock) {
+                ensureOpen();
+                if (deadlineFailure != null) {
+                    if (!WALL_DEADLINE_ADMISSIONS.tryAcquire()) {
+                        throw new RejectedExecutionException(
+                                "global source wall-deadline admission is full");
+                    }
+                    runner.reserveDeadlineSlot();
                 }
-                runner.reserveDeadlineSlot();
+                try {
+                    tasks.add(runner);
+                } catch (RuntimeException | Error failure) {
+                    runner.releaseUnusedDeadlineSlot();
+                    throw failure;
+                }
             }
-            try {
-                tasks.add(runner);
-            } catch (RuntimeException | Error failure) {
-                runner.releaseUnusedDeadlineSlot();
-                throw failure;
-            }
+        } catch (RuntimeException | Error admissionFailure) {
+            runner.retireNeverStartedBeforeAdmission(admissionFailure);
+            throw admissionFailure;
         }
         try {
             if (deadlineFailure != null) {
@@ -662,6 +757,9 @@ public final class OresScheduler implements AutoCloseable {
 
         private final Task<T> task;
         private final Runnable onQuiescent;
+        private final CompilerTaskRetirement compilerRetirement;
+        private final CompilerTaskHandle<T> compilerHandle;
+        private final AtomicBoolean guestEntered = new AtomicBoolean();
         private final Object structuredScopeLock = new Object();
         private final Set<OresTaskScope> structuredScopes =
                 Collections.newSetFromMap(new IdentityHashMap<>());
@@ -689,9 +787,14 @@ public final class OresScheduler implements AutoCloseable {
 
         private TaskRunner(Task<T> task, Runnable onQuiescent,
                 Runnable onTerminalReady,
-                boolean timedAdmission, Runnable onNotificationDrained) {
+                boolean timedAdmission, Runnable onNotificationDrained,
+                CompilerTaskRetirement compilerRetirement) {
             this.task = task;
             this.onQuiescent = onQuiescent;
+            this.compilerRetirement = compilerRetirement;
+            this.compilerHandle = compilerRetirement == null
+                    ? null
+                    : new CompilerTaskHandle<>(compilerTaskEpoch, this);
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
             this.completion = new OresFuture<>(
@@ -699,6 +802,9 @@ public final class OresScheduler implements AutoCloseable {
                     this::cancelFromFuture,
                     onTerminalReady,
                     this::notificationDrained);
+            if (compilerRetirement != null) {
+                compilerRetirement.bind(compilerHandle);
+            }
         }
 
         @Override
@@ -877,6 +983,7 @@ public final class OresScheduler implements AutoCloseable {
 
                 final Step<T> step;
                 try {
+                    guestEntered.set(true);
                     step = Objects.requireNonNull(
                             task.resume(resume),
                             "OresScheduler task returned null Step");
@@ -1185,7 +1292,7 @@ public final class OresScheduler implements AutoCloseable {
                 // trusted retirement hook succeeds.
                 cancelWallDeadline();
                 try {
-                    onQuiescent.run();
+                    retireLifecycle();
                 } catch (RuntimeException | Error retirementFailure) {
                     // A lifecycle failure supersedes an otherwise-successful
                     // guest result. Do not manufacture a successful completion
@@ -1206,6 +1313,34 @@ public final class OresScheduler implements AutoCloseable {
                 tasks.remove(this);
                 deadlineQuiescenceRetired.set(true);
                 releaseDeadlineSlotIfRetired();
+            }
+        }
+
+        private void retireLifecycle() {
+            if (compilerRetirement == null) {
+                onQuiescent.run();
+                return;
+            }
+            CompilerTaskHandle<T> handle = Objects.requireNonNull(
+                    compilerHandle, "compiler Task handle");
+            if (guestEntered.get()) {
+                compilerRetirement.retireAfterPhysicalQuiescence(handle);
+            } else {
+                compilerRetirement.retireNeverStarted(handle);
+            }
+        }
+
+        private void retireNeverStartedBeforeAdmission(Throwable admissionFailure) {
+            if (compilerRetirement == null
+                    || !quiescenceNotified.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                compilerRetirement.retireNeverStarted(
+                        Objects.requireNonNull(
+                                compilerHandle, "compiler Task handle"));
+            } catch (RuntimeException | Error retirementFailure) {
+                admissionFailure.addSuppressed(retirementFailure);
             }
         }
 
