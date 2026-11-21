@@ -8,6 +8,7 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
+import dev.oreslang.types.Types.ModuleNamespace;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
@@ -80,6 +81,9 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    private final Set<String> importedModuleNamespaces = new HashSet<>();
+    // Authenticated compile-time declarations supplied by the source-unit linker.
+    private final Map<String, Ast.ModuleDecl> linkedModuleNamespaces = new HashMap<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -171,7 +175,19 @@ public final class TypeChecker {
             Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
             Map<String, LinkedInterfaceMetadata> linkedInterfaces) {
-        if (linkedClasses == null || linkedAliases == null || linkedInterfaces == null) {
+        return checkTypesWithLinkedImports(
+                program, linkedClasses, linkedAliases, linkedInterfaces, Map.of());
+    }
+
+    /** Linker-authenticated imported module namespaces; never guest values. */
+    public static Ast.Program checkTypesWithLinkedImports(
+            Ast.Program program,
+            Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, LinkedInterfaceMetadata> linkedInterfaces,
+            Map<String, Ast.ModuleDecl> linkedModules) {
+        if (linkedModules == null
+                || linkedClasses == null || linkedAliases == null || linkedInterfaces == null) {
             throw new IllegalArgumentException(
                     "linked public class/interface metadata cannot be null");
         }
@@ -244,6 +260,25 @@ public final class TypeChecker {
             }
         }
 
+        for (Map.Entry<String, Ast.ModuleDecl> entry : linkedModules.entrySet()) {
+            String localName = entry.getKey();
+            Ast.ModuleDecl linked = entry.getValue();
+            if (localName == null || localName.isBlank() || linked == null
+                    || !checker.importedModuleNamespaces.contains(localName)
+                    || checker.modules.containsKey(localName)) {
+                throw new IllegalArgumentException(
+                        "invalid or unauthorized linked module namespace '" + localName + "'");
+            }
+            boolean imported = program.imports().stream().anyMatch(use ->
+                    use.kind() == Ast.ImportKind.MODULE && !use.wildcard()
+                            && use.names().contains(linked.name())
+                            && ImportRules.localName(use, linked.name()).equals(localName));
+            if (!imported || checker.linkedModuleNamespaces.putIfAbsent(localName, linked) != null) {
+                throw new IllegalArgumentException(
+                        "linked module namespace lacks a unique explicit module import: " + localName);
+            }
+        }
+
         checker.validate(program);
         return program;
     }
@@ -286,6 +321,10 @@ public final class TypeChecker {
                         || imported.kind() == Ast.ImportKind.CLASS
                         || ImportRules.isJavaPath(imported.path())) {
                     importedValues.add(name);
+                }
+                if (imported.kind() == Ast.ImportKind.MODULE
+                        || imported.kind() == Ast.ImportKind.ALL) {
+                    importedModuleNamespaces.add(name);
                 }
             }
         }
@@ -1807,6 +1846,49 @@ public final class TypeChecker {
         return env;
     }
 
+    /**
+     * A module is a static namespace, never a guest value. Only explicit
+     * member receivers are allowed to use the compile-time shape needed for
+     * static lookup. The regular expression path rejects bare namespaces.
+     */
+    private Type typeOfStaticNamespaceReceiver(
+            Ast.Expr receiver, Env env, Set<String> generics, Type self) {
+        if (receiver instanceof Ast.NameExpr name && env.lookup(name.name()) == null) {
+            Ast.ModuleDecl module = modules.get(name.name());
+            if (module != null) {
+                rejectUnimportedModuleNamespace(name.name());
+                return new ModuleNamespace(module.name());
+            }
+            if (importedModuleNamespaces.contains(name.name())) {
+                if (!linkedModuleNamespaces.containsKey(name.name())) {
+                    throw new IllegalArgumentException(
+                            "imported module namespace '" + name.name()
+                                    + "' requires verified linked module metadata for member access");
+                }
+                return new ModuleNamespace(name.name());
+            }
+        }
+        return typeOf(receiver, env, generics, self);
+    }
+
+    /**
+     * This conversion is legal only at an explicit static member receiver.
+     * Ordinary expression typing retains the non-first-class ModuleNamespace
+     * marker and must never widen it into a structural runtime record.
+     */
+    private Type resolveStaticMemberReceiver(Type receiver) {
+        if (receiver instanceof ModuleNamespace namespace) {
+            Ast.ModuleDecl module = modules.get(namespace.moduleName());
+            if (module == null) module = linkedModuleNamespaces.get(namespace.moduleName());
+            if (module == null) {
+                throw new IllegalArgumentException(
+                        "unverified compile-time module namespace '" + namespace.moduleName() + "'");
+            }
+            return moduleShape(module);
+        }
+        return receiver;
+    }
+
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
@@ -2320,12 +2402,21 @@ public final class TypeChecker {
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) {
                 rejectUnimportedModuleNamespace(name.name());
-                return moduleShape(moduleNamespace);
+                throw new IllegalArgumentException(
+                        "module '" + name.name()
+                                + "' is a compile-time namespace, not a runtime value; "
+                                + "access its members directly");
+
             }
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) {
                 rejectUnimportedClassNamespace(classNamespace);
                 return new ClassNamespace(qualifiedClassName(classNamespace));
+            }
+            if (importedModuleNamespaces.contains(name.name())) {
+                throw new IllegalArgumentException(
+                        "imported module '" + name.name()
+                                + "' is a compile-time namespace, not a runtime value");
             }
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findSingleFunction(name.name());
@@ -2874,7 +2965,7 @@ public final class TypeChecker {
                 };
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
-                Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                Type receiver = deref(resolveStaticMemberReceiver(typeOfStaticNamespaceReceiver(member.receiver(), env, generics, self)));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
 
@@ -3471,7 +3562,7 @@ public final class TypeChecker {
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
-            Type receiver = typeOf(member.receiver(), env, generics, self);
+            Type receiver = resolveStaticMemberReceiver(typeOfStaticNamespaceReceiver(member.receiver(), env, generics, self));
             Type sumReceiver = receiverDispatchType(deref(receiver));
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
@@ -3756,7 +3847,24 @@ public final class TypeChecker {
                                 + "struct{field: Type,...}{...}, or an explicit Map<K,V> collection");
             }
             Ast.ClassDecl klass = findClass(created.type().name());
-            if (klass == null) return resolve(created.type(), generics, self);
+            if (klass == null) {
+                // Contracts/signatures and modules are compile-time declarations,
+                // never runtime constructors. Do not allow type resolution to
+                // reinterpret a nominal contract as an allocatable class.
+                Ast.InterfaceDecl nonClass = findInterface(created.type().name());
+                if (nonClass != null) {
+                    throw new IllegalArgumentException(
+                            "cannot instantiate " + (nonClass.moduleContract()
+                                    ? "compile-time contract/signature" : "interface")
+                                    + " '" + created.type().name() + "' with new");
+                }
+                if (modules.containsKey(created.type().name())) {
+                    throw new IllegalArgumentException(
+                            "cannot instantiate compile-time module '"
+                                    + created.type().name() + "' with new");
+                }
+                return resolve(created.type(), generics, self);
+            }
             rejectUnimportedClassNamespace(klass);
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
@@ -4386,7 +4494,7 @@ public final class TypeChecker {
             Env env,
             Set<String> generics,
             Type self) {
-        Type receiver = typeOf(member.receiver(), env, generics, self);
+        Type receiver = resolveStaticMemberReceiver(typeOfStaticNamespaceReceiver(member.receiver(), env, generics, self));
         Type receiverValueType = deref(unwrapMutexGuard(receiver));
         Type normalized = receiverDispatchType(receiverValueType);
         int arity = expected.parameters().size();
@@ -5040,6 +5148,29 @@ public final class TypeChecker {
             Set<String> generics,
             Type self,
             boolean writing) {
+        // Module member writes must preserve declared binding authority.
+        // A module namespace's structural lookup shape is not mutable data.
+        if (writing && member.receiver() instanceof Ast.NameExpr namespace
+                && env.lookup(namespace.name()) == null) {
+            Ast.ModuleDecl module = modules.get(namespace.name());
+            if (module != null) {
+                Ast.FieldDecl field = module.declarations().stream()
+                        .filter(decl -> decl instanceof Ast.FieldDecl)
+                        .map(decl -> (Ast.FieldDecl) decl)
+                        .filter(candidate -> candidate.name().equals(member.member()))
+                        .findFirst().orElse(null);
+                if (field == null || field.bindingKind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException(
+                            "module member '" + namespace.name() + "." + member.member()
+                                    + "' is not a writable let binding");
+                }
+            } else if (importedModuleNamespaces.contains(namespace.name())) {
+                throw new IllegalArgumentException(
+                        "cannot write imported module member '"
+                                + namespace.name() + "." + member.member()
+                                + "' without verified linked binding authority");
+            }
+        }
         Type rawReceiver;
         if (member.receiver() instanceof Ast.NameExpr name && env.lookup(name.name()) != null) {
             Env.Binding binding = env.lookup(name.name());
@@ -5050,7 +5181,7 @@ public final class TypeChecker {
             }
             rawReceiver = binding.type();
         } else {
-            rawReceiver = typeOf(member.receiver(), env, generics, self);
+            rawReceiver = resolveStaticMemberReceiver(typeOfStaticNamespaceReceiver(member.receiver(), env, generics, self));
         }
         Type receiver = receiverDispatchType(
                 unwrapMutexGuard(deref(rawReceiver)));

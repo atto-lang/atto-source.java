@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, ModuleNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -32,6 +32,15 @@ public final class Types {
 
     /** Rust-style compile-time borrow; erased by the interpreter runtime. */
     public record Borrow(Type target, boolean mutable) implements Type { }
+
+    /** Compile-time-only module namespace, never a guest value or object. */
+    public record ModuleNamespace(String moduleName) implements Type {
+        public ModuleNamespace {
+            if (moduleName == null || moduleName.isBlank()) {
+                throw new IllegalArgumentException("module namespace name cannot be blank");
+            }
+        }
+    }
 
     /** Compile-time meta-value for access to static class functions. */
     public record ClassNamespace(String className) implements Type { }
@@ -187,6 +196,9 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        // A compile-time namespace is never a value, not even when widened
+        // to Any/Unknown or erased to a generic. Keep this fail-closed.
+        if (from instanceof ModuleNamespace || to instanceof ModuleNamespace) return false;
         // Complements must be checked before permissive Unknown/Generic rules.
         // No compiler pass may turn uncertainty into a negative-type proof.
         if (to instanceof Not negative) {

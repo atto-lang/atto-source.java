@@ -138,7 +138,10 @@ public final class IncrementalCompiler {
             Map<String, TypeChecker.LinkedInterfaceMetadata> linkedContracts =
                     linkedImportedContracts(
                             id, parsed.get(id), parsed, normalizedImportResolutions);
-            if (linked.classes().isEmpty() && linkedContracts.isEmpty()) {
+            Map<String, Ast.ModuleDecl> linkedModules = linkedImportedModuleNamespaces(
+                    id, parsed.get(id), parsed, normalizedImportResolutions);
+            if (linked.classes().isEmpty() && linkedContracts.isEmpty()
+                    && linkedModules.isEmpty()) {
                 checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
             } else {
                 try {
@@ -148,7 +151,8 @@ public final class IncrementalCompiler {
                             Parser.parse(normalized.get(id)),
                             linked.classes(),
                             linked.aliases(),
-                            linkedContracts);
+                            linkedContracts,
+                            linkedModules);
                     OwnershipChecker.checkWithImportedClasses(
                             checked, linked.classes());
                 } catch (IllegalArgumentException invalid) {
@@ -178,6 +182,50 @@ public final class IncrementalCompiler {
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 initializationGroups);
+    }
+
+    /**
+     * Only declarations from locally resolved source units can act as
+     * authenticated module namespaces. Never create a runtime module object.
+     * Unresolved/external imports intentionally have no shape proof.
+     */
+    private static Map<String, Ast.ModuleDecl> linkedImportedModuleNamespaces(
+            String unitId,
+            Ast.Program importer,
+            Map<String, Ast.Program> parsed,
+            Map<String, Map<String, String>> importResolutions) {
+        Map<String, Ast.ModuleDecl> linked = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : importer.imports()) {
+            if (imported.kind() != Ast.ImportKind.MODULE || imported.wildcard()) continue;
+            String sourceId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, parsed.keySet(), importResolutions);
+            if (sourceId == null) continue;
+            Ast.Program source = parsed.get(sourceId);
+            if (source == null) {
+                throw new IllegalArgumentException("missing linked module source '" + sourceId + "'");
+            }
+            for (String sourceName : imported.names()) {
+                Ast.ModuleDecl target = null;
+                for (Ast.ModuleDecl candidate : source.modules()) {
+                    if (!candidate.name().equals(sourceName)) continue;
+                    if (target != null) {
+                        throw new IllegalArgumentException(
+                                "ambiguous linked module '" + sourceName + "'");
+                    }
+                    target = candidate;
+                }
+                if (target == null) {
+                    throw new IllegalArgumentException(
+                            "linked module '" + sourceName + "' not found in '" + sourceId + "'");
+                }
+                String localName = ImportRules.localName(imported, sourceName);
+                if (linked.putIfAbsent(localName, target) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate linked module namespace '" + localName + "'");
+                }
+            }
+        }
+        return Map.copyOf(linked);
     }
 
     private record LinkedClasses(
