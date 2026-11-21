@@ -114,6 +114,7 @@ expected = {
         "fullAtSignedBoundaryDoesNotBurnUnsignedSequenceOrAdmitPartialDelivery",
     },
     "dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest": {
+        "publishingActorCannotCommitWhileMembershipRevocationFenceIsHeld",
         "publisherScopedSubscriptionsShareTheCrossTopicActorQuota",
         "retiredPublisherRevokesItsScopedSubscriptionWithoutRevokingObserver",
         "zeroRecipientPublicationsAllocateSequenceButDoNotReplay",
