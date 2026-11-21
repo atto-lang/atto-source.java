@@ -29,13 +29,55 @@ public final class ActorStateContract {
         return null;
     }
 
+    /**
+     * Require the exact compiler-generated closed record layout. A bare
+     * readonly/inferred record, duplicate key, reordered or malformed
+     * $field$ entry cannot be used as a hidden mutable storage schema by
+     * a later AST producer. The parser emits sorted canonical records.
+     */
+    private static Ast.TypeRef canonicalStateSchema(Ast.TypeRef schema) {
+        if (schema == null || !schema.name().equals("$record$") || schema.inferArguments()) {
+            throw new IllegalArgumentException("actor state requires canonical closed record schema");
+        }
+        try {
+            Map<String, Ast.TypeRef> members = schema.recordMembers();
+            if (members.keySet().stream().anyMatch(String::isBlank)
+                    || !schema.equals(Ast.TypeRef.recordType(members))) {
+                throw new IllegalArgumentException("actor state requires canonical closed record schema");
+            }
+        } catch (IllegalStateException malformed) {
+            throw new IllegalArgumentException("malformed sealed actor state record schema", malformed);
+        }
+        return schema;
+    }
+
     public static Ast.TypeRef keySchema(Ast.FieldDecl field) {
         Ast.TypeRef type = field.type();
-        if (type.name().equals("$actor_state_map$")) return type.arguments().get(1);
+        if (type == null) {
+            throw new IllegalArgumentException("actor state requires canonical closed record schema");
+        }
+        if (type.name().equals("$actor_state_map$")) {
+            // A later AST producer must not forge a closed schema while
+            // substituting an unverified dynamic-map substrate. Reject
+            // malformed wrappers with a controlled semantic diagnostic.
+            if (type.inferArguments() || type.arguments().size() != 2) {
+                throw new IllegalArgumentException("malformed sealed actor state map layout");
+            }
+            Ast.TypeRef mapType = type.arguments().get(0);
+            Ast.TypeRef schema = type.arguments().get(1);
+            if (!mapType.name().equals("Map") || mapType.inferArguments()
+                    || mapType.arguments().size() != 2
+                    || !(mapType.arguments().get(0).name().equals("string")
+                         || mapType.arguments().get(0).name().equals("String"))
+                    || !schema.name().equals("$record$") || schema.inferArguments()) {
+                throw new IllegalArgumentException("noncanonical sealed actor state map schema");
+            }
+            return canonicalStateSchema(schema);
+        }
         // A completely dynamic homogeneous Map has no statically named keys.
         // It remains sealed; its dynamic get/set operations need separate lowering.
         if (type.name().equals("Map")) return Ast.TypeRef.recordType(Map.of());
-        return type;
+        return canonicalStateSchema(type);
     }
 
     public static void verify(Ast.Program program) {
@@ -115,6 +157,11 @@ public final class ActorStateContract {
         for (Ast.TypeRef parent : klass.parents()) {
             checkInheritedActorLayout(klass, parent, declared, active);
         }
+        // Compiler passes must not introduce a constructor after parsing: it would
+        // create a second, unchecked initialization/write authority.
+        if (klass.constructor() != null) {
+            throw new IllegalArgumentException("actor constructors cannot bypass sealed state initialization");
+        }
         Ast.FieldDecl state = stateField(klass);
         // Actors without state are legal, but their methods must still be
         // checked: an early return here lets a state-less actor reference
@@ -132,16 +179,52 @@ public final class ActorStateContract {
         // declared map with zero keys. Both cases are still inspected.
         Set<String> keys = null;
         if (state != null) {
+            // The hidden state slot is a compiler-owned layout, not an ordinary
+            // field whose visibility, mutability or annotation can be changed
+            // by another AST producer/annotation expansion pass.
+            if (state.visibility() != Ast.Visibility.PRIVATE
+                    || state.bindingKind() != Ast.BindingKind.VAL
+                    || !state.mutableReferent()
+                    || state.annotations().size() != 1
+                    || !state.annotations().getFirst().name().equals("$actor_state$")
+                    || !state.annotations().getFirst().arguments().isEmpty()) {
+                throw new IllegalArgumentException("actor state requires canonical sealed compiler-owned layout");
+            }
+            // The parser produces a fresh inferred-struct aggregate for the
+            // compiler-owned state defaults. Later passes must not replace it
+            // with an explicit user-shaped struct carrying independent layout
+            // metadata: that would create an unchecked initialization schema.
+            if (state.initializer() != null
+                    && (!(state.initializer() instanceof Ast.ObjectExpr defaults)
+                        || defaults.kind() != Ast.ObjectKind.INFERRED_STRUCT
+                        || !defaults.declaredFields().isEmpty())) {
+                throw new IllegalArgumentException(
+                        "actor state initializer must be a canonical closed key/value aggregate");
+            }
+            if (state.type().name().equals("Map")) {
+                throw new IllegalArgumentException(
+                        "actor state requires statically known typed keys; unbounded dynamic Map is not sealed");
+            }
             Ast.TypeRef schema = keySchema(state);
             if (!schema.isRecordType()) {
                 throw new IllegalArgumentException("actor state schema must declare typed keys");
             }
             keys = schema.recordMembers().keySet();
             // No continuation-bound alias may be smuggled into actor-state defaults.
+            Set<String> seenDefaults = new java.util.HashSet<>();
             if (state.initializer() instanceof Ast.ObjectExpr defaults) {
                 for (Ast.ObjectField def : defaults.fields()) {
+                    if (!seenDefaults.add(def.name()))
+                        throw new IllegalArgumentException("duplicate actor state default key '" + def.name() + "'");
                     if (!keys.contains(def.name())) {
                         throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
+                    }
+                    // Initialization is a runtime-owned exceptional write, not
+                    // a user critical-section lease. Deny calls/aliases/FFI,
+                    // and admit only freshly constructed literal aggregates.
+                    if (!sealedDefault(def.value())) {
+                        throw new IllegalArgumentException(
+                                "actor state default requires an owned constant expression: " + def.name());
                     }
                 }
             }
@@ -153,6 +236,49 @@ public final class ActorStateContract {
             visit(method.body(), klass.name(), keys, null, false,
                     !method.isStatic(), Ast.CriticalMode.NONE);
         }
+    }
+
+    private static boolean sealedDefault(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            return value == null || value instanceof String || value instanceof Boolean
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Double || value instanceof Float
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal;
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return (unary.operator().equals("-") || unary.operator().equals("+"))
+                    && unary.operand() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Number;
+        }
+        if (expression instanceof Ast.ListExpr list)
+            return list.elements().stream().allMatch(ActorStateContract::sealedDefault);
+        if (expression instanceof Ast.TupleExpr tuple)
+            return tuple.elements().stream().allMatch(ActorStateContract::sealedDefault);
+        if (expression instanceof Ast.ObjectExpr object) {
+            // A compiler-generated nested default must not silently overwrite
+            // another key, even if every individual value is a fresh literal.
+            // Explicit structs may be only partly initialized in an ordinary
+            // mutable binding, but the actor's initialization snapshot cannot
+            // acquire such an incomplete value. Require all declared fields.
+            Set<String> initialized = new java.util.HashSet<>();
+            for (Ast.ObjectField field : object.fields()) {
+                if (!initialized.add(field.name()) || !sealedDefault(field.value()))
+                    return false;
+            }
+            if (object.explicitStruct()) {
+                Set<String> declared = new java.util.HashSet<>();
+                for (Ast.StructFieldSpec field : object.declaredFields()) {
+                    if (!declared.add(field.name())) return false;
+                }
+                return initialized.equals(declared);
+            }
+            return object.inferredStruct() && object.declaredFields().isEmpty();
+        }
+        // In particular no NameExpr, MemberExpr, CallExpr, NewExpr, alias,
+        // pointer, ownership intrinsic, coroutine or externally owned value.
+        return false;
     }
 
     private static void visit(Object node, String actor, Set<String> keys,
@@ -209,7 +335,9 @@ public final class ActorStateContract {
         if (activeAccess != null
                 && (node instanceof Ast.AwaitExpr || node instanceof Ast.SelectStmt
                     || node instanceof Ast.DynamicSelectExpr || node instanceof Ast.ChannelOpExpr
-                    || node instanceof Ast.YieldStmt
+                    || node instanceof Ast.YieldStmt || node instanceof Ast.DeferStmt
+                    || node instanceof Ast.ForStmt || node instanceof Ast.ForOfStmt
+                    || node instanceof Ast.ForOfDestructureStmt || node instanceof Ast.LoopStmt
                     || (node instanceof Ast.RuntimeCallExpr op
                         && op.operation().equals("cooperate")))) {
             throw new IllegalArgumentException(
@@ -225,6 +353,16 @@ public final class ActorStateContract {
                 && node instanceof Ast.CallExpr call
                 && referencesAccess(call.callee(), activeAccess)) {
             throw new IllegalArgumentException("critical read cannot call potentially mutating state methods");
+        }
+        // No indexing through the actor object or a state loan until the
+        // typechecker and both backends lower a statically typed, bounds-checked
+        // projection. String-key indexing is not a hidden state escape hatch.
+        if (node instanceof Ast.IndexExpr indexed
+                && (isSelf(indexed.receiver())
+                    || (activeAccess != null
+                        && referencesAccess(indexed.receiver(), activeAccess)))) {
+            throw new IllegalArgumentException(
+                    "actor state indexing requires verified typed projection lowering");
         }
         if (node instanceof Ast.MemberExpr member
                 && isSelf(member.receiver()) && member.member().equals("state")) {
@@ -283,16 +421,21 @@ public final class ActorStateContract {
             throw new IllegalArgumentException(
                     "actor state-backed rt copy requires verified snapshot lowering");
         }
+        // Unknown ownership/pointer intrinsics cannot silently gain direct
+        // state references as their argument. The only trusted access path
+        // remains compiler-lowered scoped read/write.
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
-                && (op.operation().equals("borrow") || op.operation().equals("borrow_mut")
-                    || op.operation().equals("borrowMut") || op.operation().equals("take")
-                    || op.operation().equals("share"))
                 && referencesAccess(op.arguments(), activeAccess)) {
             // A borrowed state projection cannot be moved out of the map or
             // published as Shared<T>. A primitive copy is permitted, but
             // ownership-changing operations need a proven snapshot lowering.
             throw new IllegalArgumentException(
-                    "actor state-backed borrow/take/share cannot escape its lexical loan");
+                    "actor state-backed runtime ownership/pointer operation lacks verified scoped lowering");
+        }
+        if (node instanceof Map<?, ?> entries) {
+            for (Object value : entries.values())
+                visit(value, actor, keys, activeAccess, nestedClosure, instanceMethod, accessMode);
+            return;
         }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) visit(item, actor, keys, activeAccess, nestedClosure, instanceMethod, accessMode);
@@ -320,6 +463,10 @@ public final class ActorStateContract {
             if (lambda.parameters().stream().anyMatch(p -> p.name().equals(access))) return false;
             return referencesAccess(lambda.expressionBody(), access)
                     || referencesAccess(lambda.blockBody(), access);
+        }
+        if (node instanceof Map<?, ?> entries) {
+            for (Object value : entries.values()) if (referencesAccess(value, access)) return true;
+            return false;
         }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) if (referencesAccess(item, access)) return true;

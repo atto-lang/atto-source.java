@@ -1,0 +1,28 @@
+name: Sealed actor state model
+on:
+  pull_request:
+    paths:
+      - "formal/check_sealed_actor_state.py"
+      - "formal/ACTOR_STATE_PROOF_OBLIGATIONS.md"
+      - ".github/workflows/actor-state-model.yml"
+      - "src/main/java/dev/oreslang/types/ActorStateContract.java"
+      - "src/test/java/dev/oreslang/ActorSealedStateAdmissionHardeningTest.java"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bounded-protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Check sealed actor-state model
+        run: |
+          set -euo pipefail
+          python3 -m py_compile formal/check_sealed_actor_state.py
+          python3 formal/check_sealed_actor_state.py
+          # Optimized Python must not turn checks into no-ops.
+          python3 -O formal/check_sealed_actor_state.py
+          python3 -OO formal/check_sealed_actor_state.py
