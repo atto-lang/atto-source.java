@@ -209,6 +209,109 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.executionDomain();
     }
 
+    /**
+     * Only the runtime may mint a state permit. An ExecutionContext supplied
+     * by guest/host code is never sufficient to gain sealed actor state access.
+     */
+    public final class StatePermit implements AutoCloseable {
+        private final ActorCell<?> owner;
+        private final ExecutionContext execution;
+        private final ActorStateRwLoans.StateLoan loan;
+        private final Object physicalTurn;
+
+        private StatePermit(ActorCell<?> owner, ExecutionContext execution,
+                ActorStateRwLoans.StateLoan loan, Object physicalTurn) {
+            this.owner = owner;
+            this.execution = execution;
+            this.loan = loan;
+            this.physicalTurn = physicalTurn;
+        }
+
+        /** Called on every source state-field read/write, not only at open. */
+        public void requireHeld(boolean write) {
+            if (currentActorRuntime() != ActorRuntime.this
+                    || currentActor.get() != owner
+                    || currentMutexExecutionSegment() != physicalTurn
+                    || owner.stopped.get()
+                    || currentStatePermit.get() != this
+                    || !loan.heldBy(execution)
+                    || (write && loan.access() != ActorStateRwLoans.Access.WRITE)) {
+                throw new SecurityException(
+                        "sealed actor state loan requires its owning live actor turn");
+            }
+        }
+
+        @Override public void close() {
+            if (currentActorRuntime() != ActorRuntime.this
+                    || currentActor.get() != owner
+                    || currentMutexExecutionSegment() != physicalTurn
+                    || currentStatePermit.get() != this) {
+                throw new SecurityException("foreign carrier cannot release an actor state loan");
+            }
+            try {
+                loan.close();
+            } finally {
+                currentStatePermit.remove();
+            }
+        }
+    }
+
+    /**
+     * Synchronous critical[read]/critical[write] admission: never parks an
+     * actor carrier. The actor's runtime-created incarnation and ticket are
+     * the sole authority; no caller-supplied ExecutionContext is trusted.
+     */
+    public StatePermit acquireCurrentActorStatePermit(boolean write) {
+        if (currentActorRuntime() != this || closed.get()) {
+            throw new SecurityException("state loan requires owning actor runtime");
+        }
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.stopped.get() || cell.finalized
+                || cell.codeExecutor == null || !currentThreadOwnsActorExecutionLease()) {
+            throw new SecurityException("state loan requires authenticated live source actor");
+        }
+        if (currentStatePermit.get() != null) {
+            throw new IllegalStateException("nested actor critical state loan is forbidden");
+        }
+        long ticket = nextStateExecutionTicket.incrementAndGet();
+        if (ticket <= 0 || stateRuntimeDomain <= 0 || cell.ref.generation() <= 0) {
+            throw new IllegalStateException("actor state execution identity exhausted");
+        }
+        long incarnation = cell.ref.generation();
+        ExecutionContext execution = ExecutionContext.actorBound(
+                stateRuntimeDomain, ticket, ticket, incarnation,
+                stateRuntimeDomain, incarnation, incarnation, 0, 0);
+        OresFuture<ActorStateRwLoans.StateLoan> future = write
+                ? cell.stateRegion.acquireWriteAsync(execution)
+                : cell.stateRegion.acquireReadAsync(execution);
+        if (!future.isDone()) {
+            // The compiler currently rejects await inside these callbacks.
+            // A queued loan would deadlock a source carrier, so fail closed.
+            future.cancel(false);
+            throw new IllegalStateException("synchronous critical state loan cannot queue or suspend");
+        }
+        ActorStateRwLoans.StateLoan loan = future.join();
+        StatePermit permit = new StatePermit(cell, execution, loan,
+                currentMutexExecutionSegment());
+        currentStatePermit.set(permit);
+        try {
+            permit.requireHeld(write);
+            return permit;
+        } catch (RuntimeException | Error rejected) {
+            permit.close();
+            throw rejected;
+        }
+    }
+
+    private void onActorStateRegionRetired(ActorId id) {
+        ActorCell<?> cell = actors.get(id);
+        if (cell == null) return;
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() && !cell.finalized) cell.finalizeStopLocked();
+            cell.lifecycleLock.notifyAll();
+        }
+    }
+
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
     /**
@@ -470,6 +573,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private static final AtomicLong NEXT_STATE_RUNTIME_DOMAIN = new AtomicLong(1);
+    /** Runtime-minted positive state-domain ID; never derived from actor UUID hashes. */
+    private final long stateRuntimeDomain = NEXT_STATE_RUNTIME_DOMAIN.getAndIncrement();
+    /** Unique across all actors and all loans in this runtime. */
+    private final AtomicLong nextStateExecutionTicket = new AtomicLong();
+    /** Lexical critical ownership never nests on one carrier, even via untyped host calls. */
+    private final ThreadLocal<StatePermit> currentStatePermit = new ThreadLocal<>();
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
@@ -7550,6 +7660,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ChannelRuntime.Channel<ActorOutputEnvelope> outputChannel;
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
+        /** Actor-incarnation-owned state RW ledger and physical retirement gate. */
+        private final ActorStateRwLoans stateRegion;
         private final Set<ActorShardLease> shardLeases = ConcurrentHashMap.newKeySet();
         private final Set<ActorShardSnapshotLease> shardSnapshotLeases = ConcurrentHashMap.newKeySet();
         /** Guarded by lifecycleLock; private and shared shard bytes both counted. */
@@ -7657,6 +7769,8 @@ public final class ActorRuntime implements AutoCloseable {
                 String codeActorType,
                 ActorCell<?> parent) {
             this.ref = ref;
+            this.stateRegion = new ActorStateRwLoans(0,
+                    () -> onActorStateRegionRetired(ref.id()));
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
@@ -7998,6 +8112,10 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || gracefulTeardownPending
                     || !children.isEmpty()) return;
+            // A closed lexical view is not physical loan retirement. Do not
+            // finalize owned actor memory while a reader/writer or a grant
+            // notification is still in flight.
+            if (!stateRegion.physicallyRetired()) return;
             OresScheduler scheduler = sourceScheduler;
             if (sourceStopCleanupAborted) {
                 recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
@@ -8807,6 +8925,24 @@ public final class ActorRuntime implements AutoCloseable {
                 scheduleTeardown = gracefulTeardownPending
                         && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
+            }
+            // STOP first fences new critical loans, then waits for every
+            // admitted loan and its synchronous notification to retire.
+            // Do not hold lifecycleLock while settling any loan callbacks.
+            // Even if a host notification hook fails, STOP must keep sealing
+            // descendants rather than abandoning the subtree half-stopped.
+            try {
+                stateRegion.close();
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                throw fatal;
+            } catch (Throwable loanCloseFailure) {
+                synchronized (lifecycleLock) {
+                    sourceStopCleanupAborted = true;
+                    recordFinalizationFailure(new OresScheduler.CleanupIncompleteError(
+                            "actor state physical retirement failed; quarantine arena",
+                            loanCloseFailure));
+                    lifecycleLock.notifyAll();
+                }
             }
             if (scheduleTeardown) schedule();
 

@@ -1,0 +1,85 @@
+name: Authenticated sealed state loan guest + lifetime gate
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorStateRwLoans.java'
+      - 'src/main/java/dev/oreslang/runtime/ExecutionContext.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorStateRuntimePermitAuthorityTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorStateRegionActorStopPinTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorStateSourceTaskStopQuiescenceTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorStateRw*'
+      - '.github/workflows/critical-state-runtime-loans.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  exact-head-state-guest-and-retirement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact head with no persisted token
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Confirm SHA, clean tree, pinned guest program counts and file identities
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+          test "$(git ls-files 'src/test/resources/parity/actor-critical-modes/*.ores' | wc -l)" -eq 9
+          for file in \
+            src/main/java/dev/oreslang/runtime/ActorRuntime.java \
+            src/main/java/dev/oreslang/runtime/ActorStateRwLoans.java \
+            src/main/java/dev/oreslang/runtime/ExecutionContext.java \
+            src/main/java/dev/oreslang/nodes/OresEvalRootNode.java \
+            src/test/java/dev/oreslang/runtime/ActorStateRuntimePermitAuthorityTest.java \
+            src/test/java/dev/oreslang/runtime/ActorStateRegionActorStopPinTest.java \
+            src/test/java/dev/oreslang/runtime/ActorStateSourceTaskStopQuiescenceTest.java \
+            src/test/java/dev/oreslang/runtime/ActorStateRwLoansTest.java \
+            src/test/java/dev/oreslang/runtime/ActorStateRwLoansCarrierMatrixTest.java \
+            src/test/java/dev/oreslang/runtime/ActorStateRwRetirementPublishRaceTest.java; do
+            git ls-files --error-unmatch -- "$file" >/dev/null
+            echo "CRITICAL_STATE_EXACT_BLOB $file $(git hash-object "$file")"
+          done
+          echo "CRITICAL_STATE_EXACT_HEAD=$SOURCE_SHA"
+      - name: Install GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          distribution: graalvm
+          java-version: '25'
+          version: '25.3'
+          cache: maven
+      - name: Run real guest and runtime suites, reject missing/skipped cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=ActorCriticalStateModeTest,ActorCriticalModeConformanceTest,ActorSealedStateAuthorityGateTest,ActorStateRuntimePermitAuthorityTest,ActorStateRegionActorStopPinTest,ActorStateSourceTaskStopQuiescenceTest,ActorStateRwLoansTest,ActorStateRwLoansCarrierMatrixTest,ActorStateRwRetirementPublishRaceTest \
+            test
+          for cls in \
+            dev.oreslang.ActorCriticalStateModeTest \
+            dev.oreslang.ActorCriticalModeConformanceTest \
+            dev.oreslang.ActorSealedStateAuthorityGateTest \
+            dev.oreslang.runtime.ActorStateRuntimePermitAuthorityTest \
+            dev.oreslang.runtime.ActorStateRegionActorStopPinTest \
+            dev.oreslang.runtime.ActorStateSourceTaskStopQuiescenceTest \
+            dev.oreslang.runtime.ActorStateRwLoansTest \
+            dev.oreslang.runtime.ActorStateRwLoansCarrierMatrixTest \
+            dev.oreslang.runtime.ActorStateRwRetirementPublishRaceTest; do
+            report="target/surefire-reports/TEST-${cls}.xml"
+            test -s "$report"
+            grep -Eq '<testsuite[^>]*tests="[1-9][0-9]*"' "$report"
+            for field in errors failures skipped; do
+              grep -Eq '<testsuite[^>]*'${field}'="0"' "$report"
+            done
+            echo "CRITICAL_STATE_EXECUTED_SUITE=$cls"
+          done
+          echo 'CRITICAL_STATE_GUEST_AND_PHYSICAL_RETIREMENT_PASS'

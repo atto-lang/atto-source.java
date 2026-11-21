@@ -56,7 +56,7 @@ jobs:
           mvn -B -ntp -Dtest=ActorSealedStateAuthorityGateTest,ActorCriticalStateModeTest,ActorCriticalModeConformanceTest,ActorStateLoanTest,ActorSingleStateSchemaTest test
           for spec in \
             ActorSealedStateAuthorityGateTest:1 \
-            ActorCriticalStateModeTest:12 \
+            ActorCriticalStateModeTest:13 \
             ActorCriticalModeConformanceTest:9 \
             ActorStateLoanTest:9 \
             ActorSingleStateSchemaTest:7; do
@@ -70,4 +70,4 @@ jobs:
             done
             echo "GUEST_SUITE_PASS ${class} tests=${expected}"
           done
-          echo 'NATIVE_GRAAL_CRITICAL_MODES_PASS tests=38'
+          echo 'NATIVE_GRAAL_CRITICAL_MODES_PASS tests=39'
