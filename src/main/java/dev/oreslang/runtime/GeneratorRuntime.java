@@ -35,17 +35,61 @@ public final class GeneratorRuntime {
         void run(Emitter<T> emitter) throws Exception;
     }
 
+    @FunctionalInterface
+    public interface StructuredProducer<T> {
+        void run(
+                Emitter<T> emitter,
+                TaskScope.Registration scopeRegistration)
+                throws Exception;
+    }
+
     public record Step<T>(boolean done, T value) {
         public static <T> Step<T> yielded(T value) { return new Step<>(false, value); }
         public static <T> Step<T> doneStep() { return new Step<>(true, null); }
     }
 
-    public static <T> Generator<T> generator(AsyncRuntime runtime, Producer<T> producer) {
-        return new Generator<>(new Engine<>(runtime, producer));
+    public static <T> Generator<T> generator(
+            AsyncRuntime runtime,
+            Producer<T> producer) {
+        Objects.requireNonNull(producer, "producer");
+        return new Generator<>(
+                new Engine<>(
+                        runtime,
+                        (emitter, ignored) -> producer.run(emitter),
+                        null,
+                        null));
     }
 
-    public static <T> AsyncGenerator<T> asyncGenerator(AsyncRuntime runtime, Producer<T> producer) {
-        return new AsyncGenerator<>(runtime, new Engine<>(runtime, producer));
+    public static <T> Generator<T> generator(
+            AsyncRuntime runtime,
+            StructuredProducer<T> producer,
+            TaskScope scope,
+            TaskScope.Registration scopeParent) {
+        return new Generator<>(
+                new Engine<>(runtime, producer, scope, scopeParent));
+    }
+
+    public static <T> AsyncGenerator<T> asyncGenerator(
+            AsyncRuntime runtime,
+            Producer<T> producer) {
+        Objects.requireNonNull(producer, "producer");
+        return new AsyncGenerator<>(
+                runtime,
+                new Engine<>(
+                        runtime,
+                        (emitter, ignored) -> producer.run(emitter),
+                        null,
+                        null));
+    }
+
+    public static <T> AsyncGenerator<T> asyncGenerator(
+            AsyncRuntime runtime,
+            StructuredProducer<T> producer,
+            TaskScope scope,
+            TaskScope.Registration scopeParent) {
+        return new AsyncGenerator<>(
+                runtime,
+                new Engine<>(runtime, producer, scope, scopeParent));
     }
 
     public static final class Generator<T> implements Iterable<T>, AutoCloseable {
@@ -127,7 +171,9 @@ public final class GeneratorRuntime {
 
     private static final class Engine<T> implements AutoCloseable {
         private final AsyncRuntime runtime;
-        private final Producer<T> producer;
+        private final StructuredProducer<T> producer;
+        private final TaskScope scope;
+        private final TaskScope.Registration scopeParent;
         private final ArrayBlockingQueue<Object> resumes = new ArrayBlockingQueue<>(1);
         private final ArrayBlockingQueue<Event<T>> events = new ArrayBlockingQueue<>(1);
         private final AtomicBoolean started = new AtomicBoolean();
@@ -137,9 +183,15 @@ public final class GeneratorRuntime {
         private volatile boolean done;
         private volatile Throwable backingFailure;
 
-        private Engine(AsyncRuntime runtime, Producer<T> producer) {
+        private Engine(
+                AsyncRuntime runtime,
+                StructuredProducer<T> producer,
+                TaskScope scope,
+                TaskScope.Registration scopeParent) {
             this.runtime = Objects.requireNonNull(runtime, "runtime");
             this.producer = Objects.requireNonNull(producer, "producer");
+            this.scope = scope;
+            this.scopeParent = scopeParent;
         }
 
         private boolean isClosed() {
@@ -150,6 +202,10 @@ public final class GeneratorRuntime {
             if (done || closed.get()) { awaitProducerExit(); return Step.doneStep(); }
             throwIfBackingFailed();
             startIfNeeded();
+            if (closed.get()) {
+                awaitProducerExit();
+                return Step.doneStep();
+            }
             throwIfBackingFailed();
             putResume();
             Event<T> event = takeEvent();
@@ -173,22 +229,55 @@ public final class GeneratorRuntime {
 
         private void startIfNeeded() {
             synchronized (launchLock) {
-                if (closed.get() || !started.compareAndSet(false, true)) return;
-                OresFuture<Void> task = runtime.submit(() -> {
-                    try {
-                        takeResume();
-                        if (!closed.get()) {
-                            producer.run(this::emit);
-                        }
-                        publish(new DoneEvent<>());
-                    } catch (CancellationException cancelled) {
-                        if (!closed.get()) publish(new FailedEvent<>(cancelled));
-                    } catch (Throwable failure) {
-                        if (!closed.get()) publish(new FailedEvent<>(failure));
+                if (closed.get() || started.get()) return;
+
+                TaskScope.Registration registration = null;
+                if (scope != null) {
+                    registration = scope.reserve(scopeParent);
+                    registration.onScopeClose(this::requestScopeClose);
+                    if (closed.get()) {
+                        registration.retireUnstarted();
+                        return;
                     }
-                    return null;
-                });
+                }
+
+                if (!started.compareAndSet(false, true)) {
+                    if (registration != null) registration.retireUnstarted();
+                    return;
+                }
+
+                final TaskScope.Registration structured = registration;
+                final OresFuture<Void> task;
+                try {
+                    task = structured == null
+                            ? runtime.submit(() -> runProducer(null))
+                            : runtime.submitStructured(
+                                    () -> runProducer(structured),
+                                    terminal -> {
+                                        if (closed.get() && terminal.isCancelled()) {
+                                            structured.terminalReadyAsSuccessfulClose(terminal);
+                                        } else {
+                                            structured.terminalReady(terminal);
+                                        }
+                                    },
+                                    structured::quiesced);
+                } catch (RuntimeException | Error admissionFailure) {
+                    if (structured != null) {
+                        structured.failedAdmission(admissionFailure);
+                    }
+                    throw admissionFailure;
+                }
+
                 producerTask.set(task);
+                if (structured != null) {
+                    try {
+                        structured.attach(task);
+                    } catch (RuntimeException | Error attachFailure) {
+                        task.cancel(false);
+                        throw attachFailure;
+                    }
+                }
+
                 // Admission/context entry can fail before the producer body runs.
                 // Its catch block then never publishes an event. Deliver that
                 // backing failure without blocking the runtime completion thread.
@@ -200,6 +289,56 @@ public final class GeneratorRuntime {
                 });
                 if (closed.get()) task.cancel(true);
             }
+        }
+
+        private Void runProducer(TaskScope.Registration registration)
+                throws Exception {
+            if (registration != null) {
+                registration.beganExecution();
+            }
+            try {
+                takeResume();
+                if (!closed.get()) {
+                    producer.run(this::emit, registration);
+                }
+                // Scope/user close may already have published the synthetic
+                // terminal event that releases a concurrent pull. Never block
+                // trying to publish a second terminal event into the one-slot
+                // queue after close.
+                if (!closed.get()) publish(new DoneEvent<>());
+                return null;
+            } catch (CancellationException cancelled) {
+                if (!closed.get()) {
+                    publish(new FailedEvent<>(cancelled));
+                    if (registration != null) throw cancelled;
+                }
+                return null;
+            } catch (RuntimeException failure) {
+                if (!closed.get()) publish(new FailedEvent<>(failure));
+                if (registration != null) throw failure;
+                return null;
+            } catch (Exception failure) {
+                if (!closed.get()) publish(new FailedEvent<>(failure));
+                if (registration != null) throw failure;
+                return null;
+            } catch (Error failure) {
+                if (!closed.get()) publish(new FailedEvent<>(failure));
+                throw failure;
+            }
+        }
+
+        /**
+         * Lexical scope close is a graceful producer stop request. It never
+         * waits on the caller thread; normal TaskScope drain observes producer
+         * terminal authority and physical AsyncRuntime retirement separately.
+         * Exceptional scope cancellation may subsequently revoke the producer
+         * Future if graceful shutdown has not completed yet.
+         */
+        private void requestScopeClose() {
+            if (!closed.compareAndSet(false, true)) return;
+            done = true;
+            resumes.offer(RESUME);
+            events.offer(new DoneEvent<>());
         }
 
         private void awaitProducerExit() {
@@ -271,15 +410,13 @@ public final class GeneratorRuntime {
 
         @Override
         public void close() {
-            boolean first = closed.compareAndSet(false, true);
-            if (first) {
-                done = true;
-                synchronized (launchLock) {
-                    OresFuture<Void> task = producerTask.get();
-                    if (task != null) task.cancel(true);
-                }
-                resumes.offer(RESUME);
-                events.offer(new DoneEvent<>());
+            requestScopeClose();
+            // Explicit close is stronger than the lexical scope's graceful
+            // close request. It may arrive after that request and must still
+            // be able to interrupt a producer stuck in host/runtime work.
+            synchronized (launchLock) {
+                OresFuture<Void> task = producerTask.get();
+                if (task != null) task.cancel(true);
             }
             awaitProducerExit();
         }

@@ -59,8 +59,16 @@ public final class TaskScope {
     }
 
     public OresFuture<Void> close() {
+        Registration[] admitted;
         synchronized (this) {
             closing = true;
+            admitted = children.toArray(new Registration[0]);
+        }
+        // Resource-like structured children (currently generator producers)
+        // need a close signal so a pull-driven activation cannot pin normal
+        // lexical scope exit forever. Ordinary Tasks install no hook.
+        for (Registration ticket : admitted) {
+            ticket.requestScopeClose();
         }
         publishIfReady();
         return drained;
@@ -86,6 +94,10 @@ public final class TaskScope {
                         "enclosing scoped Task was cancelled");
             }
             admitted = children.toArray(new Registration[0]);
+        }
+
+        for (Registration ticket : admitted) {
+            ticket.requestScopeClose();
         }
 
         ArrayList<OresFuture.RuntimeCancellation<?>> claimed =
@@ -157,6 +169,9 @@ public final class TaskScope {
         private OresFuture<?> attachedFuture;
         private OresFuture<?> terminalFuture;
         private Throwable failure;
+        private Runnable scopeCloseHook;
+        private boolean scopeCloseRequested;
+        private boolean scopeCloseHookRun;
 
         private Registration(TaskScope scope) {
             this.scope = scope;
@@ -176,6 +191,58 @@ public final class TaskScope {
                         "retired scoped Task cannot begin execution");
             }
             beganExecution = true;
+        }
+
+        /**
+         * Install a host-only close signal for a resource-like structured
+         * child. The hook is requested at most once when the lexical scope
+         * begins normal close or cancellation. It must not run guest code on
+         * the caller thread and should return without waiting for retirement.
+         */
+        public void onScopeClose(Runnable hook) {
+            Objects.requireNonNull(hook, "scope close hook");
+            boolean runNow = false;
+            synchronized (this) {
+                if (scopeCloseHook != null) {
+                    throw new IllegalStateException(
+                            "Task scope ticket already has a close hook");
+                }
+                scopeCloseHook = hook;
+                if (scopeCloseRequested && !scopeCloseHookRun) {
+                    scopeCloseHookRun = true;
+                    runNow = true;
+                }
+            }
+            if (runNow) hook.run();
+        }
+
+        private void requestScopeClose() {
+            Runnable hook = null;
+            synchronized (this) {
+                scopeCloseRequested = true;
+                if (scopeCloseHook != null && !scopeCloseHookRun) {
+                    scopeCloseHookRun = true;
+                    hook = scopeCloseHook;
+                }
+            }
+            if (hook != null) hook.run();
+        }
+
+        /**
+         * Retire a lazy structured child that was reserved but was closed
+         * before its producer acquired scheduler Future identity.
+         */
+        public void retireUnstarted() {
+            synchronized (this) {
+                if (notified) return;
+                if (attached || beganExecution || terminalFuture != null) {
+                    throw new IllegalStateException(
+                            "started Task scope ticket cannot retire as unstarted");
+                }
+                terminal = true;
+                quiescent = true;
+            }
+            notifyIfReady();
         }
 
         /**
@@ -234,23 +301,44 @@ public final class TaskScope {
          * revocation (when applicable) and before ordinary Future subscribers.
          */
         public void terminalReady(OresFuture<?> future) {
+            terminalReady(future, false);
+        }
+
+        /**
+         * Resource-like structured children may deliberately cancel their
+         * private backing Future as part of a successful close. The exact
+         * Future identity still supplies terminal authority; only the logical
+         * cancellation failure is suppressed. Physical quiescence remains
+         * mandatory.
+         */
+        public void terminalReadyAsSuccessfulClose(OresFuture<?> future) {
+            terminalReady(future, true);
+        }
+
+        private void terminalReady(
+                OresFuture<?> future,
+                boolean successfulClose) {
             Objects.requireNonNull(future, "terminal Future");
             Object terminalState = future.runtimeTerminalStateOrNull();
             if (terminalState == null) {
                 throw new IllegalStateException(
                         "Task scope received terminal hook before terminal authority");
             }
-            Throwable cause = OresFuture.runtimeTerminalFailure(terminalState);
+            Throwable cause = successfulClose
+                    ? null
+                    : OresFuture.runtimeTerminalFailure(terminalState);
             synchronized (this) {
                 if (notified) {
-                    // Duplicate terminal publication from the same scheduler
-                    // Future is harmless. A different Future, or any Future
-                    // after failed admission (terminalFuture == null), is an
-                    // authority mismatch and must not be silently ignored.
                     if (terminalFuture == future) return;
                     throw new IllegalStateException(
                             "retired Task scope ticket received a different Future");
                 }
+                // Scheduler terminal hooks run before ordinary Future waiters.
+                // Treat a repeated witness from the same exact Future as
+                // idempotent even before physical quiescence, so a fallback
+                // completion waiter cannot replace an already-classified
+                // successful resource close with CancellationException.
+                if (terminal && terminalFuture == future) return;
                 if (attachedFuture != null && attachedFuture != future) {
                     throw new IllegalStateException(
                             "Task scope terminal witness belongs to a different Future");

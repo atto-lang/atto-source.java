@@ -7,6 +7,106 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class GeneratorRuntimeTest {
     @Test
+    void structuredGeneratorScopeWaitsForPhysicalProducerExit() throws Exception {
+        CountDownLatch leavingGuestTurn = new CountDownLatch(1);
+        CountDownLatch allowPhysicalExit = new CountDownLatch(1);
+        TaskScope scope = new TaskScope();
+
+        try (AsyncRuntime runtime = new AsyncRuntime(turn -> {
+            try {
+                turn.run();
+            } finally {
+                leavingGuestTurn.countDown();
+                boolean interrupted = false;
+                for (;;) {
+                    try {
+                        allowPhysicalExit.await();
+                        break;
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
+        });
+             var generator = GeneratorRuntime.generator(
+                     runtime,
+                     (emitter, registration) -> emitter.emit(1),
+                     scope,
+                     null)) {
+            assertEquals(1, generator.nextStep().value());
+
+            OresFuture<Void> drained = scope.close();
+            assertTrue(leavingGuestTurn.await(2, TimeUnit.SECONDS));
+            assertFalse(
+                    drained.isDone(),
+                    "terminal producer Future must not forge physical quiescence");
+
+            allowPhysicalExit.countDown();
+            drained.get(2, TimeUnit.SECONDS);
+            assertTrue(generator.nextStep().done());
+        }
+    }
+
+    @Test
+    void explicitStructuredGeneratorCloseIsSuccessfulScopeRetirement()
+            throws Exception {
+        TaskScope scope = new TaskScope();
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.generator(
+                     runtime,
+                     (emitter, registration) -> emitter.emit(1),
+                     scope,
+                     null)) {
+            assertEquals(1, generator.nextStep().value());
+            generator.close();
+
+            assertTrue(scope.close());
+            assertNull(scope.failure(),
+                    "normal iterator close must not become a scoped child failure");
+            assertTrue(generator.nextStep().done());
+        }
+    }
+
+    @Test
+    void structuredGeneratorCancellationInterruptsProducerAndDrainsAfterExit()
+            throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch interrupted = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger cleanup =
+                new java.util.concurrent.atomic.AtomicInteger();
+        TaskScope scope = new TaskScope();
+
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             var generator = GeneratorRuntime.asyncGenerator(
+                     runtime,
+                     (emitter, registration) -> {
+                         started.countDown();
+                         try {
+                             new CountDownLatch(1).await();
+                         } catch (InterruptedException expected) {
+                             interrupted.countDown();
+                             throw expected;
+                         } finally {
+                             cleanup.incrementAndGet();
+                         }
+                     },
+                     scope,
+                     null)) {
+            OresFuture<GeneratorRuntime.Step<Object>> pull = generator.nextStep();
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+
+            OresFuture<Void> drained = scope.cancelAndDrain();
+            assertTrue(pull.get(2, TimeUnit.SECONDS).done());
+            assertTrue(interrupted.await(2, TimeUnit.SECONDS));
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> drained.get(2, TimeUnit.SECONDS));
+            assertEquals(1, cleanup.get(), "generator cleanup must run exactly once");
+        }
+    }
+
+    @Test
     void closeAtYieldWaitsForTheProducerToLeaveItsGuestTurn() throws Exception {
         CountDownLatch leaving = new CountDownLatch(1);
         CountDownLatch allowExit = new CountDownLatch(1);

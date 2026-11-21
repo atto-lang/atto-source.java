@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * Context-owned scheduler for ordinary Oreslang async callables.
@@ -102,21 +103,61 @@ public final class AsyncRuntime implements AutoCloseable {
      * interrupts the current virtual carrier when possible.
      */
     public <T> OresFuture<T> submit(Task<T> task) {
+        return submitStructured(task, ignored -> { }, () -> { });
+    }
+
+    /**
+     * Runtime-only structured submission. Terminal authority is published from
+     * OresFuture before ordinary subscribers; physical retirement is published
+     * exactly once only after the virtual carrier has left its guest turn (or
+     * after cancellation wins before carrier entry).
+     */
+    <T> OresFuture<T> submitStructured(
+            Task<T> task,
+            Consumer<OresFuture<T>> onTerminalReady,
+            Runnable afterCarrierQuiescent) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(onTerminalReady, "terminal hook");
+        Objects.requireNonNull(afterCarrierQuiescent, "quiescence hook");
         if (closed.get()) throw new RejectedExecutionException("async runtime is closed");
 
         AtomicReference<Future<?>> backing = new AtomicReference<>();
         TaskExit exit = new TaskExit();
-        OresFuture<T> completion = new OresFuture<>(() -> {
-            Future<?> carrier = backing.getAndSet(null);
-            if (carrier != null) carrier.cancel(true);
-            if (exit.state.compareAndSet(0, 2)) {
-                taskExits.remove(exit.completion, exit);
-                exit.exited.countDown();
+        AtomicBoolean retired = new AtomicBoolean();
+        Runnable retire = () -> {
+            if (retired.compareAndSet(false, true)) {
+                afterCarrierQuiescent.run();
             }
-        });
+        };
+        AtomicReference<OresFuture<T>> completionRef = new AtomicReference<>();
+
+        OresFuture<T> completion = new OresFuture<>(
+                () -> true,
+                () -> {
+                    Future<?> carrier = backing.getAndSet(null);
+                    if (carrier != null) carrier.cancel(true);
+                    if (exit.state.compareAndSet(0, 2)) {
+                        taskExits.remove(exit.completion, exit);
+                        try {
+                            retire.run();
+                        } finally {
+                            exit.exited.countDown();
+                        }
+                    }
+                },
+                () -> {
+                    OresFuture<T> terminal = completionRef.get();
+                    if (terminal == null) {
+                        throw new IllegalStateException(
+                                "structured async Future published terminal authority before identity");
+                    }
+                    onTerminalReady.accept(terminal);
+                },
+                () -> { });
+        completionRef.set(completion);
         exit.completion = completion;
         taskExits.put(completion, exit);
+
         final Future<?> scheduled;
         try {
             scheduled = executor.submit(() -> {
@@ -125,12 +166,17 @@ public final class AsyncRuntime implements AutoCloseable {
                     return;
                 }
                 exit.thread = Thread.currentThread();
-                try { runTask(task, completion); }
-                finally {
+                try {
+                    runTask(task, completion);
+                } finally {
                     // TurnExecutor has returned, including its context leave.
                     exit.state.set(2);
                     taskExits.remove(completion, exit);
-                    exit.exited.countDown();
+                    try {
+                        retire.run();
+                    } finally {
+                        exit.exited.countDown();
+                    }
                 }
             });
         } catch (RejectedExecutionException rejected) {
@@ -139,15 +185,23 @@ public final class AsyncRuntime implements AutoCloseable {
             exit.exited.countDown();
             throw new RejectedExecutionException("async runtime is closed", rejected);
         }
+
         backing.set(scheduled);
         if (completion.isCancelled()) {
             scheduled.cancel(true);
-            if (exit.state.compareAndSet(0, 2)) exit.exited.countDown();
+            if (exit.state.compareAndSet(0, 2)) {
+                try {
+                    retire.run();
+                } finally {
+                    exit.exited.countDown();
+                }
+            }
             if (exit.state.get() == 2) taskExits.remove(completion, exit);
         }
         completion.whenCompleteRuntime((value, failure) -> {
-            // Cancellation delivers waiters before invoking the cancellation hook.
-            // Leave the carrier attached until that hook has interrupted it.
+            // Cancellation delivers waiters after its internal revocation.
+            // Leave the carrier attached until the cancellation hook has had
+            // the chance to interrupt it.
             if (!completion.isCancelled()) backing.set(null);
         });
 
