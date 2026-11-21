@@ -161,6 +161,22 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                // This frontend has no nominal inverted declaration AST or
+                // compiler-owned row-storage ABI yet. Do not reinterpret the
+                // portable DOP v1 contract as an ordinary struct/class or
+                // silently fall back to a Java reference-model collection.
+                // Keep 'inverted' contextual outside declaration heads.
+                if (isContextualIdentifier("inverted") && checkNext(STRUCT)) {
+                    validateOnlyVisibilityModifiers(modifiers, "inverted structs");
+                    rejectCallableStructuralAnnotation(annotations, "inverted structs");
+                    rejectDiscardedDeclarationAnnotations(annotations, "inverted structs");
+                    rootDeclarations.add(parseInvertedStruct(modifiers.visibility));
+                    continue;
+                }
+                if (isContextualIdentifier("inverted") && checkNext(CLASS)) {
+                    throw error(peek(), "DOP_INVERTED_BACKEND_UNSUPPORTED: "
+                            + "inverted classes require checked nominal class lowering");
+                }
                 if (isProtectedDeclarationHead()) {
                     rootDeclarations.add(parseProtectedDeclaration(modifiers, annotations));
                     continue;
@@ -387,6 +403,16 @@ public final class Parser {
 
         if (match(DEFINE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
+            if (isContextualIdentifier("inverted") && checkNext(STRUCT)) {
+                validateOnlyVisibilityModifiers(modifiers, "inverted structs");
+                rejectCallableStructuralAnnotation(annotations, "inverted structs");
+                rejectDiscardedDeclarationAnnotations(annotations, "inverted structs");
+                return parseInvertedStruct(modifiers.visibility);
+            }
+            if (isContextualIdentifier("inverted") && checkNext(CLASS)) {
+                throw error(peek(), "DOP_INVERTED_BACKEND_UNSUPPORTED: "
+                        + "inverted classes require checked nominal class lowering");
+            }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
             }
@@ -588,6 +614,42 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
+    }
+
+
+    /** The source grammar owns nominal column shape, never a Java host fallback. */
+    private Ast.InvertedStructDecl parseInvertedStruct(Ast.Visibility visibility) {
+        advance(); // contextual 'inverted', admitted only before 'struct'
+        consume(STRUCT, "expected 'struct' after inverted");
+        String name = consume(IDENT, "expected nominal inverted struct name").lexeme();
+        consume(AS, "expected 'as' after inverted struct name");
+        List<Ast.InvertedColumnDecl> fields = new ArrayList<>();
+        java.util.Set<String> fieldNames = new java.util.HashSet<>();
+        while (!check(END) && !check(EOF)) {
+            // The first canonical field uses 'let'; subsequent fields may
+            // omit it. Neither spelling grants an unverified field loan.
+            match(LET);
+            Token field = consume(IDENT, "expected inverted column name");
+            if (!fieldNames.add(field.lexeme())) {
+                throw error(field, "duplicate inverted column '" + field.lexeme() + "'");
+            }
+            consume(COLON, "expected ':' after inverted column name");
+            Ast.TypeRef type = parseTypeRef();
+            if (!type.name().equals("int") || !type.arguments().isEmpty()
+                    || type.inferArguments()) {
+                throw error(previous(), "inverted v1 field must be a scalar int");
+            }
+            consume(SEMICOLON, "expected ';' after inverted column type");
+            fields.add(new Ast.InvertedColumnDecl(field.lexeme(), type));
+            if (fields.size() > 2) {
+                throw error(previous(), "inverted v1 schema requires exactly two columns");
+            }
+        }
+        consume(END, "expected 'end' after inverted struct columns");
+        if (fields.size() != 2) {
+            throw error(previous(), "inverted v1 schema requires exactly two columns");
+        }
+        return new Ast.InvertedStructDecl(name, visibility, fields);
     }
 
     private Ast.ClassDecl parseClass(
@@ -4221,7 +4283,39 @@ public final class Parser {
         return new Ast.DynamicSelectExpr(mode, policy, cases);
     }
 
+
+    private boolean looksLikeUnloweredInvertedOwner() {
+        if (!check(IDENT) || !peek().lexeme().equals("InvertedArray")
+                || !checkNext(LT)) return false;
+        int depth = 0;
+        for (int i = current + 1; i < tokens.size(); i++) {
+            Token.Type kind = tokens.get(i).type();
+            if (kind == LT) depth++;
+            else if (kind == GT) {
+                if (--depth == 0) {
+                    return i + 2 < tokens.size()
+                            && tokens.get(i + 1).type() == DOT
+                            && tokens.get(i + 2).type() == IDENT
+                            && tokens.get(i + 2).lexeme().equals("with_capacity");
+                }
+                if (depth < 0) return false;
+            } else if (kind == SEMICOLON || kind == EOF || kind == EQUAL) {
+                return false;
+            }
+        }
+        return false;
+    }
+
     private Ast.Expr parsePostfix() {
+        // Canonical LLVM currently uses a typed static storage receiver:
+        // InvertedArray<Row>.with_capacity(...). Java has no checked ABI for
+        // it yet; recognize the token structure and fail closed instead of
+        // misparsing it as comparisons or invoking host reflection.
+        if (looksLikeUnloweredInvertedOwner()) {
+            throw error(peek(), "DOP_INVERTED_BACKEND_UNSUPPORTED: "
+                    + "InvertedArray<T> guest allocation needs typed row ownership "
+                    + "and compiler-to-storage lowering");
+        }
         Ast.Expr expr = parsePrimary();
         while (true) {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
