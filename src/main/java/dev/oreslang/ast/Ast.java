@@ -1214,6 +1214,72 @@ public final class Ast {
     }
 
     /**
+     * Compiler-resolved alloc/json decode target. Runtime decoding consumes
+     * this exact checked descriptor and never reflects over host classes or
+     * reinterprets source-spelled generic/alias names.
+     */
+    public static final class CheckedJsonDecodeTarget {
+        private CheckedJsonDecodeTarget() { }
+
+        private static final java.lang.ref.ReferenceQueue<CallExpr> CLEARED =
+                new java.lang.ref.ReferenceQueue<>();
+        private static final java.util.Map<IdentityKey, TypeRef> TARGETS =
+                new java.util.HashMap<>();
+
+        private static final class IdentityKey extends java.lang.ref.WeakReference<CallExpr> {
+            private final int hash;
+            private IdentityKey(
+                    CallExpr call, java.lang.ref.ReferenceQueue<CallExpr> queue) {
+                super(call, queue);
+                hash = System.identityHashCode(call);
+            }
+            @Override public int hashCode() { return hash; }
+            @Override public boolean equals(Object other) {
+                if (this == other) return true;
+                if (!(other instanceof IdentityKey key)) return false;
+                CallExpr value = get();
+                return value != null && value == key.get();
+            }
+        }
+
+        private static void expunge() {
+            java.lang.ref.Reference<? extends CallExpr> collected;
+            while ((collected = CLEARED.poll()) != null) {
+                TARGETS.remove(collected);
+            }
+        }
+
+        public static synchronized void record(CallExpr call, TypeRef target) {
+            java.util.Objects.requireNonNull(call, "JSON decode call");
+            java.util.Objects.requireNonNull(target, "JSON decode target");
+            expunge();
+            IdentityKey key = new IdentityKey(call, CLEARED);
+            TypeRef old = TARGETS.putIfAbsent(key, target);
+            if (old != null && !old.equals(target)) {
+                throw new IllegalStateException(
+                        "same JSON decode call site received inconsistent checked targets");
+            }
+        }
+
+        public static synchronized TypeRef require(CallExpr call) {
+            java.util.Objects.requireNonNull(call, "JSON decode call");
+            expunge();
+            TypeRef target = TARGETS.get(new IdentityKey(call, null));
+            if (target == null) {
+                throw new IllegalStateException(
+                        "Json.decode requires a statically checked target descriptor");
+            }
+            return target;
+        }
+
+        public static synchronized void copy(CallExpr source, CallExpr target) {
+            expunge();
+            TypeRef value = TARGETS.get(new IdentityKey(source, null));
+            if (value != null) record(target, value);
+        }
+    }
+
+    /**
      * Central preservation policy for checker-owned, identity-bound AST metadata.
      *
      * <p>Optimizers that replace an expression must use this method instead of
@@ -1238,6 +1304,14 @@ public final class Ast {
         STRUCTURAL_FIELD_DOMAIN("CheckedStructuralFieldDomain") {
             @Override void copy(Expr source, Expr target) {
                 CheckedStructuralFieldDomain.copy(source, target);
+            }
+        },
+        JSON_DECODE_TARGET("CheckedJsonDecodeTarget") {
+            @Override void copy(Expr source, Expr target) {
+                if (source instanceof CallExpr sourceCall
+                        && target instanceof CallExpr targetCall) {
+                    CheckedJsonDecodeTarget.copy(sourceCall, targetCall);
+                }
             }
         };
 

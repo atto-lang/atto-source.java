@@ -276,6 +276,127 @@ final class AllocJsonStdlibTest {
     }
 
     @Test
+    void typedDecodeConstructsClosedStructAndRecordWithoutReflection()
+            throws Exception {
+        Path entry = temp.resolve("decode-closed-shapes.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  const struct{id: int, name: String} asStruct =
+                    Json.decode<struct{id: int, name: String}>(
+                      "{\\\"id\\\":7,\\\"name\\\":\\\"Ada\\\"}");
+                  const record{id: int, name: String} asRecord =
+                    Json.decode<record{id: int, name: String}>(
+                      "{\\\"id\\\":8,\\\"name\\\":\\\"Grace\\\"}");
+                  stdio.println(asStruct.id);
+                  stdio.println(asStruct.name);
+                  stdio.println(asRecord.id);
+                  stdio.println(asRecord.name);
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals(
+                "7" + System.lineSeparator()
+                        + "Ada" + System.lineSeparator()
+                        + "8" + System.lineSeparator()
+                        + "Grace",
+                out.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
+    void typedDecodeRejectsMissingUnknownAndWrongFieldTypes() throws Exception {
+        for (String json : new String[]{
+                "{\"id\":1}",
+                "{\"id\":1,\"name\":\"Ada\",\"extra\":2}",
+                "{\"id\":\"wrong\",\"name\":\"Ada\"}"
+        }) {
+            Path entry = temp.resolve(
+                    "decode-bad-" + Math.abs(json.hashCode()) + ".ores");
+            Files.writeString(entry, """
+                    import class JsonValue from "alloc/json";
+                    import class Json from "alloc/json";
+
+                    pub routine main(): void {
+                      const record{id: int, name: String} value =
+                        Json.decode<record{id: int, name: String}>("%s");
+                      stdio.println(value.id);
+                      return;
+                    }
+                    """.formatted(json.replace("\\", "\\\\").replace("\"", "\\\"")));
+
+            assertThrows(
+                    RuntimeException.class,
+                    () -> LinkedProgramRunner.run(
+                            entry,
+                            IsolatePolicy.developer(),
+                            ExecutionProfile.serverJit(),
+                            new ByteArrayOutputStream(),
+                            new ByteArrayOutputStream()),
+                    json);
+        }
+    }
+
+    @Test
+    void typedDecodeClassTargetFailsClosedUntilFactoryCodecExists() {
+        String source = """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                define class User as
+                  id: int;
+                end
+
+                fnc decode_user(): User {
+                  return Json.decode<User>("{\\\"id\\\":1}");
+                }
+                """;
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(
+                failure.getMessage().contains("constructor/factory codec"),
+                failure.getMessage());
+    }
+
+    @Test
+    void typedDecodeRequiresExplicitTargetAndStringInput() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        import class JsonValue from "alloc/json";
+                        import class Json from "alloc/json";
+
+                        fnc bad(): void {
+                          Json.decode("{}");
+                          return;
+                        }
+                        """));
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        import class JsonValue from "alloc/json";
+                        import class Json from "alloc/json";
+
+                        fnc bad(): int {
+                          return Json.decode<int>(7);
+                        }
+                        """));
+    }
+
+    @Test
     void sourceStringifyIsStableAndNonConsuming() throws Exception {
         Path entry = temp.resolve("stringify.ores");
         Files.writeString(entry, """
