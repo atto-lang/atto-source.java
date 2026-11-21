@@ -64,6 +64,21 @@ public final class IncrementalCompiler {
                 throw new SourceUnitDiagnosticException(entry.getKey(), "", "", invalid);
             }
             parsed.put(entry.getKey(), program);
+            // This in-memory API has no authenticated manifest or complete
+            // source-set proof. Reject declaration-only actors BEFORE ABI
+            // caching or codegen; the opt-in package builder validates the
+            // complete witness, then also rejects unsupported runtime lowering.
+            if (program.modules().stream()
+                    .flatMap(m -> m.declarations().stream())
+                    .anyMatch(d -> d instanceof Ast.DeclaredActorDecl)) {
+                throw new SourceUnitDiagnosticException(entry.getKey(), "",
+                        program.namespace() == null ? "" : program.namespace(),
+                        new IllegalArgumentException(
+                                "DECLARED_ACTOR_MANIFEST_GATE_REQUIRED: "
+                                        + "use PackageNamespaceBuild.auditDeclaredActors "
+                                        + "for manifest-authenticated static witnesses; "
+                                        + "guest code generation is still unsupported"));
+            }
             abiHashes.put(entry.getKey(), abiDigest(program));
         }
 
@@ -491,7 +506,8 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.InterfaceDecl iface) {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(iface.moduleContract() ? "contract " : "interface ")
+            abi.append(iface.actorContract() ? "actor-contract "
+                    : iface.moduleContract() ? "contract " : "interface ")
                     .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");

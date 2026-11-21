@@ -62,6 +62,9 @@ public final class ExportInterfaceCollector {
                         && iface.visibility() == Ast.Visibility.PUBLIC) {
                     StringBuilder sig = new StringBuilder();
                     flags(sig, iface.moduleContract());
+                    // Preserve the legacy non-actor interface envelope bytes.
+                    // Add the distinct target marker ONLY for actor contracts.
+                    if (iface.actorContract()) field(sig, "actor-contract-v1");
                     strings(sig, iface.genericParameters());
                     types(sig, iface.parents());
                     List<String> members = new ArrayList<>();

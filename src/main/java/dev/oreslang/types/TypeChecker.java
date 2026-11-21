@@ -841,6 +841,33 @@ public final class TypeChecker {
     }
 
     private void checkInterface(Ast.InterfaceDecl iface) {
+        if (iface.actorContract()) {
+            if (!iface.genericParameters().isEmpty() || !iface.parents().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "actor contract requires non-generic, non-inherited method table: "
+                                + iface.name());
+            }
+            Set<String> selectors = new LinkedHashSet<>();
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (!(member instanceof Ast.InterfaceFunctionDecl fn)
+                        || fn.structural() || !fn.genericParameters().isEmpty()
+                        || !fn.effects().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor contract requires only plain mtd signatures: " + iface.name());
+                }
+                if (Set.of("init", "receive", "send", "tear_down", "handle_state",
+                        "on_panic", "on_throw", "on_throws", "on_raise", "on_recover",
+                        "on_start", "on_stop", "on_restart").contains(fn.name())) {
+                    throw new IllegalArgumentException(
+                            "actor contract cannot require reserved hook: " + fn.name());
+                }
+                if (!selectors.add(fn.name() + "/" + fn.parameters().size())) {
+                    throw new IllegalArgumentException(
+                            "actor contract has ambiguous method selector: "
+                                    + iface.name() + "." + fn.name());
+                }
+            }
+        }
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
         Type interfaceSelf = iface.moduleContract() ? null : new SelfType(nominalInterfaceType(iface));
 
@@ -1963,6 +1990,56 @@ public final class TypeChecker {
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            if (iface.actorContract()) {
+                // The ordinary structural ClassShape would let inherited or
+                // static methods satisfy actor mailbox method obligations.
+                // Actor contracts demand direct public, synchronous, concrete
+                // instance methods of the exact actor.
+                if (klass.actorKind() == Ast.ActorKind.NONE
+                        || !klass.genericParameters().isEmpty()
+                        || !interfaceRef.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor contract requires non-generic nominal actor: " + iface.name());
+                }
+                for (Ast.InterfaceMember item : iface.members()) {
+                    if (!(item instanceof Ast.InterfaceFunctionDecl required)) {
+                        throw new IllegalArgumentException(
+                                "actor contract has unsupported requirement: " + iface.name());
+                    }
+                    Ast.MethodDecl witness = null;
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        if (method.name().equals(required.name())
+                                && method.arity() == required.parameters().size()
+                                && !method.isStatic()) {
+                            witness = method;
+                            break;
+                        }
+                    }
+                    if (witness == null || witness.isAbstract()
+                            || witness.visibility() != Ast.Visibility.PUBLIC
+                            || witness.async() || witness.suspends()
+                            || !witness.effects().isEmpty()
+                            || witness.structural()
+                            || !witness.genericParameters().isEmpty()
+                            || !witness.returnType().equals(required.returnType())) {
+                        throw new IllegalArgumentException(
+                                "actor contract requires a direct public concrete matching method: "
+                                        + klass.name() + "." + required.name());
+                    }
+                    for (int param = 0; param < witness.parameters().size(); param++) {
+                        Ast.Param implementation = witness.parameters().get(param);
+                        Ast.Param expected = required.parameters().get(param);
+                        if (!implementation.type().equals(expected.type())
+                                || implementation.mutable() != expected.mutable()
+                                || implementation.structural() || expected.structural()) {
+                            throw new IllegalArgumentException(
+                                    "actor contract parameter signature mismatch: "
+                                            + klass.name() + "." + required.name());
+                        }
+                    }
+                }
+                continue;
+            }
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
@@ -3117,6 +3194,17 @@ public final class TypeChecker {
                     "spread expressions are only valid as arguments to a variadic callable");
         }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
+            // Parsed lexical critical state callbacks are descriptors only.
+            // This guard must reject them even in an otherwise ordinary class
+            // or function: no host/guest dynamic method dispatch may turn a
+            // state-loan witness into executable actor authority.
+            if (runtime.operation().equals("actor_state_critical_read_unlowered")
+                    || runtime.operation().equals("actor_state_critical_write_unlowered")) {
+                throw new IllegalArgumentException(
+                        "ACTOR_STATE_LOAN_LOWERING_UNSUPPORTED: parsed critical-read/write "
+                                + "requires verified actor-owned HIR/MIR, scoped RW permits "
+                                + "and generation-fenced scheduler execution");
+            }
             if (runtime.operation().equals("spawn")) {
                 if (runtime.arguments().size() != 1
                         || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {

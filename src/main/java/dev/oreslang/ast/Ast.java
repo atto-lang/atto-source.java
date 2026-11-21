@@ -762,23 +762,40 @@ public final class Ast {
         }
     }
 
+    /**
+     * Actor-specific contracts are distinct from structural interfaces and
+     * module contracts. Never erase the actor-contract target in AST or ABI.
+     * The six-argument constructor preserves existing compiler call sites.
+     */
     public record InterfaceDecl(
             String name,
             Visibility visibility,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members,
-            boolean moduleContract) implements Decl {
+            boolean moduleContract,
+            boolean actorContract) implements Decl {
         public InterfaceDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
+            if (moduleContract && actorContract) {
+                throw new IllegalArgumentException(
+                        "actor contracts cannot also be module contracts");
+            }
+        }
+        public InterfaceDecl(
+                String name, Visibility visibility,
+                List<String> genericParameters, List<TypeRef> parents,
+                List<InterfaceMember> members, boolean moduleContract) {
+            this(name, visibility, genericParameters, parents, members,
+                    moduleContract, false);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
-            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
+            this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false, false);
         }
         public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters, List<TypeRef> parents, List<InterfaceMember> members) {
-            this(name, visibility, genericParameters, parents, members, false);
+            this(name, visibility, genericParameters, parents, members, false, false);
         }
     }
 

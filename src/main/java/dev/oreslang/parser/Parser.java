@@ -118,6 +118,15 @@ public final class Parser {
             }
         }
         String namespace = null;
+        // Both "namespace foo;" and "use namespace foo;" name the SAME
+        // compilation-unit namespace. "use" is contextual here, not a new
+        // globally reserved keyword or an import of another package's actor
+        // authority. Each file supplies its own explicit namespace header.
+        if (isContextualIdentifier("use")
+                && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == NAMESPACE) {
+            advance(); // contextual use
+        }
         if (match(NAMESPACE)) {
             namespace = consume(IDENT, "expected flat namespace name").lexeme();
             if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
@@ -1459,7 +1468,9 @@ public final class Parser {
 
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
         Ast.InterfaceDecl iface = parseInterface(visibility, true);
-        return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
+        return new Ast.InterfaceDecl(iface.name(), iface.visibility(),
+                iface.genericParameters(), iface.parents(), iface.members(),
+                iface.moduleContract(), iface.actorContract());
     }
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
@@ -1473,6 +1484,11 @@ public final class Parser {
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
         String name = consumeTypeDeclarationName("expected interface name");
         List<String> generics = parseGenericParameters();
+        boolean actorContract = false;
+        if (moduleContract && match(FOR)) {
+            consume(ACTOR, "actor-specific contract requires 'for actor'");
+            actorContract = true;
+        }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
@@ -1486,7 +1502,7 @@ public final class Parser {
             // A module contract may require the presence of a public nominal
             // actor type. This is a type requirement, not a callable or a
             // second actor declaration. It must not confer state authority.
-            if (moduleContract && match(ACTOR)) {
+            if (moduleContract && !actorContract && match(ACTOR)) {
                 validateNoModifiers(memberModifiers, "module contract actor requirements");
                 if (!memberAnnotations.isEmpty()) {
                     throw error(previous(), "contract actor requirements do not accept annotations");
@@ -1507,7 +1523,7 @@ public final class Parser {
                     && current + 2 < tokens.size()
                     && tokens.get(current + 1).type() == IDENT
                     && tokens.get(current + 2).type() == LPAREN;
-            if (moduleContract && actorMethodHead) {
+            if (moduleContract && !actorContract && actorMethodHead) {
                 advance(); // contextual mtd
                 validateOnlyVisibilityModifiers(memberModifiers, "module contract receiver requirements");
                 if (!memberAnnotations.isEmpty()) {
@@ -1540,8 +1556,45 @@ public final class Parser {
             if (!moduleContract && actorMethodHead) {
                 throw error(peek(), "actor receiver requirements belong only in module contracts");
             }
+            if (actorContract && actorMethodHead) {
+                advance(); // contextual mtd: actor contract method selector
+                validateOnlyVisibilityModifiers(memberModifiers,
+                        "actor contract method requirements");
+                if (memberModifiers.visibilitySeen
+                        && memberModifiers.visibility != Ast.Visibility.PUBLIC) {
+                    throw error(previous(),
+                            "actor contract methods cannot require private receiver slots");
+                }
+                if (!memberAnnotations.isEmpty()) {
+                    throw error(previous(),
+                            "actor contract method requirements do not accept annotations");
+                }
+                String methodName = consumeCallableName("expected actor contract method name");
+                consume(LPAREN, "expected '(' after actor contract method name");
+                List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+                consume(RPAREN, "expected ')' after actor contract parameters");
+                if (parameters.stream().anyMatch(Ast.Param::structural)) {
+                    throw error(previous(),
+                            "actor contract method arguments cannot be structural");
+                }
+                Ast.TypeRef returns = match(FAT_ARROW, COLON)
+                        ? parseTypeRef() : Ast.TypeRef.simple("void");
+                if (!parseCheckedEffects().isEmpty()) {
+                    throw error(previous(),
+                            "actor contract checked effects require typed actor lowering");
+                }
+                consumeMemberTerminator(terminator,
+                        "actor contract method signature should end with ';'");
+                members.add(new Ast.InterfaceFunctionDecl(
+                        methodName, false, List.of(), parameters, returns));
+                continue;
+            }
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
+            }
+            if (actorContract && check(FNC)) {
+                throw error(peek(),
+                        "actor contracts require 'mtd' method signatures, not 'fnc'");
             }
             if (match(FNC)) {
                 memberModifiers = mergeModifiers(memberModifiers, parseModifiers());
@@ -1564,6 +1617,10 @@ public final class Parser {
                 continue;
             }
 
+            if (actorContract) {
+                throw error(peek(),
+                        "actor contracts accept only mtd signatures; fields and other members are forbidden");
+            }
             validateNoModifiers(memberModifiers, "interface fields");
             if (!memberAnnotations.isEmpty()) {
                 throw error(previous(),
@@ -1597,7 +1654,8 @@ public final class Parser {
         }
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
-        return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+        return new Ast.InterfaceDecl(name, visibility, generics, parents, members,
+                moduleContract && !actorContract, actorContract);
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
@@ -5027,6 +5085,40 @@ public final class Parser {
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
                 rejectUnsupportedActorFactory(expr);
+                if (expr instanceof Ast.MemberExpr member
+                        && member.member().equals("handle_state")) {
+                    // The native actor state loan is a compiler-only intrinsic.
+                    // Parse its critical-read/write mode without treating the
+                    // hyphen as arithmetic or granting an ordinary method call.
+                    // The opaque RuntimeCallExpr has NO executable lowering.
+                    boolean read = isAdjacentCompoundKeyword("critical", "read");
+                    boolean write = isAdjacentCompoundKeyword("critical", "write");
+                    if (!read && !write) {
+                        throw error(peek(),
+                                "actor handle_state requires critical-read or critical-write loan");
+                    }
+                    advance(); // critical
+                    advance(); // adjacent '-'
+                    advance(); // read/write
+                    if (!check(PIPE)) {
+                        throw error(peek(),
+                                "actor handle_state requires one lexical |state| -> callback");
+                    }
+                    Ast.LambdaExpr callback = parsePipeLambda(false);
+                    if (callback.parameters().size() != 1
+                            || callback.parameters().getFirst().mutable()
+                            || callback.nonLexical()) {
+                        throw error(previous(),
+                                "actor critical callback requires exactly one lexical immutable binding");
+                    }
+                    consume(RPAREN,
+                            "actor handle_state admits one critical callback and no extra arguments");
+                    expr = new Ast.CallExpr(expr, List.of(new Ast.RuntimeCallExpr(
+                            read ? "actor_state_critical_read_unlowered"
+                                    : "actor_state_critical_write_unlowered",
+                            List.of(callback))));
+                    continue;
+                }
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);

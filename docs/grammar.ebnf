@@ -1,7 +1,11 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
 source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
-namespace_decl  = "namespace" IDENT ";" ;
+namespace_decl  = [ "use" ] "namespace" IDENT ";" ;
+(* 'use' is contextual only in this initial header. Both spellings select the
+   same flat namespace identity; neither imports authority from another
+   package. Every physical file in a linked package must supply its own
+   namespace header when using cross-file actor receiver/contract features. *)
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
@@ -141,7 +145,20 @@ static_function_decl
                   "(" [ param_list ] ")" return_spec block ;
 
 contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
-                  [ "extends" type_ref { "," type_ref } ] module_contract_body ;
+                  [ "for" "actor" ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  ( module_contract_body | actor_contract_body ) ;
+(* The 'for actor' target selects actor_contract_body, distinct from an
+   ordinary module contract and from structural interface methods. *)
+actor_contract_body
+                = "{" { actor_contract_method } "}"
+                | [ "as" ] { actor_contract_method } "end" ;
+actor_contract_method
+                = [ "pub" ] "mtd" IDENT "(" [ param_list ] ")"
+                  [ (":" | "=>") type_ref ] member_terminator ;
+(* Compiler-owned witnesses require matching pub external mtd slots.
+   No generic/structural/effect members or runtime/CONTROL hooks are admitted
+   in the v1 actor-contract target. *)
 module_contract_body = "{" { module_contract_member } "}"
                      | { module_contract_member } "end" ;
 module_contract_member = interface_member

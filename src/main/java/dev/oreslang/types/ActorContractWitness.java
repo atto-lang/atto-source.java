@@ -8,6 +8,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -21,6 +22,12 @@ import java.util.TreeMap;
  */
 public final class ActorContractWitness {
     private ActorContractWitness() { }
+
+    private static final Set<String> RESERVED_ACTOR_METHODS = Set.of(
+            "init", "receive", "send", "end", "endWithCleanup",
+            "tear_down", "handle_state", "on_panic", "on_throw",
+            "on_throws", "on_raise", "on_recover", "on_start",
+            "on_stop", "on_restart");
 
     public record ActorKey(String packageIdentity, String namespace, String actor) { }
     public record MethodProof(
@@ -103,7 +110,7 @@ public final class ActorContractWitness {
 
             for (var located : namespace.getValue()) {
                 Ast.Decl decl = located.declaration();
-                if (decl instanceof Ast.InterfaceDecl iface && !iface.moduleContract()) {
+                if (decl instanceof Ast.InterfaceDecl iface && iface.actorContract()) {
                     if (contracts.putIfAbsent(iface.name(),
                             new Located<>(located.sourceUnit(), iface)) != null) {
                         throw new IllegalArgumentException(
@@ -138,6 +145,11 @@ public final class ActorContractWitness {
                                         + name(actorName, interfaceName.name()));
                     }
                     Ast.InterfaceDecl iface = target.declaration();
+                    if (!iface.actorContract()) {
+                        throw new IllegalArgumentException(
+                                "declared actor implements target is not an actor contract: "
+                                        + iface.name());
+                    }
                     if (!iface.genericParameters().isEmpty() || !iface.parents().isEmpty()) {
                         throw new IllegalArgumentException(
                                 "actor interface contract generics/inheritance require verified lowering: "
@@ -160,6 +172,11 @@ public final class ActorContractWitness {
                                 || !requirement.effects().isEmpty()) {
                             throw new IllegalArgumentException(
                                     "actor interface contract uses unsupported generic/structural/effect method: "
+                                            + requirement.name());
+                        }
+                        if (RESERVED_ACTOR_METHODS.contains(requirement.name())) {
+                            throw new IllegalArgumentException(
+                                    "actor contract cannot expose compiler/runtime reserved hook: "
                                             + requirement.name());
                         }
                         validateSignatureTypes(requirement.parameters(),
