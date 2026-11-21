@@ -446,9 +446,10 @@ public final class ActorEventBus implements AutoCloseable {
      * to Optional.empty(): revoked authority, closed topics, invalid payloads
      * and resource errors still fail explicitly and never mint a receipt.
      *
-     * Guest Topic<T>.try_publish remains intentionally unlowered until the
-     * typed Result<PublishReceipt, PublishError> and membership-grant ABI are
-     * supported. Do not expose this Optional as portable-v1 success evidence.
+     * The host Optional is a transport primitive, not the guest Result.
+     * This Java draft has a checked source-level Result lowering, but neither
+     * it nor the unsigned receipt semantics is certified until exact-head
+     * compiled guest tests execute and pass.
      */
     public Optional<PublishReceipt> tryPublishReliable(String name, Object value) {
         requireOpen();
