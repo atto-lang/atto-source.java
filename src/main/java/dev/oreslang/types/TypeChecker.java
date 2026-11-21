@@ -3181,7 +3181,8 @@ public final class TypeChecker {
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
                 if (collectionBuiltin != null) {
                     if (isTypedMapType(receiver)
-                            && (member.member().equals("take")
+                            && (member.member().equals("put")
+                                    || member.member().equals("take")
                                     || member.member().equals("remove"))) {
                         if (!(member.receiver() instanceof Ast.NameExpr ownerName)) {
                             throw new IllegalArgumentException(
@@ -3745,7 +3746,8 @@ public final class TypeChecker {
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isTypedMapType(sumReceiver)
-                    && (member.member().equals("take")
+                    && (member.member().equals("put")
+                            || member.member().equals("take")
                             || member.member().equals("remove"))) {
                 throw new IllegalArgumentException(
                         "Map." + member.member()
@@ -6713,6 +6715,9 @@ public final class TypeChecker {
                 case "has" -> new Function(List.of(key), Primitive.BOOL);
                 case "get" -> new Function(
                         List.of(key),
+                        new Named("Option", List.of(value)));
+                case "put" -> new Function(
+                        List.of(key, value),
                         new Named("Option", List.of(value)));
                 case "take" -> new Function(
                         List.of(key),

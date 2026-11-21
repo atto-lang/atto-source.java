@@ -55,6 +55,52 @@ final class TypedMapClosedSurfaceLanguageTest {
     }
 
     @Test
+    void suspendableIndexedWritePreservesRhsFirstAssignmentOrder() {
+        String source = """
+                async fnc key(): string {
+                  stdio.println("key");
+                  return "answer";
+                }
+
+                async fnc value(): int {
+                  stdio.println("value");
+                  return 42;
+                }
+
+                pub async fnc main(): void {
+                  val Map<string, int> values = new Map<string, int>();
+                  values[await key()] = await value();
+                  stdio.println(values["answer"]);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(
+                                OresLanguage.ID,
+                                source,
+                                "typed-map-indexed-write-order.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "value\nkey\n42\n",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n"));
+    }
+
+    @Test
     void suspendableConstructionAndIndexedWriteUseSameRuntimeContract() {
         String source = """
                 async fnc key(): string {
@@ -523,6 +569,82 @@ final class TypedMapClosedSurfaceLanguageTest {
     }
 
     @Test
+    void putReturnsPreviousValueAndRequiresDirectOwnerAuthority() {
+        String source = """
+                pub fnc main(): void {
+                  val Map<string, int> values = new Map<string, int>();
+                  stdio.println(values.put("a", 10).is_none());
+                  stdio.println(values.put("a", 20).unwrap());
+                  stdio.println(values["a"]);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(
+                                OresLanguage.ID,
+                                source,
+                                "typed-map-put.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+        assertEquals(
+                "true\n10\n20\n",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n"));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          const Map<string, int> values =
+                              new Map<string, int>();
+                          values.put("x", 1);
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          const writer = values.put;
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          (rt borrow mut values).put("x", 1);
+                          return;
+                        }
+                        """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): void {
+                          val Map<string, int> values =
+                              new Map<string, int>();
+                          values.put("x", "wrong");
+                          return;
+                        }
+                        """));
+    }
+
+    @Test
     void takeAndRemoveRequireOwnerAuthorityAndPreserveAbsence() {
         String source = """
                 pub fnc main(): void {
@@ -638,6 +760,56 @@ final class TypedMapClosedSurfaceLanguageTest {
 
         assertEquals(
                 "a\ntrue\na\n10\na\n10\na\ntrue\nb\ntrue\nb\nfalse\n0\n",
+                output.toString(StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n"));
+    }
+
+
+    @Test
+    void suspendablePutEvaluatesKeyAndValueOnceInOrder() {
+        String source = """
+                async fnc key(string value): string {
+                  stdio.println(value);
+                  return value;
+                }
+
+                async fnc number(int value): int {
+                  stdio.println(value);
+                  return value;
+                }
+
+                pub async fnc main(): void {
+                  val Map<string, int> values = new Map<string, int>();
+                  stdio.println(
+                      values.put(await key("a"), await number(10)).is_none());
+                  stdio.println(
+                      values.put(await key("a"), await number(20)).unwrap());
+                  stdio.println(values["a"]);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source program = assertDoesNotThrow(() ->
+                Source.newBuilder(
+                                OresLanguage.ID,
+                                source,
+                                "typed-map-suspendable-put.ores")
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .build());
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .out(output)
+                    .build()) {
+                context.eval(program);
+            }
+        });
+
+        assertEquals(
+                "a\n10\ntrue\na\n20\n10\n20\n",
                 output.toString(StandardCharsets.UTF_8)
                         .replace("\r\n", "\n"));
     }

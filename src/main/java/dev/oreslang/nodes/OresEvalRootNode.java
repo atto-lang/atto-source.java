@@ -3737,6 +3737,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.AssignExpr assignment) {
+                    try {
+                        preflightDirectMapIndexedAssignment(
+                                assignment.target(), env);
+                    } catch (RuntimeException | Error failure) {
+                        continuation.accept(task, null, failure);
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             assignment.value(),
@@ -4666,7 +4673,8 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MemberExpr member,
                 Object receiver) {
             return receiver instanceof OresKeyedMap<?, ?>
-                    && (member.member().equals("take")
+                    && (member.member().equals("put")
+                            || member.member().equals("take")
                             || member.member().equals("remove"));
         }
 
@@ -4687,15 +4695,23 @@ public final class OresEvalRootNode extends RootNode {
                 String member,
                 OresKeyedMap<?, ?> rawMap,
                 List<Object> args) {
-            if (args.size() != 1) {
+            int expectedArity = member.equals("put") ? 2 : 1;
+            if (args.size() != expectedArity) {
                 throw new IllegalArgumentException(
-                        "Map." + member + " expects exactly 1 argument");
+                        "Map." + member + " expects exactly "
+                                + expectedArity + " argument(s)");
             }
             Object key = args.getFirst();
             @SuppressWarnings("unchecked")
             OresKeyedMap<Object, Object> map =
                     (OresKeyedMap<Object, Object>) rawMap;
             return invokableInvocation(ignored -> {
+                if (member.equals("put")) {
+                    // Typed Maps reject null values, so null unambiguously
+                    // means this key was absent before the committed write.
+                    Object previous = map.put(key, args.get(1));
+                    return new OptionValue(previous != null, previous);
+                }
                 OresKeyedMap.Lookup<Object> removed = map.take(key);
                 return member.equals("take")
                         ? new OptionValue(removed.present(), removed.value())
@@ -5004,6 +5020,22 @@ public final class OresEvalRootNode extends RootNode {
             }
             throw new IllegalArgumentException(
                     "value is not indexable");
+        }
+
+        private void preflightDirectMapIndexedAssignment(
+                Ast.Expr target,
+                Env env) {
+            if (!(target instanceof Ast.IndexExpr indexed)
+                    || !(indexed.receiver() instanceof Ast.NameExpr owner)
+                    || env == null) {
+                return;
+            }
+            Object receiver = env.lookup(owner.name());
+            if (receiver instanceof OresKeyedMap<?, ?> map
+                    && !env.canWriteMap(owner.name(), map)) {
+                throw new SecurityException(
+                        "Map<K,V> indexed mutation requires a directly owned mutable local binding");
+            }
         }
 
         private Object assignIndexValue(
@@ -6921,6 +6953,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
+                // Assignment remains RHS-first, but a directly named Map has
+                // enough runtime metadata to reject missing mutation authority
+                // before any RHS side effect runs.
+                preflightDirectMapIndexedAssignment(assignment.target(), env);
                 Object value = eval(assignment.value(), env);
                 if (assignment.target() instanceof Ast.NameExpr target) {
                     env.assign(target.name(), value);
@@ -7917,7 +7953,7 @@ public final class OresEvalRootNode extends RootNode {
                         OresKeyedMap.Lookup<?> found = map.lookup(args.getFirst());
                         return new OptionValue(found.present(), found.value());
                     };
-                    case "take", "remove" -> throw new SecurityException(
+                    case "put", "take", "remove" -> throw new SecurityException(
                             "Map." + name
                                     + " is direct-call-only because mutation authority belongs to the owning binding");
                     default -> throw new IllegalArgumentException(
