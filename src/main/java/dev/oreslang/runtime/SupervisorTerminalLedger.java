@@ -93,12 +93,16 @@ public final class SupervisorTerminalLedger {
             long published,
             long acknowledged,
             long releasedBeforeTerminal,
-            long reservationRejections) {
+            long reservationRejections,
+            int retiredEpochSlots) {
         public Stats {
             if (capacity < 1
                     || inUse < 0
                     || ready < 0
+                    || retiredEpochSlots < 0
                     || inUse > capacity
+                    || retiredEpochSlots > capacity
+                    || inUse > capacity - retiredEpochSlots
                     || ready > inUse
                     || published < 0
                     || acknowledged < 0
@@ -112,6 +116,7 @@ public final class SupervisorTerminalLedger {
     private static final byte FREE = 0;
     private static final byte RESERVED = 1;
     private static final byte READY = 2;
+    private static final byte RETIRED = 3;
 
     private static final class Slot {
         byte state = FREE;
@@ -131,6 +136,7 @@ public final class SupervisorTerminalLedger {
     private long acknowledged;
     private long releasedBeforeTerminal;
     private long reservationRejections;
+    private int retiredEpochSlots;
 
     public SupervisorTerminalLedger(int capacity) {
         if (capacity < 1 || capacity > 65_536) {
@@ -157,28 +163,27 @@ public final class SupervisorTerminalLedger {
         if (incarnation <= 0) {
             throw new IllegalArgumentException("incarnation must be positive");
         }
-        if (freeCount == 0) {
-            reservationRejections = saturatingIncrement(reservationRejections);
-            throw new IllegalStateException(
-                    "supervisor terminal CONTROL capacity exhausted");
+        while (freeCount != 0) {
+            int index = free[--freeCount];
+            Slot slot = slots[index];
+            if (slot.state != FREE || slot.receipt != null) {
+                throw new IllegalStateException("terminal ledger free-list corruption");
+            }
+            if (slot.epoch == Long.MAX_VALUE) {
+                retireSlot(slot);
+                continue;
+            }
+
+            long epoch = ++slot.epoch;
+            slot.state = RESERVED;
+            slot.actorId = actorId;
+            slot.incarnation = incarnation;
+            return new Reservation(this, index, epoch, actorId, incarnation);
         }
 
-        int index = free[--freeCount];
-        Slot slot = slots[index];
-        if (slot.state != FREE || slot.receipt != null) {
-            throw new IllegalStateException("terminal ledger free-list corruption");
-        }
-        if (slot.epoch == Long.MAX_VALUE) {
-            // Put the slot back; an ambiguous epoch must never be reused.
-            free[freeCount++] = index;
-            throw new IllegalStateException("terminal reservation epoch exhausted");
-        }
-
-        long epoch = ++slot.epoch;
-        slot.state = RESERVED;
-        slot.actorId = actorId;
-        slot.incarnation = incarnation;
-        return new Reservation(this, index, epoch, actorId, incarnation);
+        reservationRejections = saturatingIncrement(reservationRejections);
+        throw new IllegalStateException(
+                "supervisor terminal CONTROL capacity exhausted");
     }
 
     /**
@@ -287,7 +292,8 @@ public final class SupervisorTerminalLedger {
                 published,
                 acknowledged,
                 releasedBeforeTerminal,
-                reservationRejections);
+                reservationRejections,
+                retiredEpochSlots);
     }
 
     private Slot validateReservation(Reservation reservation) {
@@ -309,14 +315,39 @@ public final class SupervisorTerminalLedger {
 
     private void freeSlot(int index) {
         Slot slot = slots[index];
-        slot.state = FREE;
         slot.actorId = null;
         slot.incarnation = 0L;
         slot.receipt = null;
+
+        /*
+         * Epoch is the anti-ABA identity for a slot. Once it reaches
+         * Long.MAX_VALUE that slot can never be reused safely. Permanently
+         * retire it instead of returning a poisoned entry to the LIFO free
+         * stack, where it could otherwise block access to healthy free slots.
+         */
+        if (slot.epoch == Long.MAX_VALUE) {
+            retireSlot(slot);
+            return;
+        }
+
+        slot.state = FREE;
         if (freeCount >= free.length) {
             throw new IllegalStateException("terminal ledger free-list overflow");
         }
         free[freeCount++] = index;
+    }
+
+    private void retireSlot(Slot slot) {
+        if (slot.state == RETIRED) return;
+        if (slot.actorId != null || slot.incarnation != 0L || slot.receipt != null) {
+            throw new IllegalStateException(
+                    "cannot retire a terminal CONTROL slot while identity is still attached");
+        }
+        slot.state = RETIRED;
+        if (retiredEpochSlots >= slots.length) {
+            throw new IllegalStateException("terminal ledger retired-slot accounting overflow");
+        }
+        retiredEpochSlots++;
     }
 
     private static long saturatingIncrement(long value) {
