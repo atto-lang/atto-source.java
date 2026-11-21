@@ -132,11 +132,11 @@ public final class SupervisorLifecycleTraceOracle {
         var generations = new SupervisorLifecycleTrace.Journal(32);
         var oldChild = SupervisorLifecycleFsm.State.initial();
         oldChild = record(generations, 6, oldChild,
+                new SupervisorLifecycleFsm.RestartRequested(1));
+        oldChild = record(generations, 6, oldChild,
                 new SupervisorLifecycleFsm.ActorsFinished(1, false));
         oldChild = record(generations, 6, oldChild,
                 new SupervisorLifecycleFsm.PhysicalRelease(1));
-        oldChild = record(generations, 6, oldChild,
-                new SupervisorLifecycleFsm.RestartRequested(1));
         oldChild = record(generations, 6, oldChild,
                 new SupervisorLifecycleFsm.RestartCommitted(1));
         check(oldChild.epoch() == 2, "child restart generation did not advance");

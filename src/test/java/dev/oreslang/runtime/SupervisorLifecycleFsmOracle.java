@@ -77,6 +77,46 @@ public final class SupervisorLifecycleFsmOracle {
                 "terminal timeout mutated settled state");
         mustReject(s, new SupervisorLifecycleFsm.ChildFinished(2, 11, false));
 
+        // A pre-fence retirement cannot prove the currently admitted
+        // workload has quiesced: the RUNNING phase can admit new workers.
+        var recycled = SupervisorLifecycleFsm.State.initial();
+        recycled = apply(recycled, new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        recycled = apply(recycled, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        recycled = apply(recycled, new SupervisorLifecycleFsm.RestartRequested(1));
+        check(!recycled.actorsDone() && !recycled.physicalReleased(),
+                "restart retained stale pre-fence actor/loan receipts");
+        mustReject(recycled, new SupervisorLifecycleFsm.RestartCommitted(1));
+        recycled = apply(recycled, new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        recycled = apply(recycled, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        recycled = apply(recycled, new SupervisorLifecycleFsm.RestartCommitted(1));
+        check(recycled.epoch() == 2, "fresh restart receipt was ignored");
+
+        var staleLegacy = SupervisorLifecycleFsm.State.initial();
+        staleLegacy = apply(staleLegacy, new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        staleLegacy = apply(staleLegacy, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        staleLegacy = apply(staleLegacy, new SupervisorLifecycleFsm.ShutdownRequested(1, Set.of()));
+        check(!staleLegacy.actorsDone() && !staleLegacy.physicalReleased(),
+                "legacy shutdown inherited an unfenced physical release");
+
+        var staleShutdown = SupervisorLifecycleFsm.State.initial();
+        staleShutdown = apply(staleShutdown, new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        staleShutdown = apply(staleShutdown, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        staleShutdown = apply(staleShutdown,
+                new SupervisorLifecycleFsm.ShutdownWithChildEpochs(1, Map.of()));
+        check(!staleShutdown.actorsDone() && !staleShutdown.physicalReleased(),
+                "shutdown retained stale pre-fence physical receipt");
+        staleShutdown = apply(staleShutdown,
+                new SupervisorLifecycleFsm.BeforeHookFinished(1, false));
+        staleShutdown = apply(staleShutdown,
+                new SupervisorLifecycleFsm.ActorsFinished(1, false));
+        staleShutdown = apply(staleShutdown,
+                new SupervisorLifecycleFsm.AfterHookFinished(1, false));
+        check(staleShutdown.phase() == SupervisorLifecycleFsm.Phase.STOPPED,
+                "shutdown incorrectly declared RECLAIMED without post-fence proof");
+        staleShutdown = apply(staleShutdown, new SupervisorLifecycleFsm.PhysicalRelease(1));
+        check(staleShutdown.phase() == SupervisorLifecycleFsm.Phase.RECLAIMED,
+                "fresh physical receipt not recognized");
+
         var restart = SupervisorLifecycleFsm.State.initial();
         restart = apply(restart, new SupervisorLifecycleFsm.RestartRequested(1));
         mustReject(restart, new SupervisorLifecycleFsm.RestartCommitted(1));

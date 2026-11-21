@@ -182,6 +182,13 @@ public final class SupervisorLifecycleFsm {
         if (e instanceof RestartRequested) {
             if (p == Phase.RESTARTING) return s;
             require(p == Phase.RUNNING, "restart requested after shutdown fence");
+            // RUNNING has open admissions: any earlier retirement receipt
+            // may describe a smaller, already replaced worker snapshot.
+            // A restart MUST revalidate old-incarnation actor retirement
+            // and physical loans *after* the restart admission fence.
+            actors = false;
+            actorFailed = false;
+            released = false;
             next = Phase.RESTARTING;
         } else if (e instanceof RestartCommitted) {
             require(p == Phase.RESTARTING, "restart completion out of order");
@@ -208,6 +215,12 @@ public final class SupervisorLifecycleFsm {
             done = Set.of();
             reclaimed = Set.of();
             failedChildren = Set.of();
+            // New shutdown admission invalidates pre-fence observations:
+            // RUNNING or RESTARTING must not carry a stale physical receipt
+            // into the shutdown of a new worker admission snapshot.
+            actors = false;
+            actorFailed = false;
+            released = false;
             next = Phase.BEFORE_HOOK;
         } else if (e instanceof ShutdownRequested request) {
             if (p != Phase.RUNNING && p != Phase.RESTARTING) {
@@ -223,6 +236,12 @@ public final class SupervisorLifecycleFsm {
             done = Set.of();
             reclaimed = Set.of();
             failedChildren = Set.of();
+            // New shutdown admission invalidates pre-fence observations:
+            // RUNNING or RESTARTING must not carry a stale physical receipt
+            // into the shutdown of a new worker admission snapshot.
+            actors = false;
+            actorFailed = false;
+            released = false;
             next = Phase.BEFORE_HOOK;
         } else if (e instanceof BeforeHookFinished result) {
             if (pre) {
