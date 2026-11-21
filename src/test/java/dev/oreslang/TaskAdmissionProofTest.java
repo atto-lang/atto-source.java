@@ -67,8 +67,9 @@ final class TaskAdmissionProofTest {
 
         Ast.TaskBlockStmt lookalike =
                 new Ast.TaskBlockStmt(boundary.body());
-        assertTrue(proof.transfersFor(lookalike).isEmpty(),
-                "proof must stay bound to the exact checked AST identity");
+        assertThrows(IllegalArgumentException.class,
+                () -> proof.transfersFor(lookalike),
+                "missing exact-boundary proof must fail closed");
     }
 
     @Test

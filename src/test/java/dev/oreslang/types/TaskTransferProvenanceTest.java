@@ -61,7 +61,9 @@ final class TaskTransferProvenanceTest {
         // equal-looking boundary manufactured by a later/untrusted phase.
         Ast.TaskBlockStmt lookalike =
                 new Ast.TaskBlockStmt(boundary.body());
-        assertTrue(provenance.transfersFor(lookalike).isEmpty());
+        assertThrows(IllegalArgumentException.class,
+                () -> provenance.transfersFor(lookalike),
+                "missing exact-boundary proof must fail closed");
     }
 
     @Test
@@ -308,8 +310,9 @@ final class TaskTransferProvenanceTest {
         assertEquals(
                 TaskTransferProvenance.SelfMode.RECEIVER_POLYMORPHIC,
                 context.selfMode());
-        assertNull(provenance.lexicalContextForIdentity(
-                new Ast.TaskBlockStmt(List.of())));
+        assertThrows(IllegalArgumentException.class,
+                () -> provenance.lexicalContextForIdentity(
+                        new Ast.TaskBlockStmt(List.of())));
     }
 
     @Test
