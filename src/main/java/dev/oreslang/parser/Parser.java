@@ -31,6 +31,47 @@ public final class Parser {
         return new Parser(new Lexer(source).scan()).parseProgram();
     }
 
+    /**
+     * Trusted GPU declaration AST admission. The existing full-source
+     * parse(String) entry point intentionally rejects accelerator execution;
+     * callers must opt into this compile-only effect domain explicitly.
+     */
+    /**
+     * Typed source-level ActorStream admission shared with LLVM.
+     * This is a restricted compile-only host execution plan; arbitrary
+     * guest actor methods and hardware dispatch are NOT enabled here.
+     */
+    public static dev.oreslang.runtime.accel.PipelineSourceLowering.Plan
+    parseTrustedPipelineSource(String source,
+            dev.oreslang.runtime.DataOrientedLayout.Plan layout,
+            dev.oreslang.runtime.accel.DopKernelIR.GpuTarget target) {
+        return dev.oreslang.runtime.accel.PipelineSourceLowering
+                .compile(source, layout, target);
+    }
+
+    public static Ast.GpuF32Decl parseTrustedGpuDeclaration(
+            String source, dev.oreslang.runtime.DataOrientedLayout.Plan layout) {
+        var result = dev.oreslang.runtime.accel.AcceleratorSourceLowering.compileGpu(source, layout);
+        var kernel = result.kernel();
+        return new Ast.GpuF32Decl(result.name(), result.parameter(),
+                Ast.GpuF32Op.valueOf(kernel.operation().name()),
+                kernel.scale(), kernel.bias());
+    }
+
+    /** Strict compile-only source -> immutable quantum AST. Never submits work. */
+    public static Ast.QuantumCircuitDecl parseTrustedQuantumDeclaration(String source) {
+        var result = dev.oreslang.runtime.accel.AcceleratorSourceLowering.compileQuantum(source);
+        var circuit = result.circuit();
+        java.util.List<Ast.QuantumGate> gates = new java.util.ArrayList<>();
+        for (var gate : circuit.gates()) {
+            gates.add(new Ast.QuantumGate(
+                    Ast.QuantumGateKind.valueOf(gate.op().name()),
+                    gate.target(), gate.control(), gate.classicalBit()));
+        }
+        return new Ast.QuantumCircuitDecl(result.name(), circuit.qubits(),
+                circuit.classicalBits(), gates);
+    }
+
     public static ParseResult parseWithWarnings(String source) {
         Parser parser = new Parser(new Lexer(source).scan());
         Ast.Program program = parser.parseProgram();
