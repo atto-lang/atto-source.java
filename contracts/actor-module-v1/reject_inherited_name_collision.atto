@@ -1,0 +1,8 @@
+// EXPECT: compile error containing "conflicts with a required field or callable".
+define contract ActorBase as
+  actor Cart;
+end
+
+define contract Invalid extends ActorBase as
+  fnc Cart(): int;
+end

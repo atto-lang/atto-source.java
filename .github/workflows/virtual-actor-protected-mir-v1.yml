@@ -6,10 +6,13 @@ on:
       - 'src/main/java/dev/oreslang/compiler/VirtualActorProtectedMirV1.java'
       - 'src/main/java/dev/oreslang/compiler/VirtualActorProtectedOpsMirV1.java'
       - 'src/main/java/dev/oreslang/compiler/VirtualActorLogicalCallMirV1.java'
+      - 'src/main/java/dev/oreslang/compiler/VirtualActorGuestInvocationMirV1.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/VirtualActorProtectedMirV1Test.java'
       - 'src/test/java/dev/oreslang/VirtualActorProtectedOpsMirV1Test.java'
       - 'src/test/java/dev/oreslang/VirtualActorLogicalCallMirV1Test.java'
+      - 'src/test/java/dev/oreslang/VirtualActorGuestInvocationMirV1Test.java'
+      - 'contracts/virtual-actor-guest-invoke-v1/**'
       - 'contracts/virtual-actor-mir-v1/**'
       - '.github/workflows/virtual-actor-protected-mir-v1.yml'
   workflow_dispatch:
@@ -43,10 +46,17 @@ jobs:
           echo "TREE_SHA=$(git rev-parse 'HEAD^{tree}')"
           git hash-object src/main/java/dev/oreslang/compiler/VirtualActorProtectedOpsMirV1.java
           git hash-object src/main/java/dev/oreslang/compiler/VirtualActorLogicalCallMirV1.java
+          git hash-object src/main/java/dev/oreslang/compiler/VirtualActorGuestInvocationMirV1.java
           git hash-object src/main/java/dev/oreslang/compiler/VirtualActorProtectedMirV1.java
           git hash-object src/main/java/dev/oreslang/types/TypeChecker.java
           git hash-object src/test/java/dev/oreslang/VirtualActorProtectedOpsMirV1Test.java
           git hash-object src/test/java/dev/oreslang/VirtualActorLogicalCallMirV1Test.java
+          git hash-object src/test/java/dev/oreslang/VirtualActorGuestInvocationMirV1Test.java
+          git hash-object contracts/virtual-actor-guest-invoke-v1/positive/cart_resolve_and_invoke.atto
+          git hash-object contracts/virtual-actor-guest-invoke-v1/cases.json
+          git hash-object contracts/virtual-actor-guest-invoke-v1/negative/unawaited_cart.atto
+          git hash-object contracts/virtual-actor-guest-invoke-v1/negative/wrong_nominal_cart.atto
+          git hash-object contracts/virtual-actor-guest-invoke-v1/negative/unknown_method_cart.atto
           git hash-object src/test/java/dev/oreslang/VirtualActorProtectedMirV1Test.java
           git hash-object contracts/virtual-actor-mir-v1/cases.json
           git hash-object contracts/virtual-actor-mir-v1/positive/cart_checked_contract.atto
@@ -71,9 +81,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
           set -euo pipefail
           mvn -B -ntp \
-            -Dtest=VirtualActorLogicalCallMirV1Test,VirtualActorProtectedOpsMirV1Test,VirtualActorProtectedMirV1Test,StateContainerVirtualActorAdmissionTest,AttoCartPhysicalActivationGuestTest,VirtualActorGenerationFenceCurrentMainTest,VirtualActorTerminalControlCurrentMainTest,VirtualActorCurrentMainDirectoryTest \
+            -Dtest=VirtualActorGuestInvocationMirV1Test,VirtualActorLogicalCallMirV1Test,VirtualActorProtectedOpsMirV1Test,VirtualActorProtectedMirV1Test,StateContainerVirtualActorAdmissionTest,AttoCartPhysicalActivationGuestTest,VirtualActorGenerationFenceCurrentMainTest,VirtualActorTerminalControlCurrentMainTest,VirtualActorCurrentMainDirectoryTest \
             -DfailIfNoTests=true test
           for suite in \
+            dev.oreslang.VirtualActorGuestInvocationMirV1Test \
             dev.oreslang.VirtualActorLogicalCallMirV1Test \
             dev.oreslang.VirtualActorProtectedOpsMirV1Test \
             dev.oreslang.VirtualActorProtectedMirV1Test \

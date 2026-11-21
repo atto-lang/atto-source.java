@@ -1,0 +1,15 @@
+// Negative guest virtual-actor invocation contract; should fail before runtime.
+define virtual actor Cart as
+  state { let int quantity: 0; }
+  add(int n) -> void ::
+    handle_state(critical-write |s| -> {
+      s.quantity = s.quantity + n;
+    });
+  end
+end
+
+pub async fnc main(): int {
+  const VirtualActorRef<Cart> cart = VirtualActorRef.resolve<Cart>("cart-123");
+  await cart.shutdown(2);
+  return 0;
+}
