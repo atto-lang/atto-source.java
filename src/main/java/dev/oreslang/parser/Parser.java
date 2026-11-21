@@ -2003,10 +2003,14 @@ public final class Parser {
         if (match(BANG)) return Ast.TypeRef.complement(parseTypeAtom());
         if (match(TRUE)) return Ast.TypeRef.boolLiteral(true);
         if (match(FALSE)) return Ast.TypeRef.boolLiteral(false);
-        if ((check(STRUCT) || (check(IDENT) && peek().lexeme().equals("record")))
-                && checkNext(LBRACE)) {
-            advance(); // 'struct' and 'record' denote a structural shape in type position.
-            return parseTypeAtom(); // the existing '{field: Type}' parser owns the braces
+        if (check(STRUCT) && checkNext(LBRACE)) {
+            advance(); // Preserve exact-shape struct metadata in type position.
+            Ast.TypeRef fields = parseTypeAtom();
+            return Ast.TypeRef.structType(fields.recordMembers());
+        }
+        if (check(IDENT) && peek().lexeme().equals("record") && checkNext(LBRACE)) {
+            advance(); // Readonly structural record shape in type position.
+            return parseTypeAtom();
         }
         if (match(TYPE)) {
             // A local record alias was lexically named even though we erase it
@@ -2247,18 +2251,33 @@ public final class Parser {
                                 "generic local record aliases require specialized signature lowering");
                     }
                     consume(EQUAL, "expected '=' after local record alias name");
-                    consumeContextualIdentifier("record",
-                            "local type declarations currently require a record { ... } type");
-                    if (!check(LBRACE)) {
-                        throw error(peek(), "local record alias requires a closed record { ... } type");
+                    boolean exactStruct = match(STRUCT);
+                    if (!exactStruct) {
+                        consumeContextualIdentifier("record",
+                                "local type declaration requires record { ... } or struct { ... }");
                     }
-                    Ast.TypeRef aliasTarget = parseTypeRef();
+                    if (!check(LBRACE)) {
+                        throw error(peek(), "local type alias requires a closed aggregate field shape");
+                    }
+                    Ast.TypeRef parsedFields = parseTypeRef();
+                    Ast.TypeRef aliasTarget = exactStruct
+                            ? Ast.TypeRef.structType(parsedFields.recordMembers())
+                            : parsedFields;
                     consumeStatementTerminator("expected ';' after local record alias");
                     if (specs.stream().anyMatch(spec -> spec.name().equals(aliasName))
-                            || java.util.Set.of("int", "string", "String", "float", "bool",
-                                    "any", "unknown", "void", "self", "Object", "Error",
+                            || java.util.Set.of(
+                                    "int", "i8", "i16", "i32", "i64",
+                                    "u8", "u16", "u32", "u64", "uint", "bigint",
+                                    "float", "f32", "f64", "decimal", "complex",
+                                    "complex64", "complex128", "bool", "Bool",
+                                    "string", "String", "any", "unknown",
+                                    "void", "self", "Object", "Error",
                                     "Symbol", "Type", "Option", "Result", "Array",
-                                    "List", "Map", "Ref", "WeakRef", "Future").contains(aliasName)) {
+                                    "List", "Map", "Ref", "WeakRef", "Future",
+                                    "FixedArray", "FixedList", "Vector", "Slice",
+                                    "Tuple", "Generator", "Iterator", "AsyncIterator",
+                                    "AsyncGenerator", "record", "tuple", "infer",
+                                    "using", "DynamicStruct").contains(aliasName)) {
                         throw error(previous(), "local record alias conflicts with reserved or generic type '"
                                 + aliasName + "'");
                     }
@@ -4462,6 +4481,15 @@ public final class Parser {
             consume(RPAREN, "expected ')' after explicit tuple");
             return new Ast.TupleExpr(items);
         }
+        // A lexical transparent alias to a closed exact struct shape may be
+        // constructed with a checked initializer. This reuses the existing
+        // explicit-struct AST; it does not invent nominal type identity.
+        if (check(IDENT) && checkNext(LBRACE)
+                && callableRecordAliases != null
+                && callableRecordAliases.containsKey(peek().lexeme())
+                && callableRecordAliases.get(peek().lexeme()).isStructType()) {
+            return parseLocalStructAliasConstructor();
+        }
         if (match(IDENT, SHARED, UNTRUSTED)) {
             return new Ast.NameExpr(previous().lexeme());
         }
@@ -4525,6 +4553,50 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+
+    private Ast.ObjectExpr parseLocalStructAliasConstructor() {
+        String name = consume(IDENT, "expected local struct alias name").lexeme();
+        Ast.TypeRef shape = callableRecordAliases.get(name);
+        java.util.Map<String, Ast.TypeRef> members = shape.structMembers();
+        consume(LBRACE, "expected '{' after local struct alias");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        List<Ast.StructFieldSpec> declared = new ArrayList<>();
+        for (java.util.Map.Entry<String, Ast.TypeRef> member : members.entrySet()) {
+            declared.add(new Ast.StructFieldSpec(member.getKey(), member.getValue()));
+        }
+        if (!check(RBRACE)) {
+            boolean named = (isMemberNameToken(peek().type()) || check(STRING))
+                    && checkNext(COLON);
+            if (!named) {
+                // Aggregate TypeRef canonicalizes field names; declaration
+                // order is not preserved. Positional initialization is safe
+                // only for a genuinely single-field shape.
+                if (members.size() != 1) {
+                    throw error(peek(),
+                            "multi-field local struct constructors require named initializers");
+                }
+                String onlyField = members.keySet().iterator().next();
+                fields.add(Ast.ObjectField.named(onlyField, parseExpression()));
+                if (check(COMMA)) {
+                    throw error(peek(),
+                            "single-field local struct constructor accepts only one value");
+                }
+            } else {
+                do {
+                    String field = consumeStaticObjectKeyName(
+                            "expected named local struct initializer field");
+                    consume(COLON, "expected ':' after named struct initializer field");
+                    if (!members.containsKey(field)) {
+                        throw error(previous(), "unknown local struct field '" + field + "'");
+                    }
+                    fields.add(Ast.ObjectField.named(field, parseExpression()));
+                } while (match(COMMA));
+            }
+        }
+        consume(RBRACE, "expected '}' after local struct alias initializer");
+        return new Ast.ObjectExpr(fields, Ast.ObjectKind.EXPLICIT_STRUCT, declared);
     }
 
     private Ast.ObjectExpr parseExplicitStructLiteral() {

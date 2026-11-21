@@ -585,10 +585,11 @@ Type declarations are immutable by definition. `const type T = ...` is invalid;
 `type T = ...` defines a type, whereas `const type T x = ...` may use
 `type T` as an explicit named-type marker in a value binding.
 
-### Function/routine-local transparent record aliases (first bounded slice)
+### Function/routine-local transparent aggregate aliases (bounded slice)
 
 Ordinary `fnc` and `routine` bodies may start with compile-time-only,
-non-generic `type` declarations for structural `record` shapes:
+non-generic `type` declarations for structural `record` or exact-shape
+`struct` types. These two aggregate kinds are distinct in type position:
 
 ```ores
 pub fnc make(): T {
@@ -598,10 +599,31 @@ pub fnc make(): T {
 }
 ```
 
-The parser substitutes the closed structural type throughout later
-type positions in the callable and the callable's return signature, so public
-callers see the underlying record shape, not a private importable type named
-`T`. Local type aliases produce no runtime statement, runtime type object,
+A local alias can also refer to an exact struct shape:
+
+```ores
+pub fnc make_struct(): T {
+    type T = struct { foo: int };
+    return T{5};
+}
+
+pub fnc make_larger_struct(): T {
+    type T = struct { foo: int, label: string };
+    return T{ label: "hello", foo: 5 };
+}
+```
+
+A local exact struct alias may be constructed with `T{5}` when the
+shape has exactly one field, or with `T{ field: value, ... }` for larger
+shapes. The constructor lowers to the existing checked explicit-struct
+initializer. Multi-field positional initialization is deliberately forbidden
+because the canonical type representation does not preserve source field order.
+
+The parser substitutes the appropriate closed aggregate type throughout later
+type positions in the callable and its return signature. Public callers see
+the underlying record or exact struct shape, not a private importable name
+`T`. The `struct` type-position marker is **not** a synonym for the readonly
+structural `record` marker; it preserves the exact closed struct shape. Local type aliases produce no runtime statement, runtime type object,
 nominal identity, allocator, or constructor. Separate callables may reuse the
 same local alias spelling without sharing a nominal type identity.
 
@@ -609,8 +631,9 @@ The intentionally narrow admission rules are:
 
 - Declarations occur only in the **function/routine prologue**, before any
   executable statement. Nested blocks and late local declarations fail closed.
-- They must use `type Name = record { field: Type, ... };`.
-  Non-record, generic and directly recursive local aliases are not enabled.
+- They must use `type Name = record { field: Type, ... };` or
+  `type Name = struct { field: Type, ... };`. Generic, recursive and
+  non-aggregate local aliases are not enabled.
 - Local type uses inside the later callable body are compiled to structural
   `TypeRef` objects. The public return type is resolved after reading the
   prologue; `fnc foo(): T` may therefore name a local `T` declared in the
