@@ -35,6 +35,39 @@ final class GeneratorLanguageTest {
     }
 
     @Test
+    void generatorPullFailureDuringResumedForOfClosesProducerExactlyOnce() throws Exception {
+        assertEquals("12:closed:caught|done", run("""
+                generator fnc values(): int {
+                  try {
+                    yield 1;
+                    yield 2;
+                    val Option<int> missing = None;
+                    stdio.stdout.write(missing.unwrap());
+                  } catch (err) {
+                    // Source-level rethrow is not yet supported. Force a
+                    // terminal pull failure while preserving finally/caller catch.
+                    val Option<int> terminal = None;
+                    stdio.stdout.write(terminal.unwrap());
+                  } finally {
+                    stdio.stdout.write(":closed");
+                  }
+                  return;
+                }
+                pub async routine main(): void {
+                  try {
+                    for const item of values() do
+                      stdio.stdout.write(item);
+                    done
+                  } catch (err) {
+                    stdio.stdout.write(":caught");
+                  }
+                  stdio.stdout.write("|done");
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void suspendableAsyncIterationClosesProducerOnBreak() throws Exception {
         assertEquals("1:closed", run("""
                 async generator fnc values(): int {

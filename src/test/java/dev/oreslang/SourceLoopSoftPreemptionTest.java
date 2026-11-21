@@ -137,6 +137,72 @@ final class SourceLoopSoftPreemptionTest {
     }
 
     @Test
+    void previouslyCooperatedForLoopStopsAfterAwaitFailureWithoutReplayingEffects()
+            throws Exception {
+        assertEquals("1401|caught|finally|after", run("""
+                async fnc fail(): int {
+                  rt cooperate;
+                  val Option<int> empty = None;
+                  return empty.unwrap();
+                }
+
+                pub async routine main(): void {
+                  let completed = 0;
+                  try {
+                    for (let i = 0; i < 2048; i = i + 1) do
+                      completed = completed + 1;
+                      if i == 1400; do
+                        val unused = await fail();
+                      fi
+                    done
+                    stdio.stdout.write("unexpected");
+                  } catch (err) {
+                    stdio.stdout.write(completed);
+                    stdio.stdout.write("|caught");
+                  } finally {
+                    stdio.stdout.write("|finally");
+                  }
+                  stdio.stdout.write("|after");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void forOfFailureAfterCooperationDoesNotConsumeAnotherElement()
+            throws Exception {
+        assertEquals("1603|caught|finally|after", run("""
+                async fnc fail(): int {
+                  rt cooperate;
+                  val Option<int> empty = None;
+                  return empty.unwrap();
+                }
+
+                pub async routine main(): void {
+                  let completed = 0;
+                  try {
+                    for (let outer = 0; outer < 600; outer = outer + 1) do
+                      for const item of arr[1, 2, 3, 4] do
+                        completed = completed + 1;
+                        if outer == 400 && item == 3; do
+                          val unused = await fail();
+                        fi
+                      done
+                    done
+                    stdio.stdout.write("unexpected");
+                  } catch (err) {
+                    stdio.stdout.write(completed);
+                    stdio.stdout.write("|caught");
+                  } finally {
+                    stdio.stdout.write("|finally");
+                  }
+                  stdio.stdout.write("|after");
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void automaticLoopCooperationDoesNotYieldWhileMutexGuardIsLive() throws Exception {
         assertEquals("2000|0", run("""
                 define class Counter as

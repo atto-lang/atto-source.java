@@ -1,0 +1,83 @@
+name: canonical-source-continuations
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - integrate/canonical-with-using-20261012
+    paths:
+      - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
+      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/main/java/dev/oreslang/runtime/OresContext.java"
+      - "src/main/java/dev/oreslang/runtime/OresContextLifecycle.java"
+      - "src/main/java/dev/oreslang/runtime/NativeHttp.java"
+      - "src/main/java/dev/oreslang/runtime/AsyncRuntime.java"
+      - "src/main/java/dev/oreslang/runtime/AsyncNativeIo.java"
+      - "src/main/java/dev/oreslang/runtime/OresVM.java"
+      - "src/main/java/dev/oreslang/runtime/OresScheduler.java"
+      - "src/main/java/dev/oreslang/runtime/OresFuture.java"
+      - "src/test/java/dev/oreslang/runtime/OresSchedulerTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorForceSourceCleanupRevocationTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorStructuredCancellationTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorReadinessLifecycleTest.java"
+      - "src/test/java/dev/oreslang/runtime/SerialHttpStalledActorTest.java"
+      - "src/test/java/dev/oreslang/runtime/OresContextLifecycleTest.java"
+      - "src/test/java/dev/oreslang/runtime/NativeHttpTest.java"
+      - "src/test/java/dev/oreslang/runtime/AsyncRuntimeTest.java"
+      - "src/test/java/dev/oreslang/runtime/AsyncNativeIoTest.java"
+      - "src/test/java/dev/oreslang/runtime/OresVMTest.java"
+      - "src/test/java/dev/oreslang/ActorContinuationTeardownTest.java"
+      - "src/test/java/dev/oreslang/SourceContinuationSingleDeliveryTest.java"
+      - "src/test/java/dev/oreslang/SourceTerminalFlowPolicyTest.java"
+      - "src/test/java/dev/oreslang/SourceInlineCriticalStateHandoffTest.java"
+      - "src/test/java/dev/oreslang/WithUsingLoanSuspensionAuditTest.java"
+      - "src/test/java/dev/oreslang/SourceLoopSoftPreemptionTest.java"
+      - "src/test/java/dev/oreslang/GeneratorLanguageTest.java"
+      - ".github/workflows/canonical-source-continuations.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-source-continuations-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  focused-and-full-jdk25:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact private source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git ls-files -z | xargs -0 -r sha256sum > /tmp/canonical-continuation-source.sha256
+          sha256sum /tmp/canonical-continuation-source.sha256
+          echo "Verified head SHA: $EXPECTED_SHA"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute guest-source continuation and state-handoff regressions
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native \
+            -Dtest=OresSchedulerTest,ActorForceSourceCleanupRevocationTest,ActorStructuredCancellationTest,ActorReadinessLifecycleTest,SerialHttpStalledActorTest,OresContextLifecycleTest,NativeHttpTest,AsyncRuntimeTest,AsyncNativeIoTest,OresVMTest,ActorContinuationTeardownTest,SourceContinuationSingleDeliveryTest,SourceTerminalFlowPolicyTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,GeneratorLanguageTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
+            test
+      - name: Execute full Maven regression suite
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Archive JUnit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: canonical-source-continuations-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn

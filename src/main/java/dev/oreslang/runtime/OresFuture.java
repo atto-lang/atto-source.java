@@ -101,6 +101,12 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private final BooleanSupplier cancelAdmission;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
+    // Only stackless cleanup-aware tasks use deferred publication. A caller
+    // requests cancellation now, but actor-owned lexical cleanup runs before
+    // observers can see a settled task Future.
+    private final boolean deferredCancellation;
+    private final AtomicReference<CancellationException> cancellationRequest =
+            new AtomicReference<>();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
@@ -121,10 +127,32 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * Guest code never receives the admission capability.</p>
      */
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook) {
+        this(cancelAdmission, cancelHook, false);
+    }
+
+    OresFuture(Runnable cancelHook, boolean deferredCancellation) {
+        this(() -> true, cancelHook, deferredCancellation);
+    }
+
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+            boolean deferredCancellation) {
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
                 Objects.requireNonNull(cancelHook, "cancelHook"));
+        this.deferredCancellation = deferredCancellation;
+    }
+
+    CancellationException deferredCancellationCause() {
+        return cancellationRequest.get();
+    }
+
+    boolean completeDeferredCancellationFromRuntime() {
+        CancellationException requested = cancellationRequest.get();
+        if (!deferredCancellation || requested == null) return false;
+        boolean settled = settle(new Cancelled(requested));
+        if (settled) cancelHook.set(null);
+        return settled;
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -432,19 +460,35 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
+        if (deferredCancellation) {
+            // Cancel and runtime settlement must arbitrate against the same
+            // lock. Otherwise the initial pending check can become stale
+            // while an already-completed Future accepts a late cancellation.
+            synchronized (cancellationRequest) {
+                if (state.get() != PENDING) return false;
+                if (!cancellationRequest.compareAndSet(null, cancelled)) return false;
+            }
+            // Cleanup-aware cancellation is a request, not yet settlement.
+            // In particular, the hook must enqueue guest cleanup, never run
+            // it on the caller's thread.
+            invokeCancellationHook();
+            return true;
+        }
         if (!settle(new Cancelled(cancelled))) return false;
+        invokeCancellationHook();
+        return true;
+    }
 
+    private void invokeCancellationHook() {
         Runnable hook = cancelHook.getAndSet(null);
         if (hook != null && cancelHookRun.compareAndSet(false, true)) {
             try {
                 hook.run();
             } catch (RuntimeException | Error ignored) {
-                // Cancellation state is already authoritative. A host
-                // cancellation hook cannot roll it back or poison waiter
-                // delivery.
+                // Cancellation requests must remain authoritative. A failing
+                // hook must not invoke a guest callback on this caller thread.
             }
         }
-        return true;
     }
 
     @Override
@@ -558,13 +602,52 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private boolean settle(Object terminal) {
-        if (!state.compareAndSet(PENDING, terminal)) return false;
+        Object published = terminal;
+        if (deferredCancellation) {
+            synchronized (cancellationRequest) {
+                if (state.get() != PENDING) return false;
+                // The publisher may have observed no cancellation *before*
+                // cancel() claimed it. Resolve both outcomes at the same
+                // linearization point rather than publishing stale success
+                // or ordinary failure after an accepted cancellation.
+                CancellationException requested = cancellationRequest.get();
+                if (requested != null) {
+                    if (terminal instanceof Success<?>) {
+                        published = new Cancelled(requested);
+                    } else if (terminal instanceof Failure failed
+                            && !dominatesDeferredCancellation(failed.failure())) {
+                        Throwable diagnostic = failed.failure();
+                        if (diagnostic != requested) {
+                            synchronized (requested) {
+                                if (requested.getSuppressed().length < 64) {
+                                    requested.addSuppressed(diagnostic);
+                                }
+                            }
+                        }
+                        published = new Cancelled(requested);
+                    }
+                }
+                if (!state.compareAndSet(PENDING, published)) return false;
+            }
+        } else if (!state.compareAndSet(PENDING, published)) {
+            return false;
+        }
 
         RuntimeWaiterRegistration<T> waiter;
         while ((waiter = waiters.poll()) != null) {
-            notifyWaiter(waiter, terminal);
+            notifyWaiter(waiter, published);
         }
         return true;
+    }
+
+    // Shared by the Future arbitration and scheduler terminal publication.
+    // Always unwrap completion wrappers before comparing fatal priorities.
+    static boolean dominatesDeferredCancellation(Throwable failure) {
+        Throwable cause = unwrap(failure);
+        return cause instanceof VirtualMachineError
+                || cause instanceof ThreadDeath
+                || cause instanceof LinkageError
+                || cause instanceof ActorRuntime.UntrustedActorQuotaExceededException;
     }
 
     @SuppressWarnings("unchecked")

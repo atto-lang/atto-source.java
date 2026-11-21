@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -708,6 +709,36 @@ final class ActorStructuredCancellationTest {
         }
     }
 
+
+    @Test
+    void throwingNonFatalErrorForceRevokerClearsFenceAndActorCanResume()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch delivered = new CountDownLatch(1);
+            ActorRuntime.ActorRef<String> actor =
+                    runtime.spawnShared(() -> (message, context) ->
+                            delivered.countDown());
+
+            AssertionError revocationFailure =
+                    new AssertionError("synthetic revocation assertion");
+            runtime.setForceCancellationTreeHook(request -> {
+                throw revocationFailure;
+            });
+
+            ActorRuntime.ActorControlHandle control =
+                    runtime.controlHandle(actor);
+            assertSame(revocationFailure,
+                    assertThrows(AssertionError.class, control::kill));
+            assertTrue(actor.isAlive(),
+                    "nonfatal revoker Error must not publish a logical hard kill");
+            actor.send("after-error");
+            assertTrue(delivered.await(2, TimeUnit.SECONDS),
+                    "failed host revocation must restore user-mailbox admission");
+            actor.stop();
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
 
     @Test
     void forceKillFenceRejectsNewMailboxWorkUntilRevocationCompletes()

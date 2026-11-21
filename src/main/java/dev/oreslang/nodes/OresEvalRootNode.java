@@ -47,6 +47,13 @@ public final class OresEvalRootNode extends RootNode {
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
+    /**
+     * Host-owned shutdown preflight. Execute this while the outer Polyglot
+     * Context is still valid; a failed physical drain is not permission for
+     * the embedder to dispose that outer context.
+     */
+    public static final String PREPARE_CONTEXT_DISPOSAL_COMMAND =
+            "__ores_internal_prepare_context_disposal__";
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -73,6 +80,10 @@ public final class OresEvalRootNode extends RootNode {
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
         CapabilityChecker.check(program, context.isolatePolicy(), context.permissionCheckMode());
+        if (isControl(arguments, PREPARE_CONTEXT_DISPOSAL_COMMAND)) {
+            context.close();
+            return null;
+        }
         if (arguments.length == 3
                 && REGISTER_IMPORT_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String importPath
@@ -856,7 +867,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private enum SourceFlowKind {
-            NORMAL, RETURN, BREAK, CONTINUE, THROW
+            NORMAL, RETURN, BREAK, CONTINUE, THROW, TERMINAL
         }
 
         private record SourceFlow(
@@ -880,10 +891,62 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private static SourceFlow throwing(Throwable failure) {
-                return new SourceFlow(
-                        SourceFlowKind.THROW,
-                        null,
+                Throwable cause = OresFuture.unwrap(
                         Objects.requireNonNull(failure, "failure"));
+                if (cause instanceof Error
+                        || cause instanceof java.util.concurrent.CancellationException
+                        || cause instanceof ActorRuntime.UntrustedActorQuotaExceededException) {
+                    return new SourceFlow(SourceFlowKind.TERMINAL, null, cause);
+                }
+                return new SourceFlow(SourceFlowKind.THROW, null, cause);
+            }
+
+            private static boolean isHostFatal(Throwable failure) {
+                return failure instanceof VirtualMachineError
+                        || failure instanceof ThreadDeath
+                        || failure instanceof LinkageError;
+            }
+
+            // Never allocate a suppressed-exception chain proportional to
+            // untrusted guest defers/cleanup failures. Keep a bounded sample
+            // while preserving the authoritative failure object and status.
+            private static final int MAX_CLEANUP_SUPPRESSED = 64;
+
+            private static void suppressCleanup(Throwable primary, Throwable secondary) {
+                if (primary == null || secondary == null || primary == secondary) return;
+                synchronized (primary) {
+                    if (primary.getSuppressed().length < MAX_CLEANUP_SUPPRESSED) {
+                        primary.addSuppressed(secondary);
+                    }
+                }
+            }
+
+            /**
+             * A terminal failure wins over ordinary catch/return/throw from
+             * cleanup. Host-fatal errors retain higher priority. Guest catch
+             * does not see terminal failures, but lexical cleanup still runs.
+             */
+            private static SourceFlow afterCleanup(
+                    SourceFlow pending, SourceFlow cleanup) {
+                // JVM/process-fatal errors outrank ordinary actor
+                // cancellation; a cancelled task must never mask OOM,
+                // linkage corruption or forced ThreadDeath from cleanup.
+                if (isHostFatal(pending.failure())) return pending;
+                if (isHostFatal(cleanup.failure())) {
+                    suppressCleanup(cleanup.failure(), pending.failure());
+                    return cleanup;
+                }
+                if (pending.kind() == SourceFlowKind.TERMINAL) {
+                    suppressCleanup(pending.failure(), cleanup.failure());
+                    return pending;
+                }
+                if (cleanup.kind() == SourceFlowKind.TERMINAL) {
+                    suppressCleanup(cleanup.failure(), pending.failure());
+                    return cleanup;
+                }
+                if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
+                suppressCleanup(cleanup.failure(), pending.failure());
+                return cleanup;
             }
         }
 
@@ -893,7 +956,7 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.Task<Object> {
+        private final class SourceTask implements OresScheduler.CleanupAwareTask<Object> {
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             private static final int LOOP_SAFEPOINT_INTERVAL = 32;
@@ -1067,7 +1130,19 @@ public final class OresEvalRootNode extends RootNode {
                     if (untrusted || (backedges & (LOOP_SAFEPOINT_INTERVAL - 1)) == 0) {
                         // Untrusted fuel is charged at EVERY loop backedge, not
                         // once per 32 iterations. Trusted tasks poll at 32.
-                        context.schedulerSafepoint();
+                        try {
+                            context.schedulerSafepoint();
+                        } catch (ActorRuntime.ActorCancellationSignal
+                                 | ActorRuntime.UntrustedActorQuotaExceededException
+                                 | java.util.concurrent.CancellationException terminal) {
+                            // Cancellation and UNTRUSTED quota exhaustion
+                            // are terminal control-plane events, not guest
+                            // catchable exceptions. The trampoline has a
+                            // heap-owned continuation: send the event through
+                            // lexical cleanup without replaying an iteration.
+                            next.accept(this, null, terminal);
+                            return;
+                        }
                         // Issue #402: an UNTRUSTED carrier handoff can currently
                         // mint a fresh physical-turn quota, so fail closed.
                         // Never auto-cooperate while a live lexical mutex guard
@@ -1129,7 +1204,7 @@ public final class OresEvalRootNode extends RootNode {
                             }
                             done(null);
                         }
-                        case THROW -> throw sourceFailure(flow.failure());
+                        case THROW, TERMINAL -> throw sourceFailure(flow.failure());
                         case BREAK, CONTINUE ->
                                 throw new IllegalStateException(
                                         "loop control crossed a source continuation boundary");
@@ -1140,7 +1215,7 @@ public final class OresEvalRootNode extends RootNode {
                 switch (flow.kind()) {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
-                    case THROW -> throw sourceFailure(flow.failure());
+                    case THROW, TERMINAL -> throw sourceFailure(flow.failure());
                     case BREAK, CONTINUE ->
                             throw new IllegalStateException(
                                     "loop control crossed a source function boundary");
@@ -1506,7 +1581,14 @@ public final class OresEvalRootNode extends RootNode {
                                     && seen.add(method)) {
                                 if (method.async()) return true;
                                 for (Ast.Stmt statement : method.body()) {
-                                    if (statementContainsPotentialSuspension(statement, seen)) return true;
+                                    // The call site must await a loop-bearing
+                                    // method's SourceTask completion. Otherwise
+                                    // a returned Future is silently discarded
+                                    // by an ordinary expression statement.
+                                    if ((klass.actorKind() != Ast.ActorKind.NONE
+                                                    && containsSourceLoop(statement))
+                                            || statementContainsPotentialSuspension(statement, seen))
+                                        return true;
                                 }
                             }
                         }
@@ -1758,7 +1840,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             initialFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = SourceFlow.afterCleanup(completed, SourceFlow.throwing(failure));
                 }
                 // The consumer owns any failure it throws. Do not call it twice.
                 continuation.accept(task, completed);
@@ -1786,7 +1868,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(
                             currentFlow.kind() != SourceFlowKind.NORMAL);
                 } catch (RuntimeException | Error failure) {
-                    completed = SourceFlow.throwing(failure);
+                    completed = SourceFlow.afterCleanup(completed, SourceFlow.throwing(failure));
                 }
                 continuation.accept(task, completed);
                 return;
@@ -1798,14 +1880,12 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     (ignored, ignoredValue, failure) -> {
                         if (failure != null) {
-                            if (currentFlow.failure() != null) {
-                                failure.addSuppressed(currentFlow.failure());
-                            }
                             runOneDefer(
                                     task,
                                     env,
                                     defers,
-                                    SourceFlow.throwing(failure),
+                                    SourceFlow.afterCleanup(
+                                            currentFlow, SourceFlow.throwing(failure)),
                                     continuation);
                         } else {
                             runOneDefer(
@@ -1823,7 +1903,20 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Stmt stmt,
                 Env env,
                 ArrayDeque<Ast.Expr> defers,
-                SourceFlowCont continuation) {
+                SourceFlowCont downstream) {
+            // A statement may finish synchronously or through a suspended
+            // continuation. Its downstream flow must be published only once.
+            // Otherwise a downstream failure thrown during delivery would
+            // enter this method's catch and replay completion as an error.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            SourceFlowCont continuation = (t, flow) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "source statement continuation attempted multiple deliveries");
+                }
+                downstream.accept(t, flow);
+            };
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -1888,14 +1981,12 @@ public final class OresEvalRootNode extends RootNode {
                                             }
                                         }
                                     }
-                                    continuation.accept(
-                                            t,
-                                            SourceFlow.normal());
                                 } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(
-                                            t,
-                                            SourceFlow.throwing(failure2));
+                                    continuation.accept(t, SourceFlow.throwing(failure2));
+                                    return;
                                 }
+                                // Never publish while the destructuring catch is active.
+                                continuation.accept(t, SourceFlow.normal());
                             });
                     return;
                 }
@@ -2054,10 +2145,7 @@ public final class OresEvalRootNode extends RootNode {
                                                             (t3, finallyFlow) ->
                                                                     continuation.accept(
                                                                             t3,
-                                                                            finallyFlow.kind()
-                                                                                            != SourceFlowKind.NORMAL
-                                                                                    ? finallyFlow
-                                                                                    : catchFlow)));
+                                                                            SourceFlow.afterCleanup(catchFlow, finallyFlow))));
                                 } else {
                                     runBlock(
                                             t,
@@ -2066,10 +2154,7 @@ public final class OresEvalRootNode extends RootNode {
                                             (t2, finallyFlow) ->
                                                     continuation.accept(
                                                             t2,
-                                                            finallyFlow.kind()
-                                                                            != SourceFlowKind.NORMAL
-                                                                    ? finallyFlow
-                                                                    : flow));
+                                                            SourceFlow.afterCleanup(flow, finallyFlow)));
                                 }
                             });
                     return;
@@ -2178,9 +2263,10 @@ public final class OresEvalRootNode extends RootNode {
                         "unsupported suspendable statement "
                                 + stmt.getClass().getName());
             } catch (RuntimeException | Error failure) {
-                continuation.accept(
-                        task,
-                        SourceFlow.throwing(failure));
+                // Once downstream has received a flow, propagate its failure
+                // rather than delivering a second, synthetic THROW flow.
+                if (delivered.get()) throw failure;
+                continuation.accept(task, SourceFlow.throwing(failure));
             }
         }
 
@@ -2478,6 +2564,20 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        /**
+         * A failed loop resumption is not permission to replay the next
+         * iteration. Actor cancellation and native fatal control signals
+         * remain terminal; ordinary failures are delivered to the enclosing
+         * flow, which performs for-of iterator cleanup before publication.
+         */
+        private SourceFlow sourceLoopResumeFailure(Throwable failure) {
+            Throwable cause = OresFuture.unwrap(
+                    Objects.requireNonNull(failure, "failure"));
+            // Do not throw here: the enclosing SourceFlow pipeline must run
+            // finally/defer/iterator cleanup. Guest catch matches THROW only.
+            return SourceFlow.throwing(cause);
+        }
+
         private void runForSuspendable(
                 SourceTask task,
                 Ast.ForStmt loop,
@@ -2563,14 +2663,21 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             if (loop.update() == null) {
                                 t.scheduleLoopContinuation(
                                         loopEnv,
-                                        (resumed, ignored, failure) -> runForIteration(
-                                                resumed, loop, loopEnv, continuation));
+                                        (resumed, ignored, failure) -> {
+                                            if (failure != null) {
+                                                continuation.accept(
+                                                        resumed, sourceLoopResumeFailure(failure));
+                                                return;
+                                            }
+                                            runForIteration(resumed, loop, loopEnv, continuation);
+                                        });
                             } else {
                                 evalSuspendableExpr(
                                         t,
@@ -2585,8 +2692,15 @@ public final class OresEvalRootNode extends RootNode {
                                             } else {
                                                 t2.scheduleLoopContinuation(
                                                         loopEnv,
-                                                        (resumed, ignoredResumeValue, failure2) -> runForIteration(
-                                                                resumed, loop, loopEnv, continuation));
+                                                        (resumed, ignoredResumeValue, failure2) -> {
+                                                            if (failure2 != null) {
+                                                                continuation.accept(resumed,
+                                                                        sourceLoopResumeFailure(failure2));
+                                                                return;
+                                                            }
+                                                            runForIteration(
+                                                                    resumed, loop, loopEnv, continuation);
+                                                        });
                                             }
                                         });
                             }
@@ -2609,13 +2723,20 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runLoopSuspendable(
-                                            resumed, loop, env, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            continuation.accept(
+                                                    resumed, sourceLoopResumeFailure(failure));
+                                            return;
+                                        }
+                                        runLoopSuspendable(resumed, loop, env, continuation);
+                                    });
                         }
                     });
         }
@@ -2679,7 +2800,8 @@ public final class OresEvalRootNode extends RootNode {
                 closeIterable(values);
                 return null;
             }), (t, ignored, failure) -> continuation.accept(t,
-                    failure == null ? flow : SourceFlow.throwing(failure)));
+                    SourceFlow.afterCleanup(flow,
+                            failure == null ? SourceFlow.normal() : SourceFlow.throwing(failure))));
         }
 
         private void finishAsyncForOf(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
@@ -2689,7 +2811,8 @@ public final class OresEvalRootNode extends RootNode {
                 generator.close();
                 return null;
             }), (t, ignored, failure) -> continuation.accept(t,
-                    failure == null ? flow : SourceFlow.throwing(failure)));
+                    SourceFlow.afterCleanup(flow,
+                            failure == null ? SourceFlow.normal() : SourceFlow.throwing(failure))));
         }
 
         private void runAsyncForOfIteration(SourceTask task, GeneratorRuntime.AsyncGenerator<?> generator,
@@ -2715,7 +2838,8 @@ public final class OresEvalRootNode extends RootNode {
                 runBlock(t, body, iteration, (t2, flow) -> {
                     if (flow.kind() == SourceFlowKind.BREAK) {
                         finishAsyncForOf(t2, generator, SourceFlow.normal(), continuation);
-                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW) {
+                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                         finishAsyncForOf(t2, generator, flow, continuation);
                     } else {
                         runAsyncForOfIteration(t2, generator, env, body, bind, continuation);
@@ -2731,16 +2855,33 @@ public final class OresEvalRootNode extends RootNode {
                 java.util.Iterator<?> items,
                 int index,
                 SourceFlowCont continuation) {
-            if (!items.hasNext()) {
+            // Iterator operations can fail on a later carrier, after the
+            // original caller's exception scope has already unwound. Only
+            // ordinary runtime exceptions become guest flow failures; Error
+            // (including the actor cancellation control signal) stays terminal.
+            // Report
+            // the failure through the enclosing close/cleanup continuation.
+            boolean available;
+            Object item;
+            try {
+                available = items.hasNext();
+                item = available ? items.next() : null;
+            } catch (RuntimeException iteratorFailure) {
+                continuation.accept(task, SourceFlow.throwing(iteratorFailure));
+                return;
+            }
+            if (!available) {
                 continuation.accept(task, SourceFlow.normal());
                 return;
             }
 
             Env iteration = new Env(env);
-            iteration.define(
-                    loop.bindingName(),
-                    items.next(),
-                    loop.bindingKind());
+            try {
+                iteration.define(loop.bindingName(), item, loop.bindingKind());
+            } catch (RuntimeException bindingFailure) {
+                continuation.accept(task, SourceFlow.throwing(bindingFailure));
+                return;
+            }
 
             runBlock(
                     task,
@@ -2750,13 +2891,22 @@ public final class OresEvalRootNode extends RootNode {
                         if (flow.kind() == SourceFlowKind.BREAK) {
                             continuation.accept(t, SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runForOfIteration(
-                                            resumed, loop, env, items, index + 1, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            // The enclosing continuation closes the iterable.
+                                            continuation.accept(
+                                                    resumed, sourceLoopResumeFailure(failure));
+                                            return;
+                                        }
+                                        runForOfIteration(
+                                                resumed, loop, env, items, index + 1, continuation);
+                                    });
                         }
                     });
         }
@@ -2768,12 +2918,19 @@ public final class OresEvalRootNode extends RootNode {
                 java.util.Iterator<?> items,
                 int index,
                 SourceFlowCont continuation) {
-            if (!items.hasNext()) {
+            boolean available;
+            List<?> parts;
+            try {
+                available = items.hasNext();
+                parts = available ? asSequence(items.next()) : null;
+            } catch (RuntimeException iteratorFailure) {
+                continuation.accept(task, SourceFlow.throwing(iteratorFailure));
+                return;
+            }
+            if (!available) {
                 continuation.accept(task, SourceFlow.normal());
                 return;
             }
-
-            List<?> parts = asSequence(items.next());
             if (parts.size() != loop.bindings().size()) {
                 continuation.accept(
                         task,
@@ -2784,14 +2941,16 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Env iteration = new Env(env);
-            for (int i = 0; i < parts.size(); i++) {
-                Ast.DestructureBinding binding = loop.bindings().get(i);
-                if (!binding.isDiscard()) {
-                    iteration.define(
-                            binding.name(),
-                            parts.get(i),
-                            binding.kind());
+            try {
+                for (int i = 0; i < parts.size(); i++) {
+                    Ast.DestructureBinding binding = loop.bindings().get(i);
+                    if (!binding.isDiscard()) {
+                        iteration.define(binding.name(), parts.get(i), binding.kind());
+                    }
                 }
+            } catch (RuntimeException bindingFailure) {
+                continuation.accept(task, SourceFlow.throwing(bindingFailure));
+                return;
             }
 
             runBlock(
@@ -2802,13 +2961,22 @@ public final class OresEvalRootNode extends RootNode {
                         if (flow.kind() == SourceFlowKind.BREAK) {
                             continuation.accept(t, SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
                                     env,
-                                    (resumed, ignored, failure) -> runForOfDestructureIteration(
-                                            resumed, loop, env, items, index + 1, continuation));
+                                    (resumed, ignored, failure) -> {
+                                        if (failure != null) {
+                                            // The enclosing continuation closes the iterable.
+                                            continuation.accept(
+                                                    resumed, sourceLoopResumeFailure(failure));
+                                            return;
+                                        }
+                                        runForOfDestructureIteration(
+                                                resumed, loop, env, items, index + 1, continuation);
+                                    });
                         }
                     });
         }
@@ -2936,19 +3104,45 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
-                SourceValueCont continuation) {
+                SourceValueCont downstream) {
+            // Most expressions are immediate. Keep their common path free of
+            // a per-expression atomic allocation and, crucially, never wrap
+            // downstream continuation delivery in an evaluation catch block.
+            boolean mightSuspend;
             try {
-                if (!expressionContainsPotentialSuspension(
+                mightSuspend = expressionContainsPotentialSuspension(
                         expr,
                         java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
-                    continuation.accept(
-                            task,
-                            eval(expr, env),
-                            null);
+                                new IdentityHashMap<>()));
+            } catch (RuntimeException | Error failure) {
+                downstream.accept(task, null, failure);
+                return;
+            }
+            if (!mightSuspend) {
+                Object immediate;
+                try {
+                    immediate = eval(expr, env);
+                } catch (RuntimeException | Error failure) {
+                    downstream.accept(task, null, failure);
                     return;
                 }
+                downstream.accept(task, immediate, null);
+                return;
+            }
 
+            // Suspended expressions may complete on a different carrier. A
+            // nested continuation is single-use: throwing *after* delivery
+            // must not cause the enclosing evaluator's catch to replay it.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            SourceValueCont continuation = (t, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "source expression continuation attempted multiple deliveries");
+                }
+                downstream.accept(t, value, failure);
+            };
+            try {
                 if (expr instanceof Ast.AwaitExpr awaited) {
                     evalSuspendableExpr(
                             task,
@@ -2989,66 +3183,67 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                ChannelRuntime.SelectSet set;
+                                ChannelRuntime.SelectPolicy policy;
                                 try {
-                                    ChannelRuntime.SelectSet set =
-                                            asSelectSet(cases);
-                                    ChannelRuntime.SelectPolicy policy =
-                                            runtimeSelectPolicy(
-                                                    selected.policy());
-                                    if (selected.mode()
-                                            == Ast.WaitMode.IMMEDIATE) {
-                                        java.util.Optional<
-                                                ChannelRuntime.SelectResult> result =
-                                                set.trySelect(policy);
-                                        continuation.accept(
-                                                t,
-                                                result.isPresent()
-                                                        ? new OptionValue(
-                                                                true,
-                                                                result.get())
-                                                        : new OptionValue(
-                                                                false,
-                                                                null),
-                                                null);
-                                        return;
-                                    }
-                                    OresFuture<
-                                            ChannelRuntime.SelectResult> future =
-                                            set.selectAsync(policy);
-                                    if (selected.mode()
-                                            == Ast.WaitMode.NONBLOCKING) {
-                                        continuation.accept(
-                                                t,
-                                                wrapFutureSome(future),
-                                                null);
-                                        return;
-                                    }
-                                    if (future.isDone()) {
-                                        continuation.accept(
-                                                t,
-                                                new OptionValue(
-                                                        true,
-                                                        future.join()),
-                                                null);
-                                        return;
-                                    }
-                                    t.suspend(
-                                            future,
-                                            (t2, value, failure2) ->
-                                                    continuation.accept(
-                                                            t2,
-                                                            failure2 == null
-                                                                    ? new OptionValue(
-                                                                            true,
-                                                                            value)
-                                                                    : null,
-                                                            failure2));
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(
-                                            t,
-                                            null,
-                                            failure2);
+                                    set = asSelectSet(cases);
+                                    policy = runtimeSelectPolicy(selected.policy());
+                                } catch (RuntimeException | Error conversionFailure) {
+                                    continuation.accept(t, null, conversionFailure);
+                                    return;
                                 }
+                                if (selected.mode() == Ast.WaitMode.IMMEDIATE) {
+                                    OptionValue immediate;
+                                    try {
+                                        java.util.Optional<ChannelRuntime.SelectResult> result =
+                                                set.trySelect(policy);
+                                        immediate = result.isPresent()
+                                                ? new OptionValue(true, result.get())
+                                                : new OptionValue(false, null);
+                                    } catch (RuntimeException | Error selectionFailure) {
+                                        continuation.accept(t, null, selectionFailure);
+                                        return;
+                                    }
+                                    continuation.accept(t, immediate, null);
+                                    return;
+                                }
+                                OresFuture<ChannelRuntime.SelectResult> future;
+                                try {
+                                    future = set.selectAsync(policy);
+                                } catch (RuntimeException | Error registrationFailure) {
+                                    continuation.accept(t, null, registrationFailure);
+                                    return;
+                                }
+                                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                                    Object wrapped;
+                                    try {
+                                        wrapped = wrapFutureSome(future);
+                                    } catch (RuntimeException | Error wrappingFailure) {
+                                        continuation.accept(t, null, wrappingFailure);
+                                        return;
+                                    }
+                                    continuation.accept(t, wrapped, null);
+                                    return;
+                                }
+                                if (future.isDone()) {
+                                    OptionValue settled;
+                                    try {
+                                        settled = new OptionValue(true, future.join());
+                                    } catch (RuntimeException | Error completionFailure) {
+                                        continuation.accept(t, null, completionFailure);
+                                        return;
+                                    }
+                                    continuation.accept(t, settled, null);
+                                    return;
+                                }
+                                t.suspend(future,
+                                        (t2, value, failure2) ->
+                                                continuation.accept(
+                                                        t2,
+                                                        failure2 == null
+                                                                ? new OptionValue(true, value)
+                                                                : null,
+                                                        failure2));
                             });
                     return;
                 }
@@ -3133,22 +3328,14 @@ public final class OresEvalRootNode extends RootNode {
                                                         null,
                                                         failure2);
                                             } else {
+                                                Object result;
                                                 try {
-                                                    Object result =
-                                                            binary(
-                                                                    binary.operator(),
-                                                                    left,
-                                                                    right);
-                                                    continuation.accept(
-                                                            t2,
-                                                            result,
-                                                            null);
+                                                    result = binary(binary.operator(), left, right);
                                                 } catch (RuntimeException | Error failure3) {
-                                                    continuation.accept(
-                                                            t2,
-                                                            null,
-                                                            failure3);
+                                                    continuation.accept(t2, null, failure3);
+                                                    return;
                                                 }
+                                                continuation.accept(t2, result, null);
                                             }
                                         });
                             });
@@ -3224,34 +3411,26 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
+                                Throwable castFailure = null;
                                 try {
-                                    boolean matches =
-                                            oresTypeMatches(
-                                                    value,
-                                                    cast.targetType());
-                                    if (cast.mode()
-                                            == Ast.CastMode.OPTIONAL) {
-                                        continuation.accept(
-                                                t,
-                                                new OptionValue(
-                                                        matches,
-                                                        matches ? value : null),
-                                                null);
+                                    boolean matches = oresTypeMatches(value, cast.targetType());
+                                    if (cast.mode() == Ast.CastMode.OPTIONAL) {
+                                        result = new OptionValue(matches, matches ? value : null);
                                     } else if (!matches) {
-                                        continuation.accept(
-                                                t,
-                                                null,
-                                                new OresCastError(
-                                                        "cannot cast runtime type "
-                                                                + oresRuntimeTypeName(value)
-                                                                + " to "
-                                                                + cast.targetType().name()));
+                                        result = null;
+                                        castFailure = new OresCastError(
+                                                "cannot cast runtime type "
+                                                        + oresRuntimeTypeName(value)
+                                                        + " to " + cast.targetType().name());
                                     } else {
-                                        continuation.accept(t, value, null);
+                                        result = value;
                                     }
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, castFailure);
                             });
                     return;
                 }
@@ -3271,17 +3450,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            member(
-                                                    receiver,
-                                                    member.member(),
-                                                    env),
-                                            null);
+                                    result = member(receiver, member.member(), env);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, null);
                             });
                     return;
                 }
@@ -3308,19 +3484,14 @@ public final class OresEvalRootNode extends RootNode {
                                                         failure2);
                                                 return;
                                             }
+                                            Object result;
                                             try {
-                                                continuation.accept(
-                                                        t2,
-                                                        indexValue(
-                                                                receiver,
-                                                                key),
-                                                        null);
+                                                result = indexValue(receiver, key);
                                             } catch (RuntimeException | Error failure3) {
-                                                continuation.accept(
-                                                        t2,
-                                                        null,
-                                                        failure3);
+                                                continuation.accept(t2, null, failure3);
+                                                return;
                                             }
+                                            continuation.accept(t2, result, null);
                                         });
                             });
                     return;
@@ -3336,17 +3507,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            assignEvaluated(
-                                                    assignment.target(),
-                                                    value,
-                                                    env),
-                                            null);
+                                    result = assignEvaluated(assignment.target(), value, env);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, null);
                             });
                     return;
                 }
@@ -3370,17 +3538,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            instantiateEvaluated(
-                                                    created,
-                                                    values,
-                                                    env),
-                                            null);
+                                    result = instantiateEvaluated(created, values, env);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, null);
                             });
                     return;
                 }
@@ -3424,8 +3589,13 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
-                continuation.accept(task, eval(expr, env), null);
+                // Conservative fallback for an expression shape not lowered
+                // to a resumable case above. Keep any evaluation error separate
+                // from its single downstream completion.
+                Object fallback = eval(expr, env);
+                continuation.accept(task, fallback, null);
             } catch (RuntimeException | Error failure) {
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
@@ -3873,9 +4043,25 @@ public final class OresEvalRootNode extends RootNode {
                     && selfName.name().equals("self")
                     && env.lookup("self") instanceof OresObject actor
                     && actor.actorState != null) {
-                continuation.accept(task, null, new UnsupportedOperationException(
-                        "critical handle_state on a suspendable task requires "
-                        + "generation-fenced continuation lowering"));
+                // The *surrounding* source task may suspend on a later loop
+                // backedge, but a sealed handle_state invocation is atomic.
+                // Reuse the synchronous critical-state admission path rather
+                // than mistakenly rejecting an otherwise safe actor receive.
+                // This path validates lexical callback shape, rejects any
+                // nested potential suspension, and releases the state loan
+                // before resuming the outer source continuation.
+                Object value;
+                try {
+                    Invocation invocation = criticalStateInvocation(call, member, env);
+                    value = invoke(invocation);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                    return;
+                }
+                // Never invoke a continuation under the exception catch:
+                // if downstream propagation itself throws, retrying it would
+                // duplicate the continuation and potentially its side effects.
+                continuation.accept(task, value, null);
                 return;
             }
             if (call.callee() instanceof Ast.NameExpr name
@@ -3892,17 +4078,20 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Invocation invocation;
+                                boolean declaredFuture;
                                 try {
-                                    Invocation invocation =
-                                            functionInvocation(direct, values);
-                                    completeSourceInvocation(
-                                            t,
-                                            invocation,
-                                            invocationDeclaresAsync(invocation),
-                                            continuation);
+                                    invocation = functionInvocation(direct, values);
+                                    declaredFuture = invocationDeclaresAsync(invocation);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                // Preparation can fail under this catch, but a
+                                // downstream continuation must never be run
+                                // inside it or a throw would replay delivery.
+                                completeSourceInvocation(
+                                        t, invocation, declaredFuture, continuation);
                             });
                     return;
                 }
@@ -3927,24 +4116,22 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation.accept(t2, null, failure2);
                                             return;
                                         }
+                                        Invocation invocation;
+                                        boolean declaredFuture;
                                         try {
-                                            Invocation invocation =
-                                                    prepareInvocationEvaluated(
-                                                            call,
-                                                            receiver,
-                                                            values,
-                                                            env);
-                                            boolean declaredFuture =
-                                                    invocationDeclaresAsync(
-                                                            invocation);
-                                            completeSourceInvocation(
-                                                    t2,
-                                                    invocation,
-                                                    declaredFuture,
-                                                    continuation);
+                                            invocation = prepareInvocationEvaluated(
+                                                    call, receiver, values, env);
+                                            declaredFuture = invocationDeclaresAsync(
+                                                    invocation);
                                         } catch (RuntimeException | Error failure3) {
                                             continuation.accept(t2, null, failure3);
+                                            return;
                                         }
+                                        // This covers both instance/static method
+                                        // and namespace calls; no caller catch
+                                        // may re-invoke a failed continuation.
+                                        completeSourceInvocation(
+                                                t2, invocation, declaredFuture, continuation);
                                     });
                         });
                 return;
@@ -3992,25 +4179,23 @@ public final class OresEvalRootNode extends RootNode {
                 Invocation invocation,
                 boolean declaredFuture,
                 SourceValueCont continuation) {
+            Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
-                }
+                result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
+            }
+            // Continuation execution is *not* part of the invocation try.
+            // A failure in downstream continuation propagation must not call
+            // the same continuation again (and replay observable side effects).
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                task.suspend(
+                        future,
+                        (t, value, failure) ->
+                                continuation.accept(t, value, failure));
+            } else {
+                continuation.accept(task, result, null);
             }
         }
 
@@ -4578,6 +4763,21 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
+        /**
+         * Actor instance methods can carry outstanding message lifetimes
+         * across a CPU-only loop backedge. Keep ordinary class/static method
+         * calls on their existing synchronous path unless they explicitly
+         * suspend; widening those calls could silently change their results
+         * into futures on scheduler carriers.
+         */
+        private boolean actorMethodRequiresSourceTask(
+                Ast.MethodDecl method, OresObject receiver) {
+            return method.async()
+                    || methodContainsPotentialSuspension(method)
+                    || (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                            && method.body().stream().anyMatch(this::containsSourceLoop));
+        }
+
         private void callGeneratorBodyRaw(
                 Ast.FunctionDecl fn,
                 List<?> args,
@@ -4619,7 +4819,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "method " + method.name() + " arity mismatch");
             }
-            if (method.async() || methodContainsPotentialSuspension(method)) {
+            if (actorMethodRequiresSourceTask(method, receiver)) {
                 OresFuture<Object> future =
                         startSourceMethodTask(method, receiver, args);
                 return returnSourceTaskResult(future, method.async());

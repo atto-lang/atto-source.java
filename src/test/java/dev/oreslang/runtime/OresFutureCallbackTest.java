@@ -10,6 +10,74 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class OresFutureCallbackTest {
 
+
+    @Test
+    void acceptedDeferredCancellationWinsLateOrdinarySettlement() throws Exception {
+        OresFuture<Integer> completed = new OresFuture<>(() -> { }, true);
+        assertTrue(completed.cancel(false));
+        assertTrue(completed.completeFromRuntime(42));
+        assertThrows(java.util.concurrent.CancellationException.class,
+                () -> completed.get(5, TimeUnit.SECONDS));
+        assertTrue(completed.isCancelled());
+
+        OresFuture<Integer> failed = new OresFuture<>(() -> { }, true);
+        IllegalStateException cleanupFailure = new IllegalStateException("cleanup failed");
+        assertTrue(failed.cancel(false));
+        assertTrue(failed.failFromRuntime(cleanupFailure));
+        java.util.concurrent.CancellationException cancelled = assertThrows(
+                java.util.concurrent.CancellationException.class,
+                () -> failed.get(5, TimeUnit.SECONDS));
+        assertTrue(failed.isCancelled());
+        assertArrayEquals(new Throwable[] { cleanupFailure }, cancelled.getSuppressed(),
+                "ordinary cleanup failure remains a bounded cancellation diagnostic");
+    }
+
+    @Test
+    void fatalFailureStillDominatesAcceptedDeferredCancellation() throws Exception {
+        OresFuture<Integer> future = new OresFuture<>(() -> { }, true);
+        LinkageError fatal = new LinkageError("fatal VM failure");
+        assertTrue(future.cancel(false));
+        assertTrue(future.failFromRuntime(fatal));
+        var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertSame(fatal, observed.getCause());
+        assertFalse(future.isCancelled());
+    }
+
+    @Test
+    void deferredCancelCannotReportSuccessAfterRuntimeAlreadySettled() throws Exception {
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch proceed = new java.util.concurrent.CountDownLatch(1);
+        OresFuture<Integer> future = new OresFuture<>(() -> {
+            entered.countDown();
+            try {
+                return proceed.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }, () -> { }, true);
+
+        java.util.concurrent.ExecutorService worker =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<Boolean> cancellation =
+                    worker.submit(() -> future.cancel(false));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertTrue(future.completeFromRuntime(42));
+            proceed.countDown();
+            assertFalse(cancellation.get(5, TimeUnit.SECONDS),
+                    "late deferred cancellation cannot claim a terminal Future");
+            assertEquals(42, future.get(5, TimeUnit.SECONDS));
+            assertNull(future.deferredCancellationCause(),
+                    "rejected cancellation must not install a pending request");
+        } finally {
+            proceed.countDown();
+            worker.shutdownNow();
+            assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
     @Test
     void fromCallbackMaySettleSynchronouslyButRemainsSingleShot() throws Exception {
         AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();

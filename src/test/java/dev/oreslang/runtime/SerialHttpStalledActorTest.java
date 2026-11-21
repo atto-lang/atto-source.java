@@ -128,6 +128,10 @@ final class SerialHttpStalledActorTest {
                 context.eval(Source.newBuilder(OresLanguage.ID, guest,
                         "stalled-serial-http.ores").build());
                 clients.get(40, TimeUnit.SECONDS);
+                // Prove physical actor/HTTP quiescence while the outer
+                // Polyglot Context is still valid. The subsequent
+                // try-with-resources close is intentionally idempotent.
+                OresContextLifecycle.prepareForDisposal(context);
             } finally {
                 clients.cancel(true);
             }
