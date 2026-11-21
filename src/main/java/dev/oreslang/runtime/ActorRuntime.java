@@ -1967,8 +1967,7 @@ public final class ActorRuntime implements AutoCloseable {
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
             this.supervisorControl = new SupervisorFailureControl(
-                    supervisorId, id, privateDispatcher,
-                    Math.max(8, Math.min(256, memberLimit)));
+                    supervisorId, id, privateDispatcher, memberLimit);
             if (creator != null) members.add(creator);
         }
 
@@ -2008,7 +2007,7 @@ public final class ActorRuntime implements AutoCloseable {
                     supervisorId, id, privateDispatcher, mailboxCapacity,
                     onFailure, onDecision);
             try {
-                supervisorControl.install(process::accept);
+                supervisorControl.installAsync(process::accept);
             } catch (RuntimeException | Error admissionFailure) {
                 process.close();
                 throw admissionFailure;
@@ -2030,6 +2029,21 @@ public final class ActorRuntime implements AutoCloseable {
         public int queuedSupervisorFailures() {
             requireObserver("inspect pending supervisor failures");
             return supervisorControl.queued();
+        }
+
+        public int reservedSupervisorControlSlots() {
+            requireObserver("inspect supervisor CONTROL reservations");
+            return supervisorControl.reserved();
+        }
+
+        public int availableSupervisorControlSlots() {
+            requireObserver("inspect supervisor CONTROL capacity");
+            return supervisorControl.availableReservations();
+        }
+
+        public List<SupervisorFailureControl.PendingTerminal> pendingSupervisorFailures() {
+            requireObserver("inspect durable supervisor terminal state");
+            return supervisorControl.pendingSnapshot();
         }
 
         /** Actor-only, non-reentrant delivery of authenticated child terminal CONTROL. */
@@ -2088,16 +2102,19 @@ public final class ActorRuntime implements AutoCloseable {
                         || stoppingWorkers.contains(worker.id())) {
                     throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
                 }
-                if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
+                boolean newControlReservation = !managedWorkers.containsKey(worker.id());
+                if (newControlReservation && managedWorkers.size() >= memberLimit) {
                     throw new IllegalStateException(
                             "ActorGroup managed worker limit exceeded: maximum " + memberLimit);
                 }
+                if (newControlReservation) supervisorControl.reserve(worker.id());
                 // A worker has exactly one structured ActorGroup owner.
                 // Other cooperation groups may still admit it as a member,
                 // but no second manager may acquire independent stop rights.
                 ActorGroupId owningGroup = cell.managedByGroup.get();
                 if (owningGroup == null) {
                     if (!cell.children.isEmpty()) {
+                        if (newControlReservation) supervisorControl.releaseReservation(worker.id());
                         throw new IllegalStateException(
                                 "cannot adopt unmanaged worker with live descendants");
                     }
@@ -2108,6 +2125,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 if (!id.equals(owningGroup)) {
+                    if (newControlReservation) supervisorControl.releaseReservation(worker.id());
                     throw new IllegalStateException(
                             "actor is already managed by a different ActorGroup");
                 }
@@ -2192,10 +2210,16 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "cannot transfer worker with live structured descendants");
                 }
+                if (cell.supervision.get() != supervisorControl) {
+                    throw new IllegalStateException("worker supervisor CONTROL owner changed unexpectedly");
+                }
                 if (!cell.managedByGroup.compareAndSet(id, null)) {
                     throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
                 }
-                cell.supervision.compareAndSet(supervisorControl, null);
+                if (!cell.supervision.compareAndSet(supervisorControl, null)) {
+                    throw new IllegalStateException("worker supervisor CONTROL owner changed unexpectedly");
+                }
+                supervisorControl.releaseReservation(worker.id());
                 managedWorkers.remove(worker.id(), worker);
                 return true;
             }
@@ -3926,6 +3950,7 @@ public final class ActorRuntime implements AutoCloseable {
                                             "ActorGroup managed worker limit exceeded: maximum "
                                                     + targetGroup.memberLimit);
                                 }
+                                targetGroup.supervisorControl.reserve(id);
                                 cell.managedByGroup.set(targetId);
                                 cell.supervision.set(targetGroup.supervisorControl);
                                 targetGroup.managedWorkers.put(id, ref);
@@ -3946,6 +3971,9 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (RuntimeException | Error failure) {
                 // Roll back every registry when spawn admission fails. In
                 // particular, never strand an inherited group ownership ref.
+                if (cell != null && cell.supervision.get() != null) {
+                    cell.supervision.get().releaseReservation(id);
+                }
                 if (cell != null) actors.remove(id, cell);
                 if (linkedToParent && cell != null) parent.children.remove(cell);
                 if (cell != null) {
@@ -4256,6 +4284,9 @@ public final class ActorRuntime implements AutoCloseable {
                         failure.getClass().getName(),
                         failure.getMessage() == null ? "" : failure.getMessage()));
             }
+        }
+        if (lane != null && failure == null) {
+            lane.releaseReservation(cell.ref.id());
         }
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()

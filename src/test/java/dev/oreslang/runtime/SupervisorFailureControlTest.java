@@ -74,13 +74,20 @@ final class SupervisorFailureControlTest {
     }
 
     @Test
-    void controlLaneIsBoundedSingleFlightAndRecordsHandlerFailure() throws Exception {
+    void controlLanePreReservesCapacityAndStaysSingleFlight() throws Exception {
         try (ExecutorService pool = Executors.newFixedThreadPool(3)) {
             ActorRuntime.SupervisorId supervisorId = ActorRuntime.SupervisorId.create();
             ActorRuntime.ActorGroupId groupId = ActorRuntime.ActorGroupId.create();
             ActorRuntime.ActorId actorId = ActorRuntime.ActorId.create();
+            ActorRuntime.ActorId actorId2 = ActorRuntime.ActorId.create();
+            ActorRuntime.ActorId actorId3 = ActorRuntime.ActorId.create();
             SupervisorFailureControl lane =
                     new SupervisorFailureControl(supervisorId, groupId, pool, 2);
+            lane.reserve(actorId);
+            lane.reserve(actorId2);
+            assertEquals(2, lane.reserved());
+            assertThrows(IllegalStateException.class, () -> lane.reserve(actorId3));
+
             AtomicInteger active = new AtomicInteger();
             AtomicInteger maximum = new AtomicInteger();
             AtomicInteger delivered = new AtomicInteger();
@@ -107,15 +114,23 @@ final class SupervisorFailureControlTest {
             SupervisorFailureControl.Notice notice = new SupervisorFailureControl.Notice(
                     supervisorId, groupId, actorId, java.util.Optional.empty(),
                     SupervisorFailureControl.Kind.TERMINAL_FAILURE, "Failure", "boom");
+            SupervisorFailureControl.Notice notice2 = new SupervisorFailureControl.Notice(
+                    supervisorId, groupId, actorId2, java.util.Optional.empty(),
+                    SupervisorFailureControl.Kind.TERMINAL_FAILURE, "Failure", "boom2");
             lane.publish(notice);
             assertTrue(entered.await(5, TimeUnit.SECONDS));
-            lane.publish(notice);
-            lane.publish(notice);
-            assertEquals(1, lane.undelivered(), "overflow must be visible");
+            lane.publish(notice2);
+            assertEquals(2, lane.queued(), "both admitted terminal records remain durable");
+            assertEquals(0, lane.undelivered(), "reserved terminal state must not overflow");
+            assertThrows(IllegalStateException.class, () -> lane.reserve(actorId3));
             release.countDown();
             assertTrue(twoDelivered.await(5, TimeUnit.SECONDS));
             assertEquals(2, delivered.get());
             assertEquals(1, maximum.get(), "supervisor callbacks must not overlap");
+            for (int i = 0; i < 100 && lane.reserved() != 0; i++) TimeUnit.MILLISECONDS.sleep(10);
+            assertEquals(0, lane.queued());
+            assertEquals(0, lane.reserved());
+            lane.reserve(actorId3);
 
             assertThrows(SecurityException.class, () -> lane.publish(
                     new SupervisorFailureControl.Notice(

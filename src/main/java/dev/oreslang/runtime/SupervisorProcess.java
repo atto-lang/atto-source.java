@@ -1,8 +1,11 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -37,15 +40,24 @@ public final class SupervisorProcess implements AutoCloseable {
 
     private enum State { RUNNING, FAILED, CLOSED }
 
+    private static final class Pending {
+        private final SupervisorFailureControl.Notice notice;
+        private final CompletableFuture<Void> acknowledgement = new CompletableFuture<>();
+
+        private Pending(SupervisorFailureControl.Notice notice) {
+            this.notice = Objects.requireNonNull(notice);
+        }
+    }
+
     private final ActorRuntime.SupervisorId supervisorId;
     private final ActorRuntime.ActorGroupId groupId;
     private final Executor controlDispatcher;
+    private final Object decisionFence = new Object();
     private final int capacity;
     private final Function<SupervisorFailureControl.Notice,
             CompletionStage<Directive>> onFailure;
     private final Consumer<Resolution> decisionSink;
-    private final ArrayDeque<SupervisorFailureControl.Notice> mailbox =
-            new ArrayDeque<>();
+    private final ArrayDeque<Pending> mailbox = new ArrayDeque<>();
     private final AtomicLong admitted = new AtomicLong();
     private final AtomicLong resolved = new AtomicLong();
     private final AtomicLong undelivered = new AtomicLong();
@@ -87,8 +99,12 @@ public final class SupervisorProcess implements AutoCloseable {
         return Optional.ofNullable(fatal).map(Throwable::toString);
     }
 
-    /** Called only from the trusted runtime CONTROL lane. */
-    void accept(SupervisorFailureControl.Notice notice) {
+    public synchronized List<SupervisorFailureControl.Notice> pendingSnapshot() {
+        return mailbox.stream().map(pending -> pending.notice).toList();
+    }
+
+    /** Completion is the durable acknowledgement boundary back to CONTROL. */
+    CompletionStage<Void> accept(SupervisorFailureControl.Notice notice) {
         Objects.requireNonNull(notice);
         if (!supervisorId.equals(notice.supervisorId())
                 || !groupId.equals(notice.groupId())) {
@@ -97,19 +113,16 @@ public final class SupervisorProcess implements AutoCloseable {
         synchronized (this) {
             if (state != State.RUNNING || mailbox.size() >= capacity) {
                 undelivered.incrementAndGet();
-                // Stop consuming CONTROL rather than misreporting loss as success.
-                throw new IllegalStateException("supervisor process cannot admit notice");
+                CompletableFuture<Void> rejected = new CompletableFuture<>();
+                rejected.completeExceptionally(
+                        new IllegalStateException("supervisor process cannot admit notice"));
+                return rejected;
             }
-            mailbox.addLast(notice);
+            Pending pending = new Pending(notice);
+            mailbox.addLast(pending);
             admitted.incrementAndGet();
             scheduleLocked();
-            // Dispatch refusal is an admission failure. A caller such as the
-            // parent CONTROL lane must not record the notice as handed off
-            // after this process has already failed closed.
-            if (state != State.RUNNING) {
-                throw new IllegalStateException(
-                        "supervisor process failed during CONTROL admission", fatal);
-            }
+            return pending.acknowledgement;
         }
     }
 
@@ -125,11 +138,11 @@ public final class SupervisorProcess implements AutoCloseable {
     }
 
     private void beginCallback() {
-        SupervisorFailureControl.Notice notice;
+        Pending current;
         synchronized (this) {
             if (state != State.RUNNING) return;
-            notice = mailbox.peekFirst();
-            if (notice == null) {
+            current = mailbox.peekFirst();
+            if (current == null) {
                 callbackActive = false;
                 return;
             }
@@ -137,7 +150,7 @@ public final class SupervisorProcess implements AutoCloseable {
         final CompletionStage<Directive> pending;
         try {
             pending = Objects.requireNonNull(
-                    onFailure.apply(notice),
+                    onFailure.apply(current.notice),
                     "supervisor failure handler returned null completion");
         } catch (Throwable failure) {
             synchronized (this) { failLocked(failure); }
@@ -150,7 +163,7 @@ public final class SupervisorProcess implements AutoCloseable {
                 try {
                     SupervisorDispatchGuard.enqueue(
                             controlDispatcher,
-                            () -> finishCallback(notice, decision, failure));
+                            () -> finishCallback(current, decision, failure));
                 } catch (Throwable schedulingFailure) {
                     synchronized (this) { failLocked(schedulingFailure); }
                 }
@@ -161,13 +174,14 @@ public final class SupervisorProcess implements AutoCloseable {
     }
 
     private void finishCallback(
-            SupervisorFailureControl.Notice notice,
+            Pending current,
             Directive decision,
             Throwable error) {
+        synchronized (decisionFence) {
         synchronized (this) {
             if (state != State.RUNNING) return;
             // The lease is never released while a callback is unfinished.
-            if (!callbackActive || mailbox.peekFirst() != notice) {
+            if (!callbackActive || mailbox.peekFirst() != current) {
                 failLocked(new IllegalStateException(
                         "supervisor continuation lost its exclusive lease"));
                 return;
@@ -181,7 +195,7 @@ public final class SupervisorProcess implements AutoCloseable {
         }
         try {
             // Exactly one decision request, on an admitted runtime turn.
-            decisionSink.accept(new Resolution(notice, decision));
+            decisionSink.accept(new Resolution(current.notice, decision));
         } catch (Throwable sinkFailure) {
             synchronized (this) { failLocked(sinkFailure); }
             return;
@@ -193,6 +207,8 @@ public final class SupervisorProcess implements AutoCloseable {
             callbackActive = false;
             scheduleLocked();
         }
+        current.acknowledgement.complete(null);
+        }
     }
 
     private void failLocked(Throwable error) {
@@ -202,8 +218,8 @@ public final class SupervisorProcess implements AutoCloseable {
         undelivered.addAndGet(mailbox.size());
         // The failed process cannot resume or dispatch these notices.
         // Keep observable failure counters but release retained payloads.
-        mailbox.clear();
         callbackActive = false;
+        for (Pending pending : mailbox) pending.acknowledgement.cancel(false);
     }
 
     /**
@@ -211,13 +227,18 @@ public final class SupervisorProcess implements AutoCloseable {
      * An unresolved callback cannot be declared completed by cancellation.
      */
     @Override
-    public synchronized void close() {
+    public void close() {
+        synchronized (decisionFence) {
+        synchronized (this) {
         if (state == State.CLOSED) return;
         if (state == State.RUNNING) {
             undelivered.addAndGet(mailbox.size());
         }
         state = State.CLOSED;
+        for (Pending pending : mailbox) pending.acknowledgement.cancel(false);
         mailbox.clear();
         callbackActive = false;
+        }
+        }
     }
 }
