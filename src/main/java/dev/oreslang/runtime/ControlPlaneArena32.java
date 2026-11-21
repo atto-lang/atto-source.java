@@ -11,7 +11,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * Host API witnesses are 64 bits (issuer:32, Ref32:32); control heap fields
  * store exactly four-byte tokens. Never treat the host witness as a guest pointer.
  *
- * Bounded fixed-size pilot: no source-guest or scheduler integration claim.
+ * Bounded host primitive: ActorRuntime may opt in to one native root counter.
+ * Managed scheduler queues and compiled Atto guest object lowering remain outside this pilot.
  * Allocates the arena/segment host wrappers once at boot, not per operation.
  */
 public final class ControlPlaneArena32 implements AutoCloseable {
