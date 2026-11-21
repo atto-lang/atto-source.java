@@ -1,0 +1,70 @@
+name: Task lock + actor STOP exact-head JDK25
+
+on:
+  push:
+    branches:
+      - feat/actor-stop-lock-retirement-20261022
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-lock-stop-exact-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-lock-lifecycle:
+    name: Focused lifecycle JUnit / exact branch head
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out the exact push commit without persistent credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prove exact source commit and branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/feat/actor-stop-lock-retirement-20261022"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          git show -s --format='tested-commit=%H%nsource-tree=%T' HEAD
+      - name: Set up pinned GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+      - name: Report actual toolchain
+        run: |
+          java -version
+          mvn -version
+      - name: Compile and run the lock, Task and actor STOP regressions
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native "-Dtest=TaskOwnedLockLedgerTest,MutexRuntimeTest,SharedMutexPublicationTest,ActorLockStopRetirementTest,FormalActorStopRetirementModelCheckTest,FormalStructuredCancellationModelCheckTest,ActorCarrierIdentityCleanupTest,ActorStopMailboxRaceTest,TaskHandleTest,TaskScopeTest,TaskCancellationTest" test
+
+  full-regression:
+    name: Full source Java regression / exact same push commit
+    needs: focused-lock-lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify exact matching commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git show -s --format='tested-commit=%H%nsource-tree=%T' HEAD
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+      - name: Full Maven verify
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify

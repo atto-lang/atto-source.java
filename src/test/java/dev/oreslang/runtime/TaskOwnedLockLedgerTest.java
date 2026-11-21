@@ -12,6 +12,73 @@ import org.junit.jupiter.api.Test;
 /** The real OresScheduler TaskHandle + OresMutex synchronous guard path. */
 public final class TaskOwnedLockLedgerTest {
     @Test
+    void wallDeadlineTaskHasOwnGuardLedgerAndReleasesQuotaCallbacks()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresMutex.Shared<int[]> mutex = OresMutex.shared(new int[]{5});
+            AtomicReference<OresMutex.Guard<int[]>> leaked = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger physical = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger notified = new java.util.concurrent.atomic.AtomicInteger();
+            TaskHandle<Void> task = TaskHandle.startWithWallDeadline(
+                    scheduler,
+                    resume -> {
+                        var guard = mutex.tryLock().orElseThrow();
+                        leaked.set(guard);
+                        guard.value()[0] = 29;
+                        return OresScheduler.done(null);
+                    },
+                    physical::incrementAndGet,
+                    TimeUnit.SECONDS.toNanos(5),
+                    new IllegalStateException("injected wall budget exhausted"),
+                    notified::incrementAndGet);
+            assertEquals(new TaskHandle.Success<Void>(null),
+                    task.getDone().get(3, TimeUnit.SECONDS));
+            assertNotNull(leaked.get());
+            assertTrue(leaked.get().released(), "wall-deadline Task lost its lock ledger");
+            assertTrue(mutex.isPoisoned());
+            assertEquals(1, physical.get(), "physical quota retirement duplicated");
+            assertEquals(1, notified.get(), "timed notification quota retirement duplicated");
+        }
+    }
+
+    @Test
+    void wallDeadlineSuspendedTaskIsQuiescentBeforeSchedulerCloseReturnsDone()
+            throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        try {
+            var mutex = OresMutex.shared(new int[]{8});
+            OresFuture<Integer> never = new OresFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            AtomicReference<OresMutex.Guard<int[]>> held = new AtomicReference<>();
+            java.util.concurrent.atomic.AtomicInteger physical = new java.util.concurrent.atomic.AtomicInteger();
+            TaskHandle<Void> task = TaskHandle.startWithWallDeadline(
+                    scheduler,
+                    resume -> {
+                        if (!resume.initial()) {
+                            throw new IllegalStateException("cancelled Task resumed");
+                        }
+                        var guard = mutex.tryLock().orElseThrow();
+                        held.set(guard);
+                        suspended.countDown();
+                        return OresScheduler.await(never);
+                    },
+                    physical::incrementAndGet,
+                    TimeUnit.SECONDS.toNanos(5),
+                    new IllegalStateException("deadline exceeded"),
+                    () -> { });
+            assertTrue(suspended.await(3, TimeUnit.SECONDS));
+            scheduler.close();
+            assertInstanceOf(TaskHandle.Cancelled.class,
+                    task.getDone().get(3, TimeUnit.SECONDS));
+            assertEquals(1, physical.get());
+            assertTrue(held.get().released());
+            assertTrue(mutex.isPoisoned());
+        } finally {
+            scheduler.close();
+        }
+    }
+
+    @Test
     void immediatelyAvailableAsyncMutexCannotOutliveRequestingTask()
             throws Exception {
         try (OresScheduler scheduler = new OresScheduler(2)) {
@@ -823,6 +890,36 @@ public final class TaskOwnedLockLedgerTest {
         first.join();
         assertEquals(0, ledger.outstanding());
         assertEquals(1, revokeCount.get());
+    }
+
+    @Test
+    void reentrantActorTaskCleanupDoesNotDuplicatePermitRevocation() {
+        TaskOwnedLockLedger ledger = new TaskOwnedLockLedger();
+        java.util.concurrent.CompletableFuture<Void> physical =
+                new java.util.concurrent.CompletableFuture<>();
+        java.util.concurrent.atomic.AtomicInteger attempts =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CompletableFuture<Void>>
+                nested = new java.util.concurrent.atomic.AtomicReference<>();
+        ledger.register(new TaskOwnedLockLedger.Lease() {
+            @Override public void revokeAfterQuiescence() {
+                throw new AssertionError("unexpected synchronous revocation");
+            }
+            @Override public java.util.concurrent.CompletionStage<Void>
+                    settleAfterQuiescence() {
+                attempts.incrementAndGet();
+                nested.set(ledger.retireAfterQuiescence());
+                return physical;
+            }
+        });
+        var first = ledger.retireAfterQuiescence();
+        assertSame(first, nested.get());
+        assertSame(first, ledger.retireAfterQuiescence());
+        assertEquals(1, attempts.get());
+        assertFalse(first.isDone());
+        physical.complete(null);
+        first.join();
+        assertEquals(0, ledger.outstanding());
     }
 
     @Test

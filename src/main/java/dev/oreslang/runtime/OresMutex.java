@@ -36,6 +36,12 @@ public final class OresMutex {
         return task == null ? ActorRuntime.currentExecutionDomain() : task;
     }
 
+    /** Tracked Task permits outrank direct actor-incarnation ownership. */
+    private static TaskOwnedLockLedger currentPermitLedger() {
+        TaskOwnedLockLedger task = TaskHandle.currentLockLedger();
+        return task != null ? task : ActorRuntime.currentActorLockLedger();
+    }
+
     private static long saturatedNanos(Duration timeout) {
         try {
             return timeout.toNanos();
@@ -442,7 +448,7 @@ public final class OresMutex {
 
             private LocalGuard(Object owningSegment) {
                 this.owningSegment = owningSegment;
-                TaskOwnedLockLedger ledger = TaskHandle.currentLockLedger();
+                TaskOwnedLockLedger ledger = currentPermitLedger();
                 if (ledger != null) {
                     try {
                         ledger.register(this);
@@ -943,7 +949,7 @@ public final class OresMutex {
             }
             try {
                 return new SharedGuard(ownerDomain, enforceOwnerDomain,
-                        TaskHandle.currentLockLedger());
+                        currentPermitLedger());
             } catch (RuntimeException | Error failure) {
                 clearOwner(ownerDomain);
                 releaseDomain(ownerDomain);
@@ -1041,7 +1047,7 @@ public final class OresMutex {
                         "SharedMutex host notification capacity exceeded"));
             }
 
-            TaskOwnedLockLedger ledger = TaskHandle.currentLockLedger();
+            TaskOwnedLockLedger ledger = currentPermitLedger();
             boolean enforceOwnerDomain = ActorRuntime.inActorExecution() || ledger != null;
             GuardFuture<T> future = new GuardFuture<>();
             future.releaseNotificationAdmission =

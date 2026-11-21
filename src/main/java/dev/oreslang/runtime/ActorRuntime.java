@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -173,6 +174,15 @@ public final class ActorRuntime implements AutoCloseable {
      * <p>Use identity comparison, not equals(): ActorExecutionContext is a
      * record whose value equality is intentionally not a lease identity.</p>
      */
+    /** Trusted internal lookup: a direct actor turn owns an actor-scoped
+     * fallback ledger if it does not run in a separately tracked Task. */
+    static TaskOwnedLockLedger currentActorLockLedger() {
+        ActorExecutionContext context = CURRENT_ACTOR_EXECUTION.get();
+        if (context == null) return null;
+        ActorCell<?> cell = context.runtime().currentActor.get();
+        return cell == null ? null : cell.actorLocks;
+    }
+
     static Object currentMutexExecutionSegment() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current;
@@ -1280,21 +1290,6 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        void copyInto(double[] destination, int offset) {
-            Objects.requireNonNull(destination, "destination");
-            synchronized (cell.lifecycleLock) {
-                checkCaller();
-                if (revoked || cell.finalized) {
-                    throw new IllegalStateException("shard snapshot revoked");
-                }
-                if (offset < 0 || offset > destination.length
-                        || values.length > destination.length - offset) {
-                    throw new IndexOutOfBoundsException("snapshot destination span");
-                }
-                System.arraycopy(values, 0, destination, offset, values.length);
-            }
-        }
-
         void writeFromOwner(int index, double value) {
             synchronized (cell.lifecycleLock) {
                 if (currentActor.get() != cell || revoked || cell.finalized) {
@@ -1706,17 +1701,6 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorOwnedGuestState state,
                 ActorInboxMail<Object> mail,
                 ActorContext<Object> context) throws Exception;
-
-        /**
-         * Once-only, actor-affine cooperative teardown before owned state is
-         * released. No suspension is admitted in this first source-level slice.
-         * A default no-op preserves existing host ActorCodeExecutor bridges.
-         */
-        default void tearDownActor(
-                String actorTypeName,
-                ActorOwnedGuestState state,
-                ActorContext<Object> context) throws Exception {
-        }
     }
 
     public interface ActorContext<M> {
@@ -1896,7 +1880,8 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (!cell.acceptsActorOutputLocked()) {
+                if ((cell.stopped.get() && !cell.endRequested)
+                        || cell.finalized) {
                     throw terminated(cell.ref);
                 }
                 if (cell.forceKillFenced) {
@@ -1951,7 +1936,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) return cell.startTrackedSourceTask(task);
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -2039,9 +2024,10 @@ public final class ActorRuntime implements AutoCloseable {
             terminalSubscribersDrained.set(true);
             releaseTimedWhenSafe.run();
         };
-        OresFuture<T> future;
+        TaskHandle<T> handle;
         try {
-            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
+            handle = TaskHandle.startWithWallDeadline(
+                    cell.sourceScheduler(), resume -> {
                 UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
                 CURRENT_UNTRUSTED_QUOTA.set(quota);
                 boolean entered = false;
@@ -2076,10 +2062,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             throw failure;
         }
-        // A caller may cancel the Future while the source turn is still
-        // executing. The scheduler invokes retireOnce ONLY after guest
-        // carrier quiescence, not merely when the Future settles.
-        return future;
+        // Caller-visible result can settle before physical carrier exit.
+        // Track this logical Task's independent lock/child retirement
+        // receipt; actor STOP must join it before reclaiming actor storage.
+        return cell.trackSourceTask(handle);
     }
 
     private void releaseUntrustedSourceTask(
@@ -2275,6 +2261,9 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /** Host-only physical lifecycle receipt; independent of the actors
+         * lookup map, which may unregister before the final Future drains. */
+        private final CountDownLatch terminated = new CountDownLatch(1);
         private volatile ActorOutputStream<Object> outputStream;
 
         private ActorRef(ActorId id, ActorKind kind, long generation) {
@@ -2358,10 +2347,9 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronously wait for actor termination");
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
-            cell.awaitFinalized(unit.toNanos(timeout));
-            return cell.finalized();
+            // Never infer successful termination from actors.remove(). Its
+            // membership transition can precede the final observer receipt.
+            return terminated.await(timeout, unit);
         }
 
         public void send(M message) {
@@ -4916,12 +4904,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private void unregisterActor(ActorCell<?> cell) {
-        // Keep the actor discoverable until all runtime-owned teardown that is
-        // part of its termination contract has completed. ActorRef.awaitTermination()
-        // treats absence from this map as terminal, so removing the actor first
-        // would let observers race ahead of creator-owned ActorGroup cleanup.
-        Throwable deregistrationFailure = null;
+    private void retireActorGroupBindings(ActorCell<?> cell) {
+        // The group retirement callbacks can fail or invoke external host
+        // observers. Run them before public DONE, but keep the old actor
+        // registered until all terminal Future subscribers have drained.
+        // Otherwise another incarnation may reclaim its registry slot while
+        // a callback still owns its terminal notification stack.
         Set<ActorGroupId> affected = new java.util.HashSet<>();
         synchronized (groupMembershipLock) {
             Set<ActorGroupId> memberships = groupMemberships.get(cell.ref.id());
@@ -4935,32 +4923,20 @@ public final class ActorRuntime implements AutoCloseable {
         }
         for (ActorGroupId groupId : affected) {
             ActorGroup group = actorGroups.get(groupId);
-            try {
-                if (group != null) group.actorTerminated(cell.ref.id());
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable failure) {
-                // One broken ActorGroup must not prevent removal from every
-                // other group, actor count retirement or done notification.
-                if (deregistrationFailure == null) deregistrationFailure = failure;
-                else if (deregistrationFailure != failure) {
-                    deregistrationFailure.addSuppressed(failure);
-                }
-            }
+            if (group != null) group.actorTerminated(cell.ref.id());
         }
+    }
+
+    private void releaseActorRegistrySlot(ActorCell<?> cell) {
+        // Public terminal state may be visible during OresFuture's synchronous
+        // callback drain; the incarnation and its actor quota slot must stay
+        // rooted until that drain physically returns.
         if (actors.remove(cell.ref.id(), cell)) {
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
                 actorCount.incrementAndGet();
                 throw new IllegalStateException("actor count accounting underflow");
             }
-        }
-        if (deregistrationFailure != null) {
-            if (deregistrationFailure instanceof RuntimeException runtime) throw runtime;
-            if (deregistrationFailure instanceof Error error) throw error;
-            throw new IllegalStateException(
-                    "ActorGroup deregistration failed during actor retirement",
-                    deregistrationFailure);
         }
     }
 
@@ -6455,25 +6431,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> frozen = new LinkedHashSet<>();
-                for (Object item : set) {
-                    Object detached = freeze(item, visiting, depth + 1);
-                    if (!frozen.add(detached)) {
-                        throw new IllegalArgumentException(
-                                "duplicate logical Set element during actor freeze");
-                    }
-                }
+                for (Object item : set) frozen.add(freeze(item, visiting, depth + 1));
                 return Collections.unmodifiableSet(frozen);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    Object detachedKey = freeze(entry.getKey(), visiting, depth + 1);
-                    Object detachedValue = freeze(entry.getValue(), visiting, depth + 1);
-                    if (frozen.containsKey(detachedKey)) {
-                        throw new IllegalArgumentException(
-                                "duplicate logical Map key during actor freeze");
-                    }
-                    frozen.put(detachedKey, detachedValue);
+                    frozen.put(freeze(entry.getKey(), visiting, depth + 1), freeze(entry.getValue(), visiting, depth + 1));
                 }
                 return Collections.unmodifiableMap(frozen);
             }
@@ -6530,25 +6494,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> copy = new LinkedHashSet<>();
-                for (Object item : set) {
-                    Object detached = isolateCopy(item, visiting, depth + 1);
-                    if (!copy.add(detached)) {
-                        throw new IllegalArgumentException(
-                                "duplicate logical Set element during private actor copy");
-                    }
-                }
+                for (Object item : set) copy.add(isolateCopy(item, visiting, depth + 1));
                 return Collections.unmodifiableSet(copy);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> copy = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    Object detachedKey = isolateCopy(entry.getKey(), visiting, depth + 1);
-                    Object detachedValue = isolateCopy(entry.getValue(), visiting, depth + 1);
-                    if (copy.containsKey(detachedKey)) {
-                        throw new IllegalArgumentException(
-                                "duplicate logical Map key during private actor copy");
-                    }
-                    copy.put(detachedKey, detachedValue);
+                    copy.put(isolateCopy(entry.getKey(), visiting, depth + 1), isolateCopy(entry.getValue(), visiting, depth + 1));
                 }
                 return Collections.unmodifiableMap(copy);
             }
@@ -6936,18 +6888,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
-        actorGroups.clear();
-        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
-            stream.closeAndDrainFromRuntime();
-        }
-        actorOutputStreams.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
-        syncCells.clear();
-        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
-        sharedValues.clear();
-        sharedMemoryBytes.set(0L);
-
+        // Fail closed: global shared structures and capability registries
+        // can still be referenced by a quarantined actor whose lock/loan
+        // retirement failed. Never invalidate or free them while any actor
+        // has not produced a complete physical lifecycle receipt.
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
@@ -6962,6 +6906,19 @@ public final class ActorRuntime implements AutoCloseable {
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
         }
+
+        for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
+        actorGroups.clear();
+        for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
+            stream.closeAndDrainFromRuntime();
+        }
+        actorOutputStreams.clear();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
+        syncCells.clear();
+        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+        sharedValues.clear();
+        sharedMemoryBytes.set(0L);
+
         actors.clear();
         actorCount.set(0);
     }
@@ -7101,6 +7058,17 @@ public final class ActorRuntime implements AutoCloseable {
          * runnable can never consume a newer scheduled=false->true claim. */
         private Object scheduledDispatchToken;
         private final AtomicBoolean stopped = new AtomicBoolean();
+        /** Actor-owned permits for direct actor turns. Tracked Tasks maintain
+         * their own ledgers; actor STOP waits for every remaining actor permit
+         * to revoke after the last physical carrier has exited. */
+        private final TaskOwnedLockLedger actorLocks = new TaskOwnedLockLedger();
+        /** One asynchronous terminal retirement claim; guarded by lifecycleLock. */
+        private boolean finalizationStarted;
+        /** Stop cancellation/descendant notifications outside the actor
+         * monitor must complete before physical terminal retirement starts.
+         * Guarded by lifecycleLock; simultaneous supervisor STOP is counted. */
+        private int stopEffectsInFlight;
+        private volatile Throwable finalizationFailure;
         /** Set under lifecycleLock by gracefulStop; no further user admissions. */
         private boolean sealing;
         // Lifetime-affine structured owner: never transferred before physical
@@ -7141,20 +7109,15 @@ public final class ActorRuntime implements AutoCloseable {
          */
         private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
+        /** Source-scheduler logical Task ownership is distinct from actor
+         * incarnation ownership. Retain live Task handles until their own
+         * lock, child, and quiescence receipts have physically completed. */
+        private final Set<TaskHandle<?>> sourceTaskHandles = ConcurrentHashMap.newKeySet();
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
         private boolean finalCleanupStarted;
         private volatile boolean finalCleanupActive;
-        /** Graceful source teardown is a reserved once-only actor turn. */
-        // schedule() is also called outside lifecycleLock by host stops and
-        // producer threads. Its admission read must see the shutdown request.
-        private volatile boolean gracefulTeardownPending;
-        private boolean gracefulTeardownStarted;
-        private boolean gracefulTeardownActive;
-        /** Cancellation, fatal failure and runtime close revoke all further
-         * guest finalization callbacks, even if teardown already began. */
-        private boolean gracefulTeardownRevoked;
         private boolean finalized;
         private volatile ActorTurnWatchdog.Lease watchdogLease;
         private long turnStartedWallNanos;
@@ -7365,9 +7328,52 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private <T> OresFuture<T> startTrackedSourceTask(OresScheduler.Task<T> task) {
+            return trackSourceTask(sourceScheduler().startTracked(task));
+        }
+
+        private <T> OresFuture<T> trackSourceTask(TaskHandle<T> handle) {
+            // The enclosing actor turn cannot finalize until this method
+            // returns; enrollment wins over concurrent STOP.
+            sourceTaskHandles.add(handle);
+            // getDone's terminal state is published before all synchronous
+            // terminal subscribers have returned. Removing the handle from
+            // our reverse index at the start of such a subscriber permits
+            // actor STOP to overlook a still-running callback.
+            handle.terminalCallbacksDrained().whenComplete((ignored, failure) -> {
+                if (failure == null) sourceTaskHandles.remove(handle);
+                else quarantineStopRetirement(failure);
+            });
+            return handle.result();
+        }
+
+        /**
+         * Independent physical receipt for every source Task that STOP still
+         * owns. A cancelled result Future may have settled while its Task's
+         * hidden lock ledger is waiting for an in-flight permit handoff.
+         */
+        private CompletableFuture<Void> sourceTasksSettled() {
+            List<TaskHandle<?>> pending = List.copyOf(sourceTaskHandles);
+            if (pending.isEmpty()) return CompletableFuture.completedFuture(null);
+            CompletableFuture<Void> barrier = new CompletableFuture<>();
+            AtomicInteger remaining = new AtomicInteger(pending.size());
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            for (TaskHandle<?> handle : pending) {
+                handle.terminalCallbacksDrained().whenComplete((ignored, failure) -> {
+                    if (failure != null) error.compareAndSet(null, failure);
+                    if (remaining.decrementAndGet() == 0) {
+                        Throwable unsafe = error.get();
+                        if (unsafe == null) barrier.complete(null);
+                        else barrier.completeExceptionally(unsafe);
+                    }
+                });
+            }
+            return barrier;
+        }
+
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
-                if ((stopped.get() && !gracefulTeardownPending) || forceKillFenced || finalized) return false;
+                if (stopped.get() || forceKillFenced || finalized) return false;
                 // The full actor execution domain (including lifecycle and resumed
                 // continuations) must be entered on the single admitted carrier.
                 if (!carrierActive || carrierOwnerThread != Thread.currentThread()
@@ -7402,42 +7408,12 @@ public final class ActorRuntime implements AutoCloseable {
             stop();
         }
 
-        private void runGracefulTeardownIfNeeded(ActorContext<M> context) throws Exception {
-            ActorOwnedGuestState state;
-            synchronized (lifecycleLock) {
-                if (!gracefulTeardownPending || gracefulTeardownStarted
-                        || gracefulTeardownRevoked
-                        || forceKillFenced || finalized
-                        || ref.terminationCause.get() != null) return;
-                gracefulTeardownStarted = true;
-                gracefulTeardownActive = true;
-                state = codeActorState;
-            }
-            try {
-                if (state != null && codeExecutor != null) {
-                    @SuppressWarnings("unchecked")
-                    ActorContext<Object> sourceContext =
-                            (ActorContext<Object>) (ActorContext<?>) context;
-                    codeExecutor.tearDownActor(codeActorType, state, sourceContext);
-                }
-            } finally {
-                synchronized (lifecycleLock) {
-                    gracefulTeardownActive = false;
-                    gracefulTeardownPending = false;
-                    lifecycleLock.notifyAll();
-                }
-            }
-        }
-
         private void runFinalCleanupIfNeeded() {
             Runnable cleanup;
             synchronized (lifecycleLock) {
                 if (!endRequested
                         || finalCleanupStarted
-                        || finalCleanup == null
-                        || gracefulTeardownRevoked
-                        || (ref.terminationCause.get() != null
-                                && !gracefulTeardownStarted)) return;
+                        || finalCleanup == null) return;
                 finalCleanupStarted = true;
                 finalCleanupActive = true;
                 cleanup = finalCleanup;
@@ -7471,110 +7447,155 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Claim terminal retirement under lifecycleLock; external hooks,
+         * scheduler shutdown, permit revocation, and Future observers run
+         * outside the monitor on a bounded-by-actor-count host finalizer.
+         * Repeated STOP, cancelled dispatch, and child completion are idempotent.
+         */
         private void finalizeStopLocked() {
-            // External termination is not observable until the dispatcher has
-            // fully crossed back out of the TurnExecutor boundary. For
-            // Truffle-backed runtimes that boundary owns context enter/leave.
-            if (finalized
-                    || activeTurns != 0
-                    || scheduled.get()
-                    || carrierActive
-                    || gracefulTeardownPending
-                    || !children.isEmpty()) return;
-            finalized = true;
-            OresScheduler scheduler = sourceScheduler;
-            sourceScheduler = null;
-            if (scheduler != null) {
-                try {
-                    scheduler.close();
-                } catch (VirtualMachineError | ThreadDeath fatal) {
-                    throw fatal;
-                } catch (Throwable closeFailure) {
-                    // Closing a source scheduler may leave work or native
-                    // captures outstanding. Do not report successful done.
-                    recordFinalizationFailure(closeFailure);
-                }
+            if (finalized || finalizationStarted || finalizationFailure != null
+                    || stopEffectsInFlight != 0 || activeTurns != 0 || scheduled.get()
+                    || carrierActive || !children.isEmpty()) return;
+            finalizationStarted = true;
+            scheduleHostRetirement("ores-actor-lock-retirement-",
+                    this::retireStopOutsideMonitor);
+        }
+
+        /**
+         * Finalization is a one-way claim. If host thread creation fails, or
+         * a later async stage throws, the actor MUST remain quarantined:
+         * there is no safe way to reopen its admission and no successful
+         * physical-retirement receipt to publish to its supervisor.
+         */
+        private void scheduleHostRetirement(String prefix, Runnable action) {
+            try {
+                Thread.ofVirtual().name(prefix + ref.id()).start(() -> {
+                    try {
+                        action.run();
+                    } catch (Throwable failure) {
+                        quarantineStopRetirement(failure);
+                    }
+                });
+            } catch (Throwable failure) {
+                quarantineStopRetirement(failure);
+            }
+        }
+
+        private void retireStopOutsideMonitor() {
+            if (Thread.holdsLock(lifecycleLock)) {
+                quarantineStopRetirement(new IllegalStateException(
+                        "actor terminal cleanup invoked under lifecycle monitor"));
+                return;
             }
             try {
+                // Source Task cancellation and physical scheduler quiescence
+                // must finish before a direct actor lock may be revoked.
+                OresScheduler scheduler;
+                synchronized (lifecycleLock) {
+                    scheduler = sourceScheduler;
+                    sourceScheduler = null;
+                }
+                if (scheduler != null) scheduler.close();
+                // A tracked source Task's lock ledger is its own lifetime
+                // scope, even when the surrounding actor remains alive.
+                // Do not reclaim actor memory until all such handles prove
+                // physical quiescence and descendant cleanup.
+                sourceTasksSettled().whenComplete((ignored, taskFailure) ->
+                        scheduleHostRetirement("ores-actor-source-task-retired-", () -> {
+                            if (taskFailure != null) {
+                                quarantineStopRetirement(taskFailure);
+                                return;
+                            }
+                            // Never park an actor carrier on claimed handoffs.
+                            // A scheduling/continuation failure must quarantine,
+                            // not silently strand the Future and fake DONE.
+                            actorLocks.retireAfterQuiescence().whenComplete(
+                                    (nothing, lockFailure) ->
+                                            scheduleHostRetirement(
+                                                    "ores-actor-lock-settled-", () -> {
+                                                        if (lockFailure == null) {
+                                                            finishStopOutsideMonitor();
+                                                        } else {
+                                                            quarantineStopRetirement(lockFailure);
+                                                        }
+                                                    }));
+                        }));
+            } catch (Throwable failure) {
+                quarantineStopRetirement(failure);
+            }
+        }
+
+        private void quarantineStopRetirement(Throwable failure) {
+            // Retain the actor in its registry with heap/arenas still alive.
+            // Preserve the first authoritative physical-cleanup failure:
+            // competing failed callbacks may report additional symptoms but
+            // cannot clear this incarnation's fail-closed terminal fence.
+            Objects.requireNonNull(failure);
+            synchronized (lifecycleLock) {
+                if (finalizationFailure == null) finalizationFailure = failure;
+                ref.terminationCause.compareAndSet(null, failure);
+                lifecycleLock.notifyAll();
+            }
+        }
+
+        private void finishStopOutsideMonitor() {
+            if (Thread.holdsLock(lifecycleLock)) {
+                quarantineStopRetirement(new IllegalStateException(
+                        "actor finalization attempted under lifecycle monitor"));
+                return;
+            }
+            try {
+                // Cleanup/hook and observer operations must not execute under
+                // lifecycleLock or while guest code holds an actor turn.
                 drainMailboxReservations();
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable drainFailure) {
-                recordFinalizationFailure(drainFailure);
-            }
-            staticSelectCursors.clear();
-            codeActorState = null;
-            try {
-                outputStream.close(ref.terminationCause.get());
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable outputFailure) {
-                recordFinalizationFailure(outputFailure);
-            }
-            for (ActorShardLease lease : List.copyOf(shardLeases)) {
-                try { lease.revokeFromActorStop(); }
-                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
-            }
-            shardLeases.clear();
-            for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
-                try { snapshot.revokeFromActorStop(); }
-                catch (VirtualMachineError | ThreadDeath fatal) { throw fatal; }
-                catch (Throwable failure) { recordFinalizationFailure(failure); }
-            }
-            shardSnapshotLeases.clear();
-            if (memorySlice != null) {
-                try {
-                    memorySlice.close();
-                } catch (VirtualMachineError | ThreadDeath fatal) {
-                    throw fatal;
-                } catch (Throwable memoryFailure) {
-                    recordFinalizationFailure(memoryFailure);
+                staticSelectCursors.clear();
+                Throwable terminalOutput = ref.terminationCause.get();
+                outputStream.close(terminalOutput);
+                for (ActorShardLease lease : List.copyOf(shardLeases)) {
+                    lease.revokeFromActorStop();
                 }
-            }
-            try {
+                shardLeases.clear();
+                for (ActorShardSnapshotLease snapshot : List.copyOf(shardSnapshotLeases)) {
+                    snapshot.revokeFromActorStop();
+                }
+                shardSnapshotLeases.clear();
+
+                // Actor exit hooks can be external/native cleanup providers.
+                // A failure must quarantine the backing memory rather than
+                // releasing an arena that may still contain live loans.
                 actorExitHook.accept(executionDomain);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable exitFailure) {
-                // A failed trusted exit hook may leave an isolate resource
-                // reachable. Its failure must be observable from actor.done.
-                recordFinalizationFailure(exitFailure);
-            }
-            // Neither ActorGroup deregistration nor parent bookkeeping may
-            // strand the runtime-owned done observer after we already
-            // irreversibly committed finalized=true. Preserve the failure
-            // and continue remaining retirement notification steps.
-            try {
-                unregisterActor(this);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable unregisterFailure) {
-                recordFinalizationFailure(unregisterFailure);
-            }
-            if (parent != null) {
-                try {
-                    parent.childFinalized(this);
-                } catch (VirtualMachineError | ThreadDeath fatal) {
-                    throw fatal;
-                } catch (Throwable parentFailure) {
-                    recordFinalizationFailure(parentFailure);
+                if (memorySlice != null) memorySlice.close();
+                codeActorState = null;
+                retireActorGroupBindings(this);
+                // Parent child-ownership must remain live until this child's
+                // own DONE subscribers and terminal receipt have drained.
+                // Otherwise parent shutdown can reclaim its arena while a
+                // child's terminal callback still holds native loans.
+                Throwable terminal = ref.terminationCause.get();
+                if (!ref.readyFuture.isDone()) {
+                    ref.readyFuture.failFromRuntime(
+                            terminal == null
+                                    ? new ActorTerminatedException(ref.id(), kind, null)
+                                    : terminal);
                 }
+                if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+                else ref.doneFuture.failFromRuntime(terminal);
+                finalizedFuture.completeFromRuntime(null);
+                // In particular, do not release the registry slot while
+                // terminal observers are still synchronously running.
+                releaseActorRegistrySlot(this);
+                // Only after observer notification and arena/lock cleanup
+                // may awaitTermination() report a complete actor incarnation.
+                synchronized (lifecycleLock) {
+                    finalized = true;
+                    lifecycleLock.notifyAll();
+                }
+                ref.terminated.countDown();
+                if (parent != null) parent.childFinalized(this);
+            } catch (Throwable failure) {
+                quarantineStopRetirement(failure);
             }
-            Throwable terminal = ref.terminationCause.get();
-            if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
-                ref.readyFuture.failFromRuntime(
-                        terminal == null
-                                ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
-            }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
-            lifecycleLock.notifyAll();
         }
 
         private void childFinalized(ActorCell<?> child) {
@@ -7614,17 +7635,6 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        /** Caller must hold lifecycleLock. Both output reservation and
-         * actual commit enforce this same revocable actor authority. */
-        private boolean acceptsActorOutputLocked() {
-            return !closed.get()
-                    && !finalized
-                    && !gracefulTeardownRevoked
-                    && !forceKillFenced
-                    && (!stopped.get() || endRequested
-                            || gracefulTeardownActive || finalCleanupActive);
-        }
-
         private void reserveOutput(long bytes) {
             if (bytes < 0) {
                 throw new IllegalArgumentException(
@@ -7637,7 +7647,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // self.end/self.endWithCleanup seals the mailbox immediately, but
                 // the current turn and its final cleanup retain the actor's output
                 // capability until finalization closes the stream.
-                if (!acceptsActorOutputLocked()) {
+                if ((stopped.get() && !endRequested) || finalized) {
                     throw terminated(ref);
                 }
 
@@ -7727,7 +7737,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void schedule() {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
-                if ((stopped.get() && !gracefulTeardownPending) || forceKillFenced || closed.get() || scheduled.get()) return;
+                if (stopped.get() || forceKillFenced || closed.get() || scheduled.get()) return;
                 // Atomically claim the actor lane and publish a fresh identity.
                 dispatchTicket = new Object();
                 scheduledDispatchToken = dispatchTicket;
@@ -7763,12 +7773,7 @@ public final class ActorRuntime implements AutoCloseable {
                         scheduled.set(false);
                     }
                 }
-                synchronized (lifecycleLock) {
-                    gracefulTeardownPending = false;
-                    gracefulTeardownRevoked = true;
-                }
-                fail(rejected);
-
+                stop();
                 if (!closed.get()) throw rejected;
             }
         }
@@ -7784,7 +7789,7 @@ public final class ActorRuntime implements AutoCloseable {
                     // Prevent obsolete queued runnables impersonating the
                     // next actor turn after scheduled was cleared and re-claimed.
                     if (scheduledDispatchToken != dispatchTicket || !scheduled.get()) return;
-                    if ((stopped.get() && !gracefulTeardownPending) || closed.get() || forceKillFenced) return;
+                    if (stopped.get() || closed.get() || forceKillFenced) return;
                     if (carrierActive || carrierOwnerThread != null || activeTurns != 0) {
                         throw new IllegalStateException(
                                 "actor physical carrier already occupied for " + ref.id());
@@ -7873,10 +7878,11 @@ public final class ActorRuntime implements AutoCloseable {
                             scheduledDispatchToken = null;
                             scheduled.set(false);
                             if (stopped.get() && activeTurns == 0) finalizeStopLocked();
-                            reschedule = !forceKillFenced
+                            reschedule = !stopped.get()
+                                    && !forceKillFenced
                                     && !closed.get()
                                     && !finalized
-                                    && (stopped.get() ? gracefulTeardownPending : hasQueuedWorkLocked());
+                                    && hasQueuedWorkLocked();
                         }
                         lifecycleLock.notifyAll();
                     }
@@ -7905,7 +7911,6 @@ public final class ActorRuntime implements AutoCloseable {
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
             boolean turnActive = false;
-            ActorContext<M> teardownContext = null;
             try {
                 // Admission may throw on a single-writer lease violation.
                 // The carrier's actor identity must still be cleared.
@@ -7936,11 +7941,6 @@ public final class ActorRuntime implements AutoCloseable {
                         return Optional.ofNullable(codeImage);
                     }
                 };
-
-                teardownContext = context;
-                // External stop may have sealed the user mailbox before this
-                // reserved lifecycle turn began. Never initialize or receive.
-                if (stopped.get()) return;
 
                 if (behavior == null && codeActorState == null) {
                     if (codeExecutor != null) {
@@ -8086,16 +8086,13 @@ public final class ActorRuntime implements AutoCloseable {
             } finally {
                 if (turnActive && stopped.get()) {
                     try {
-                        if (teardownContext != null) {
-                            runGracefulTeardownIfNeeded(teardownContext);
-                        }
-                    } catch (Throwable teardownFailure) {
-                        recordFinalizationFailure(teardownFailure);
-                    }
-                    try {
                         runFinalCleanupIfNeeded();
                     } catch (Throwable cleanupFailure) {
-                        recordFinalizationFailure(cleanupFailure);
+                        // Cleanup is the final guest action. Preserve its
+                        // failure for ActorRef.failure/done before finalization.
+                        ref.terminationCause.compareAndSet(
+                                null,
+                                cleanupFailure);
                     }
                 }
                 try {
@@ -8115,31 +8112,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainMailboxReservations() {
-            synchronized (lifecycleLock) {
+            // ChannelRuntime.drainOne executes the supplied release callback
+            // outside the channel coordinator, but that is NOT sufficient if
+            // our caller holds the actor lifecycle monitor. User envelope
+            // release actions can re-enter STOP or block on another actor.
+            if (Thread.holdsLock(lifecycleLock)) {
+                throw new IllegalStateException(
+                        "actor mailbox cleanup cannot invoke callbacks under lifecycleLock");
+            }
+            try {
                 while (continuationMailbox.drainOne(continuation -> {
                     releaseMailboxSlot(true);
                     continuation.close();
                 })) {
-                    // Reclaim admitted control mail even after termination closes the channel.
+                    // Quiescent control envelopes still own quota receipts.
                 }
-                sourceHandoffRequested = false;
+                while (mailbox.drainOne(envelope -> {
+                    releaseMailboxSlot(false);
+                    envelope.close();
+                })) {
+                    // Release accepted user envelopes even after channel close.
+                }
+            } finally {
+                synchronized (lifecycleLock) {
+                    sourceHandoffRequested = false;
+                    sourceReceiveSuspended = false;
+                    activeMail = null;
+                }
             }
-
-            while (mailbox.drainOne(envelope -> {
-                releaseMailboxSlot(false);
-                envelope.close();
-            })) {
-                // Drain all committed user-message envelopes, including after close.
-            }
-            sourceReceiveSuspended = false;
-            activeMail = null;
-        }
-
-        private void recordFinalizationFailure(Throwable failure) {
-            Throwable original = ref.terminationCause.get();
-            if (original == null && ref.terminationCause.compareAndSet(null, failure)) return;
-            original = ref.terminationCause.get();
-            if (original != null && original != failure) original.addSuppressed(failure);
         }
 
         private void fail(Throwable failure) {
@@ -8157,59 +8157,90 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
-            boolean scheduleTeardown;
             List<DrainWaiter> failedDrainWaiters;
             synchronized (lifecycleLock) {
-                if (finalized) return;
+                if (finalized || finalizationStarted) return;
+                stopEffectsInFlight++;
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
-                // Only an initialized, quiescent source actor gets a guest
-                // teardown turn. Panic/cancel/failure, runtime shutdown, and
-                // a suspended receive use trusted-only retirement.
-                if (cause != null || closed.get() || forceKillFenced) {
-                    gracefulTeardownPending = false;
-                    gracefulTeardownRevoked = true;
-                } else if (!stopped.get() && codeExecutor != null
-                        && codeActorState != null && !sourceReceiveSuspended) {
-                    gracefulTeardownPending = true;
-                }
                 stopped.set(true);
                 sealing = true;
+                // Fencing is safe under lifecycleLock: it only updates trusted
+                // ledger metadata and NEVER executes revokers or subscribers.
+                actorLocks.fence();
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
                 failedDrainWaiters = List.copyOf(pendingDrains);
                 pendingDrains.clear();
-                if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
-                drainMailboxReservations();
+                // ChannelRuntime.close may synchronously settle select/Future
+                // observers, so even channel closure belongs to the STOP
+                // effect phase outside this monitor.
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
                 finalizeStopLocked();
-                scheduleTeardown = gracefulTeardownPending
-                        && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
             }
-            if (scheduleTeardown) schedule();
 
-            // Runtime Future callbacks can take other actor/lifecycle locks.
-            // Publish failure only after teardown has released lifecycleLock.
-            Throwable drainFailure = cause == null ? terminated(ref) : cause;
-            for (DrainWaiter waiter : failedDrainWaiters) {
-                waiter.completion().failFromRuntime(drainFailure);
+            // Runtime Future subscribers may synchronously block or reach
+            // other lifecycle locks. None execute under lifecycleLock, and
+            // terminal retirement must not start until this batch of stop
+            // effects (including descendant cancellation) has been issued.
+            Throwable stopFailure = null;
+            try {
+                if (cause == null) mailbox.close();
+                else mailbox.close(cause);
+                continuationMailbox.close(cause);
+                drainMailboxReservations();
+            } catch (Throwable failure) {
+                stopFailure = failure;
             }
-
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
-
-            for (ActorCell<?> child : descendants) {
-                child.cancel(new ActorCancelledException(
-                        child.ref.id(),
-                        "parent actor " + ref.id() + " terminated"));
+            try {
+                Throwable drainFailure = cause == null ? terminated(ref) : cause;
+                for (DrainWaiter waiter : failedDrainWaiters) {
+                    try {
+                        waiter.completion().failFromRuntime(drainFailure);
+                    } catch (Throwable failure) {
+                        if (stopFailure == null) stopFailure = failure;
+                        else stopFailure.addSuppressed(failure);
+                    }
+                }
+                for (OresFuture<?> future : pending) {
+                    try {
+                        future.cancel(false);
+                    } catch (Throwable failure) {
+                        if (stopFailure == null) stopFailure = failure;
+                        else stopFailure.addSuppressed(failure);
+                    }
+                }
+                for (ActorCell<?> child : descendants) {
+                    try {
+                        child.cancel(new ActorCancelledException(
+                                child.ref.id(),
+                                "parent actor " + ref.id() + " terminated"));
+                    } catch (Throwable failure) {
+                        if (stopFailure == null) stopFailure = failure;
+                        else stopFailure.addSuppressed(failure);
+                    }
+                }
+            } finally {
+                synchronized (lifecycleLock) {
+                    if (stopFailure != null) {
+                        // An envelope release failed after dequeue. We cannot
+                        // prove its quota/loan callback completed; quarantine
+                        // rather than return the actor's memory to a successor.
+                        finalizationFailure = stopFailure;
+                        ref.terminationCause.compareAndSet(null, stopFailure);
+                    }
+                    if (--stopEffectsInFlight < 0) {
+                        throw new IllegalStateException(
+                                "actor STOP effect barrier underflow");
+                    }
+                    if (finalizationFailure == null) finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
             }
         }
     }

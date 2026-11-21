@@ -55,6 +55,28 @@ The checked invariants are:
 
 `FormalActorStorageLifetimeModelCheckTest` explores actor retirement versus promoted-root lifetime. `FormalProxySynchronizationModelCheckTest` explores two proxies, lock modes, suspension and disposal. These are bounded abstract contracts; they do not substitute for concrete runtime refinement tests.
 
+### Actor STOP, physical receipts, and successor restart
+
+`FormalActorStopRetirementModelCheckTest` exhaustively explores a bounded
+single-incarnation lifecycle with six phases: RUNNING, STOPPING, QUIESCING,
+RETIRING, TERMINATED, and QUARANTINED. Independent pending bits represent
+physical carrier exit, stop-effect drain, descendant termination, source-Task
+retirement, lock handoff, and Future callback drain. Injected cleanup failures
+and callback exceptions move to irreversible quarantine. Duplicate STOP and
+stale-generation notifications carry no replacement authority.
+
+Its safety properties forbid new admission after STOP, retirement while
+carriers/children/stop effects are live, actor arena reclamation before all
+physical receipts have drained, successful DONE after quarantine, and supervisor
+successor activation except after fully successful old-incarnation termination.
+
+**Refinement required:** this is an abstract bounded model, not executable
+proof of `ActorRuntime`, supervisor restart admission, native callback fencing,
+or LLVM parity. The corresponding runtime regression in
+`ActorLockStopRetirementTest` injects a failed asynchronous lock receipt and
+requires actor quarantine. JDK25 integration and real supervisor restart traces
+must be separately verified.
+
 ## Relationship to runtime tests
 
 This model is deliberately smaller than `ActorRuntime`. Its purpose is to make the semantic contract reviewable and exhaustive. Integration tests must separately prove that concrete runtime traces refine these transitions.
@@ -85,52 +107,3 @@ For unbounded properties we should add a second tier using an external prover/mo
 ## InvertedArray handle and field-sensitive loan safety
 
 See [INVERTED_ARRAY_MODEL.md](INVERTED_ARRAY_MODEL.md) for a bounded explicit-state checker with four negative mutation oracles. It does not certify executable guest lowering; tracked by issue #1424.
-
-
-## Static-effect model checking (2026-10-19)
-
-`FormalEffectClosureModelCheckTest` independently enumerates all 512 three-function directed call graphs
-and 64 pairs of direct IO/PANIC effect assignments (32,768 configurations).
-A breadth-first reachability oracle checks the fixed-point effect summaries for
-every possible root, including recursive strongly connected components. It also
-checks rejection of over-budget graph input and proves via tests that the
-current trapping abstraction does not discard PANIC or unknown calls.
-
-**Scope boundary:** this is a finite-state proof of the graph summary library,
-not a proof that compiler-produced call edges, exception handlers, imports,
-or FFI effect labels are complete or authenticated. Source AST-to-effect-IR
-refinement remains an independent obligation.
-
-## Effect-model trust-boundary regression (2026-10-19 follow-up)
-
-`EffectGraphAdmissionBoundaryTest` verifies transitive unresolved-host effects
-through recursive call graphs, that trapping cannot swallow RAISE/PANIC or
-cancellation, and that rejected over-budget symbol/edge graphs do not mutate
-the accepted environment. The existing
-`FormalEffectClosureModelCheckTest` exhausts finite three-node effect graphs.
-
-Run both with `mvn -B -Dtest=FormalEffectClosureModelCheckTest,EffectGraphAdmissionBoundaryTest,TypeclassesAndEffectsFoundationTest test`.
-
-**Important:** all graph nodes and edges are supplied to the Java analysis
-library, not derived from the full Oreslang source frontend. A pass is a model
-property only; complete AST/HIR-to-effect-IR refinement, authenticated imports
-and dynamic dispatch effects are still unproved.
-
-## Standalone JDK effect-closure verification
-
-To check the actual `EffectContracts` implementation without Maven,
-Truffle or third-party libraries, run:
-
-```bash
-bash tools/formal-standalone/verify-effects.sh
-```
-
-This compiles the production effect-graph class with JDK 21, and explores
-**all 98,304 starting roots** across 512 three-node call graphs and 64
-IO/PANIC direct-effect configurations, against an independent BFS oracle.
-A negative control ensures `trap` cannot swallow PANIC or unknown FFI calls.
-The standalone checker is a bounded finite-state library proof, not a proof
-that Java Oreslang lowering constructs complete or authenticated call edges.
-
-`RustScalarGuestParityTest` separately runs `40+2` in a Graal guest and
-checks the observed value `42`; it does not yet emit comparable effect IR.

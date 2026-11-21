@@ -42,13 +42,15 @@ Cross-repo reference: platform-conformance PR #158; native substrate LLVM PR #86
 - **Losing handoff / stale terminal waiters:** If Task-death cancellation already claimed a Future, a dequeued grant or failure cannot settle its physical handoff until the winning cancellation's non-Async completion subscribers finish. Likewise, a lock releaser skipping a terminal Future still found in the queue waits for that Future's private notification-drain receipt; it does not infer safe cleanup from `isDone()`. The skip path schedules receipt completion off `asyncQueueLock`. Deterministic reflective JUnit fault-injection regressions cover both cases. Two independent source-free Java 21 concurrency models completed 4,000 losing-handoff and 1,000 terminal-queue iterations, respectively. **These are not project JUnit passes.**
 - **Residual host API caveat:** Java `CompletableFuture` invokes a non-Async dependent inline on the *registering* thread when registration happens after the Future is already completed. Off-carrier completion does **not** make arbitrary late `whenComplete` calls safe on a guest actor carrier. Guest-language await/continuation lowering must schedule onto an authenticated Task domain, or use a Future facade with strictly asynchronous guest callbacks. This remains a release gate.
 
-- **Task DONE callback drain receipt:** The runtime-owned `TaskHandle.doneCallbacksDrained()`
-  is not the public `getDone().isDone()` bit. The former settles after all
-  synchronous subscribers registered before terminal delivery have unwound.
-  It exposes a read-only minimal CompletionStage, so a caller cancelling an
-  observation copy cannot forge physical quiescence. Actor STOP must retain
-  tracked Task handles through this witness rather than removing them at
-  the beginning of a terminal observer callback.
+
+- **Task terminal callback receipts:** `TaskHandle.getDone()` commits its
+  public terminal state before runtime subscribers return. A separate
+  `doneCallbacksDrained()` receipt completes only from the Future's final
+  notification hook. It is exposed as a read-only minimal CompletionStage,
+  so a cancelled observer copy cannot forge Task physical quiescence.
+  Actor STOP must join this drain receipt before releasing Task tracking or
+  retiring actor backing storage. This is distinct from the lock permit's
+  own physical-settlement receipt.
 
 - **Two independent Task notification drains:** A Task's `getDone()` terminal CAS and callback drain do not imply the scheduler's separate source-result Future has drained all its subscribers. `TaskHandle.terminalCallbacksDrained()` now joins both source-result and Task-DONE completion drains into one read-only, unforgeable observation stage. Actor STOP retains the Task until this *combined* receipt settles. This applies to ordinary tracked Tasks and UNTRUSTED wall-deadline Tasks, preserving the original quota callback and propagating its exceptional failure as an unsafe receipt. The new JUnit regressions block source-result subscribers after `getDone()` is already terminal; these project tests still require JDK25 CI.
 
