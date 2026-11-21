@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Runtime-owned immutable authorization chain. A child scope keeps a
@@ -14,6 +15,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 final class ActorPermissionScope {
     private static final int MAX_RESTRICTION_LAYERS = 128;
+    private static final int MAX_SUBTREE_IO = 65_536;
+    private final Object ioQuotaLock;
+    private final int maxSubtreeIo;
+    private int activeSubtreeIo;
     private final ActorPermissionScope parent;
     private final RuntimePermissions restrictions;
     private final int depth;
@@ -21,12 +26,23 @@ final class ActorPermissionScope {
     private final AtomicBoolean revoked = new AtomicBoolean();
 
     private ActorPermissionScope(ActorPermissionScope parent, RuntimePermissions restrictions) {
+        this(parent, restrictions, parent == null ? MAX_SUBTREE_IO : parent.maxSubtreeIo);
+    }
+
+    private ActorPermissionScope(ActorPermissionScope parent,
+            RuntimePermissions restrictions, int maxIo) {
         this.parent = parent;
         this.restrictions = Objects.requireNonNull(restrictions, "restrictions");
         this.depth = parent == null ? 1 : parent.depth + 1;
         if (depth > MAX_RESTRICTION_LAYERS) {
             throw new SecurityException("actor permission delegation depth limit exceeded");
         }
+        if (maxIo < 1 || maxIo > MAX_SUBTREE_IO
+                || (parent != null && maxIo > parent.maxSubtreeIo)) {
+            throw new IllegalArgumentException("child actor cannot widen subtree I/O quota");
+        }
+        this.maxSubtreeIo = maxIo;
+        this.ioQuotaLock = parent == null ? new Object() : parent.ioQuotaLock;
     }
 
     static ActorPermissionScope root(RuntimePermissions ceiling) {
@@ -34,13 +50,59 @@ final class ActorPermissionScope {
     }
 
     ActorPermissionScope attenuate(RuntimePermissions requested) {
-        return new ActorPermissionScope(this, requested);
+        return attenuate(requested, maxSubtreeIo);
+    }
+
+    ActorPermissionScope attenuate(RuntimePermissions requested, int maxIo) {
+        synchronized (ioQuotaLock) {
+            requireActive("delegate actor I/O quota");
+            return new ActorPermissionScope(this, requested, maxIo);
+        }
     }
 
     boolean revoke() {
-        // Only the specific delegated node is revoked. Independent sibling
-        // branches sharing a parent remain unaffected.
-        return revoked.compareAndSet(false, true);
+        // Serialize with reservation; only future admission is revoked.
+        synchronized (ioQuotaLock) {
+            return revoked.compareAndSet(false, true);
+        }
+    }
+
+    /** Host-only ticket. Caller must release only after physical I/O retirement. */
+    static final class IoReservation implements AutoCloseable {
+        private final ActorPermissionScope leaf;
+        private boolean retired;
+        private IoReservation(ActorPermissionScope leaf) { this.leaf = leaf; }
+
+        @Override public void close() {
+            synchronized (leaf.ioQuotaLock) {
+                if (retired) throw new IllegalStateException("duplicate I/O quota retirement");
+                for (ActorPermissionScope p = leaf; p != null; p = p.parent) {
+                    if (p.activeSubtreeIo <= 0)
+                        throw new IllegalStateException("subtree I/O quota underflow");
+                }
+                retired = true;
+                for (ActorPermissionScope p = leaf; p != null; p = p.parent)
+                    p.activeSubtreeIo--;
+            }
+        }
+    }
+
+    IoReservation reserveIo(String operation) {
+        synchronized (ioQuotaLock) {
+            for (ActorPermissionScope p = this; p != null; p = p.parent) {
+                if (p.revoked.get())
+                    throw new SecurityException("revoked actor permission for " + operation);
+                if (p.activeSubtreeIo >= p.maxSubtreeIo)
+                    throw new RejectedExecutionException("actor subtree I/O quota exhausted");
+            }
+            for (ActorPermissionScope p = this; p != null; p = p.parent)
+                p.activeSubtreeIo++;
+            return new IoReservation(this);
+        }
+    }
+
+    int subtreeIoInFlight() {
+        synchronized (ioQuotaLock) { return activeSubtreeIo; }
     }
 
     void requireActive(String operation) {

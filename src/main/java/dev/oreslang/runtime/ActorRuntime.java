@@ -120,6 +120,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorId actorId() { return actorId; }
         ActorRuntime runtime() { return runtime; }
+        ActorPermissionScope.IoReservation reserveIo(String operation) {
+            return scope.reserveIo(operation);
+        }
         void requireActive(String operation) {
             // Admission capture is not authority to start after delegation
             // revocation. Require the still-live chain on the physical worker
@@ -4626,6 +4629,17 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public PermissionDelegation delegatePermissions(RuntimePermissions restrictions) {
+        return delegatePermissions(restrictions, (Integer) null);
+    }
+
+    /** Caller-only scoped child delegation with a narrowed aggregate I/O budget. */
+    public PermissionDelegation delegatePermissions(
+            RuntimePermissions restrictions, int maxSubtreeIo) {
+        return delegatePermissions(restrictions, Integer.valueOf(maxSubtreeIo));
+    }
+
+    private PermissionDelegation delegatePermissions(
+            RuntimePermissions restrictions, Integer maxSubtreeIo) {
         requireCallerRuntimeAffinity("mint actor permission delegation");
         requireNotActorGroupMailman("mint actor permission delegation");
         ActorCell<?> parent = currentActor.get();
@@ -4635,8 +4649,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (parent.stopped.get() || parent.finalized || parent.forceKillFenced) {
             throw new SecurityException("stopping actor cannot delegate permissions");
         }
-        return new PermissionDelegation(this, parent.ref.id(),
-                parent.permissionScope.attenuate(Objects.requireNonNull(restrictions)));
+        RuntimePermissions requested = Objects.requireNonNull(restrictions);
+        ActorPermissionScope delegated = maxSubtreeIo == null
+                ? parent.permissionScope.attenuate(requested)
+                : parent.permissionScope.attenuate(requested, maxSubtreeIo);
+        return new PermissionDelegation(this, parent.ref.id(), delegated);
     }
 
     /**

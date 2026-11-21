@@ -252,10 +252,12 @@ public final class AsyncNativeIo implements AutoCloseable {
         Objects.requireNonNull(operation);
         Objects.requireNonNull(work);
         OresFuture<T> result = new OresFuture<>(() -> false, () -> { });
-        if (closed || admitted.size() >= limit) {
+        if (closed || incompleteReceipt != null || admitted.size() >= limit) {
             CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
             result.failFromRuntime(new RejectedExecutionException(
-                    closed ? "I/O context closed" : "I/O admission capacity exhausted"));
+                    closed ? "I/O context closed"
+                            : incompleteReceipt != null ? "I/O receipt incomplete: context quarantined"
+                            : "I/O admission capacity exhausted"));
             return result;
         }
 
@@ -266,8 +268,16 @@ public final class AsyncNativeIo implements AutoCloseable {
         ActorRuntime.ActorId admittedActor = ioAuthority == null
                 ? ActorRuntime.currentActorId().orElse(null)
                 : ioAuthority.actorId();
+        ActorPermissionScope.IoReservation ioReservation;
+        try {
+            ioReservation = ioAuthority == null ? null : ioAuthority.reserveIo(operation);
+        } catch (SecurityException | RejectedExecutionException rejected) {
+            CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 1L);
+            result.failFromRuntime(rejected);
+            return result;
+        }
         Operation<T> op = new Operation<>(
-                operation, work, result, admitted, admittedActor, ioAuthority);
+                operation, work, result, admitted, admittedActor, ioAuthority, ioReservation);
         admitted.add(op); // Reserve before publishing work to any executor.
         incrementActorOperationLocked(op.admittedActor);
         long queuedAt = CorePerf.start();
@@ -278,6 +288,7 @@ public final class AsyncNativeIo implements AutoCloseable {
             // Rejected admission never owns a worker or physical resource.
             admitted.remove(op);
             decrementActorOperationLocked(op.admittedActor);
+            if (ioReservation != null) ioReservation.close();
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
             result.failFromRuntime(failure);
         }
@@ -291,19 +302,33 @@ public final class AsyncNativeIo implements AutoCloseable {
         private final Set<Operation<?>> owner;
         private final ActorRuntime.ActorId admittedActor;
         private final ActorRuntime.NativeIoAuthority ioAuthority;
+        private final ActorPermissionScope.IoReservation ioReservation;
         private final AtomicReference<OperationState> state =
                 new AtomicReference<>(OperationState.ADMITTED);
         private long queuedAt;
 
         private Operation(String operation, Callable<T> work, OresFuture<T> completion,
                 Set<Operation<?>> owner, ActorRuntime.ActorId admittedActor,
-                ActorRuntime.NativeIoAuthority ioAuthority) {
+                ActorRuntime.NativeIoAuthority ioAuthority,
+                ActorPermissionScope.IoReservation ioReservation) {
+            this.ioReservation = ioReservation;
             this.operation = operation;
             this.work = work;
             this.completion = completion;
             this.owner = owner;
             this.admittedActor = admittedActor;
             this.ioAuthority = ioAuthority;
+        }
+
+        /** Failed quota receipts quarantine the I/O context, never silently free credits. */
+        private void retireIoBudget() {
+            if (ioReservation == null) return;
+            try {
+                ioReservation.close();
+            } catch (RuntimeException invalidReceipt) {
+                recordIncomplete(invalidReceipt);
+                throw invalidReceipt;
+            }
         }
 
         @Override public void run() {
@@ -351,6 +376,8 @@ public final class AsyncNativeIo implements AutoCloseable {
                 try {
                     synchronized (AsyncNativeIo.this) {
                         owner.remove(this);
+                        // Release only after work and terminal callbacks have retired.
+                        retireIoBudget();
                         retireActor = decrementActorOperationLocked(admittedActor);
                         retireDeferredUnregisterLocked();
                         AsyncNativeIo.this.notifyAll();
@@ -393,6 +420,8 @@ public final class AsyncNativeIo implements AutoCloseable {
                         try {
                             synchronized (AsyncNativeIo.this) {
                                 owner.remove(this);
+                                // Release only after work and terminal callbacks have retired.
+                                retireIoBudget();
                                 retireActor = decrementActorOperationLocked(admittedActor);
                                 retireDeferredUnregisterLocked();
                                 AsyncNativeIo.this.notifyAll();
