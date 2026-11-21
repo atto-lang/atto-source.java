@@ -69,20 +69,32 @@ final class ActorFrameArena {
     ExecutionContext.AllocationDomain allocationDomain() { return owner; }
 
     /**
-     * Mint one logical identity for a synchronous interpreter call chain.
-     * Never reuse an execution ID within an actor incarnation. This is NOT a
-     * SourceTask continuation identity and must not be resumed across await.
+     * One per-incarnation execution-id sequence for BOTH synchronous calls and
+     * compiler-lowered actor SourceTasks. Sharing the sequence is essential:
+     * two live continuations may occupy this arena while a different call
+     * chain runs on the same scheduler, even when their runtime-domain
+     * numbers happen to coincide.
      */
-    private long nextSynchronousExecution = 1L;
+    private long nextLogicalExecution = 1L;
 
     synchronized ExecutionContext newSynchronousExecution() {
+        return newActorTaskExecution(owner.domain());
+    }
+
+    /**
+     * Mint an actor-domain-bound scheduler task identity. It remains stable
+     * across await/cooperate and cannot alias a synchronous evaluator call.
+     * This is runtime admission only: source frame locals still need lowering.
+     */
+    synchronized ExecutionContext newActorTaskExecution(long schedulerDomain) {
+        if (schedulerDomain <= 0) throw new IllegalArgumentException("scheduler domain must be positive");
         if (retired) throw new IllegalStateException("retired actor frame arena");
         requireExecutable();
-        if (nextSynchronousExecution == Long.MAX_VALUE) {
+        if (nextLogicalExecution == Long.MAX_VALUE) {
             poisoned = true;
-            throw new BudgetExceeded("actor synchronous execution IDs exhausted");
+            throw new BudgetExceeded("actor execution identity space exhausted");
         }
-        return ExecutionContext.actor(owner.domain(), nextSynchronousExecution++,
+        return ExecutionContext.actor(schedulerDomain, nextLogicalExecution++,
                 owner.domain(), owner.owner(), owner.generation(), 0, 0);
     }
 

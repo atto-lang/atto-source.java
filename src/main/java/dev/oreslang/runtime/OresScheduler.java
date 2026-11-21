@@ -195,6 +195,8 @@ public final class OresScheduler implements AutoCloseable {
 
     private final String name;
     private final long schedulerDomain;
+    /** Explicitly bound only to an actor cell's source scheduler. No ambient capture. */
+    private final ActorFrameArena sourceActorFrameArena;
     private final AtomicLong nextExecution = new AtomicLong();
     private final int parallelism;
     private final Executor executor;
@@ -237,6 +239,7 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         this.schedulerDomain = allocatePositiveId(NEXT_ID, "scheduler-domain");
+        this.sourceActorFrameArena = null;
         this.name = "ores-user-scheduler-" + schedulerDomain;
         this.parallelism = parallelism;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
@@ -271,9 +274,11 @@ public final class OresScheduler implements AutoCloseable {
             int parallelism,
             Executor executor,
             ExecutorService ownedExecutor,
-            TurnExecutor turnExecutor) {
+            TurnExecutor turnExecutor,
+            ActorFrameArena actorFrameArena) {
         this.name = Objects.requireNonNull(name, "name");
         this.schedulerDomain = allocatePositiveId(NEXT_ID, "scheduler-domain");
+        this.sourceActorFrameArena = actorFrameArena;
         if (parallelism <= 0) {
             throw new IllegalArgumentException("scheduler parallelism must be positive");
         }
@@ -309,12 +314,22 @@ public final class OresScheduler implements AutoCloseable {
             int parallelism,
             Executor executor,
             TurnExecutor turnExecutor) {
+        return runtimeOwned(name, parallelism, executor, turnExecutor, null);
+    }
+
+    /** Bind a source-task scheduler to exactly one actor-generation arena. */
+    static OresScheduler runtimeOwned(
+            String name,
+            int parallelism,
+            Executor executor,
+            TurnExecutor turnExecutor,
+            ActorFrameArena actorFrameArena) {
+        if (actorFrameArena != null && parallelism != 1) {
+            throw new IllegalArgumentException(
+                    "actor source frame scheduler must have one logical carrier");
+        }
         return new OresScheduler(
-                name,
-                parallelism,
-                executor,
-                null,
-                turnExecutor);
+                name, parallelism, executor, null, turnExecutor, actorFrameArena);
     }
 
     /**
@@ -778,6 +793,7 @@ public final class OresScheduler implements AutoCloseable {
 
         private final Task<T> task;
         private final ExecutionContext executionContext;
+        private final ActorSourceTaskFrame actorFrame;
         private final Runnable onQuiescent;
         // 0=unclaimed, 1=retirement callback executing, 2=retired,
         // 3=callback failed. The publication path cannot overtake state 1.
@@ -817,8 +833,16 @@ public final class OresScheduler implements AutoCloseable {
         private TaskRunner(Task<T> task, Runnable onQuiescent,
                 boolean timedAdmission, Runnable onNotificationDrained) {
             this.task = task;
-            long execution = allocatePositiveId(nextExecution, "execution");
-            this.executionContext = ExecutionContext.task(schedulerDomain, execution);
+            if (sourceActorFrameArena == null) {
+                long execution = allocatePositiveId(nextExecution, "execution");
+                this.executionContext = ExecutionContext.task(schedulerDomain, execution);
+                this.actorFrame = null;
+            } else {
+                this.executionContext =
+                        sourceActorFrameArena.newActorTaskExecution(schedulerDomain);
+                this.actorFrame =
+                        new ActorSourceTaskFrame(sourceActorFrameArena, executionContext);
+            }
             this.onQuiescent = onQuiescent;
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
@@ -944,6 +968,14 @@ public final class OresScheduler implements AutoCloseable {
             ExecutionContext priorExecutionContext = CURRENT_EXECUTION_CONTEXT.get();
             CURRENT_EXECUTION_CONTEXT.set(executionContext);
             try {
+                if (actorFrame != null) {
+                    try {
+                        actorFrame.beforeResume();
+                    } catch (RuntimeException failedFrameAdmission) {
+                        failTerminal(failedFrameAdmission);
+                        return;
+                    }
+                }
                 detachActiveAwaitRegistration();
                 Resume resume = pendingResume.getAndSet(null);
                 if (resume == null) {
@@ -1022,11 +1054,27 @@ public final class OresScheduler implements AutoCloseable {
                 }
 
                 if (step instanceof Await<?> await) {
+                    if (actorFrame != null) {
+                        try {
+                            actorFrame.suspend();
+                        } catch (RuntimeException invalidFrame) {
+                            failTerminal(invalidFrame);
+                            return;
+                        }
+                    }
                     armAwait(await.future());
                     return;
                 }
 
                 if (step instanceof Cooperate<?>) {
+                    if (actorFrame != null) {
+                        try {
+                            actorFrame.suspend();
+                        } catch (RuntimeException invalidFrame) {
+                            failTerminal(invalidFrame);
+                            return;
+                        }
+                    }
                     armCooperate();
                     return;
                 }
@@ -1350,6 +1398,10 @@ public final class OresScheduler implements AutoCloseable {
                 // Keep the Task registered until the callback has actually
                 // finished: it may revoke actor-owned loans and can fail.
                 if (cleanupIncomplete.get()) return;
+                // After actual physical guest-turn exit, clear the source
+                // frame before freeing actor scheduler receipts. A completed
+                // Future alone is never sufficient to reclaim these bytes.
+                if (actorFrame != null) actorFrame.retireAfterQuiescence();
                 onQuiescent.run();
                 if (!cleanupIncomplete.get()) tasks.remove(this);
             } catch (Throwable retirementFailure) {
