@@ -472,7 +472,7 @@ public final class TypeChecker {
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
                 "HttpClientResponse", "HttpClientBody",
-                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorGroup", "Topic", "Subscription", "ActorStream", "StreamOperator",
+                "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorGroup", "Topic", "Subscription", "PublishReceipt", "PublishError", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
@@ -3824,6 +3824,28 @@ public final class TypeChecker {
                             requireAssignable(actual, payload, "Topic.publish value");
                             yield new Named("Future", List.of(Primitive.VOID));
                         }
+                        case "try_publish" -> {
+                            if (call.arguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "Topic.try_publish expects exactly one shared value");
+                            }
+                            // The guest call must carry a checked share proof.
+                            // Both share! x and rt share x lower to this same AST.
+                            // No raw object, borrowed mutable alias, or implicit
+                            // host capability may be converted here.
+                            Ast.Expr operand = call.arguments().getFirst();
+                            if (!(operand instanceof Ast.RuntimeCallExpr share)
+                                    || !share.operation().equals("share")
+                                    || share.arguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "Topic.try_publish requires explicit checked share! value");
+                            }
+                            Type actual = typeOf(operand, env, generics, self);
+                            requireAssignable(actual, payload, "Topic.try_publish value");
+                            yield new Named("Result", List.of(
+                                    new Named("PublishReceipt", List.of()),
+                                    new Named("PublishError", List.of())));
+                        }
                         case "subscribe" -> {
                             if (!call.arguments().isEmpty()) {
                                 throw new IllegalArgumentException(
@@ -4571,6 +4593,25 @@ public final class TypeChecker {
 
             Type selectedReceiver = deref(receiver);
 
+            // These are sealed, compiler-owned guest snapshots: never expose
+            // the ActorEventBus host receipt or its OresFuture completion.
+            if (selectedReceiver instanceof Named published
+                    && published.name().equals("PublishReceipt")) {
+                return switch (member.member()) {
+                    case "sequence" -> Primitive.STRING; // unsigned u64 decimal
+                    case "subscribers", "accepted", "dropped", "coalesced" -> Primitive.INT;
+                    default -> throw new IllegalArgumentException(
+                            "unknown PublishReceipt field '" + member.member() + "'");
+                };
+            }
+            if (selectedReceiver instanceof Named publishError
+                    && publishError.name().equals("PublishError")) {
+                return switch (member.member()) {
+                    case "code" -> Primitive.STRING;
+                    default -> throw new IllegalArgumentException(
+                            "unknown PublishError field '" + member.member() + "'");
+                };
+            }
             if (selectedReceiver instanceof Named selected
                     && selected.name().equals("SelectResult")) {
                 return switch (member.member()) {
@@ -10373,12 +10414,12 @@ public final class TypeChecker {
                 }
                 yield new Named(ref.name(), List.of());
             }
-            case "ActorGroup" -> {
+            case "ActorGroup", "PublishReceipt", "PublishError" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException(
-                            "ActorGroup does not accept type arguments");
+                            ref.name() + " does not accept type arguments");
                 }
-                yield new Named("ActorGroup", List.of());
+                yield new Named(ref.name(), List.of());
             }
             case "Topic", "Subscription" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {

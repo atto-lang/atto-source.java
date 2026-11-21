@@ -3,7 +3,7 @@
 pub suspends fnc main(): void {
   val group = actor.group("portable");
   val topic = group.topic<String>("events", "reliable", 4);
-  val String event = "pending";
+  val int event = 42;
   val receipt = topic.try_publish(share! event);
   return;
 }

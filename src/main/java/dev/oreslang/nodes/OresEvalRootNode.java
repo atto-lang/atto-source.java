@@ -8623,6 +8623,24 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "Topic.publish");
                         return topic.publish(args.getFirst());
                     };
+                    case "try_publish" -> (Invokable) args -> {
+                        requireOne(args, "Topic.try_publish");
+                        // The compiler type/ownership passes must establish
+                        // the explicit share! / rt share proof before eval.
+                        // A Full refusal alone maps to typed Err(Full);
+                        // forged/stale authority, close, policy and payload
+                        // errors remain fail-closed and are never disguised as
+                        // backpressure or a successful receipt.
+                        var admitted = topic.tryPublishReliable(args.getFirst());
+                        if (admitted.isEmpty()) {
+                            return new ResultValue(false, new GuestPublishError("Full"));
+                        }
+                        var receipt = admitted.get();
+                        return new ResultValue(true, new GuestPublishReceipt(
+                                receipt.sequenceUnsignedString(),
+                                receipt.subscribers(), receipt.accepted(),
+                                receipt.dropped(), receipt.coalesced()));
+                    };
                     case "subscribe" -> (Invokable) args -> {
                         requireZero(args, "Topic.subscribe");
                         return topic.subscribe();
@@ -8896,6 +8914,22 @@ public final class OresEvalRootNode extends RootNode {
                     case "value" -> new OptionValue(!step.done(), step.value());
                     default -> throw new IllegalArgumentException("unknown IteratorResult member " + name);
                 };
+            }
+            if (receiver instanceof GuestPublishReceipt receipt) {
+                return switch (name) {
+                    case "sequence" -> receipt.sequence();
+                    case "subscribers" -> receipt.subscribers();
+                    case "accepted" -> receipt.accepted();
+                    case "dropped" -> receipt.dropped();
+                    case "coalesced" -> receipt.coalesced();
+                    default -> throw new IllegalArgumentException(
+                            "unknown PublishReceipt member " + name);
+                };
+            }
+            if (receiver instanceof GuestPublishError error) {
+                if (!name.equals("code")) throw new IllegalArgumentException(
+                        "unknown PublishError member " + name);
+                return error.code();
             }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
@@ -11889,6 +11923,12 @@ public final class OresEvalRootNode extends RootNode {
         @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
         @Override public String toString(){return CycleSafeDisplay.render(this);}
     }
+    /** Guest-safe value: never exposes EventBus completion or mutable host state. */
+    private record GuestPublishReceipt(
+            String sequence, long subscribers, long accepted,
+            long dropped, long coalesced) { }
+    private record GuestPublishError(String code) { }
+
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){
             return value == null ? List.of() : List.of(value);

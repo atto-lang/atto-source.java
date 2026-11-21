@@ -115,6 +115,26 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    void shareBangTypedTryPublishExecutesGuestWithUnsignedReceipt() throws Exception {
+        // Executed .atto guest when JUnit/Truffle CI is actually admitted.
+        // A receipt confirms atomic admission, not processing completion.
+        assertEquals("subscribed|p-1|1",
+                run(pinnedFixture("actor-pubsub-try-publish-v1.atto",
+                        "6f16558653cc3accb1df6825cfafa6b5f6ae79eb"), "actor-pubsub-try-publish-v1.atto"));
+    }
+
+    @Test
+    void directTryPublishCallWithoutShareProofCannotCompile() throws Exception {
+        String source = fixture("actor-pubsub-reject-unlowered-try-publish.atto");
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(denied.getMessage().contains(
+                "Topic.try_publish requires explicit checked share! value"),
+                denied.getMessage());
+    }
+
+    @Test
     void shareBangAttoGuestPublishesCheckedScalarOnExistingAsyncTopic() throws Exception {
         // This actually exercises compiler+Truffle guest code on an admitted
         // immutable scalar. It is NOT portable atomic try_publish verification.
@@ -186,12 +206,9 @@ final class SourceActorPubSubExecutionTest {
 
         for (String spelling : new String[]{
                 "rt share event", "share! event", "share!event"}) {
-            IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class,
+            org.junit.jupiter.api.Assertions.assertDoesNotThrow(
                     () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
-                    spelling);
-            assertTrue(error.getMessage().contains("unknown Topic callable member"),
-                    spelling + ": " + error.getMessage());
+                    "typed try_publish should accept checked share AST: " + spelling);
         }
     }
 
@@ -217,25 +234,25 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
-    void shareBangPortableTryPublishIsRejectedBeforeGuestExecution() throws Exception {
+    void shareBangTryPublishRejectsMismatchedPayloadType() throws Exception {
         String source = pinnedFixture("actor-pubsub-reject-unlowered-share-bang-try-publish.atto",
-                "d26c291c7af7fbdc8361de0cf26e9572fe6ce3b7");
+                "dc33b5970301f4fbb84eea001e19b9611c0a0586");
         Parser.parse(source);
         IllegalArgumentException denied = assertThrows(
                 IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(source));
-        assertTrue(denied.getMessage().contains("unknown Topic callable member"),
+        assertTrue(denied.getMessage().contains("Topic.try_publish value"),
                 denied.getMessage());
     }
 
     @Test
-    void portableTryPublishRejectedUntilNativeLowering() throws Exception {
+    void portableTryPublishRejectsMissingShareProof() throws Exception {
         PolyglotException error = assertThrows(
                 PolyglotException.class,
                 () -> run(
                         fixture("actor-pubsub-reject-unlowered-try-publish.atto"),
                         "source-pubsub-try-publish-not-lowered.atto"));
-        assertTrue(error.getMessage().contains("unknown Topic callable member"),
+        assertTrue(error.getMessage().contains("Topic.try_publish requires explicit checked share! value"),
                 error.getMessage());
     }
 

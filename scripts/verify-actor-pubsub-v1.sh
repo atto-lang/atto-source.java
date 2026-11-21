@@ -24,7 +24,8 @@ command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 
 # Pin both newly added share! source fixtures before Maven/guest execution.
 test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-share-bang-v1.atto)" = "00f311e2f569cf66009ba533282b63d35571853f"
-test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-reject-unlowered-share-bang-try-publish.atto)" = "d26c291c7af7fbdc8361de0cf26e9572fe6ce3b7"
+test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-reject-unlowered-share-bang-try-publish.atto)" = "dc33b5970301f4fbb84eea001e19b9611c0a0586"
+test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-v1.atto)" = "6f16558653cc3accb1df6825cfafa6b5f6ae79eb"
 
 # Must execute the Channel<T> recursive Sendable/callable negatives,
 # Must execute the guest-positive fixtures and all guest compile negatives,
@@ -85,11 +86,13 @@ expected = {
         "attolangFilenameExecutesExistingPubSubGuest",
         "pubSubHandlesCannotCrossIndependentSuspendsTaskBoundary",
         "legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors",
-        "portableTryPublishRejectedUntilNativeLowering",
+        "portableTryPublishRejectsMissingShareProof",
         "canonicalShareBangUsesSameOwnershipAstInsidePortableTryPublish",
         "canonicalShareBangTypeChecksWithExistingAsyncTopicPublish",
         "shareBangAttoGuestPublishesCheckedScalarOnExistingAsyncTopic",
-        "shareBangPortableTryPublishIsRejectedBeforeGuestExecution",
+        "shareBangTryPublishRejectsMismatchedPayloadType",
+        "shareBangTypedTryPublishExecutesGuestWithUnsignedReceipt",
+        "directTryPublishCallWithoutShareProofCannotCompile",
         "attoMultiGroupGuestPreservesOtherGroupAfterLeave",
         "attoPubSubTypeAndAuthorityNegativesStayFailClosed",
     },
