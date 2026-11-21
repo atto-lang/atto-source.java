@@ -111,6 +111,16 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    void shareBangAttoGuestPublishesCheckedScalarOnExistingAsyncTopic() throws Exception {
+        // This actually exercises compiler+Truffle guest code on an admitted
+        // immutable scalar. It is NOT portable atomic try_publish verification.
+        assertEquals(
+                "subscribed|p-1",
+                run(fixture("actor-pubsub-share-bang-v1.atto"),
+                        "source-pubsub-share-bang-v1.atto"));
+    }
+
+    @Test
     void attolangFilenameExecutesExistingPubSubGuest() throws Exception {
         // Explicit OresLanguage ID and MIME select the guest engine. This is
         // a .atto fixture regression, NOT proof of CLI extension discovery,
@@ -199,6 +209,17 @@ final class SourceActorPubSubExecutionTest {
                     () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
                     spelling);
         }
+    }
+
+    @Test
+    void shareBangPortableTryPublishIsRejectedBeforeGuestExecution() throws Exception {
+        String source = fixture("actor-pubsub-reject-unlowered-share-bang-try-publish.atto");
+        Parser.parse(source);
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(denied.getMessage().contains("unknown Topic callable member"),
+                denied.getMessage());
     }
 
     @Test

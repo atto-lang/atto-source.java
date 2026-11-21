@@ -1,0 +1,9 @@
+// Portable v1's synchronous atomic admission must not silently alias legacy
+// asynchronous RELIABLE publish until guest lowering and receipt semantics exist.
+pub suspends fnc main(): void {
+  val group = actor.group("portable");
+  val topic = group.topic<String>("events", "reliable", 4);
+  val String event = "pending";
+  val receipt = topic.try_publish(share! event);
+  return;
+}
