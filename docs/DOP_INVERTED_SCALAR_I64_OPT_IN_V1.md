@@ -1,0 +1,73 @@
+# AttoLang inverted struct: bounded compiler-verified i64 source slice
+
+**Status:** compiler-verified Java **host-reference executor only**. The ordinary
+Java/GraalVM guest compiler remains fail-closed. This is not a Truffle call
+target, GraalVM native-image, LLVM output, JVM bytecode generation, actor
+ownership proof or SIMD/AoSoA/SoAoS backend.
+
+## Restricted source and admission
+
+The production parser has an explicit opt-in entry point
+`Parser.parseDopInvertedScalarV1`. It parses the canonical
+`InvertedArray<Row>.with_capacity(N)` factory into a dedicated typed AST shape.
+The only consumer is `OresCompiler.compileDopInvertedScalarI64(source)`, which
+constructs a closed `DopInvertedScalarCompilerV1.Plan`. Ordinary
+`Parser.parse`, `OresCompiler.parseAndTypeCheck`, `TypeChecker`, and
+`LinkedProgramRunner` continue to reject unsupported inverted execution.
+
+Accepted source is exactly one nominal two-`int` inverted struct and one
+synchronous `fnc main(): int` with no inputs, generics, imports, user effects,
+extra declarations, actor lifecycle or annotations. The body must start with
+`let rows = InvertedArray<Row>.with_capacity(N);`, with `0 <= N <= 4096`,
+then contain no more than 4096 statements consisting solely of:
+
+- `rows.push(i64Literal, i64Literal);`
+- `rows.set(denseIndex, mutableFieldName, i64Literal);`
+- `rows.erase_swap(denseIndex);`
+- a terminal `return rows.get(denseIndex, fieldName);`
+
+All operands must be static signed i64 literals or declared static field names.
+No arbitrary functions, callbacks, host reflection, source imports, aliasing,
+operator overloads, suspension, layout conversion or silent backend fallback.
+Writes to fields lacking `let` fail during plan construction.
+
+The plan has immutable typed operations and a private constructor. Its
+`executeHostReference()` creates a new bounded
+`InvertedSchemaStorageBridge`/private `InvertedColumnStore`, then executes
+only checked operations and closes the owner in a finally-equivalent scope.
+Physical columns are independent byte-backed arrays, **not AOT/zero-GC
+proof**. Dense indices are logical positions; they are **not** stable
+generation-fenced row handles. The store-issued handles internally enforce
+generation fencing across erase-swap and recycling.
+
+## Cross-backend exact source fixtures
+
+The following source paths are committed byte-identically in the Java and
+LLVM repositories:
+
+| Source | Git blob SHA | Intended behavior |
+| --- | --- | --- |
+| `contracts/dop-inverted-v1/column-write-42.atto` | `766b8ef482b5d18da33e13a37ce0225f3fc0d744` | Return/exit `42` |
+| `contracts/dop-inverted-v1/immutable-write-rejected.atto` | `8a316fd438fdfed1631e11c5f2741d3fba578285` | Reject immutable field write before execution |
+
+The older byte-identical `swap-reuse.atto` and `removed-index-trap.atto`
+fixtures are also exercised. LLVM's native script now **requires**, but has
+not yet executed, 12 positive O0/O2 native returns, four real bounds-signal
+checks, and six source negatives. Java has authored JUnit host-reference
+plan/bridge tests but no executed native or guest parity receipts yet.
+
+## Promotion gates
+
+1. Run the exact-head Java JUnit suite and LLVM production compiler/CTest
+   with nonzero executed GitHub Actions job steps and independently verified
+   immutable HEAD/tree identities. Zero-step workflows are NOT_EXECUTED.
+2. Independently review static effect/ownership admission, integer overflow,
+   row lifetime, store capacity, failure cleanup and LLVM/Java shared blobs.
+3. Integrate verified operations into **real Truffle/Graal guest lowering**
+   through a typed compiler-owned MIR/ABI. Do not simply dispatch host
+   source snippets or relax ordinary TypeChecker ahead of this step.
+4. Prove backend-native physical columns, negative mutation behavior and
+   generation fencing against the same source oracle.
+5. Add separate support for general field kinds, actor-owned regions,
+   structured concurrency, AOT, AoSoA/SoAoS and SIMD only after the small
+   executable source slice is independently qualified.

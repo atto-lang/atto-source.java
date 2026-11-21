@@ -21,6 +21,15 @@ public final class OresCompiler {
         return ProtectedScalarMirV1.lower(Parser.parse(source));
     }
 
+    /**
+     * Opt-in bounded inverted struct v1 compilation. It uses the production
+     * source parser but a separately verified linear operation plan; it does
+     * not enable general guest inverted allocation in TypeChecker or Truffle.
+     */
+    public static DopInvertedScalarCompilerV1.Plan compileDopInvertedScalarI64(String source) {
+        return DopInvertedScalarCompilerV1.lower(Parser.parseDopInvertedScalarV1(source));
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
     }
