@@ -23,7 +23,13 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * 0ba32f019a0c1dfcf9aaa2f91accb030178f5a45.
  * Four additional saga fixtures: feat/native-checkout-saga-20261029;
  * their exact Git blobs are pinned below after same-organization copying.
- * This file's expected Git blobs bind all thirteen copied source fixtures.
+ * This file's expected Git blobs bind all fourteen copied source fixtures. The
+ * 14th fixture is an actor-owned in-memory effect receipt ledger. Canonical
+ * guest sources are pinned to step-function-demo PR #11 exact head
+ * 3b5cf40782b9f25f656bb79c6f3f6966568aa928. The coordinator and
+ * receipt ledger use isolated sealed state and a non-returning critical[write]
+ * callback; publication follows loan revocation. Native compiler acceptance
+ * and cross-backend runtime semantics are still pending.
  */
 final class SourceActorDemoWorkflowExecutionTest {
 
@@ -78,7 +84,7 @@ final class SourceActorDemoWorkflowExecutionTest {
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void rejectsForeignDuplicateAndOutOfOrderMessages() throws Exception {
-        assertGuest("coordinator-state", "workflow:state-guarded", "d91bfa28323d198c0001ece58747e68d9980597f");
+        assertGuest("coordinator-state", "workflow:state-guarded", "5c79f0f49593f501a525369c0f1b47b38ada8790");
     }
 
     @Test
@@ -104,6 +110,13 @@ final class SourceActorDemoWorkflowExecutionTest {
     void doesNotReleaseInventoryAfterUnconfirmedPaymentVoid() throws Exception {
         assertGuest("order-saga-void-unknown", "saga:compensation-incomplete",
                 "7137fcfaba3782e357ffe433a8b05798cd811849");
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void rejectsDuplicateAndForeignEffectReceiptsAndBlocksUnknownCancellation() throws Exception {
+        assertGuest("effect-receipt-ledger", "effect:fixture-reconciled-no-replay",
+                "58e9bda1709c015bb7fa17693c8f08ad384a397c");
     }
 
     private static void assertGuest(String fixture, String expected, String expectedGitBlob)

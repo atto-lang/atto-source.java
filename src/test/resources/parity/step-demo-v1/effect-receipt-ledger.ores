@@ -1,0 +1,142 @@
+// Native in-memory EFFECT PROTOCOL FIXTURE, not a durable outbox/receipt verifier.
+// The messages below are synthetic test labels, NOT authenticated receipts.
+// An ambiguous dispatched effect must be reconciled before a new disposition.
+// All persistent guest-owned instance data is in this actor's sealed state.
+define isolated actor WorkflowEffectLedger as
+  state {
+    phase: String = "created";
+    transition_epoch: int = 0;
+  }
+
+  receive(ActorMail<String> mail): void with state.read, state.write {
+    // Entire check/update is one non-suspending exclusive loan. No external
+    // effect, send, await, borrow escape, or actor teardown under the loan.
+    // The callback returns void; only detached local scalar output is
+    // published after exclusive state-loan revocation.
+    val command = mail.value;
+    let mut String reply = "rejected";
+    self.handle_state(critical[write] |s| -> {
+      if command == "tenant-a:run-1:prepare"; do
+        if s.phase == "created"; do
+          s.phase = "prepared";
+          s.transition_epoch = 1;
+          reply = "prepared";
+        fi
+      fi
+
+      if command == "tenant-a:run-1:dispatch"; do
+        if s.phase == "prepared"; do
+          if s.transition_epoch == 1; do
+            s.phase = "dispatched-unknown";
+            s.transition_epoch = 2;
+            reply = "unknown";
+          fi
+        fi
+      fi
+
+      if command == "tenant-a:run-1:cancel"; do
+        if s.phase == "dispatched-unknown"; do
+          reply = "blocked-unknown";
+        fi
+      fi
+
+      if command == "tenant-a:run-1:reconcile-not-applied"; do
+        if s.phase == "dispatched-unknown"; do
+          if s.transition_epoch == 2; do
+            // A real system requires an independently authenticated receipt
+            // and storage-fenced transition before this point.
+            s.phase = "known-not-applied";
+            s.transition_epoch = 3;
+            reply = "known-not-applied";
+          fi
+        fi
+      fi
+
+      if command == "tenant-a:run-1:retire"; do
+        if s.phase == "known-not-applied"; do
+          if s.transition_epoch == 3; do
+            s.phase = "retired";
+            s.transition_epoch = 4;
+            reply = "retired";
+          fi
+        fi
+      fi
+    });
+
+    self.send(reply);
+    if reply == "retired"; do
+      self.end();
+    fi
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val ledger = await spawn WorkflowEffectLedger();
+
+  ledger.send("tenant-b:run-1:prepare");
+  val foreign = (await ledger.outputs.next()).value.unwrap();
+  if foreign.value != "rejected"; do
+    stdio.stdout.write("effect:unsafe-foreign");
+    return;
+  fi
+
+  ledger.send("tenant-a:run-1:prepare");
+  val prepared = (await ledger.outputs.next()).value.unwrap();
+  if prepared.value != "prepared"; do
+    stdio.stdout.write("effect:unsafe-prepare");
+    return;
+  fi
+
+  ledger.send("tenant-a:run-1:prepare");
+  val duplicate = (await ledger.outputs.next()).value.unwrap();
+  if duplicate.value != "rejected"; do
+    stdio.stdout.write("effect:unsafe-duplicate");
+    return;
+  fi
+
+  ledger.send("tenant-a:run-1:dispatch");
+  val unknown = (await ledger.outputs.next()).value.unwrap();
+  if unknown.value != "unknown"; do
+    stdio.stdout.write("effect:unsafe-dispatch");
+    return;
+  fi
+
+  ledger.send("tenant-a:run-1:cancel");
+  val cancelled = (await ledger.outputs.next()).value.unwrap();
+  if cancelled.value != "blocked-unknown"; do
+    stdio.stdout.write("effect:unsafe-cancel");
+    return;
+  fi
+
+  ledger.send("tenant-b:run-1:reconcile-not-applied");
+  val foreign_receipt = (await ledger.outputs.next()).value.unwrap();
+  if foreign_receipt.value != "rejected"; do
+    stdio.stdout.write("effect:unsafe-receipt");
+    return;
+  fi
+
+  ledger.send("tenant-a:run-1:reconcile-not-applied");
+  val reconciled = (await ledger.outputs.next()).value.unwrap();
+  if reconciled.value != "known-not-applied"; do
+    stdio.stdout.write("effect:unsafe-reconcile");
+    return;
+  fi
+
+  ledger.send("tenant-a:run-1:reconcile-not-applied");
+  val repeated = (await ledger.outputs.next()).value.unwrap();
+  if repeated.value != "rejected"; do
+    stdio.stdout.write("effect:unsafe-replay");
+    return;
+  fi
+
+  ledger.send("tenant-a:run-1:retire");
+  val retired = (await ledger.outputs.next()).value.unwrap();
+  await ledger.get_done();
+  if retired.value == "retired"; do
+    stdio.stdout.write("effect:fixture-reconciled-no-replay");
+    return;
+  fi
+  stdio.stdout.write("effect:unsafe-terminal");
+  return;
+}

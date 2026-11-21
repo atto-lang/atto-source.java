@@ -1,0 +1,124 @@
+name: Actor demo pinned native AOT compiler build
+on:
+  push:
+    branches:
+      - test/actor-demo-14-sealed-state-20261029
+  pull_request:
+    branches:
+      - feat/actor-step-source-guest-baseline-20261028
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-trusted-compiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout exact compiler revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact source provenance
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          printf 'COMPILER_SOURCE_SHA=%s\n' "$EXPECTED_SHA"
+          printf 'COMPILER_SOURCE_TREE=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+      - name: Run source-free JSON compiler-admission security regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test-native-build-info-admission.sh
+          bash scripts/test-native-actor-smoke-admission.sh
+
+      - name: Set up pinned GraalVM JDK
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute real Graal JUnit baseline and compiler metadata tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=ManagedReferenceBuildInfoTest,CompilerCheckModeTest,SourceActorStepWorkflowExecutionTest test
+          # Require actual JVM/Truffle guest execution, not a green Maven invocation with skips.
+          for record in \
+            "dev.oreslang.launcher.ManagedReferenceBuildInfoTest:1" \
+            "dev.oreslang.launcher.CompilerCheckModeTest:4" \
+            "dev.oreslang.SourceActorStepWorkflowExecutionTest:4"; do
+            suite="${record%:*}"
+            count="${record#*:}"
+            report="target/surefire-reports/TEST-${suite}.xml"
+            test -s "$report"
+            grep -Eq "tests=\"$count\"" "$report"
+            for attr in errors failures skipped; do
+              grep -Eq "$attr=\"0\"" "$report"
+            done
+          done
+          echo 'REAL_GRAAL_BASELINE_GUEST_PASS count=4'
+
+      - name: Build real Oreslang Native Image and retain source/build identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          native-image --version
+          mvn -version
+          mvn -B -ntp -DskipTests -Pnative-aot package
+          test -f target/ores-aot && test -x target/ores-aot
+          sha256sum target/ores-aot | tee target/ores-aot.sha256
+          {
+            printf 'compiler_source_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'compiler_tree_sha=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+            printf 'compiler_sha256=%s\n' "$(sha256sum target/ores-aot | cut -d ' ' -f 1)"
+            printf 'github_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'github_run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'build_profile=native-aot\n'
+            java -version 2>&1
+            native-image --version
+            mvn -version
+          } > target/ores-aot.build-provenance.txt
+          cat target/ores-aot.build-provenance.txt
+          echo 'NATIVE_AOT_BINARY_BUILT'
+      - name: Verify genuine native CLI metadata and source execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x target/ores-aot
+          timeout --kill-after=5s 15s target/ores-aot --build-info > target/ores-aot.build-info.json
+          test "$(wc -c < target/ores-aot.build-info.json)" -le 2048
+          # Native AOT must identify its concrete execution mode; reject
+          # JSON strings, JVM/hybrid impersonation, or multiple documents.
+          bash scripts/verify-native-build-info.sh target/ores-aot.build-info.json
+          bash scripts/verify-native-actor-smoke.sh \
+            "$(realpath target/ores-aot)" \
+            "$(cut -d ' ' -f 1 target/ores-aot.sha256)" \
+            src/test/resources/parity/actor-step-sequential.ores \
+            e8d9b1c0a870ff6a8d35ced1acf860f85fd7e42d \
+            complete | tee target/ores-aot.actor-smoke.receipt.txt
+      # Same-source-repository artifact only: not permission to mirror compiler
+      # bytes or private source across organizations. Security incident #22
+      # remains a separate gate. Expiration intentionally limits exposure.
+      - name: Retain verified private binary and provenance for independent review
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oreslang-native-aot-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: |
+            target/ores-aot
+            target/ores-aot.sha256
+            target/ores-aot.build-provenance.txt
+            target/ores-aot.build-info.json
+            target/ores-aot.actor-smoke.receipt.txt
+            target/surefire-reports/TEST-dev.oreslang.launcher.ManagedReferenceBuildInfoTest.xml
+            target/surefire-reports/TEST-dev.oreslang.launcher.CompilerCheckModeTest.xml
+            target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
+          if-no-files-found: ignore
+          retention-days: 1

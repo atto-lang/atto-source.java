@@ -25,8 +25,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           git diff --exit-code
           git diff --cached --exit-code
-          test "$(git ls-files 'src/test/resources/parity/step-demo-v1/*.ores' | wc -l)" -eq 13
-          # Four actor-step fixtures + thirteen canonical demo fixtures.
+          test "$(git ls-files 'src/test/resources/parity/step-demo-v1/*.ores' | wc -l)" -eq 14
+          # Four actor-step fixtures + fourteen canonical demo fixtures.
           test "$(git ls-files 'src/test/resources/parity/actor-*.ores' | wc -l)" -eq 4
           test "$(git hash-object src/test/resources/parity/actor-coordinator-fork-join.ores)" = "9470d82a3180744c28abe9f890545b9bafdb2110"
           echo "NATIVE_GUEST_SOURCE_HEAD=$EXPECTED_SHA"
@@ -37,7 +37,7 @@ jobs:
           java-version: '25'
           distribution: 'graalvm'
           cache: maven
-      - name: Compile and execute seventeen real Oreslang guest cases
+      - name: Compile and execute eighteen real Oreslang guest cases
         shell: bash
         run: |
           set -euo pipefail
@@ -55,5 +55,5 @@ jobs:
             done
           done
           grep -Eq 'tests="4"' target/surefire-reports/TEST-dev.oreslang.SourceActorStepWorkflowExecutionTest.xml
-          grep -Eq 'tests="13"' target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
-          echo 'NATIVE_GUEST_EXECUTED_WITH_REAL_COMPILER cases=17'
+          grep -Eq 'tests="14"' target/surefire-reports/TEST-dev.oreslang.SourceActorDemoWorkflowExecutionTest.xml
+          echo 'NATIVE_GUEST_EXECUTED_WITH_REAL_COMPILER cases=18'
