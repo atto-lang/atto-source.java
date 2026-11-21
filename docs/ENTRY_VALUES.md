@@ -49,3 +49,9 @@ This change deliberately does not introduce a second guest Map runtime. Current
 typed-Map work owns Map storage, key-domain, mutation, ownership and actor
 transport semantics. `Map.from_entries` must be implemented on that foundation
 rather than by reusing Java `Map`/record storage as guest collection policy.
+
+Actor-frozen record maps are represented by a dedicated `FrozenGuestMap` carrier.
+Guest equality traverses only trusted record/maps and exact known-safe List
+carriers. Unknown host Map/List implementations are opaque and their callbacks
+must not run implicitly during guest equality; record field keys must be strings.
+Tuple equality retains separate `OresTuple` nominal kind and positional comparison.

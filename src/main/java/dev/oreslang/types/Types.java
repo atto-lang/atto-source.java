@@ -197,7 +197,9 @@ public final class Types {
         return false; // Not knowing if types overlap is NOT proof of exclusion.
     }
 
-    private static boolean containsUncertainType(Type type) {
+    // Package-visible so TypeChecker can apply the same proof rule to
+    // declaration-aware structural relations.
+    static boolean containsUncertainType(Type type) {
         if (type == Unknown.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
@@ -258,15 +260,29 @@ public final class Types {
             return true;
         }
         if (from instanceof Record source && to instanceof Record target) {
-            if (!compatibleAggregateKinds(source.kind(), target.kind())) return false;
-            // Structs are closed concrete shapes: unlike records/contracts, they do not
-            // participate in row-width subtyping. A lexical infer<T> alias can
-            // therefore name the exact generated struct shape.
-            if (source.kind() == AggregateKind.STRUCT
+            // Only an explicitly readonly structural contract may view a
+            // concrete struct by a subset of its fields. Plain RECORD and
+            // writable CONTRACT destinations must not erase STRUCT identity.
+            boolean readonlyStructView = source.kind() == AggregateKind.STRUCT
+                    && target.kind() == AggregateKind.CONTRACT
+                    && target.readOnly();
+            if (!readonlyStructView && !compatibleAggregateKinds(source.kind(), target.kind())) return false;
+            // Ordinary struct-to-struct assignment remains exact, including
+            // arity; width is exclusively available through readonly CONTRACT.
+            if (target.kind() == AggregateKind.STRUCT
                     && source.members().size() != target.members().size()) return false;
+            // Readonly structural views may covariantly read fields, but a
+            // writable destination cannot widen a slot or recover mutation from
+            // an already-readonly source.
+            if (!target.readOnly() && source.readOnly()) return false;
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
                 Type actual = source.members().get(required.getKey());
-                if (actual == null || !isAssignable(actual, required.getValue())) return false;
+                if (actual == null) return false;
+                if (target.readOnly()) {
+                    if (!readonlyViewMemberCompatible(actual, required.getValue())) return false;
+                } else if (!actual.equals(required.getValue())) {
+                    return false;
+                }
             }
             return true;
         }
@@ -279,7 +295,16 @@ public final class Types {
             if (source.kind() != target.kind()) return false;
             if (source.elements().size() != target.elements().size()) return false;
             for (int i = 0; i < source.elements().size(); i++) {
-                if (!isAssignable(source.elements().get(i), target.elements().get(i))) return false;
+                Type actualSlot = source.elements().get(i);
+                Type expectedSlot = target.elements().get(i);
+                // Positional products are passed by their existing physical
+                // slots. No implicit numeric representation change may be
+                // smuggled through an immutable Tuple/structural pair view.
+                if (!readonlyViewMemberCompatible(actualSlot, expectedSlot)) return false;
+                // Fixed Array/List slots also have write-capable storage:
+                // require invariance rather than unsound covariant writes.
+                if (source.kind() != TupleKind.TUPLE
+                        && !readonlyViewMemberCompatible(expectedSlot, actualSlot)) return false;
             }
             return true;
         }
@@ -298,6 +323,40 @@ public final class Types {
         }
 
         return numericWidening(from, to);
+    }
+
+    /**
+     * A structural view reads an existing slot without converting/repacking it.
+     * General assignability is too permissive here (e.g. int -> float).
+     * Nominal subtyping needs declaration metadata and is handled by TypeChecker.
+     */
+    private static boolean readonlyViewMemberCompatible(Type source, Type target) {
+        if (source.equals(target)) return true;
+        if (containsUncertainType(source) || containsUncertainType(target)) return false;
+        if (source instanceof StringLiteral && target == Primitive.STRING) return true;
+        if (source instanceof BoolLiteral && target == Primitive.BOOL) return true;
+        if (source instanceof Union union) {
+            return union.options().stream().allMatch(t -> readonlyViewMemberCompatible(t, target));
+        }
+        if (target instanceof Union union) {
+            return union.options().stream().anyMatch(t -> readonlyViewMemberCompatible(source, t));
+        }
+        if (source instanceof Record from && target instanceof Record to) {
+            return isAssignable(from, to);
+        }
+        if (source instanceof Tuple from && target instanceof Tuple to) {
+            if (from.kind() != to.kind() || from.elements().size() != to.elements().size()) return false;
+            for (int i = 0; i < from.elements().size(); i++) {
+                if (!readonlyViewMemberCompatible(from.elements().get(i), to.elements().get(i))) return false;
+            }
+            return true;
+        }
+        // Callable values have their own variance/ABI rules. This does not
+        // grant writable access to a data field containing the callable.
+        if (source instanceof Function && target instanceof Function) {
+            return isAssignable(source, target);
+        }
+        return false;
     }
 
     private static boolean numericWidening(Type from, Type to) {
