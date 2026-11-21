@@ -32,11 +32,16 @@ import java.util.function.Supplier;
  * cannot forge a value/failure.</p>
  *
  * <p>Blocking host bridges ({@code get}, timed {@code get}, and {@code join})
- * reject pending reads inside actor execution. Settled reads and zero-timeout
- * polling remain available without parking an actor dispatcher.</p>
+ * reject pending reads inside actor execution and runtime completion callbacks.
+ * Settled reads and zero-timeout polling remain available without parking a
+ * dispatcher or preventing completion of other runtime Future waiters.</p>
  */
 public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private static final Object PENDING = new Object();
+    // Runtime Future completion callbacks are delivered inline on their
+    // producer/registration thread. Blocking one here can deadlock completion
+    // of another waiter still queued behind it on the same settled Future.
+    private static final ThreadLocal<Boolean> deliveringRuntimeCallback = new ThreadLocal<>();
 
     /**
      * Single-shot completion capability used to adapt callback-only APIs.
@@ -623,6 +628,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     @SuppressWarnings("unchecked")
     private void notifyWaiter(RuntimeWaiterRegistration<T> waiter, Object terminal) {
         if (!waiter.claimed.compareAndSet(false, true)) return;
+        // Nested Future settlements inherit the same nonblocking callback
+        // scope. Only the outermost delivery removes the ThreadLocal.
+        boolean nestedCallback = Boolean.TRUE.equals(deliveringRuntimeCallback.get());
+        if (!nestedCallback) deliveringRuntimeCallback.set(Boolean.TRUE);
         try {
             if (terminal instanceof Success<?> success) {
                 waiter.callback.accept((T) success.value(), null);
@@ -637,6 +646,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             // Runtime waiter failures must not stop delivery to other waiters or
             // mutate the settled Future. Scheduler plumbing owns its own
             // failure path.
+        } finally {
+            if (!nestedCallback) deliveringRuntimeCallback.remove();
         }
     }
 
@@ -649,17 +660,32 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         requireBlockingAllowed();
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
-
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        // Repeated timed host polling of a pending READY/DONE Future must not
+        // accumulate callbacks after timeout or interruption.
+        RuntimeWaiterRegistration<T> registration =
+                whenCompleteRuntimeCancellable((value, failure) -> done.countDown());
+        try {
+            if (unit == null) {
+                done.await();
+            } else if (!done.await(timeout, unit)) {
+                return state.get();
+            }
+            return state.get();
+        } finally {
+            // Safe even if settlement concurrently claimed this registration.
+            registration.detach();
         }
-        return state.get();
     }
 
     private static void requireBlockingAllowed() {
+        if (Boolean.TRUE.equals(deliveringRuntimeCallback.get())) {
+            throw new IllegalStateException(
+                    "await would block a runtime Future completion callback and may deadlock pending waiter delivery");
+        }
+        if (ActorRuntime.inActorRetirementCallback()) {
+            throw new IllegalStateException(
+                    "await would block an actor retirement callback before DONE or another pending Future can settle");
+        }
         if (ActorRuntime.inActorExecution()) {
             throw new IllegalStateException(
                     "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
