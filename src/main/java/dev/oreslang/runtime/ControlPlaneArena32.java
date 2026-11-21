@@ -124,6 +124,27 @@ final class ControlPlaneArena32 implements AutoCloseable {
             throw new IllegalArgumentException("only typed i64 fields 0 and 8");
         return records.get(I64, offset(slot, field));
     }
+    /**
+     * Store one 128-bit scalar atomically with respect to all other operations
+     * on this control arena. Low/high limbs are little-endian. No managed
+     * per-operation buffer; the compiler must validate the 128-bit field type.
+     * Do not mix this field with separate i64 writes in typed guest lowering.
+     */
+    synchronized void writeI128(long handle, long low, long high) {
+        int slot = validate(handle);
+        records.set(I64, offset(slot, 0), low);
+        records.set(I64, offset(slot, 8), high);
+    }
+
+    /** Read two limbs into a caller-owned reusable buffer; zero allocations. */
+    synchronized void readI128(long handle, long[] limbs) {
+        if (limbs == null || limbs.length != 2)
+            throw new IllegalArgumentException("i128 output must be two caller-owned limbs");
+        int slot = validate(handle);
+        limbs[0] = records.get(I64, offset(slot, 0));
+        limbs[1] = records.get(I64, offset(slot, 8));
+    }
+
     public synchronized void writeRef32(long parent, long child) {
         int slot = validate(parent);
         if (child != 0L) validate(child); // child must belong to this exact control arena
