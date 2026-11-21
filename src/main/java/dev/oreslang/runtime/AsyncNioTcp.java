@@ -290,6 +290,123 @@ public final class AsyncNioTcp {
         }
 
         /**
+         * Read one bounded RESP2 request as owned Bytes, not hex strings.
+         * Tuple positions: [kind, canonicalOpcode, key, value].
+         * kind 0=EOF,1=PING,2=GET,3=SET,4=DEL,5=QUIT,6=unsupported.
+         * Invalid arities receive kind 6 and cannot mutate actor storage.
+         * Read method modes are exclusive (raw / hex / binary).
+         */
+        public OresFuture<List<Object>> readResp2BinaryAsync() {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.read_resp2_binary_async");
+            if (!readerMode.compareAndSet(0, 3) && readerMode.get() != 3) {
+                return OresFuture.failed(new IllegalStateException(
+                        "cannot mix binary RESP2, hex RESP2 and raw socket reads"));
+            }
+            if (closed.get() || !reading.compareAndSet(false, true)) {
+                return OresFuture.failed(new IllegalStateException(
+                        "closed socket or concurrent binary RESP2 reader"));
+            }
+            return OresFuture.fromCallback(this::continueBinaryRespRead, this::closeQuietly);
+        }
+
+        private void continueBinaryRespRead(OresFuture.Callback<List<Object>> callback) {
+            if (closed.get()) {
+                reading.set(false);
+                callback.reject(new IOException("socket retired before binary RESP2 read"));
+                return;
+            }
+            respInput.flip();
+            AsyncNioResp2.BinaryParsed frame;
+            try {
+                frame = AsyncNioResp2.parseBinary(respInput);
+            } catch (IOException invalid) {
+                reading.set(false);
+                closeQuietly();
+                callback.reject(invalid);
+                return;
+            }
+            if (frame != null) {
+                respInput.position(frame.consumed());
+                respInput.compact();
+                reading.set(false);
+                List<OresBytes> arguments = frame.arguments();
+                int kind = switch (frame.opcode()) {
+                    case "PING" -> arguments.isEmpty() ? 1 : 6;
+                    case "GET" -> arguments.size() == 1 ? 2 : 6;
+                    case "SET" -> arguments.size() == 2 ? 3 : 6;
+                    case "DEL" -> arguments.size() == 1 ? 4 : 6;
+                    case "QUIT" -> arguments.isEmpty() ? 5 : 6;
+                    default -> 6;
+                };
+                OresBytes key = arguments.size() >= 1
+                        ? arguments.get(0) : OresBytes.empty();
+                OresBytes value = arguments.size() >= 2
+                        ? arguments.get(1) : OresBytes.empty();
+                callback.resolve(List.of(kind, frame.opcode(), key, value));
+                return;
+            }
+            respInput.compact();
+            if (!respInput.hasRemaining()) {
+                if (respInput.capacity() >= AsyncNioResp2.MAX_FRAME) {
+                    reading.set(false);
+                    closeQuietly();
+                    callback.reject(new IOException("binary RESP2 exceeds bounded frame"));
+                    return;
+                }
+                ByteBuffer enlarged = ByteBuffer.allocate(Math.min(
+                        AsyncNioResp2.MAX_FRAME, respInput.capacity() * 2));
+                respInput.flip();
+                enlarged.put(respInput);
+                respInput = enlarged;
+            }
+            try {
+                channel.read(respInput, IO_TIMEOUT_SECONDS, TimeUnit.SECONDS, null,
+                        new CompletionHandler<Integer, Void>() {
+                    @Override public void completed(Integer count, Void ignored) {
+                        if (count == null || count < 0) {
+                            int buffered = respInput.position();
+                            reading.set(false);
+                            if (buffered != 0) {
+                                closeQuietly();
+                                callback.reject(new IOException("truncated binary RESP2 frame"));
+                            } else {
+                                callback.resolve(List.of(
+                                        0, "", OresBytes.empty(), OresBytes.empty()));
+                            }
+                            return;
+                        }
+                        // A zero-count completion is not EOF.
+                        continueBinaryRespRead(callback);
+                    }
+                    @Override public void failed(Throwable failure, Void ignored) {
+                        reading.set(false);
+                        closeQuietly();
+                        callback.reject(failure);
+                    }
+                });
+            } catch (RuntimeException failure) {
+                reading.set(false);
+                closeQuietly();
+                callback.reject(failure);
+            }
+        }
+
+        /** One bounded binary RESP2 write through NIO2 completion callbacks. */
+        public OresFuture<Void> writeResp2BinaryAsync(String status, OresBytes payload) {
+            context.requireCapability(IsolatePolicy.Capability.NETWORK,
+                    "socket.write_resp2_binary_async");
+            try {
+                // Non-bulk replies never serialize a payload: caller may
+                // supply a harmless placeholder from its typed tuple.
+                OresBytes data = "VALUE".equals(status) ? payload : null;
+                return writeDetachedAsync(AsyncNioResp2.encodeBinary(status, data));
+            } catch (IOException failure) {
+                return OresFuture.failed(failure);
+            }
+        }
+
+        /**
          * Encode one bounded actor reply and write through the same NIO2
          * CompletionHandler. One guest actor output per GET, no blocking IO.
          */

@@ -8199,6 +8199,19 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof dev.oreslang.runtime.AsyncNioTcp.Connection socket) {
                 return switch (name) {
+                    case "read_resp2_binary_async" -> (Invokable) args -> {
+                        requireZero(args, "socket.read_resp2_binary_async");
+                        return socket.readResp2BinaryAsync();
+                    };
+                    case "write_resp2_binary_async" -> (Invokable) args -> {
+                        requireTwo(args, "socket.write_resp2_binary_async");
+                        String status = requireString(args.get(0), "binary RESP2 reply kind");
+                        if (!(args.get(1) instanceof dev.oreslang.runtime.OresBytes payload)) {
+                            throw new IllegalArgumentException(
+                                    "socket.write_resp2_binary_async requires immutable Bytes");
+                        }
+                        return socket.writeResp2BinaryAsync(status, payload);
+                    };
                     case "read_resp2_hex_async" -> (Invokable) args -> {
                         requireZero(args, "socket.read_resp2_hex_async");
                         return socket.readResp2HexAsync();

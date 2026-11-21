@@ -1,0 +1,80 @@
+// Experimental, compiler-backed Atto actor with binary Bytes KV storage.
+// Production physical TCP I/O is NIO2 CompletionHandler only.
+// Java NIO2 frames RESP2 into immutable owned Bytes; Atto alone owns Map.
+// One client, memory-only; no blocking socket, stdio, WAL or host-owned KV.
+define actor OwnedBytesNioKvActor implements StreamOperator<Tuple[int, Bytes, Bytes], Tuple[string, Bytes]> as
+  let Map<Bytes,Bytes> values;
+
+  on_start(): void {
+    self.values = ~map<Bytes,Bytes>();
+    return;
+  }
+
+  receive(ActorMail<Tuple[int, Bytes, Bytes]> mail): void {
+    const tuple = mail.value;
+    const int kind = tuple[0];
+    const Bytes key = tuple[1];
+    const Bytes value = tuple[2];
+
+    if kind == 5; do self.end(); return; fi
+    if kind == 3; do
+      self.values.set(key, value);
+      self.send(("OK", value));
+      return;
+    fi
+    if kind == 2; do
+      val found = self.values.get_optional(key);
+      if found.is_none(); do
+        self.send(("NIL", key));
+      else
+        self.send(("VALUE", found.unwrap()));
+      fi
+      return;
+    fi
+    if kind == 4; do
+      if self.values.delete(key); do
+        self.send(("ONE", key));
+      else
+        self.send(("ZERO", key));
+      fi
+      return;
+    fi
+    self.send(("ERR", key));
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val worker = spawn OwnedBytesNioKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16399);
+  val socket = await listener.accept_async();
+
+  loop {
+    val frame = await socket.read_resp2_binary_async();
+    const int kind = frame[0];
+    if kind == 0; do
+      await socket.close_async();
+      await listener.close_async();
+      worker.send((5, frame[2], frame[3]));
+      await worker.get_done();
+      return;
+    fi
+    if kind == 5; do
+      await socket.write_resp2_binary_async("OK", frame[3]);
+      await socket.close_async();
+      await listener.close_async();
+      worker.send((5, frame[2], frame[3]));
+      await worker.get_done();
+      return;
+    fi
+    if kind == 1; do
+      await socket.write_resp2_binary_async("PONG", frame[3]);
+    else
+      worker.send((kind, frame[2], frame[3]));
+      val output = (await worker.outputs.next()).value.unwrap();
+      val reply = output.value;
+      await socket.write_resp2_binary_async(reply[0], reply[1]);
+    fi
+  }
+}
