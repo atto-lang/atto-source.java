@@ -7,6 +7,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ExecutionContext.java'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/test/java/dev/oreslang/runtime/ActorStateRuntimePermitAuthorityTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorSupervisorUniqueOwnerRwTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorStateRegionActorStopPinTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorStateSourceTaskStopQuiescenceTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorStateRw*'
@@ -39,6 +40,7 @@ jobs:
             src/main/java/dev/oreslang/runtime/ExecutionContext.java \
             src/main/java/dev/oreslang/nodes/OresEvalRootNode.java \
             src/test/java/dev/oreslang/runtime/ActorStateRuntimePermitAuthorityTest.java \
+            src/test/java/dev/oreslang/runtime/ActorSupervisorUniqueOwnerRwTest.java \
             src/test/java/dev/oreslang/runtime/ActorStateRegionActorStopPinTest.java \
             src/test/java/dev/oreslang/runtime/ActorStateSourceTaskStopQuiescenceTest.java \
             src/test/java/dev/oreslang/runtime/ActorStateRwLoansTest.java \
@@ -62,13 +64,14 @@ jobs:
           java -version
           mvn -version
           mvn -B -ntp -DfailIfNoTests=true \
-            -Dtest=ActorCriticalStateModeTest,ActorCriticalModeConformanceTest,ActorSealedStateAuthorityGateTest,ActorStateRuntimePermitAuthorityTest,ActorStateRegionActorStopPinTest,ActorStateSourceTaskStopQuiescenceTest,ActorStateRwLoansTest,ActorStateRwLoansCarrierMatrixTest,ActorStateRwRetirementPublishRaceTest \
+            -Dtest=ActorCriticalStateModeTest,ActorCriticalModeConformanceTest,ActorSealedStateAuthorityGateTest,ActorStateRuntimePermitAuthorityTest,ActorSupervisorUniqueOwnerRwTest,ActorStateRegionActorStopPinTest,ActorStateSourceTaskStopQuiescenceTest,ActorStateRwLoansTest,ActorStateRwLoansCarrierMatrixTest,ActorStateRwRetirementPublishRaceTest \
             test
           for cls in \
             dev.oreslang.ActorCriticalStateModeTest \
             dev.oreslang.ActorCriticalModeConformanceTest \
             dev.oreslang.ActorSealedStateAuthorityGateTest \
             dev.oreslang.runtime.ActorStateRuntimePermitAuthorityTest \
+            dev.oreslang.runtime.ActorSupervisorUniqueOwnerRwTest \
             dev.oreslang.runtime.ActorStateRegionActorStopPinTest \
             dev.oreslang.runtime.ActorStateSourceTaskStopQuiescenceTest \
             dev.oreslang.runtime.ActorStateRwLoansTest \

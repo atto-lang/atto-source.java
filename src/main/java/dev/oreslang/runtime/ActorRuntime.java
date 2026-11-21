@@ -7769,8 +7769,14 @@ public final class ActorRuntime implements AutoCloseable {
                 String codeActorType,
                 ActorCell<?> parent) {
             this.ref = ref;
+            // Bind the sealed state region to this actor's minted allocation
+            // identity at construction, not on its first borrower admission.
+            // This matches acquireCurrentActorStatePermit's execution domain.
             this.stateRegion = new ActorStateRwLoans(0,
-                    () -> onActorStateRegionRetired(ref.id()));
+                    () -> onActorStateRegionRetired(ref.id()),
+                    new ExecutionContext.AllocationDomain(
+                            ExecutionContext.AllocationKind.ACTOR,
+                            stateRuntimeDomain, ref.generation(), ref.generation()));
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
