@@ -1,0 +1,3 @@
+// Reject aliases on a declaration; a declared actor is a nominal type, not a receiver value.
+namespace foo;
+declare pub actor Foo as f;

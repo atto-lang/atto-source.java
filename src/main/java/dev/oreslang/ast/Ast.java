@@ -130,8 +130,15 @@ public final class Ast {
      * declaration, it must not be turned into an empty actor class.
      */
     public record StandaloneActorDecl(
-            String name, String receiverName, Visibility visibility, ActorKind actorKind)
+            String name, String receiverName, Visibility visibility, ActorKind actorKind,
+            List<TypeRef> implementsTypes, boolean declared)
             implements Decl {
+        /** Legacy 'define actor Foo as f;' source stays compatible. */
+        public StandaloneActorDecl(String name, String receiverName,
+                                   Visibility visibility, ActorKind actorKind) {
+            this(name, receiverName, visibility, actorKind, List.of(), false);
+        }
+
         public StandaloneActorDecl {
             if (name == null || name.isBlank() || receiverName == null
                     || receiverName.isBlank() || name.equals(receiverName)) {
@@ -142,6 +149,11 @@ public final class Ast {
             if (actorKind != ActorKind.SHARED) {
                 throw new IllegalArgumentException(
                         "standalone actor AST currently supports only generic shared actors");
+            }
+            implementsTypes = List.copyOf(implementsTypes);
+            if (declared && !receiverName.equals("$declared$" + name)) {
+                throw new IllegalArgumentException(
+                        "declared actor must have a compiler-owned internal receiver sentinel");
             }
         }
     }

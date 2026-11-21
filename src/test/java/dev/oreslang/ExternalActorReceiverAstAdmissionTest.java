@@ -35,6 +35,31 @@ final class ExternalActorReceiverAstAdmissionTest {
     }
 
     @Test
+    void definePrefixedOrdinaryCallableRemainsNonActorFunction() {
+        assertInstanceOf(Ast.FunctionDecl.class,
+                declaration("define pub fnc inspect(Worker worker): void { return; }"));
+        assertInstanceOf(Ast.FunctionDecl.class,
+                declaration("define pub routine inspect(Worker worker): void { return; }"));
+        assertInstanceOf(Ast.FunctionDecl.class,
+                declaration("define module workers as\n"
+                        + "  define pub fnc inspect(Worker worker): void { return; }\n"
+                        + "end\n"));
+    }
+
+    @Test
+    void definePrefixedExternalFunctionNeverGainsActorIngress() {
+        for (String spelling : new String[]{
+                "define external fnc inspect(): void { return; }",
+                "define external routine inspect(): void { return; }"}) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(spelling));
+            assertTrue(error.getMessage().contains(
+                    "'external' is allowed only for nominal actor mtd declarations"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
     void moduleScopedExternalMtdPreservesItsDeclarationKind() {
         assertInstanceOf(Ast.ExternalActorMethodDecl.class,
                 declaration("define module workers as\n"
