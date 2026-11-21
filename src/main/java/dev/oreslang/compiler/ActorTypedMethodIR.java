@@ -214,6 +214,18 @@ public final class ActorTypedMethodIR {
                             "ACTOR_TYPED_IR_PROVENANCE_MISMATCH: missing source namespace");
                 }
                 Ast.ExternalActorMethodDecl method = origin.nominalBinding().method();
+                Ast.Program actorProgram = parsed.get(origin.actorUnit());
+                if (actorProgram == null
+                        || !actorKey.namespace().equals(actorProgram.namespace())
+                        || !hasExactRootDeclaration(actorProgram,
+                                origin.nominalBinding().nominalActor())
+                        || !hasExactRootDeclaration(sourceProgram, method)) {
+                    // Equal AST *values* parsed independently are not the
+                    // authenticated AST identities used by the binder. This
+                    // closes stale/mixed snapshot reuse of actor method IR.
+                    throw new IllegalArgumentException(
+                            "ACTOR_TYPED_IR_SOURCE_AST_IDENTITY_MISMATCH: " + key);
+                }
                 if (!method.actorName().equals(actorKey.actorName())
                         || !method.name().equals(signature.name())
                         || method.parameters().size() != signature.arity()
@@ -227,6 +239,16 @@ public final class ActorTypedMethodIR {
                 var byName = new LinkedHashMap<String, ParameterRead>();
                 for (int i = 0; i < method.parameters().size(); i++) {
                     Ast.Param p = method.parameters().get(i);
+                    // Parser-normal names are expected, but the pre-HIR
+                    // boundary is also exercised with compiler-synthesized
+                    // ASTs. Reject malformed names deterministically rather
+                    // than triggering an unchecked null dereference.
+                    if (p.name() == null || p.name().isBlank()
+                            || p.name().length() > 1024) {
+                        throw new IllegalArgumentException(
+                                "ACTOR_TYPED_IR_PARAMETER_NAME_INVALID: " + key
+                                        + " parameter " + i);
+                    }
                     if (p.name().equals(method.receiverName())
                             || p.type().isBorrow() || p.type().inferArguments()
                             || !p.type().arguments().isEmpty()
@@ -297,6 +319,19 @@ public final class ActorTypedMethodIR {
         return new Result(checked, plans);
     }
 
+    private static boolean hasExactRootDeclaration(
+            Ast.Program program, Ast.Decl expected) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            if (!dev.oreslang.parser.Parser.ROOT_MODULE.equals(module.name())) {
+                continue;
+            }
+            for (Ast.Decl candidate : module.declarations()) {
+                if (candidate == expected) return true;
+            }
+        }
+        return false;
+    }
+
     private static ReturnTerminator checkTerminal(
             List<Ast.Stmt> body, String resultType, String receiver,
             Map<String, ParameterRead> parameters,
@@ -365,7 +400,20 @@ public final class ActorTypedMethodIR {
             if (!left.typeName().equals("int") || !right.typeName().equals("int")) {
                 throw unsupported(key, "integer arithmetic requires exactly int operands");
             }
-            return new CheckedIntBinary(binary.operator(), left, right);
+            // Analyze only fully constant integer subtrees. Never execute
+            // dynamic arithmetic or rely on Java's unchecked overflow.
+            // Checking the divisor after recursive exact-folding detects
+            // constants such as 1 - 1, not just literal 0.
+            Long denominator = constantInt(right, key);
+            if ((binary.operator().equals("/") || binary.operator().equals("%"))
+                    && denominator != null && denominator == 0L) {
+                throw new IllegalArgumentException(
+                        "ACTOR_TYPED_IR_DIVIDE_BY_ZERO: " + key
+                                + " has a provably zero integer divisor");
+            }
+            var typed = new CheckedIntBinary(binary.operator(), left, right);
+            constantInt(typed, key); // rejects statically provable overflow
+            return typed;
         }
         // In particular, never infer effect/ownership semantics of CallExpr,
         // MemberExpr, AwaitExpr, AssignExpr, LambdaExpr or state access from
@@ -373,6 +421,50 @@ public final class ActorTypedMethodIR {
         throw unsupported(key,
                 "expression node requires checked ownership/effect/critical lowering: "
                         + expr.getClass().getSimpleName());
+    }
+
+    /**
+     * Exact, bounded constant analysis for checked int operations. A null
+     * result means runtime-dependent; it NEVER licenses execution or
+     * unwraps actor/ownership values. Nested division is deliberately left
+     * dynamic because backend integer division semantics require MIR proof.
+     */
+    private static Long constantInt(Value value, ActorMethodIndex.MethodKey key) {
+        if (value instanceof ScalarLiteral literal) {
+            return literal.typeName().equals("int") && literal.value() instanceof Long integer
+                    ? integer : null;
+        }
+        if (!(value instanceof CheckedIntBinary expr)) return null;
+        Long left = constantInt(expr.left(), key);
+        Long right = constantInt(expr.right(), key);
+        if ((expr.operator().equals("/") || expr.operator().equals("%"))
+                && right != null && right == 0L) {
+            throw new IllegalArgumentException(
+                    "ACTOR_TYPED_IR_DIVIDE_BY_ZERO: " + key
+                            + " has a provably zero integer divisor");
+        }
+        if (left == null || right == null) return null;
+        try {
+            return switch (expr.operator()) {
+                case "+" -> Math.addExact(left, right);
+                case "-" -> Math.subtractExact(left, right);
+                case "*" -> Math.multiplyExact(left, right);
+                // Do not fold until compiler-owned checked division is
+                // defined in MIR, including Long.MIN_VALUE / -1.
+                case "/", "%" -> {
+                    if (left == Long.MIN_VALUE && right == -1L) {
+                        throw new ArithmeticException("signed division overflow");
+                    }
+                    yield null;
+                }
+                default -> throw new IllegalStateException(
+                        "unexpected pre-HIR integer operator");
+            };
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    "ACTOR_TYPED_IR_INTEGER_OVERFLOW: " + key
+                            + " has statically overflowing checked arithmetic", overflow);
+        }
     }
 
     private static IllegalArgumentException unsupported(
