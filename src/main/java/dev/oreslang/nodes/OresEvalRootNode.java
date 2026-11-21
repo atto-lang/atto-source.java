@@ -887,16 +887,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
-            Invocation current = initial;
-            int tailHops = 0;
-            while (true) {
-                Object result = current.owner().executeRaw(current);
-                if (!(result instanceof TailCall tail)) return result;
-                current = tail.invocation();
-                tailHops++;
-                if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
-                    current.owner().context.schedulerSafepoint();
+            // Guard synchronous non-tail guest call nesting, not tail hops.
+            // This is carrier-local safety admission, NOT actor-owned frames.
+            int guestCallDepth = dev.oreslang.runtime.GuestCallDepthGuard.enter();
+            try {
+                Invocation current = initial;
+                int tailHops = 0;
+                while (true) {
+                    Object result = current.owner().executeRaw(current);
+                    if (!(result instanceof TailCall tail)) return result;
+                    current = tail.invocation();
+                    tailHops++;
+                    if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
+                        current.owner().context.schedulerSafepoint();
+                    }
                 }
+            } finally {
+                dev.oreslang.runtime.GuestCallDepthGuard.leave(guestCallDepth);
             }
         }
 
