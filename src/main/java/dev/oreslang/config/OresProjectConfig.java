@@ -8,10 +8,16 @@ import org.tomlj.TomlTable;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -22,13 +28,15 @@ import java.util.Optional;
 /**
  * Project-level Oreslang compiler configuration.
  *
- * <p>The nearest .oreslangc.cfg.toml found by walking upward from the source
- * file (or current working directory) owns the project. Manifest paths are
- * resolved relative to [project].root. Ambient ORESLANG_PATH entries are
- * process-relative and are searched after project-local roots.</p>
+ * <p>The nearest .ores.pkg.toml, or legacy .oreslangc.cfg.toml when no modern
+ * marker is present in that directory, owns the project. A modern package root
+ * is exactly the directory containing .ores.pkg.toml. Legacy manifests retain
+ * their historical [project].root behavior during migration.</p>
  */
 public final class OresProjectConfig {
+    public static final String PACKAGE_MANIFEST_NAME = ".ores.pkg.toml";
     public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String ENV_ORES_PATHS = "ORES_PATHS";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
 
@@ -101,8 +109,8 @@ public final class OresProjectConfig {
 
         Path searchFrom = directoryFor(start);
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
-            Path candidate = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(candidate)) return load(candidate, environment);
+            Path candidate = manifestInDirectory(cursor);
+            if (candidate != null) return load(candidate, environment);
         }
 
         Path root = searchFrom.toAbsolutePath().normalize();
@@ -118,25 +126,117 @@ public final class OresProjectConfig {
                 LibraryProfile.STD);
     }
 
+    private static Path manifestInDirectory(Path directory) {
+        Path modern = directory.resolve(PACKAGE_MANIFEST_NAME);
+        if (Files.exists(modern, LinkOption.NOFOLLOW_LINKS)) return modern;
+
+        Path legacy = directory.resolve(MANIFEST_NAME);
+        return Files.isRegularFile(legacy) ? legacy : null;
+    }
+
+    private static boolean isPackageManifest(Path manifest) {
+        return manifest != null
+                && manifest.getFileName() != null
+                && PACKAGE_MANIFEST_NAME.equals(manifest.getFileName().toString());
+    }
+
+    private static final int MAX_MANIFEST_BYTES = 65_536;
+
+    private static String readManifestSnapshot(Path manifest) throws IOException {
+        BasicFileAttributes before = Files.readAttributes(
+                manifest, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        if (!before.isRegularFile() || before.isSymbolicLink()) {
+            throw new IllegalArgumentException(
+                    "project manifest must remain a regular non-symlink file: " + manifest);
+        }
+        if (before.size() < 0 || before.size() > MAX_MANIFEST_BYTES) {
+            throw new IllegalArgumentException("project manifest exceeds 64 KiB: " + manifest);
+        }
+
+        ByteBuffer bytes = ByteBuffer.allocate(MAX_MANIFEST_BYTES + 1);
+        try (var channel = Files.newByteChannel(
+                manifest,
+                java.util.Set.<OpenOption>of(
+                        StandardOpenOption.READ,
+                        LinkOption.NOFOLLOW_LINKS))) {
+            while (bytes.hasRemaining()) {
+                int count = channel.read(bytes);
+                if (count == -1) break;
+                if (count == 0) throw new IOException("project manifest read made no progress");
+            }
+        }
+
+        if (bytes.position() > MAX_MANIFEST_BYTES) {
+            throw new IllegalArgumentException("project manifest exceeds 64 KiB: " + manifest);
+        }
+
+        BasicFileAttributes after = Files.readAttributes(
+                manifest, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        Object beforeKey = before.fileKey();
+        Object afterKey = after.fileKey();
+        if (!after.isRegularFile()
+                || after.isSymbolicLink()
+                || (beforeKey != null && afterKey != null && !beforeKey.equals(afterKey))
+                || before.size() != after.size()
+                || bytes.position() != before.size()
+                || !before.lastModifiedTime().equals(after.lastModifiedTime())
+                || !before.creationTime().equals(after.creationTime())) {
+            throw new IllegalArgumentException(
+                    "project manifest changed during bounded snapshot: " + manifest);
+        }
+
+        bytes.flip();
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(bytes)
+                    .toString();
+        } catch (CharacterCodingException invalid) {
+            throw new IllegalArgumentException(
+                    "project manifest requires valid UTF-8: " + manifest,
+                    invalid);
+        }
+    }
+
     public static OresProjectConfig load(Path manifest, Map<String, String> environment) throws IOException {
         if (manifest == null) throw new IllegalArgumentException("manifest path cannot be null");
         if (environment == null) throw new IllegalArgumentException("environment cannot be null");
 
         Path absoluteManifest = manifest.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(absoluteManifest)) {
-            throw new IllegalArgumentException("not an Oreslang project manifest: " + absoluteManifest);
+        boolean modernPackage = isPackageManifest(absoluteManifest);
+        String manifestName = absoluteManifest.getFileName().toString();
+        TomlParseResult toml;
+        if (modernPackage) {
+            BasicFileAttributes manifestAttributes;
+            try {
+                manifestAttributes = Files.readAttributes(
+                        absoluteManifest, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            } catch (NoSuchFileException missing) {
+                throw new IllegalArgumentException(
+                        "project manifest does not exist: " + absoluteManifest, missing);
+            }
+            if (manifestAttributes.isSymbolicLink() || !manifestAttributes.isRegularFile()) {
+                throw new IllegalArgumentException(
+                        "project manifest must be a regular non-symlink file: " + absoluteManifest);
+            }
+            toml = Toml.parse(readManifestSnapshot(absoluteManifest));
+        } else {
+            if (!Files.isRegularFile(absoluteManifest)) {
+                throw new IllegalArgumentException(
+                        "not an Oreslang project manifest: " + absoluteManifest);
+            }
+            toml = Toml.parse(absoluteManifest);
         }
-
-        TomlParseResult toml = Toml.parse(absoluteManifest);
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
-                    "invalid " + MANIFEST_NAME + ": " + toml.errors().getFirst());
+                    "invalid " + manifestName + ": " + toml.errors().getFirst());
         }
 
         String schemaVersion = toml.getString("schema_version");
         if (schemaVersion == null || !SCHEMA_VERSION.equals(schemaVersion)) {
             throw new IllegalArgumentException(
-                    MANIFEST_NAME + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
+                    manifestName + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
         }
 
         Object rawBuild = toml.get("build");
@@ -157,21 +257,52 @@ public final class OresProjectConfig {
 
         Path manifestDir = absoluteManifest.getParent();
         String rootText = defaultString(toml.getString("project.root"), ".");
-        Path projectRoot = resolvePath(manifestDir, rootText);
+        Path projectRoot;
+        if (modernPackage) {
+            if (!".".equals(rootText)) {
+                throw new IllegalArgumentException(
+                        PACKAGE_MANIFEST_NAME
+                                + " anchors the package root to its own directory; "
+                                + "[project].root must be omitted or '.'");
+            }
+            projectRoot = manifestDir.toRealPath();
+            if (!Files.isDirectory(projectRoot, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(
+                        "package manifest parent is not a physical directory: " + manifestDir);
+            }
+        } else {
+            projectRoot = resolvePath(manifestDir, rootText);
+        }
 
         List<String> sourceRootValues = stringArray(toml, "source.roots");
-        if (sourceRootValues.isEmpty()) sourceRootValues = List.of(".");
-        List<Path> sourceRoots = resolvePaths(projectRoot, sourceRootValues);
-        List<Path> importPaths = resolvePaths(projectRoot, stringArray(toml, "source.import_paths"));
+        if (toml.get("source.roots") == null) sourceRootValues = List.of(".");
+        List<Path> sourceRoots = modernPackage
+                ? resolveModernPackagePaths(
+                        projectRoot, sourceRootValues, "source.roots", true)
+                : resolvePaths(projectRoot, sourceRootValues);
+        List<String> importPathValues = stringArray(toml, "source.import_paths");
+        List<Path> importPaths = modernPackage
+                ? resolveModernPackagePaths(
+                        projectRoot, importPathValues, "source.import_paths", true)
+                : resolvePaths(projectRoot, importPathValues);
 
         String mainText = toml.getString("entrypoints.main");
-        Path mainEntrypoint = mainText == null ? null : resolvePath(projectRoot, mainText);
+        Path mainEntrypoint = mainText == null
+                ? null
+                : (modernPackage
+                        ? resolveModernPackagePath(
+                                projectRoot, mainText, "entrypoints.main", false)
+                        : resolvePath(projectRoot, mainText));
 
         return new OresProjectConfig(
                 absoluteManifest,
                 projectRoot,
-                toml.getString("project.name"),
-                toml.getString("project.version"),
+                modernPackage
+                        ? defaultString(toml.getString("package.name"), toml.getString("project.name"))
+                        : toml.getString("project.name"),
+                modernPackage
+                        ? defaultString(toml.getString("package.version"), toml.getString("project.version"))
+                        : toml.getString("project.version"),
                 sourceRoots,
                 importPaths,
                 parseEnvironmentPaths(environment),
@@ -255,6 +386,19 @@ public final class OresProjectConfig {
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
         String unix = importPath.replace('\\', '/');
+        if (ImportRules.isProjectRootPath(importPath)) {
+            String local = ImportRules.projectRootRelativePath(importPath);
+            PackageAuthority authority = packageAuthorityForImporter(importer, importPath);
+            Path root = authority.root();
+            Path candidate = root.resolve(local).normalize();
+            Optional<ResolvedSource> resolved =
+                    existingSourceWithinRoot(candidate, root, importPath);
+            if (resolved.isEmpty()) return Optional.empty();
+
+            rejectNestedPackageBoundary(root, resolved.get().path(), importPath);
+            return resolved;
+        }
+
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
 
@@ -290,7 +434,7 @@ public final class OresProjectConfig {
                         "relative import '" + importPath
                                 + "' escapes physical project root '" + physicalRoot + "'");
             }
-            rejectNestedRelativePackage(physicalRoot, physicalSource, importPath);
+            rejectNestedPackageBoundary(physicalRoot, physicalSource, importPath);
             return resolved;
         }
 
@@ -308,20 +452,68 @@ public final class OresProjectConfig {
         return Optional.empty();
     }
 
-    private static void rejectNestedRelativePackage(
+    private record PackageAuthority(Path manifest, Path root) { }
+
+    private PackageAuthority packageAuthorityForImporter(
+            Path importer,
+            String importPath) {
+        ResolvedSource physicalImporter = existingSource(importer)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "project-root import importer does not resolve to a regular source: "
+                                + importer));
+
+        for (Path cursor = physicalImporter.path().getParent();
+                cursor != null;
+                cursor = cursor.getParent()) {
+            Path modern = cursor.resolve(PACKAGE_MANIFEST_NAME);
+            if (Files.exists(modern, LinkOption.NOFOLLOW_LINKS)) {
+                try {
+                    OresProjectConfig owner = load(modern, Map.of());
+                    return new PackageAuthority(
+                            owner.manifestPath().orElseThrow(),
+                            owner.projectRoot().toAbsolutePath().normalize());
+                } catch (IOException failure) {
+                    throw new IllegalArgumentException(
+                            "cannot load package authority for project-root import '"
+                                    + importPath + "'",
+                            failure);
+                }
+            }
+
+            Path legacy = cursor.resolve(MANIFEST_NAME);
+            if (Files.exists(legacy, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(
+                        "project-root import is blocked by nearer legacy package authority at '"
+                                + cursor + "': " + importPath);
+            }
+        }
+
+        throw new IllegalArgumentException(
+                "project-root import requires " + PACKAGE_MANIFEST_NAME + ": " + importPath);
+    }
+
+    private static void rejectNestedPackageBoundary(
             Path physicalRoot,
             Path physicalSource,
             String importPath) {
         for (Path cursor = physicalSource.getParent();
                 cursor != null && !cursor.equals(physicalRoot);
                 cursor = cursor.getParent()) {
-            Path marker = cursor.resolve(MANIFEST_NAME);
-            if (Files.exists(marker, LinkOption.NOFOLLOW_LINKS)) {
+            if (hasPackageMarker(cursor)) {
                 throw new IllegalArgumentException(
-                        "relative import '" + importPath
+                        "source import '" + importPath
                                 + "' crosses nested package boundary at '" + cursor + "'");
             }
         }
+    }
+
+    private static boolean hasPackageMarker(Path directory) {
+        return Files.exists(
+                        directory.resolve(PACKAGE_MANIFEST_NAME),
+                        LinkOption.NOFOLLOW_LINKS)
+                || Files.exists(
+                        directory.resolve(MANIFEST_NAME),
+                        LinkOption.NOFOLLOW_LINKS);
     }
 
     /**
@@ -507,23 +699,145 @@ public final class OresProjectConfig {
     }
 
     private static List<Path> parseEnvironmentPaths(Map<String, String> environment) {
-        String raw = environment.get(ENV_ORESLANG_PATH);
-        if (raw == null || raw.isBlank()) return List.of();
-
         LinkedHashSet<Path> paths = new LinkedHashSet<>();
-        String[] parts = raw.split(java.util.regex.Pattern.quote(File.pathSeparator), -1);
+        appendEnvironmentPaths(paths, environment.get(ENV_ORES_PATHS), ":");
+        appendEnvironmentPaths(paths, environment.get(ENV_ORESLANG_PATH), File.pathSeparator);
+        return List.copyOf(paths);
+    }
+
+    private static void appendEnvironmentPaths(
+            LinkedHashSet<Path> paths,
+            String raw,
+            String separator) {
+        if (raw == null || raw.isBlank()) return;
+
         Path cwd = Path.of("").toAbsolutePath().normalize();
-        for (String part : parts) {
+        for (String part : raw.split(java.util.regex.Pattern.quote(separator), -1)) {
             String trimmed = part.trim();
-            // Unlike PATH, an empty entry never means the current directory.
-            // That avoids accidental dependency injection via leading/trailing
-            // separators or "::".
+            // Empty entries never grant the current directory.
             if (trimmed.isEmpty()) continue;
             Path path = Path.of(trimmed);
             if (!path.isAbsolute()) path = cwd.resolve(path);
             paths.add(path.toAbsolutePath().normalize());
         }
+    }
+
+    private static List<Path> resolveModernPackagePaths(
+            Path packageRoot,
+            List<String> values,
+            String key,
+            boolean requireDirectoryWhenPresent) {
+        ArrayList<Path> paths = new ArrayList<>(values.size());
+        LinkedHashSet<Path> seen = new LinkedHashSet<>();
+        for (String value : values) {
+            Path path = resolveModernPackagePath(
+                    packageRoot, value, key, requireDirectoryWhenPresent);
+            if (seen.add(path)) paths.add(path);
+        }
         return List.copyOf(paths);
+    }
+
+    private static Path resolveModernPackagePath(
+            Path packageRoot,
+            String value,
+            String key,
+            boolean requireDirectoryWhenPresent) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(
+                    PACKAGE_MANIFEST_NAME + " key '" + key + "' cannot be blank");
+        }
+        if (value.indexOf('\\') >= 0
+                || value.indexOf(':') >= 0
+                || value.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException(
+                    PACKAGE_MANIFEST_NAME + " key '" + key
+                            + "' must use a package-relative forward-slash path: " + value);
+        }
+
+        if (!".".equals(value)) {
+            for (String component : value.split("/", -1)) {
+                if (component.isEmpty() || ".".equals(component) || "..".equals(component)) {
+                    throw new IllegalArgumentException(
+                            PACKAGE_MANIFEST_NAME + " key '" + key
+                                    + "' contains invalid path component: " + value);
+                }
+            }
+        }
+
+        Path relative = Path.of(value);
+        if (relative.isAbsolute()) {
+            throw new IllegalArgumentException(
+                    PACKAGE_MANIFEST_NAME + " key '" + key
+                            + "' must be relative to the package root: " + value);
+        }
+
+        Path root = packageRoot.toAbsolutePath().normalize();
+        Path candidate = root.resolve(relative).normalize();
+        if (!candidate.startsWith(root)) {
+            throw new IllegalArgumentException(
+                    PACKAGE_MANIFEST_NAME + " key '" + key
+                            + "' escapes the package root: " + value);
+        }
+
+        verifyModernPackagePath(root, candidate, key, requireDirectoryWhenPresent);
+        return candidate;
+    }
+
+    private static void verifyModernPackagePath(
+            Path physicalRoot,
+            Path candidate,
+            String key,
+            boolean requireDirectoryWhenPresent) {
+        try {
+            Path existing = candidate;
+            while (existing != null
+                    && !Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+                existing = existing.getParent();
+            }
+            if (existing == null) {
+                throw new IllegalArgumentException(
+                        "cannot establish package authority for " + key + ": " + candidate);
+            }
+
+            Path physicalExisting = existing.toRealPath();
+            if (!physicalExisting.startsWith(physicalRoot)) {
+                throw new IllegalArgumentException(
+                        PACKAGE_MANIFEST_NAME + " key '" + key
+                                + "' escapes the physical package root: " + candidate);
+            }
+
+            boolean existingDirectory =
+                    Files.isDirectory(physicalExisting, LinkOption.NOFOLLOW_LINKS);
+            if (existing.equals(candidate)
+                    && requireDirectoryWhenPresent
+                    && !existingDirectory) {
+                throw new IllegalArgumentException(
+                        PACKAGE_MANIFEST_NAME + " key '" + key
+                                + "' must resolve to a directory when present: " + candidate);
+            }
+            if (!existing.equals(candidate) && !existingDirectory) {
+                throw new IllegalArgumentException(
+                        PACKAGE_MANIFEST_NAME + " key '" + key
+                                + "' is blocked by a non-directory ancestor: " + existing);
+            }
+
+            Path boundaryCursor = existingDirectory
+                    ? physicalExisting
+                    : physicalExisting.getParent();
+            for (Path cursor = boundaryCursor;
+                    cursor != null && !cursor.equals(physicalRoot);
+                    cursor = cursor.getParent()) {
+                if (hasPackageMarker(cursor)) {
+                    throw new IllegalArgumentException(
+                            PACKAGE_MANIFEST_NAME + " key '" + key
+                                    + "' crosses nested package boundary at '" + cursor + "'");
+                }
+            }
+        } catch (IOException failure) {
+            throw new IllegalArgumentException(
+                    "cannot verify physical package path for " + key + ": " + candidate,
+                    failure);
+        }
     }
 
     private static List<Path> resolvePaths(Path base, List<String> values) {
@@ -553,7 +867,8 @@ public final class OresProjectConfig {
         for (int i = 0; i < array.size(); i++) {
             Object value = array.get(i);
             if (!(value instanceof String text)) {
-                throw new IllegalArgumentException(MANIFEST_NAME + " key '" + key + "' must be an array of strings");
+                throw new IllegalArgumentException(
+                        "project manifest key '" + key + "' must be an array of strings");
             }
             result.add(text);
         }

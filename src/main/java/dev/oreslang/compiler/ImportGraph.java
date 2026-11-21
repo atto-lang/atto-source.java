@@ -69,6 +69,11 @@ final class ImportGraph {
             throw new IllegalArgumentException("relative import '" + imported.path() + "' from '" + unitId
                     + "' does not resolve to a supplied Oreslang/mixed source unit");
         }
+        if (ImportRules.isProjectRootPath(imported.path())) {
+            throw new IllegalArgumentException(
+                    "project-root import '" + imported.path() + "' from '" + unitId
+                            + "' requires a package-root resolver mapping");
+        }
         return null;
     }
 

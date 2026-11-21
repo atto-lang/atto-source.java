@@ -440,7 +440,9 @@ public final class LinkedProgramRunner {
             java.util.Optional<OresProjectConfig.ResolvedSource> target =
                     projectConfig.resolveImportSource(normalized, imported.path());
             if (target.isEmpty()) {
-                if (ImportRules.isExplicitRelativePath(raw) || Path.of(raw).isAbsolute()) {
+                if (ImportRules.isProjectRootPath(imported.path())
+                        || ImportRules.isExplicitRelativePath(raw)
+                        || Path.of(raw).isAbsolute()) {
                     throw new IllegalArgumentException(
                             "filesystem import '" + imported.path() + "' from '" + id + "' does not resolve to a file");
                 }

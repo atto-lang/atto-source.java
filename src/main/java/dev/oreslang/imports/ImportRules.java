@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
 /** Shared invariants for source imports and capability-gated Java host imports. */
 public final class ImportRules {
     public static final String JAVA_PREFIX = "java:";
+    public static final String PROJECT_ROOT_PREFIX = "+";
     private static final Pattern JAVA_BINARY_NAME =
             Pattern.compile("[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)*");
 
@@ -24,6 +25,42 @@ public final class ImportRules {
                 || "..".equals(unix)
                 || unix.startsWith("./")
                 || unix.startsWith("../");
+    }
+
+    public static boolean isProjectRootPath(String path) {
+        return path != null && path.startsWith(PROJECT_ROOT_PREFIX);
+    }
+
+    /**
+     * Canonical root imports are +path (for example +lib/telemetry).
+     * The older +/path draft spelling is deliberately rejected.
+     */
+    public static String projectRootRelativePath(String path) {
+        if (!isProjectRootPath(path)) {
+            throw new IllegalArgumentException("not a project-root import path: " + path);
+        }
+        if (path.indexOf('\\') >= 0) {
+            throw new IllegalArgumentException(
+                    "project-root imports require forward slashes: " + path);
+        }
+        if (path.startsWith("+/")) {
+            throw new IllegalArgumentException(
+                    "project-root imports use '+path', not the retired '+/path' spelling: " + path);
+        }
+
+        String local = path.substring(PROJECT_ROOT_PREFIX.length());
+        if (local.isEmpty()) {
+            throw new IllegalArgumentException("project-root import path cannot be empty");
+        }
+        if (local.indexOf(':') >= 0 || local.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("invalid project-root import path: " + path);
+        }
+        for (String component : local.split("/", -1)) {
+            if (component.isEmpty() || ".".equals(component) || "..".equals(component)) {
+                throw new IllegalArgumentException("invalid project-root import path: " + path);
+            }
+        }
+        return local;
     }
 
     public static String javaClassName(String path) {
