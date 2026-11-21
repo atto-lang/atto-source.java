@@ -162,7 +162,8 @@ public final class AnnotationExpander {
                 klass.constructor(),
                 methods,
                 klass.actorReplyRole(),
-                klass.actorTransport());
+                klass.actorTransport(),
+                klass.annotations());
     }
 
     private static void addGeneratedAccessor(

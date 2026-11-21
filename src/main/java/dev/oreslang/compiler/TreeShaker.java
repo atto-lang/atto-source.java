@@ -618,7 +618,8 @@ public final class TreeShaker {
                         constructor,
                         methods,
                         klass.actorReplyRole(),
-                        klass.actorTransport());
+                        klass.actorTransport(),
+                        klass.annotations());
             }
             return declaration;
         }
@@ -1101,6 +1102,9 @@ public final class TreeShaker {
                 return;
             }
             if (declaration instanceof Ast.ClassDecl klass) {
+                // Middleware types are executable dependencies, not decorative
+                // metadata. A shaken actor must retain every referenced stage.
+                for (Ast.Annotation annotation : klass.annotations()) scanAnnotation(annotation);
                 for (Ast.TypeRef parent : klass.parents()) scanType(parent);
                 for (Ast.TypeRef iface : klass.interfaces()) scanType(iface);
                 for (Ast.FieldDecl field : klass.fields()) {

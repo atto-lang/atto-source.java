@@ -268,7 +268,41 @@ public final class TypeChecker {
         }
     }
 
+    private static void rejectMisplacedActorMiddleware(
+            List<Ast.Annotation> annotations, String site) {
+        for (Ast.Annotation a : annotations) {
+            if (a.name().equals("ActorMiddleware") || a.name().equals("SupervisorMiddleware")) {
+                throw new IllegalArgumentException("@" + a.name()
+                        + " must be declared on an actor type or configured by the trusted supervisor, not " + site);
+            }
+        }
+    }
+
     private void validate(Ast.Program program) {
+        // Middleware is an executable authorization contract, not a generic
+        // class/method/module annotation. Never ignore it on the wrong site.
+        for (Ast.ModuleDecl module : program.modules()) {
+            rejectMisplacedActorMiddleware(module.annotations(), "module " + module.name());
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    rejectMisplacedActorMiddleware(fn.annotations(), "function " + fn.name());
+                } else if (decl instanceof Ast.FieldDecl field) {
+                    rejectMisplacedActorMiddleware(field.annotations(), "module field " + field.name());
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    for (Ast.FieldDecl field : klass.fields()) {
+                        rejectMisplacedActorMiddleware(field.annotations(), "field " + klass.name() + "." + field.name());
+                    }
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        rejectMisplacedActorMiddleware(method.annotations(), "method " + klass.name() + "." + method.name());
+                    }
+                    if (klass.constructor() != null) {
+                        rejectMisplacedActorMiddleware(klass.constructor().annotations(),
+                                "constructor " + klass.name());
+                    }
+                }
+            }
+        }
+
         // Local overload identity must be validated before class-shape
         // construction. Otherwise same-name/same-arity declarations whose
         // types differ can fail later as a generic structural conflict before
@@ -1086,6 +1120,72 @@ public final class TypeChecker {
      * with main's actor scheduler, and network adapters supply request-scoped
      * capabilities, reject execution rather than silently dropping the prefix.
      */
+    /**
+     * Actor middleware annotations are security-sensitive executable policy,
+     * never inert documentation. Validate the exact ordered class references
+     * and refuse activation until the compiler can bind trusted continuations
+     * into the source actor's own (single-flight) turn.
+     */
+    private void validateActorMiddlewareAnnotation(Ast.ClassDecl klass) {
+        if (klass.annotations().isEmpty()) return;
+        if (klass.actorKind() == Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException("@ActorMiddleware applies only to actors");
+        }
+        if (klass.annotations().size() != 1
+                || !klass.annotations().getFirst().name().equals("ActorMiddleware")) {
+            throw new IllegalArgumentException("actor '" + klass.name()
+                    + "' accepts exactly one @ActorMiddleware annotation");
+        }
+        Ast.Annotation annotation = klass.annotations().getFirst();
+        if (annotation.arguments().isEmpty() || annotation.arguments().size() > 16) {
+            throw new IllegalArgumentException("@ActorMiddleware requires 1..16 middleware classes");
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        for (Ast.TypeRef ref : annotation.arguments()) {
+            if (ref.isBorrow() || ref.inferArguments() || !ref.arguments().isEmpty()
+                    || ref.isStringLiteral() || ref.isIntLiteral() || ref.isBoolLiteral()
+                    || ref.name().startsWith("$")) {
+                throw new IllegalArgumentException(
+                        "@ActorMiddleware arguments must be simple nominal middleware class names");
+            }
+            if (!seen.add(ref.name())) {
+                throw new IllegalArgumentException("duplicate @ActorMiddleware class '" + ref.name() + "'");
+            }
+            Ast.ClassDecl middleware = findClass(ref.name());
+            if (middleware == null || middleware.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException("@ActorMiddleware references unknown or actor class '"
+                        + ref.name() + "'");
+            }
+            if (!middleware.genericParameters().isEmpty() || middleware.isAbstract()
+                    || !middleware.fields().isEmpty() || middleware.constructor() != null
+                    || !middleware.parents().isEmpty()) {
+                throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
+                        + "' must be a concrete stateless non-generic middleware class");
+            }
+            long nextMethods = middleware.methods().stream()
+                    .filter(m -> m.name().equals("next") && !m.isStatic()).count();
+            if (nextMethods != 1) {
+                throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
+                        + "' requires exactly one instance next(ctx, next) method");
+            }
+            Ast.MethodDecl next = middleware.methods().stream()
+                    .filter(m -> m.name().equals("next") && !m.isStatic()).findFirst().orElseThrow();
+            if (next.parameters().size() != 2
+                    || !next.parameters().get(0).type().name().equals("MiddlewareContext")
+                    || !next.parameters().get(1).type().name().equals("MiddlewareNext")
+                    || !next.returnType().name().equals("MiddlewareOutcome")
+                    || !next.async() || next.isAbstract()) {
+                throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
+                        + "' requires async next(MiddlewareContext, MiddlewareNext): MiddlewareOutcome");
+            }
+        }
+        // A declaration without a live, runtime-owned middleware chain would
+        // be a severe authorization bypass. Do not permit that execution.
+        throw new IllegalArgumentException("@ActorMiddleware on actor '" + klass.name()
+                + "' is parsed and signature-checked but requires actor-turn middleware "
+                + "continuation lowering and transport binding; not executable yet");
+    }
+
     private void validateExplicitActorRoleAndTransport(Ast.ClassDecl klass) {
         if (klass.actorKind() == Ast.ActorKind.NONE) return;
         Ast.ActorReplyRole role = klass.actorReplyRole();
@@ -1144,6 +1244,7 @@ public final class TypeChecker {
     }
 
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        validateActorMiddlewareAnnotation(klass);
         validateExplicitActorRoleAndTransport(klass);
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);

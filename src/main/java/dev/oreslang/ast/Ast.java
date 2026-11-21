@@ -303,8 +303,10 @@ public final class Ast {
             ConstructorDecl constructor,
             List<MethodDecl> methods,
             ActorReplyRole actorReplyRole,
-            ActorTransport actorTransport) implements Decl {
+            ActorTransport actorTransport,
+            List<Annotation> annotations) implements Decl {
         public ClassDecl {
+            annotations = List.copyOf(annotations);
             actorReplyRole = java.util.Objects.requireNonNull(actorReplyRole);
             actorTransport = java.util.Objects.requireNonNull(actorTransport);
             if (actorKind == ActorKind.NONE && (actorReplyRole != ActorReplyRole.INFER
@@ -318,13 +320,23 @@ public final class Ast {
             methods = List.copyOf(methods);
         }
 
+        /** Preserve actor protocol metadata for existing 12-argument AST producers. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
+                         List<String> genericParameters, List<TypeRef> parents,
+                         List<TypeRef> interfaces, List<FieldDecl> fields,
+                         ConstructorDecl constructor, List<MethodDecl> methods,
+                         ActorReplyRole actorReplyRole, ActorTransport actorTransport) {
+            this(name, visibility, isAbstract, actorKind, genericParameters, parents, interfaces,
+                    fields, constructor, methods, actorReplyRole, actorTransport, List.of());
+        }
+
         /** Old AST producers continue to create legacy actor declarations. */
         public ClassDecl(String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
                          List<String> genericParameters, List<TypeRef> parents,
                          List<TypeRef> interfaces, List<FieldDecl> fields,
                          ConstructorDecl constructor, List<MethodDecl> methods) {
             this(name, visibility, isAbstract, actorKind, genericParameters, parents, interfaces,
-                    fields, constructor, methods, ActorReplyRole.INFER, ActorTransport.GENERIC);
+                    fields, constructor, methods, ActorReplyRole.INFER, ActorTransport.GENERIC, List.of());
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */

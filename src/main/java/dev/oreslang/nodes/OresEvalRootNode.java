@@ -522,6 +522,12 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.ClassDecl klass = requireLocalActorClass(actorTypeName);
+            // Actor decorators are effectful dispatch policy. A host caller
+            // must not bypass type-checking and dispatch undecorated messages.
+            if (!klass.annotations().isEmpty()) {
+                throw new SecurityException("actor middleware dispatcher is not installed; "
+                        + "refusing to start decorated actor " + klass.name());
+            }
             // A source interpreter can be invoked through host bootstrap as
             // well as checked Oreslang source. Never accept a declaration whose
             // role or transport the runtime cannot actually dispatch.
