@@ -230,8 +230,20 @@ public final class OresProjectConfig {
         }
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
-        final boolean canonicalAttoImporter = importer.getFileName() != null
-                && importer.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".atto");
+        // Reject noncanonical *importer* identities as well as imported
+        // targets. Otherwise consumer.ATTO inherits .atto import semantics
+        // on one filesystem while remaining distinct on another.
+        final Path importerFileName = importer.getFileName();
+        final String importerName = importerFileName == null ? "" : importerFileName.toString();
+        final String importerLower = importerName.toLowerCase(Locale.ROOT);
+        if ((importerLower.endsWith(".atto") || importerLower.endsWith(".ores")
+                || importerLower.endsWith(".java"))
+                && !(importerName.endsWith(".atto") || importerName.endsWith(".ores")
+                        || importerName.endsWith(".java"))) {
+            throw new IllegalArgumentException(
+                    "noncanonical importer source extension: use exactly .atto, .ores or .java");
+        }
+        final boolean canonicalAttoImporter = importerName.endsWith(".atto");
         String unix = importPath.replace('\\', '/');
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw, canonicalAttoImporter);
@@ -259,11 +271,19 @@ public final class OresProjectConfig {
         // Never query existence until the candidate belongs to an authorized
         // root and all lexically named descendants are checked for symlinks.
         Path normalized = requireSafeSourceCandidate(candidate);
-        String text = normalized.toString().toLowerCase(Locale.ROOT);
-        // Explicit source extensions may resolve as spelled; a physical file
-        // without an admitted extension must not bypass .atto/.ores selection.
-        if (text.endsWith(".atto") || text.endsWith(".ores")
-                || text.endsWith(".java")) {
+        String sourceName = normalized.getFileName().toString();
+        String lowerName = sourceName.toLowerCase(Locale.ROOT);
+        // Source suffixes are part of the logical source identity: accepting
+        // .ATTO/.OrEs on one filesystem and case-folding them on another
+        // silently aliases different source units. Deny an explicitly
+        // noncanonical spelling before probing that file's existence.
+        if (lowerName.endsWith(".atto") || lowerName.endsWith(".ores")
+                || lowerName.endsWith(".java")) {
+            if (!(sourceName.endsWith(".atto") || sourceName.endsWith(".ores")
+                    || sourceName.endsWith(".java"))) {
+                throw new IllegalArgumentException(
+                        "noncanonical source extension: use exactly .atto, .ores or .java");
+            }
             return Files.isRegularFile(normalized)
                     ? Optional.of(normalized) : Optional.empty();
         }

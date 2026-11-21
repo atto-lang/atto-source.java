@@ -176,6 +176,57 @@ final class AttoFileImportResolutionTest {
     }
 
     @Test
+    void explicitMixedCaseSourceExtensionsAreRejectedBeforeExistence() throws Exception {
+        Path consumer = workspace.resolve("consumer.atto");
+        Files.writeString(consumer, "pub fnc main() -> int { return 42; }");
+        Files.writeString(workspace.resolve("producer.ATTO"), "pub fnc value() -> int { return 7; }");
+        Files.writeString(workspace.resolve("producer.atto"), "pub fnc value() -> int { return 42; }");
+        OresProjectConfig config = OresProjectConfig.discover(consumer, Map.of());
+        for (String importName : new String[] {
+                "./producer.ATTO", "./producer.AtTo", "./missing.ATTO",
+                "./producer.ORES", "./missing.JAVA"}) {
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> config.resolveImport(consumer, importName));
+            assertTrue(denied.getMessage().contains("noncanonical source extension"),
+                    denied::toString);
+        }
+        assertEquals(workspace.resolve("producer.atto").toAbsolutePath().normalize(),
+                config.resolveImport(consumer, "./producer.atto").orElseThrow());
+    }
+
+    @Test
+    void mixedCaseImporterSuffixCannotChooseCanonicalAttoDialect() throws Exception {
+        Path noncanonical = workspace.resolve("consumer.ATTO");
+        Path producer = workspace.resolve("producer.atto");
+        Files.writeString(noncanonical, "pub fnc main() -> int { return 42; }");
+        Files.writeString(producer, "pub fnc value() -> int { return 42; }");
+        OresProjectConfig config = OresProjectConfig.discover(noncanonical, Map.of());
+
+        for (Path importer : new Path[] {
+                noncanonical, workspace.resolve("missing.OrEs"),
+                workspace.resolve("missing.JAVA")}) {
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> config.resolveImport(importer, "./producer.atto"));
+            assertTrue(denied.getMessage().contains("noncanonical importer source extension"),
+                    denied::toString);
+        }
+    }
+
+    @Test
+    void legacyExplicitOresStillWorksButCaseAliasIsRejected() throws Exception {
+        Path consumer = workspace.resolve("consumer.ores");
+        Path legacy = workspace.resolve("producer.ores");
+        Files.writeString(consumer, "pub fnc main() -> int { return 42; }");
+        Files.writeString(legacy, "pub fnc value() -> int { return 7; }");
+        OresProjectConfig config = OresProjectConfig.discover(consumer, Map.of());
+        assertEquals(legacy.toAbsolutePath().normalize(),
+                config.resolveImport(consumer, "./producer.ores").orElseThrow());
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(consumer, "./producer.OREs"));
+    }
+
+    @Test
     void canonicalAttoImporterDoesNotImplicitlyLoadJavaSource() throws Exception {
         Path consumer = workspace.resolve("consumer.atto");
         Path java = workspace.resolve("producer.java");
