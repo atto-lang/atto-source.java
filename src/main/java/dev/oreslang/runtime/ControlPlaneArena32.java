@@ -98,7 +98,9 @@ public final class ControlPlaneArena32 implements AutoCloseable {
     }
     public synchronized void drop(long handle) {
         int slot = validate(handle);
-        records.asSlice(offset(slot, 0), RECORD_BYTES).fill((byte) 0);
+        // Avoid creating a MemorySegment slice/wrapper on the per-record drop path.
+        for (int field = 0; field < RECORD_BYTES; field += Long.BYTES)
+            records.set(I64, offset(slot, field), 0L);
         setMeta(slot, 4, 0);
         int generation = meta(slot, 0);
         if (generation == MAX_GENERATION) {
