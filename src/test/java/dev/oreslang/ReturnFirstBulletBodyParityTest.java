@@ -191,6 +191,29 @@ final class ReturnFirstBulletBodyParityTest {
     }
 
     @Test
+    void nominalErrorInheritanceAndEffectIdentitySurviveJavaParsing() {
+        // Signature/AST parity only, NOT JVM/AOT exception guest parity.
+        String program = """
+                fnc int <- twice(int value)
+                raises Foo ::
+                  return value * 2;
+                end
+                define class Foo extends Error as
+                end
+                pub fnc main(): int { return twice(21); }
+                """;
+        Ast.Program parsed = Parser.parse(program);
+        Ast.FunctionDecl function = assertInstanceOf(Ast.FunctionDecl.class,
+                parsed.modules().getFirst().declarations().getFirst());
+        Ast.ClassDecl foo = assertInstanceOf(Ast.ClassDecl.class,
+                parsed.modules().getFirst().declarations().get(1));
+        assertEquals("Foo", foo.name());
+        assertEquals("Error", foo.parents().getFirst().name());
+        assertEquals("Foo", function.effects().raisesTypes().getFirst().name());
+        assertEquals("int", function.returnType().name());
+    }
+
+    @Test
     void exceptionalRaiseInJavaMustRejectUntilRuntimeLoweringExists() {
         String program = """
                 fnc int <- risky(int x)
