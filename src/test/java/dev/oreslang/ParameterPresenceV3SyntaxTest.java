@@ -41,6 +41,61 @@ final class ParameterPresenceV3SyntaxTest {
     }
 
     @Test
+    void mixedFormalQuestionMarksCoexistWithOrdinaryTernary() {
+        Ast.Program parsed = Parser.parse("""
+                define module m
+                  @DefaultArgVals(b: "fallback")
+                  pub fnc foo(bool? a, string b?): void { return; }
+                  fnc maybe(bool? value?): void { return; }
+                  fnc choose(bool flag): int { return flag ? 1 : 2; }
+                end
+                """);
+        List<Ast.FunctionDecl> declarations = parsed.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof Ast.FunctionDecl)
+                .map(decl -> (Ast.FunctionDecl) decl).toList();
+        assertEquals(3, declarations.size());
+        List<Ast.Param> foo = declarations.get(0).parameters();
+        assertEquals("foo", declarations.get(0).name());
+        assertEquals("Option", foo.get(0).type().name());
+        assertEquals("bool", foo.get(0).type().arguments().getFirst().name());
+        assertTrue(foo.get(0).optionTypeSugar());
+        assertFalse(foo.get(0).omittable());
+        assertEquals("string", foo.get(1).type().name());
+        assertFalse(foo.get(1).optionTypeSugar());
+        assertTrue(foo.get(1).omittable());
+
+        Ast.Param combined = declarations.get(1).parameters().getFirst();
+        assertTrue(combined.optionTypeSugar());
+        assertTrue(combined.omittable());
+        assertEquals("Option", combined.type().name());
+        assertEquals("choose", declarations.get(2).name());
+
+        // Grammar admission is separate from executable default binding.
+        assertThrows(IllegalArgumentException.class,
+                () -> UnloweredDefaultArgValsGuard.reject(parsed));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+    }
+
+    @Test
+    void omittedScalarQuestionMarkNeverSynthesizesNullOrEmptyString() {
+        Ast.Program invalid = Parser.parse("""
+                define module m
+                  pub fnc foo(bool? a, string b?): void { return; }
+                end
+                """);
+        List<Ast.Param> formals = onlyFunction(invalid).parameters();
+        assertEquals("Option", formals.get(0).type().name());
+        assertFalse(formals.get(0).omittable());
+        assertEquals("string", formals.get(1).type().name());
+        assertTrue(formals.get(1).omittable());
+        IllegalArgumentException violation = assertThrows(IllegalArgumentException.class,
+                () -> UnloweredDefaultArgValsGuard.reject(invalid));
+        assertTrue(violation.getMessage().contains("needs an explicit default"));
+    }
+
+    @Test
     void doubleQuestionIsOptionValueWithSeparateOmittability() {
         Ast.Program p = Parser.parse("""
                 define module m
