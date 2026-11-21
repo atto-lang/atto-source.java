@@ -1,4 +1,4 @@
-# InvertedArray stage-one lowering target (draft)
+# InvertedArray one-level SoA lowering target (draft)
 
 **Status:** Java host-only reference; Oreslang guest compilation still intentionally
 fails closed. This document describes executable *compiler-target* primitives and
@@ -8,7 +8,8 @@ their current admissions, not an enabled end-user language feature.
 
 - Parser and AST preserve `define inverted class` in root/module scope.
 - A nominal `InvertedArray.Schema` can be derived from the parsed class and
-  maps fields by declaration order to physical scalar columns.
+  maps **only directly declared fields** to physical columns; never recursively
+  splits the members of a nested value struct.
 - `InvertedArray` owns the actual column memory, creates opaque generation-checked
   handles, provides transient row views, and permits bind-once fixed-column access.
 - A restricted `InvertedRowMethod` compiles a source method's AST into a
@@ -49,9 +50,57 @@ fields, pure `f64` literals, field reads (`self.field`), parameter reads,
 unary minus, and `+`, `-`, `*`. Other AST effects and conversions are
 rejected. This is intentionally narrower than the final language.
 
+## One-level inversion contract (October 25, 2026)
+
+`define inverted class` inverts the fields declared *at that class level
+only*. A direct `position: struct{x: f64, y: f64}` field creates **one**
+`position[]` column containing contiguous `{x,y}` values, **not** separate
+`position.x[]` and `position.y[]` arrays. Other directly declared fields
+get separate columns, regardless of whether their types are scalar or
+fixed-layout value records. The one-column-per-declared-field invariant
+applies to row insertion, field binding, borrowing, erasure and snapshots.
+
+```oreslang
+define inverted class Particle as
+    position: struct{x: f64, y: f64};
+    velocity: struct{x: f32, y: f32};
+    mass: f64;
+end
+```
+
+Host reference layout (conceptual, not end-user guest execution):
+
+```text
+Particle
+  position: [ {x0,y0}, {x1,y1}, ... ]    // each element is packed AoS
+  velocity: [ {x0,y0}, {x1,y1}, ... ]
+  mass:     [ m0,      m1,      ...  ]   // separate scalar column
+```
+
+The Java host-only reference now supports inline closed structural record
+types and explicitly supplied non-generic structural type aliases.
+Supported record members are currently fixed-width scalar primitives
+(`i32/i64/f32/f64/bool`) with no pointers, dynamic arrays, strings,
+unverified widths, nested records, or recursive alias expansion. An
+unsupported record layout must **fail closed**; the compiler must never
+silently flatten grandchild fields, construct persistent row objects, or
+fall back to ordinary AoS class storage.
+
+All byte-width calculations use checked arithmetic; record writes,
+reads and loan operations copy buffers and return immutable detached
+record values. The reference encoding is packed little-endian; it is
+**not yet an ABI commitment** for native LLVM, padding, alignment, GPU
+or external interop. LLVM must explicitly agree on physical layout
+before guest execution is admitted. Existing class-method admission
+remains scalar-only and source-level inverted classes remain gated by
+TypeChecker until ownership/effects/parity are proven.
+
 ## Layout and lifecycle
 
-Current explicit physical kinds: `i32`, `i64`, `f32`, `f64`, `bool`.
+Current primitive physical kinds: `i32`, `i64`, `f32`, `f64`, `bool`.
+An additional fixed-stride RECORD column stores packed, AoS-formatted structural
+value elements, one per row, using an explicit verified codec. The record's
+members are **not** promoted to sibling SoA columns.
 The aliases `int` and `float` must be mapped only after the Java/LLVM
 target ABI and signedness/width agreement. Generic classes, parent classes,
 interfaces, constructors, annotations, and initialized/resource-owning fields
@@ -59,7 +108,8 @@ are not admitted to this lowering target. The existing type checker continues
 to reject *all* executable inverted-class guest code, including classes whose
 AST the host reference can model.
 
-The backing Java store uses contiguous little-endian per-field byte arrays.
+The backing Java store uses contiguous little-endian per-field byte arrays,
+with record elements encoded at a fixed byte stride.
 Handles use opaque store-issued issuer identity, slot and monotonically advanced
 generation. Reuse after deletion cannot revive old handles; deleted physical
 tail bytes and closed backing arrays are cleared. Bounded row transforms

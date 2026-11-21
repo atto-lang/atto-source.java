@@ -7,18 +7,41 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Allocation-backed, scalar-only reference storage for inverted classes.
+ * Allocation-backed, one-column-per-declared-field reference storage for inverted classes.
  *
  * This is a host runtime primitive, NOT source language lowering. Each column
- * owns a contiguous primitive byte array with a stable little-endian encoding.
+ * owns a contiguous byte array with a stable little-endian encoding.
+ * A fixed-size record is opaque within its column: its members are NOT SoA-flattened.
  * No raw array, ByteBuffer, or writable view escapes the owning store.
  */
 public final class InvertedColumnStore implements AutoCloseable {
     public enum Kind {
-        I32(4), I64(8), F32(4), F64(8), BOOL(1);
+        I32(4), I64(8), F32(4), F64(8), BOOL(1), RECORD(0);
         private final int bytes;
         Kind(int bytes) { this.bytes = bytes; }
         public int bytes() { return bytes; }
+    }
+
+    /**
+     * Fixed-stride physical columns. RECORD holds an entire value record in
+     * AoS layout per element; only its declaring inverted-class field becomes
+     * a column. Record payloads are copied both into and out of the store.
+     */
+    public record ColumnSpec(Kind kind, int bytes) {
+        public ColumnSpec {
+            Objects.requireNonNull(kind, "column kind");
+            if (bytes <= 0 || (kind != Kind.RECORD && kind.bytes() != bytes)) {
+                throw new IllegalArgumentException("invalid inverted column stride");
+            }
+        }
+        public static ColumnSpec scalar(Kind kind) {
+            if (kind == null || kind == Kind.RECORD)
+                throw new IllegalArgumentException("expected primitive inverted column kind");
+            return new ColumnSpec(kind, kind.bytes());
+        }
+        public static ColumnSpec record(int bytes) {
+            return new ColumnSpec(Kind.RECORD, bytes);
+        }
     }
 
     /**
@@ -60,6 +83,7 @@ public final class InvertedColumnStore implements AutoCloseable {
     // the entire owning store strongly reachable from every stale handle.
     private final Object capability = new Object();
     private final Kind[] kinds;
+    private final ColumnSpec[] specs;
     private byte[][] columns;
     private ByteBuffer[] buffers;
     private int[] rowSlots;
@@ -80,11 +104,26 @@ public final class InvertedColumnStore implements AutoCloseable {
     private boolean rejectedReentrantAccess;
 
     public InvertedColumnStore(Kind... types) {
+        this(scalarSpecs(types));
+    }
+
+    private static ColumnSpec[] scalarSpecs(Kind[] types) {
+        if (types == null) throw new IllegalArgumentException("null inverted column kinds");
+        ColumnSpec[] specs = new ColumnSpec[types.length];
+        for (int i = 0; i < types.length; i++) specs[i] = ColumnSpec.scalar(types[i]);
+        return specs;
+    }
+
+    public InvertedColumnStore(ColumnSpec... types) {
         if (types == null || types.length == 0) {
             throw new IllegalArgumentException("inverted store requires at least one field");
         }
-        kinds = types.clone();
-        for (Kind kind : kinds) Objects.requireNonNull(kind, "column kind");
+        specs = types.clone();
+        kinds = new Kind[specs.length];
+        for (int i = 0; i < specs.length; i++) {
+            Objects.requireNonNull(specs[i], "column specification");
+            kinds[i] = specs[i].kind();
+        }
         columns = new byte[kinds.length][];
         buffers = new ByteBuffer[kinds.length];
         for (int i = 0; i < kinds.length; i++) {
@@ -142,7 +181,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         byte[][] newColumns = new byte[kinds.length][];
         ByteBuffer[] newBuffers = new ByteBuffer[kinds.length];
         for (int i = 0; i < kinds.length; i++) {
-            int bytes = Math.multiplyExact(required, kinds[i].bytes());
+            int bytes = Math.multiplyExact(required, specs[i].bytes());
             newColumns[i] = Arrays.copyOf(columns[i], bytes);
             newBuffers[i] = ByteBuffer.wrap(newColumns[i]).order(ByteOrder.LITTLE_ENDIAN);
         }
@@ -161,15 +200,16 @@ public final class InvertedColumnStore implements AutoCloseable {
         capacity = required;
     }
 
-    private static void validateValue(Kind kind, Object value) {
-        boolean valid = switch (kind) {
+    private static void validateValue(ColumnSpec spec, Object value) {
+        boolean valid = switch (spec.kind()) {
             case I32 -> value instanceof Integer;
             case I64 -> value instanceof Long;
             case F32 -> value instanceof Float;
             case F64 -> value instanceof Double;
             case BOOL -> value instanceof Boolean;
+            case RECORD -> value instanceof byte[] payload && payload.length == spec.bytes();
         };
-        if (!valid) throw new IllegalArgumentException("invalid scalar for column " + kind);
+        if (!valid) throw new IllegalArgumentException("invalid value for column " + spec.kind());
     }
 
     private int resolve(Handle handle) {
@@ -188,7 +228,7 @@ public final class InvertedColumnStore implements AutoCloseable {
 
     private Object load(int column, int row) {
         Kind kind = kinds[column];
-        int offset = row * kind.bytes();  // within checked reserved capacity
+        int offset = row * specs[column].bytes();  // within checked reserved capacity
         ByteBuffer buffer = buffers[column];
         return switch (kind) {
             case I32 -> buffer.getInt(offset);
@@ -196,12 +236,13 @@ public final class InvertedColumnStore implements AutoCloseable {
             case F32 -> buffer.getFloat(offset);
             case F64 -> buffer.getDouble(offset);
             case BOOL -> buffer.get(offset) != 0;
+            case RECORD -> Arrays.copyOfRange(columns[column], offset, offset + specs[column].bytes());
         };
     }
 
     private void store(int column, int row, Object value) {
         Kind kind = kinds[column];
-        int offset = row * kind.bytes();
+        int offset = row * specs[column].bytes();
         ByteBuffer buffer = buffers[column];
         switch (kind) {
             case I32 -> buffer.putInt(offset, (Integer) value);
@@ -209,6 +250,7 @@ public final class InvertedColumnStore implements AutoCloseable {
             case F32 -> buffer.putFloat(offset, (Float) value);
             case F64 -> buffer.putDouble(offset, (Double) value);
             case BOOL -> buffer.put(offset, (byte) ((Boolean) value ? 1 : 0));
+            case RECORD -> System.arraycopy((byte[]) value, 0, columns[column], offset, specs[column].bytes());
         }
     }
 
@@ -218,7 +260,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         if (values == null || values.length != kinds.length) {
             throw new IllegalArgumentException("row width must equal inverted column count");
         }
-        for (int i = 0; i < kinds.length; i++) validateValue(kinds[i], values[i]);
+        for (int i = 0; i < kinds.length; i++) validateValue(specs[i], values[i]);
         if (length == Integer.MAX_VALUE) throw new IllegalStateException("row capacity exhausted");
         // A retired generation-MAX slot is not reusable. Slot metadata can
         // therefore fill up even when live row count is below row capacity.
@@ -244,7 +286,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         int last = length - 1;
         if (row != last) {
             for (int i = 0; i < kinds.length; i++) {
-                int stride = kinds[i].bytes();
+                int stride = specs[i].bytes();
                 System.arraycopy(columns[i], last * stride, columns[i], row * stride, stride);
             }
             int displaced = rowSlots[last];
@@ -255,7 +297,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         // deleted row after a swap. This also clears references to old scalar
         // payloads before that storage slot can be reused.
         for (int i = 0; i < kinds.length; i++) {
-            int stride = kinds[i].bytes();
+            int stride = specs[i].bytes();
             int start = last * stride;
             Arrays.fill(columns[i], start, start + stride, (byte) 0);
         }
@@ -278,7 +320,7 @@ public final class InvertedColumnStore implements AutoCloseable {
     public synchronized void set(Handle handle, int field, Object value) {
         int row = resolve(handle);
         int i = column(field);
-        validateValue(kinds[i], value);
+        validateValue(specs[i], value);
         if (readers[i] != 0 || writers[i]) {
             throw new IllegalStateException("borrowed column");
         }
@@ -301,7 +343,7 @@ public final class InvertedColumnStore implements AutoCloseable {
             throw new IllegalArgumentException("row width mismatch");
         }
         unborrowed();
-        for (int i = 0; i < kinds.length; i++) validateValue(kinds[i], values[i]);
+        for (int i = 0; i < kinds.length; i++) validateValue(specs[i], values[i]);
         for (int i = 0; i < kinds.length; i++) store(i, row, values[i]);
     }
 
@@ -341,7 +383,7 @@ public final class InvertedColumnStore implements AutoCloseable {
         if (updated == null || updated.length != kinds.length) {
             throw new IllegalStateException("invalid compiler row transform result");
         }
-        for (int i = 0; i < kinds.length; i++) validateValue(kinds[i], updated[i]);
+        for (int i = 0; i < kinds.length; i++) validateValue(specs[i], updated[i]);
         for (int i = 0; i < kinds.length; i++) store(i, row, updated[i]);
     }
 
@@ -397,7 +439,7 @@ public final class InvertedColumnStore implements AutoCloseable {
                 active();
                 if (!write) throw new IllegalStateException("read-only column loan");
                 if (row < 0 || row >= length) throw new IndexOutOfBoundsException();
-                validateValue(kinds[field], value);
+                validateValue(specs[field], value);
                 store(field, row, value);
             }
         }
