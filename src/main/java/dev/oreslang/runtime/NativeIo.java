@@ -232,6 +232,10 @@ public final class NativeIo {
             String method,
             String rawUri,
             String body) {
+        // HttpClient.send is synchronous. Strict NIO must not disguise it as
+        // an allowed network path merely because TCP now has a selector route.
+        NioOnlyPolicy.requireLegacyAllowed(
+                "http." + method.toLowerCase(java.util.Locale.ROOT));
         URI uri = checkedHttpUri(rawUri);
         String endpoint = networkEndpoint(uri);
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "http." + method.toLowerCase());
@@ -263,7 +267,47 @@ public final class NativeIo {
         }
     }
 
+    /**
+     * Nonblocking TCP connect backed by the owning VM's selector domain.
+     *
+     * <p>This is the strict-mode network path. Numeric IPv4 is intentionally
+     * required by the first contract so hostname resolution cannot hide a
+     * blocking resolver call.</p>
+     */
+    public static OresFuture<VmNioTcpClient.Connection> connectAsync(
+            OresContext context, String host, int port) {
+        return connectAsync(context, host, port, 15_000);
+    }
+
+    public static OresFuture<VmNioTcpClient.Connection> connectAsync(
+            OresContext context, String host, int port, int timeoutMillis) {
+        if (context == null) throw new NullPointerException("context");
+        if (host == null || host.isBlank()) {
+            return OresFuture.failed(new IllegalArgumentException(
+                    "network.connect_async host cannot be blank"));
+        }
+        if (port < 1 || port > 65_535) {
+            return OresFuture.failed(new IllegalArgumentException(
+                    "network.connect_async port must be 1..65535"));
+        }
+        String endpoint =
+                host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
+        context.requirePermission(
+                RuntimePermissions.Permission.NET,
+                endpoint,
+                "network.connect_async");
+        try {
+            return context.vm().connectNioTcp(
+                    host, port, timeoutMillis);
+        } catch (IOException | RuntimeException failure) {
+            return OresFuture.failed(failure);
+        }
+    }
+
     public static TcpConnection connect(OresContext context, String host, int port) {
+        // Compatibility API: this path owns java.net.Socket and may park.
+        // Strict NIO callers must use connectAsync() below.
+        NioOnlyPolicy.requireLegacyAllowed("network.connect");
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("network.connect host cannot be blank");
         }
@@ -304,6 +348,7 @@ public final class NativeIo {
         }
 
         public String readLine() {
+            NioOnlyPolicy.requireLegacyAllowed("network.socket.read_line");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.read_line");
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 return reader.readLine();
@@ -313,6 +358,7 @@ public final class NativeIo {
         }
 
         public void writeText(String value) {
+            NioOnlyPolicy.requireLegacyAllowed("network.socket.write_text");
             context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.socket.write_text");
             try (AsyncNativeIo.IoLoan loan = context.nativeIo().borrow(socket)) {
                 writer.write(value);

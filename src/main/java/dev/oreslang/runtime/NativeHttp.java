@@ -35,6 +35,9 @@ public final class NativeHttp implements AutoCloseable {
         long perf = CorePerf.start();
         if (closed) throw new IllegalStateException("HTTP runtime closed");
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP listeners belong to the supervisor");
+        // JDK HttpServer exposes blocking-style stream semantics. Strict NIO
+        // must fail closed until HTTP is rebuilt on the VM-owned TCP reactor.
+        NioOnlyPolicy.requireLegacyAllowed("http.listen");
         if (host == null || host.isBlank() || port < 0 || port > 65535
                 || capacity < 1 || capacity > 65536 || bodyLimit < 1 || bodyLimit > 64 * 1024 * 1024
                 || deadlineMillis < 1) throw new IllegalArgumentException("invalid HTTP listener limits");

@@ -48,7 +48,7 @@ public final class TypeChecker {
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
             "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex",
             "Channel", "Future", "Fnc", "Function",
-            "HttpClientResponse", "HttpClientBody");
+            "NioTcpConnection", "HttpClientResponse", "HttpClientBody");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -330,7 +330,7 @@ public final class TypeChecker {
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
                 "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "HttpResponse", "TcpConnection",
-                "HttpClientResponse", "HttpClientBody",
+                "NioTcpConnection", "HttpClientResponse", "HttpClientBody",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
@@ -5615,8 +5615,17 @@ public final class TypeChecker {
                 }
             }
             case "network", "net" -> {
-                if (!name.equals("connect") && !name.equals("connect_blocking")) return null;
-                result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
+                if (name.equals("connect") || name.equals("connect_blocking")) {
+                    result = new Named("TcpConnection", List.of());
+                    parameters = List.of(Primitive.STRING, Primitive.INT);
+                } else if (name.equals("connect_async")) {
+                    result = new Named(
+                            "Future",
+                            List.of(new Named("NioTcpConnection", List.of())));
+                    parameters = List.of(Primitive.STRING, Primitive.INT);
+                } else {
+                    return null;
+                }
             }
             case "TcpConnection" -> {
                 switch (name) {
@@ -5627,6 +5636,25 @@ public final class TypeChecker {
                         result = Primitive.VOID; parameters = List.of(Primitive.STRING);
                     }
                     case "close", "close_blocking" -> { result = Primitive.VOID; parameters = List.of(); }
+                    default -> { return null; }
+                }
+            }
+            case "NioTcpConnection" -> {
+                switch (name) {
+                    case "read_bytes_async" -> {
+                        result = new Named(
+                                "Future",
+                                List.of(new ListType(Primitive.INT)));
+                        parameters = List.of(Primitive.INT);
+                    }
+                    case "write_bytes_async" -> {
+                        result = new Named("Future", List.of(Primitive.INT));
+                        parameters = List.of(new ListType(Primitive.INT));
+                    }
+                    case "close_async" -> {
+                        result = new Named("Future", List.of(Primitive.VOID));
+                        parameters = List.of();
+                    }
                     default -> { return null; }
                 }
             }
@@ -5873,7 +5901,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
+        if (named.name().equals("TcpConnection") || named.name().equals("NioTcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("HttpClientResponse") || named.name().equals("HttpClientBody")
                 || named.name().equals("Box") || named.name().equals("Arc")
                 || named.name().equals("Weak") || named.name().equals("Rc")

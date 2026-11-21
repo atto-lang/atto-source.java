@@ -102,6 +102,8 @@ public final class OresVM implements AutoCloseable {
     private final NioReadinessGroup nioReadiness;
     private final Set<VmNioTcpListener> nioTcpListeners =
             ConcurrentHashMap.newKeySet();
+    private final Set<VmNioTcpClient> nioTcpClients =
+            ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -296,6 +298,40 @@ public final class OresVM implements AutoCloseable {
         return nioTcpListeners.size();
     }
 
+    OresFuture<VmNioTcpClient.Connection> connectNioTcp(
+            String host, int port, int timeoutMillis) throws IOException {
+        if (!started() || closed.get()) {
+            return OresFuture.failed(new RejectedExecutionException(
+                    "Oreslang VM is not running"));
+        }
+
+        AtomicReference<VmNioTcpClient> owner = new AtomicReference<>();
+        VmNioTcpClient client = VmNioTcpClient.openOwned(
+                nioReadiness,
+                host,
+                port,
+                timeoutMillis,
+                () -> {
+                    VmNioTcpClient terminated = owner.get();
+                    if (terminated != null) nioTcpClients.remove(terminated);
+                });
+        owner.set(client);
+        nioTcpClients.add(client);
+        if (client.isTerminated()) nioTcpClients.remove(client);
+
+        if (!started() || closed.get()) {
+            client.close();
+            nioTcpClients.remove(client);
+            return OresFuture.failed(new RejectedExecutionException(
+                    "Oreslang VM closed during TCP connect admission"));
+        }
+        return client.connectedFuture();
+    }
+
+    int nioTcpClientCount() {
+        return nioTcpClients.size();
+    }
+
     public OresScheduler rootScheduler() {
         if (!started()) {
             throw new IllegalStateException(
@@ -385,7 +421,9 @@ public final class OresVM implements AutoCloseable {
      */
     private RuntimeException closeNioReadiness() {
         List<VmNioTcpListener> listeners = List.copyOf(nioTcpListeners);
+        List<VmNioTcpClient> clients = List.copyOf(nioTcpClients);
         for (VmNioTcpListener listener : listeners) listener.close();
+        for (VmNioTcpClient client : clients) client.close();
         nioReadiness.close();
 
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
@@ -404,7 +442,16 @@ public final class OresVM implements AutoCloseable {
                             "Oreslang TCP listener did not retire before CONTROL shutdown");
                 }
             }
+            for (VmNioTcpClient client : clients) {
+                left = deadline - System.nanoTime();
+                if (left <= 0 || !client.awaitTerminated(
+                        left, TimeUnit.NANOSECONDS)) {
+                    return new IllegalStateException(
+                            "Oreslang TCP client did not retire before CONTROL shutdown");
+                }
+            }
             nioTcpListeners.removeAll(listeners);
+            nioTcpClients.removeAll(clients);
             return null;
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
