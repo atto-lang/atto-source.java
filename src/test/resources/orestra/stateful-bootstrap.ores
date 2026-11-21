@@ -1,0 +1,150 @@
+// Orestra M1: real actor-owned scalar state, intentionally not durable yet.
+// Persistent guest-owned data lives only in the single sealed state schema.
+// Every mutation is performed through the lexical handle_state loan.
+// Admission checks run before mutation so rejected operations cannot advance state.
+define actor StateBootstrap as
+  state {
+    revision: int = 0;
+    capacity_cpu: int = 5;
+    reserved_cpu: int = 0;
+    leader_epoch: int = 7;
+    recovered: bool = true;
+  }
+
+  receive(ActorMail<String> mail): void {
+    if mail.value == "reserve-2"; then
+      self.handle_state(|s| -> {
+        if s.reserved_cpu <= s.capacity_cpu - 2; then
+          s.reserved_cpu = s.reserved_cpu + 2;
+          s.revision = s.revision + 1;
+          if s.reserved_cpu == 2 && s.revision == 1 &&
+             s.leader_epoch == 7 && s.recovered; then
+            self.send("reserve-ok");
+          else
+            self.send("reserve-bad");
+          fi
+        else
+          self.send("capacity-rejected");
+        fi
+      });
+    elif mail.value == "reserve-3"; then
+      self.handle_state(|s| -> {
+        if s.reserved_cpu <= s.capacity_cpu - 3; then
+          s.reserved_cpu = s.reserved_cpu + 3;
+          s.revision = s.revision + 1;
+          if s.reserved_cpu == 5 && s.revision == 2; then
+            self.send("accumulate-ok");
+          else
+            self.send("accumulate-bad");
+          fi
+        else
+          self.send("capacity-rejected");
+        fi
+      });
+    elif mail.value == "reserve-1-over"; then
+      self.handle_state(|s| -> {
+        if s.reserved_cpu <= s.capacity_cpu - 1; then
+          s.reserved_cpu = s.reserved_cpu + 1;
+          s.revision = s.revision + 1;
+          self.send("capacity-bad");
+        else
+          if s.reserved_cpu == 5 && s.revision == 2; then
+            self.send("capacity-rejected");
+          else
+            self.send("capacity-rejection-bad");
+          fi
+        fi
+      });
+    elif mail.value == "release-2"; then
+      self.handle_state(|s| -> {
+        if s.reserved_cpu >= 2; then
+          s.reserved_cpu = s.reserved_cpu - 2;
+          s.revision = s.revision + 1;
+          if s.reserved_cpu == 3 && s.revision == 3; then
+            self.send("release-ok");
+          else
+            self.send("release-bad");
+          fi
+        else
+          self.send("release-rejected");
+        fi
+      });
+    elif mail.value == "release-4-underflow"; then
+      self.handle_state(|s| -> {
+        if s.reserved_cpu >= 4; then
+          s.reserved_cpu = s.reserved_cpu - 4;
+          s.revision = s.revision + 1;
+          self.send("release-bad");
+        else
+          if s.reserved_cpu == 3 && s.revision == 3; then
+            self.send("release-rejected");
+          else
+            self.send("release-rejection-bad");
+          fi
+        fi
+      });
+    elif mail.value == "shutdown"; then
+      self.handle_state(|s| -> {
+        if s.reserved_cpu == 3 && s.revision == 3 &&
+           s.capacity_cpu == 5 && s.leader_epoch == 7 && s.recovered; then
+          self.send("final-ok");
+        else
+          self.send("final-bad");
+        fi
+      });
+      self.end();
+    else
+      self.send("unknown");
+    fi
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val state = spawn StateBootstrap();
+  await state.get_ready();
+
+  // Queue three outstanding reservation lifetimes before consuming output.
+  // The actor must serialize these turns against its single state root.
+  state.send("reserve-2");
+  state.send("reserve-3");
+  state.send("reserve-1-over");
+
+  val first = await state.outputs.next();
+  val first_output = first.value.unwrap();
+  stdio.stdout.write(first_output.value);
+  stdio.stdout.write("\n");
+
+  val second = await state.outputs.next();
+  val second_output = second.value.unwrap();
+  stdio.stdout.write(second_output.value);
+  stdio.stdout.write("\n");
+
+  val third = await state.outputs.next();
+  val third_output = third.value.unwrap();
+  stdio.stdout.write(third_output.value);
+  stdio.stdout.write("\n");
+
+  // Queue accepted + rejected release lifetimes together as well.
+  state.send("release-2");
+  state.send("release-4-underflow");
+
+  val fourth = await state.outputs.next();
+  val fourth_output = fourth.value.unwrap();
+  stdio.stdout.write(fourth_output.value);
+  stdio.stdout.write("\n");
+
+  val fifth = await state.outputs.next();
+  val fifth_output = fifth.value.unwrap();
+  stdio.stdout.write(fifth_output.value);
+  stdio.stdout.write("\n");
+
+  state.send("shutdown");
+  val final_step = await state.outputs.next();
+  val final_output = final_step.value.unwrap();
+  stdio.stdout.write(final_output.value);
+  stdio.stdout.write("\n");
+
+  await state.get_done();
+  return;
+}

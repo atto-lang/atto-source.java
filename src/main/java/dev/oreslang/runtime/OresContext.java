@@ -11,6 +11,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -35,6 +36,8 @@ public final class OresContext implements AutoCloseable {
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     public AsyncNativeIo nativeIo() { return nativeIo; }
+    private final NativeChildProcesses childProcesses = new NativeChildProcesses();
+    public NativeChildProcesses childProcesses() { return childProcesses; }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
 
@@ -45,6 +48,7 @@ public final class OresContext implements AutoCloseable {
     private final RuntimePermissions runtimePermissions;
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
+    private final List<String> guestArguments;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
@@ -83,6 +87,8 @@ public final class OresContext implements AutoCloseable {
         this.permissionCheckMode = PermissionCheckMode.fromApplicationArguments(
                 env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
+        this.guestArguments = IsolatePolicy.guestArgumentsFromApplicationArguments(
+                env.getApplicationArguments());
         // UNTRUSTED contexts admit one guest thread and the isolate's JNI
         // scope belongs to the calling thread. Root task turns retain that
         // admission while runtime CONTROL carriers remain prestarted.
@@ -149,6 +155,7 @@ public final class OresContext implements AutoCloseable {
     public RuntimePermissions runtimePermissions() { return runtimePermissions; }
     public PermissionCheckMode permissionCheckMode() { return permissionCheckMode; }
     public ExecutionProfile executionProfile() { return executionProfile; }
+    public List<String> guestArguments() { return guestArguments; }
 
     public Object lookupHostSymbol(String className) {
         requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java host import " + className);
@@ -428,6 +435,7 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        childProcesses.close();
         nativeIo.close();
         http.close();
         RuntimeException failure = null;

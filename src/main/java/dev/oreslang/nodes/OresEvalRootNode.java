@@ -6737,6 +6737,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
+                if (name.name().equals("crypto")) return CryptoFacade.INSTANCE;
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -7249,8 +7250,14 @@ public final class OresEvalRootNode extends RootNode {
                     case "write_text_atomic" -> (Invokable) fs::writeTextAtomic;
                     case "write_text_atomic_durable" ->
                             (Invokable) fs::writeTextAtomicDurable;
+                    case "write_text_atomic_durable_checked" ->
+                            (Invokable) fs::writeTextAtomicDurableChecked;
                     case "append_text_durable" ->
                             (Invokable) fs::appendTextDurable;
+                    case "append_text_durable_checked" ->
+                            (Invokable) fs::appendTextDurableChecked;
+                    case "acquire_exclusive_lease" ->
+                            (Invokable) fs::acquireExclusiveLease;
                     case "write_text_async" -> (Invokable) args -> {
                         List<Object> values = immutableIoStrings(args);
                         return context.nativeIo().submit(context, dev.oreslang.runtime.RuntimePermissions.Permission.WRITE,
@@ -7505,6 +7512,12 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown env member " + name);
                 };
             }
+            if (receiver instanceof CryptoFacade crypto) {
+                return switch (name) {
+                    case "sha256" -> (Invokable) crypto::sha256;
+                    default -> throw new IllegalArgumentException("unknown crypto member " + name);
+                };
+            }
             if (receiver instanceof StdFacade std) {
                 if (name.equals("process")) return new ProcessFacade(std.context());
                 throw new IllegalArgumentException("unknown std member " + name);
@@ -7514,6 +7527,12 @@ public final class OresEvalRootNode extends RootNode {
                     case "monotonic_ns" -> (Invokable) args -> { requireZero(args, "process.monotonic_ns"); return System.nanoTime(); };
                     case "unique_id" -> (Invokable) args -> { requireZero(args, "process.unique_id"); return java.util.UUID.randomUUID().toString(); };
                     case "unix_ms" -> (Invokable) args -> { requireZero(args, "process.unix_ms"); return System.currentTimeMillis(); };
+                    case "argv_size" -> (Invokable) process::argvSize;
+                    case "argv_at" -> (Invokable) process::argvAt;
+                    case "spawn" -> (Invokable) process::spawn;
+                    case "running" -> (Invokable) process::running;
+                    case "pid" -> (Invokable) process::pid;
+                    case "stop" -> (Invokable) process::stop;
                     case "context_id" -> process.contextId();
                     case "descriptor" -> process.descriptor();
                     case "share_readonly" -> (Invokable) process::shareReadonly;
@@ -7767,6 +7786,17 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && name.equals("handle_state")) {
+                    return (Invokable) args -> {
+                        if (args.size() != 1
+                                || !(args.getFirst() instanceof Invokable callback)) {
+                            throw new IllegalArgumentException(
+                                    "self.handle_state expects exactly one inline callable");
+                        }
+                        return object.owner.withActorStateLoan(object, callback);
+                    };
+                }
                 if (object.fields.containsKey(name)) {
                     OwnedField ownedField = object.owner.findField(
                             object.klass, name, new LinkedHashSet<>());
@@ -10386,6 +10416,17 @@ public final class OresEvalRootNode extends RootNode {
                             "fs.write_text_atomic_durable value"));
             return null;
         }
+        private Object writeTextAtomicDurableChecked(List<Object> args) {
+            requireTwo(args, "fs.write_text_atomic_durable_checked");
+            return NativeIo.writeTextAtomicDurableChecked(
+                    context,
+                    requireString(
+                            args.get(0),
+                            "fs.write_text_atomic_durable_checked path"),
+                    requireString(
+                            args.get(1),
+                            "fs.write_text_atomic_durable_checked value"));
+        }
         private Object appendTextDurable(List<Object> args) {
             requireTwo(args, "fs.append_text_durable");
             NativeIo.appendTextDurable(
@@ -10397,6 +10438,22 @@ public final class OresEvalRootNode extends RootNode {
                             args.get(1),
                             "fs.append_text_durable value"));
             return null;
+        }
+        private Object appendTextDurableChecked(List<Object> args) {
+            requireTwo(args, "fs.append_text_durable_checked");
+            return NativeIo.appendTextDurableChecked(
+                    context,
+                    requireString(
+                            args.get(0),
+                            "fs.append_text_durable_checked path"),
+                    requireString(
+                            args.get(1),
+                            "fs.append_text_durable_checked value"));
+        }
+        private Object acquireExclusiveLease(List<Object> args) {
+            return NativeIo.acquireExclusiveLease(
+                    context,
+                    requireStringArg(args, "fs.acquire_exclusive_lease"));
         }
         private Object appendText(List<Object> args) {
             requireTwo(args, "fs.append_text");
@@ -10462,6 +10519,24 @@ public final class OresEvalRootNode extends RootNode {
             return NativeIo.envHas(context, requireStringArg(args, "env.has"));
         }
     }
+    private enum CryptoFacade {
+        INSTANCE;
+
+        private Object sha256(List<Object> args) {
+            requireOne(args, "crypto.sha256");
+            String value = requireString(args.getFirst(), "crypto.sha256 value");
+            try {
+                java.security.MessageDigest digest =
+                        java.security.MessageDigest.getInstance("SHA-256");
+                byte[] encoded = digest.digest(
+                        value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                return java.util.HexFormat.of().formatHex(encoded);
+            } catch (java.security.NoSuchAlgorithmException impossible) {
+                throw new IllegalStateException("SHA-256 is unavailable", impossible);
+            }
+        }
+    }
+
 
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args) {
@@ -10522,6 +10597,43 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record StdFacade(OresContext context) { }
     private record ProcessFacade(OresContext context) {
+        private Object argvSize(List<Object> args) {
+            requireZero(args, "process.argv_size");
+            return (long) context.guestArguments().size();
+        }
+        private Object argvAt(List<Object> args) {
+            requireOne(args, "process.argv_at");
+            Object value = args.getFirst();
+            if (!(value instanceof Number number)) {
+                throw new IllegalArgumentException("process.argv_at expects an int index");
+            }
+            long index = number.longValue();
+            if (number.doubleValue() != (double) index
+                    || index < 0
+                    || index >= context.guestArguments().size()) {
+                throw new IllegalArgumentException("process.argv_at index out of range");
+            }
+            return context.guestArguments().get((int) index);
+        }
+        private Object spawn(List<Object> args) {
+            requireTwo(args, "process.spawn");
+            return context.childProcesses().spawn(
+                    context,
+                    requireString(args.get(0), "process.spawn executable"),
+                    requireString(args.get(1), "process.spawn argument"));
+        }
+        private Object running(List<Object> args) {
+            return context.childProcesses().running(
+                    context, requireStringArg(args, "process.running"));
+        }
+        private Object pid(List<Object> args) {
+            return context.childProcesses().pid(
+                    context, requireStringArg(args, "process.pid"));
+        }
+        private Object stop(List<Object> args) {
+            return context.childProcesses().stop(
+                    context, requireStringArg(args, "process.stop"));
+        }
         private Object exit(List<Object> args) {
             requireOne(args, "std.process.exit");
             if (ActorRuntime.currentActorId().isPresent() || ActorRuntime.currentActorPolicy() != null) {

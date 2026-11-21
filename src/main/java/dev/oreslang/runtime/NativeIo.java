@@ -13,6 +13,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -21,6 +23,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Trusted native host-I/O implementations for Oreslang.
@@ -30,6 +33,20 @@ import java.util.List;
  */
 public final class NativeIo {
     private NativeIo() { }
+
+    private static final AtomicReference<String> DURABILITY_FAULT_FOR_TEST =
+            new AtomicReference<>();
+
+    static void injectDurabilityFaultForTest(String point) {
+        if (point == null || point.isBlank()) {
+            throw new IllegalArgumentException("durability fault point cannot be blank");
+        }
+        DURABILITY_FAULT_FOR_TEST.set(point);
+    }
+
+    static void clearDurabilityFaultForTest() {
+        DURABILITY_FAULT_FOR_TEST.set(null);
+    }
 
     public static String readText(OresContext context, String rawPath) {
         Path path = canonicalExistingPath(rawPath);
@@ -230,6 +247,7 @@ public final class NativeIo {
                     java.nio.file.StandardCopyOption.ATOMIC_MOVE,
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             temp = null;
+            maybeInjectDurabilityFaultForTest("atomic-after-move", target);
 
             try {
                 syncDirectory(canonicalParent);
@@ -307,6 +325,7 @@ public final class NativeIo {
                 LinkOption.NOFOLLOW_LINKS)) {
             writeFully(channel, encoded);
             channel.force(true);
+            maybeInjectDurabilityFaultForTest("append-after-force", path);
         } catch (IOException | RuntimeException failure) {
             if (failure instanceof SecurityException security) throw security;
             throw new DurabilityUncertainException(
@@ -325,6 +344,154 @@ public final class NativeIo {
                                 + "failed for " + path,
                         failure);
             }
+        }
+    }
+
+    public static boolean writeTextAtomicDurableChecked(
+            OresContext context,
+            String rawPath,
+            String value) {
+        try {
+            writeTextAtomicDurable(context, rawPath, value);
+            return true;
+        } catch (DurabilityUncertainException uncertain) {
+            return false;
+        }
+    }
+
+    public static boolean appendTextDurableChecked(
+            OresContext context,
+            String rawPath,
+            String value) {
+        try {
+            appendTextDurable(context, rawPath, value);
+            return true;
+        } catch (DurabilityUncertainException uncertain) {
+            return false;
+        }
+    }
+
+    /**
+     * Acquire a process/context-lifetime exclusive lease on a stable lock file.
+     * The underlying FileLock is registered with the context-owned I/O registry
+     * and is released automatically when the Ores context closes.
+     *
+     * <p>This M1 primitive assumes the containing directory is not hostile to
+     * the process while the lease is held. Symlink and hard-link aliases fail
+     * closed, but unlink-and-replace attacks by another writer with directory
+     * mutation authority require a stronger directory-owner protocol.</p>
+     */
+    public static boolean acquireExclusiveLease(
+            OresContext context,
+            String rawPath) {
+        Path lexical = lexicalPath(rawPath);
+        if (Files.isSymbolicLink(lexical)) {
+            throw new SecurityException(
+                    "fs.acquire_exclusive_lease refuses symlink: " + lexical);
+        }
+        Path path = canonicalWritePath(rawPath);
+        context.requirePermission(
+                RuntimePermissions.Permission.WRITE,
+                lexical.toString(),
+                "fs.acquire_exclusive_lease");
+        context.requirePermission(
+                RuntimePermissions.Permission.WRITE,
+                path.toString(),
+                "fs.acquire_exclusive_lease");
+
+        Path parent = path.getParent();
+        if (parent == null || !Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException(
+                    "exclusive lease parent is not a directory: " + parent);
+        }
+
+        boolean existed = Files.exists(path, LinkOption.NOFOLLOW_LINKS);
+        if (existed) requireSingleLink(path, "fs.acquire_exclusive_lease");
+
+        final FileChannel channel;
+        try {
+            channel = FileChannel.open(
+                    path,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.WRITE,
+                    LinkOption.NOFOLLOW_LINKS);
+        } catch (IOException failure) {
+            throw ioFailure("open exclusive lease", path, failure);
+        }
+
+        try {
+            if (Files.isSymbolicLink(path)) {
+                throw new SecurityException(
+                        "fs.acquire_exclusive_lease refuses symlink: " + path);
+            }
+            requireSingleLink(path, "fs.acquire_exclusive_lease");
+
+            final FileLock lock;
+            try {
+                lock = channel.tryLock();
+            } catch (OverlappingFileLockException busy) {
+                channel.close();
+                return false;
+            }
+            if (lock == null) {
+                channel.close();
+                return false;
+            }
+
+            ExclusiveFileLease lease = new ExclusiveFileLease(lock, channel);
+            try {
+                context.nativeIo().register(lease);
+            } catch (Exception registrationFailure) {
+                try {
+                    lease.close();
+                } catch (Exception cleanup) {
+                    registrationFailure.addSuppressed(cleanup);
+                }
+                throw new IllegalStateException(
+                        "failed to register exclusive WAL lease for " + path,
+                        registrationFailure);
+            }
+            return true;
+        } catch (IOException failure) {
+            try { channel.close(); } catch (IOException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw ioFailure("acquire exclusive lease", path, failure);
+        } catch (RuntimeException failure) {
+            try { channel.close(); } catch (IOException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
+        }
+    }
+
+    private static final class ExclusiveFileLease implements AutoCloseable {
+        private final FileLock lock;
+        private final FileChannel channel;
+        private boolean closed;
+
+        private ExclusiveFileLease(FileLock lock, FileChannel channel) {
+            this.lock = lock;
+            this.channel = channel;
+        }
+
+        @Override
+        public synchronized void close() throws IOException {
+            if (closed) return;
+            closed = true;
+            IOException failure = null;
+            try {
+                if (lock.isValid()) lock.release();
+            } catch (IOException releaseFailure) {
+                failure = releaseFailure;
+            }
+            try {
+                channel.close();
+            } catch (IOException closeFailure) {
+                if (failure == null) failure = closeFailure;
+                else failure.addSuppressed(closeFailure);
+            }
+            if (failure != null) throw failure;
         }
     }
 
@@ -383,13 +550,13 @@ public final class NativeIo {
     public static String envGet(OresContext context, String name) {
         validateEnvName(name);
         context.requirePermission(RuntimePermissions.Permission.ENV, name, "env.get");
-        return System.getenv(name);
+        return context.env().getEnvironment().get(name);
     }
 
     public static boolean envHas(OresContext context, String name) {
         validateEnvName(name);
         context.requirePermission(RuntimePermissions.Permission.ENV, name, "env.has");
-        return System.getenv().containsKey(name);
+        return context.env().getEnvironment().containsKey(name);
     }
 
     public static String httpGetText(OresContext context, String rawUri) {
@@ -616,6 +783,17 @@ public final class NativeIo {
         if (!(raw instanceof Number number) || number.longValue() != 1L) {
             throw new SecurityException(
                     operation + " refuses hard-linked file: " + path);
+        }
+    }
+
+    private static void maybeInjectDurabilityFaultForTest(
+            String point,
+            Path path) {
+        if (DURABILITY_FAULT_FOR_TEST.compareAndSet(point, null)) {
+            throw new DurabilityUncertainException(
+                    "injected durability-uncertain outcome at " + point
+                            + " for " + path,
+                    new IOException("injected durability fault"));
         }
     }
 

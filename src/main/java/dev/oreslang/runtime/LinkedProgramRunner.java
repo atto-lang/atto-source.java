@@ -174,6 +174,31 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
+        return runWithExitStatus(
+                entryFile,
+                policy,
+                permissions,
+                permissionCheckMode,
+                executionProfile,
+                allowedHostClasses,
+                environment,
+                List.of(),
+                out,
+                err);
+    }
+
+    public static RunResult runWithExitStatus(
+            Path entryFile,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            List<String> guestArguments,
+            OutputStream out,
+            OutputStream err) throws IOException {
+        List<String> exactGuestArguments = List.copyOf(guestArguments);
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -215,6 +240,18 @@ public final class LinkedProgramRunner {
                         effectiveHostClasses,
                         permissions,
                         permissionCheckMode);
+                builder.arguments(
+                        OresLanguage.ID,
+                        policy.applicationArguments(
+                                executionProfile,
+                                permissions,
+                                permissionCheckMode,
+                                exactGuestArguments));
+                // The explicit runner environment is part of the embedding
+                // contract, not just project discovery. Install exactly that
+                // map on the Polyglot context so guest env.get/env.has observe
+                // per-context values rather than ambient host process state.
+                builder.environment(Map.copyOf(environment));
                 if (out != null) builder.out(forwardingStream(out));
                 if (err != null) builder.err(forwardingStream(err));
 

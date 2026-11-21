@@ -95,8 +95,19 @@ public final class OresMain {
         List<IsolatePolicy.Capability> additionalCapabilities = new ArrayList<>();
         Set<String> allowedHostClasses = new LinkedHashSet<>();
         String filename = null;
-
+        List<String> compilerArguments = new ArrayList<>();
+        List<String> guestArguments = new ArrayList<>();
+        boolean guestArgumentMode = false;
         for (String arg : args) {
+            if (!guestArgumentMode && arg.equals("--")) {
+                guestArgumentMode = true;
+                continue;
+            }
+            if (guestArgumentMode) guestArguments.add(arg);
+            else compilerArguments.add(arg);
+        }
+
+        for (String arg : compilerArguments) {
             try {
                 if (arg.equals("--strict-isolate")) strict = true;
                 else if (arg.equals("--check")) checkOnly = true;
@@ -308,6 +319,7 @@ public final class OresMain {
                 profile,
                 allowedHostClasses,
                 System.getenv(),
+                guestArguments,
                 System.out,
                 System.err).exitStatus();
         return exitStatus;
@@ -382,7 +394,7 @@ public final class OresMain {
                         + "[--core-log-level=off|error|warn|info|debug|trace] [--no-core-log] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
-                        + "[file.ores|file.java]");
+                        + "[file.ores|file.java] [-- guest-args...]");
     }
 
     static List<String> formatSyntaxWarnings(Path path, String source) {
