@@ -311,6 +311,50 @@ final class SourceActorSpawnExecutionTest {
     }
 
     @Test
+    void actorReceiveLowersAwaitSendAsyncThroughSourceTaskContinuation()
+            throws Exception {
+        String program = """
+                define actor Sink as
+                  receive(ActorMail<int> mail): void {
+                    return;
+                  }
+                end
+
+                define actor Producer as
+                  val ActorRef<Sink> sink;
+
+                  on_start(): void {
+                    self.sink = spawn Sink();
+                    return;
+                  }
+
+                  receive(ActorMail<String> mail): void {
+                    await self.sink.get_ready();
+                    await self.sink.send_async(7);
+                    self.send("admitted");
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val producer = spawn Producer();
+                  await producer.get_ready();
+                  producer.send("go");
+
+                  val output = (await producer.outputs.next()).value.unwrap();
+                  stdio.stdout.write(output.value);
+                  await producer.get_done();
+                  return;
+                }
+                """;
+
+        assertEquals(
+                "admitted",
+                run(program, "source-actor-send-async-continuation.ores"));
+    }
+
+    @Test
     void actorLifecycleMethodsReturnAwaitableFuturesAndRejectPropertyAccess() throws Exception {
         String valid = """
                 define actor Worker as

@@ -81,6 +81,17 @@ loop and not a second message queue.
   pre-publication cohort is finitely bounded before payload traversal/copy.
 - Payload ownership/freeze/copy and retained-byte accounting are established
   before a producer may remain pending.
+- At the source ownership layer, an affine mailbox payload transfers at the
+  `send(...)` / `send_async(...)` call boundary, not at a later `await`.
+  Copy payloads remain usable by the sender. Borrowed references and lexical
+  guards are never mailbox payloads. A future recoverable-send API may return
+  ownership explicitly on rejection; ordinary send does not silently restore a
+  statically transferred affine value.
+- `await actor.send_async(...)` is a compiler-lowered scheduler suspension:
+  evaluate/register the send, return an `OresScheduler.await` step, unwind the
+  current carrier, and resume the saved logical continuation after admission.
+  It must never call a blocking Future bridge, poll/retry for space, or keep an
+  OS/JVM carrier parked.
 - The full observation, waiter registration, cancellation and USER-credit
   release share one admission linearization domain; check-then-register lost
   wakeups are invalid.

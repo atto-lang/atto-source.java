@@ -1556,6 +1556,12 @@ public final class OwnershipChecker {
             // A const/let read-only view must not gain mutation via .add/.set.
             Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
             if (memberReceiverType == null
+                    && (member.member().equals("send")
+                            || member.member().equals("send_async"))) {
+                memberReceiverType =
+                        stableProjectedReceiverType(member.receiver(), scope);
+            }
+            if (memberReceiverType == null
                     && (member.member().equals("add") || member.member().equals("set"))
                     && (member.receiver() instanceof Ast.MemberExpr
                         || member.receiver() instanceof Ast.IndexExpr)) {
@@ -1564,6 +1570,42 @@ public final class OwnershipChecker {
                 // loan cannot be bypassed by holder.items.add(...) or set(...).
                 memberReceiverType = borrowPlace(member.receiver(), scope).type();
             }
+            if (memberReceiverType != null
+                    && memberReceiverType.name().equals("ActorRef")
+                    && (member.member().equals("send")
+                            || member.member().equals("send_async"))) {
+                // Actor mailbox submission is an ownership boundary. Evaluate
+                // the capability as a read, but transfer affine payload
+                // ownership at the send/send_async call itself rather than at
+                // a later await. This matches Task submit-time ownership and
+                // prevents a pending Future from retaining a live caller loan.
+                checkExpr(member.receiver(), scope, false);
+                if (call.arguments().size() != 1) {
+                    throw error("ActorRef." + member.member()
+                            + " expects exactly one mailbox value");
+                }
+                ValueInfo payload = checkExpr(
+                        call.arguments().getFirst(),
+                        scope,
+                        true);
+                if (containsMutexGuardType(payload.type)) {
+                    throw error("ActorRef." + member.member()
+                            + " cannot transport MutexGuard");
+                }
+                if (isBorrowValue(payload)) {
+                    throw error("ActorRef." + member.member()
+                            + " cannot transport a borrowed reference; "
+                            + "mailbox payloads must own/copy/share their data");
+                }
+                Ast.TypeRef result = member.member().equals("send_async")
+                        ? new Ast.TypeRef(
+                                "Future",
+                                List.of(Ast.TypeRef.simple("void")),
+                                false)
+                        : Ast.TypeRef.simple("void");
+                return new ValueInfo(result, kindOfType(result), null);
+            }
+
             if (memberReceiverType != null) {
                 Ast.TypeRef concreteCollection = memberReceiverType.isBorrow()
                         ? memberReceiverType.borrowedTarget() : memberReceiverType;
@@ -2975,6 +3017,55 @@ public final class OwnershipChecker {
                 && scope.lookup(namespace.name()) == null) {
             return findClass(namespace.name() + "." + member.member());
         }
+        return null;
+    }
+
+    /**
+     * Resolve only side-effect-free field/index projection types for capability
+     * method dispatch. This does not create a borrow or evaluate an index; it
+     * exists so a mailbox boundary cannot disappear merely because ActorRef is
+     * stored in actor/class/record state instead of a local binding.
+     */
+    private Ast.TypeRef stableProjectedReceiverType(
+            Ast.Expr receiver,
+            Scope scope) {
+        Ast.TypeRef direct = receiverType(receiver, scope);
+        if (direct != null) return direct;
+
+        if (receiver instanceof Ast.MemberExpr member) {
+            Ast.TypeRef owner =
+                    stableProjectedReceiverType(member.receiver(), scope);
+            if (owner == null) return null;
+            if (owner.isBorrow()) owner = owner.borrowedTarget();
+
+            if (owner.isRecordType()) {
+                return owner.recordMembers().get(member.member());
+            }
+
+            Ast.ClassDecl klass = findClass(owner.name());
+            if (klass == null) return null;
+            ResolvedField target = findFieldTarget(
+                    klass, owner, member.member(), new LinkedHashSet<>());
+            if (target == null) return null;
+            return substituteType(
+                    ownershipFieldType(target.field()),
+                    genericBindings(
+                            target.owner().genericParameters(),
+                            target.ownerType().arguments()));
+        }
+
+        if (receiver instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef collection =
+                    stableProjectedReceiverType(indexed.receiver(), scope);
+            if (collection == null) return null;
+            if (collection.isBorrow()) collection = collection.borrowedTarget();
+            if ((collection.name().equals("Array")
+                            || collection.name().equals("List"))
+                    && collection.arguments().size() == 1) {
+                return collection.arguments().getFirst();
+            }
+        }
+
         return null;
     }
 

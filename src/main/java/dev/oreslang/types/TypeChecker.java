@@ -5226,9 +5226,12 @@ public final class TypeChecker {
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
-                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
+                || named.name().equals("Task") || named.name().equals("Channel")
+                || named.name().equals("SelectCase") || named.name().equals("SelectSet")
+                || named.name().equals("SelectResult") || named.name().equals("Iterator")
+                || named.name().equals("AsyncIterator") || named.name().equals("RawPointer")
+                || named.name().equals("NativePointer") || named.name().equals("Pointer")
+                || named.name().equals("Ptr") || named.name().equals("ThreadLocal")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
