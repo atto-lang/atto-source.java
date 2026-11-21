@@ -38,6 +38,11 @@ public final class IncrementalCompiler {
             }
         }
 
+        // std/* is compiler-owned Oreslang source. Resolve bundled units before
+        // hashing/parsing so they participate in the ordinary import graph,
+        // ABI invalidation, initialization ordering, and AOT reachability.
+        StandardLibraryResolver.augmentSources(normalized);
+
         Map<String, String> hashes = new LinkedHashMap<>();
         Map<String, String> abiHashes = new LinkedHashMap<>();
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();

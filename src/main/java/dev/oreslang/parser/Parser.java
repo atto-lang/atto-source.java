@@ -517,11 +517,18 @@ public final class Parser {
                 annotated = annotation.arguments().getFirst();
             }
         }
-        Ast.TypeRef arrow = match(FAT_ARROW) ? parseTypeRef() : null;
-        if (annotated != null && arrow != null && !sameType(annotated, arrow)) {
-            throw error(previous(), "@Ret type and => return type disagree");
+
+        Ast.TypeRef declared = null;
+        if (match(COLON) || match(ARROW) || match(FAT_ARROW)) {
+            // ':' and '->' are the current callable spellings. Keep legacy
+            // '=>' accepted on this older native-core stack so the collections
+            // PR does not force an unrelated whole-repository syntax migration.
+            declared = parseTypeRef();
         }
-        return arrow != null ? arrow : annotated != null ? annotated : Ast.TypeRef.simple("void");
+        if (annotated != null && declared != null && !sameType(annotated, declared)) {
+            throw error(previous(), "@Ret type and declared return type disagree");
+        }
+        return declared != null ? declared : annotated != null ? annotated : Ast.TypeRef.simple("void");
     }
 
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
@@ -763,7 +770,28 @@ public final class Parser {
     }
 
     private Ast.Stmt parseFor() {
-        consume(LPAREN, "expected '(' after for");
+        // Canonical iterator form is unparenthesized and supports either loop
+        // body spelling:
+        //
+        //   for value of values do ... done
+        //   for const value of values { ... }
+        //
+        // Parenthesized forms remain accepted for compatibility and for
+        // conventional initializer/condition/update loops.
+        if (!match(LPAREN)) {
+            Ast.BindingKind kind = isBindingKind(peek().type())
+                    ? parseBindingKind()
+                    : Ast.BindingKind.VAL;
+            if (!(check(IDENT) && checkNext(OF))) {
+                throw error(peek(),
+                        "unparenthesized for-loop uses 'for [const|val|let] x of iterable' "
+                                + "followed by '{ ... }' or 'do ... done'");
+            }
+            String name = advance().lexeme();
+            consume(OF, "iterator for-loop shorthand uses 'for x of iterable'");
+            Ast.Expr iterable = parseExpression();
+            return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody());
+        }
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
@@ -772,7 +800,7 @@ public final class Parser {
                 consume(OF, "expected 'of' in for-of loop");
                 Ast.Expr iterable = parseExpression();
                 consume(RPAREN, "expected ')' after for-of header");
-                return new Ast.ForOfStmt(kind, name, iterable, parseBlock());
+                return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody());
             }
 
             Ast.TypeRef type = null;
@@ -790,7 +818,7 @@ public final class Parser {
             consume(SEMICOLON, "expected ';' after for condition");
             Ast.Expr update = check(RPAREN) ? null : parseExpression();
             consume(RPAREN, "expected ')' after for header");
-            return new Ast.ForStmt(init, condition, update, parseBlock());
+            return new Ast.ForStmt(init, condition, update, parseLoopBody());
         }
 
         if (check(IDENT) && checkNext(OF)) {
@@ -798,7 +826,7 @@ public final class Parser {
             consume(OF, "expected 'of' in for-of loop");
             Ast.Expr iterable = parseExpression();
             consume(RPAREN, "expected ')' after for-of header");
-            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, parseBlock());
+            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, parseLoopBody());
         }
 
         Ast.Stmt initializer = null;
@@ -808,7 +836,25 @@ public final class Parser {
         consume(SEMICOLON, "expected ';' after for condition");
         Ast.Expr update = check(RPAREN) ? null : parseExpression();
         consume(RPAREN, "expected ')' after for header");
-        return new Ast.ForStmt(initializer, condition, update, parseBlock());
+        return new Ast.ForStmt(initializer, condition, update, parseLoopBody());
+    }
+
+    private List<Ast.Stmt> parseLoopBody() {
+        if (check(LBRACE)) return parseBlock();
+        if (!match(DO)) {
+            throw error(peek(), "loop body must use '{ ... }' or 'do ... done'");
+        }
+
+        List<Ast.Stmt> body = new ArrayList<>();
+        while (!check(EOF) && !isBareDoneDelimiter()) {
+            body.add(parseStatement());
+        }
+        consume(DONE, "expected 'done' to close loop body");
+        return body;
+    }
+
+    private boolean isBareDoneDelimiter() {
+        return check(DONE) && !reservedCallableNameFollowedByInvocation(current);
     }
 
     private Ast.BindingStmt parseBindingStatement() {
@@ -1346,7 +1392,7 @@ public final class Parser {
 
     private boolean isSafeStatementBoundary() {
         return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
-                || check(CATCH) || check(FINALLY) || check(EOF);
+                || check(CATCH) || check(FINALLY) || isBareDoneDelimiter() || check(EOF);
     }
 
     private Ast.BindingKind parseBindingKind() {
