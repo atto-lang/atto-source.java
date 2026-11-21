@@ -45,6 +45,58 @@ final class OresVMTest {
     }
 
     @Test
+    void vmBootstrapsControlEventLoopBeforeRootMainCanRun() throws Exception {
+        ActorRuntime.DispatcherConfig config = ActorRuntime.DispatcherConfig.defaults();
+        OresVM vm = OresVM.dedicated(config);
+        try {
+            assertTrue(vm.started(), "VM startup must establish the scheduler before main");
+            assertEquals(
+                    config.controlParallelism(),
+                    vm.controlCarrierCount(),
+                    "CONTROL/event-loop core carriers must be prestarted at VM startup");
+
+            try (ActorRuntime runtime = ActorRuntime.attachToVm(
+                    vm,
+                    IsolatePolicy.developer(),
+                    ActorRuntime.TurnExecutor.direct())) {
+                AtomicReference<String> carrier = new AtomicReference<>();
+                OresFuture<String> main = runtime.rootScheduler().startSync(() -> {
+                    assertTrue(ActorRuntime.inRootExecution());
+                    carrier.set(Thread.currentThread().getName());
+                    return carrier.get();
+                });
+
+                String threadName = main.get(5, TimeUnit.SECONDS);
+                assertTrue(
+                        threadName.contains("control-plane-dispatcher-"),
+                        "root/main work must execute on the VM CONTROL/event-loop pool");
+            }
+        } finally {
+            vm.shutdownNow();
+        }
+    }
+
+    @Test
+    void vmStartupBarrierIsIdempotentAndSurvivesRepeatedBootstrapCalls() {
+        ActorRuntime.DispatcherConfig config = ActorRuntime.DispatcherConfig.defaults();
+        OresVM vm = OresVM.dedicated(config);
+        try {
+            int expected = config.controlParallelism();
+
+            for (int i = 0; i < 32; i++) {
+                vm.startup();
+                assertTrue(vm.started());
+                assertEquals(
+                        expected,
+                        vm.controlCarrierCount(),
+                        "repeated startup must not reduce the resident CONTROL carrier floor");
+            }
+        } finally {
+            vm.shutdownNow();
+        }
+    }
+
+    @Test
     void vmKernelTypeIsNotPublicAndContextDoesNotExposeIt() {
         assertFalse(Modifier.isPublic(OresVM.class.getModifiers()),
                 "OresVM is a runtime kernel type, not a user/interop API");

@@ -77,6 +77,14 @@ final class OresVM {
             String, ActorRuntime.ActorGenerationLeaseFactory> generationBindings =
             new ConcurrentHashMap<>();
     private final AtomicBoolean shutdown = new AtomicBoolean();
+    private volatile StartupState startupState = StartupState.NEW;
+
+    private enum StartupState {
+        NEW,
+        STARTING,
+        STARTED,
+        FAILED
+    }
 
     private OresVM(
             ActorRuntime.DispatcherConfig config,
@@ -85,12 +93,37 @@ final class OresVM {
         String prefix = Objects.requireNonNull(threadPrefix, "threadPrefix");
         ActorRuntime.DispatcherConfig schedulerConfig =
                 Objects.requireNonNull(config, "config");
-        this.dispatchers = new ActorRuntime.DispatcherGroup(
-                schedulerConfig,
-                prefix);
-        this.blockingIo = new BlockingIoExecutor(prefix);
-        this.processVm = processVm;
-        VM_BINDINGS.put(contextBindingToken, this);
+
+        ActorRuntime.DispatcherGroup createdDispatchers =
+                new ActorRuntime.DispatcherGroup(schedulerConfig, prefix);
+        BlockingIoExecutor createdBlockingIo = null;
+        try {
+            createdBlockingIo = new BlockingIoExecutor(prefix);
+            this.dispatchers = createdDispatchers;
+            this.blockingIo = createdBlockingIo;
+            this.processVm = processVm;
+
+            // VM construction is the runtime bootstrap boundary. The physical
+            // CONTROL carrier pool must already be live before this VM can be
+            // published through its opaque context binding. No context lookup can
+            // therefore observe a partially-started VM.
+            startup();
+            VM_BINDINGS.put(contextBindingToken, this);
+        } catch (RuntimeException | Error failure) {
+            if (createdBlockingIo != null) {
+                try {
+                    createdBlockingIo.close();
+                } catch (Throwable cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+            }
+            try {
+                createdDispatchers.shutdownNow();
+            } catch (Throwable cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
+        }
     }
 
     /** The one physical Oreslang VM for the current OS process. */
@@ -186,6 +219,45 @@ final class OresVM {
         return processVm;
     }
 
+    boolean started() {
+        return startupState == StartupState.STARTED;
+    }
+
+    /**
+     * Start the VM-owned root/control event-loop carriers exactly once.
+     *
+     * <p>Startup is a real lifecycle barrier: STARTED is published only after
+     * every configured CONTROL core carrier has been successfully prestarted.
+     * The synchronized transition also makes concurrent bootstrap callers wait
+     * without spinning while the one bootstrapper establishes the barrier.</p>
+     */
+    synchronized void startup() {
+        ensureRunning();
+
+        switch (startupState) {
+            case STARTED -> {
+                return;
+            }
+            case FAILED -> throw new IllegalStateException(
+                    "Oreslang VM scheduler bootstrap previously failed");
+            case STARTING -> throw new IllegalStateException(
+                    "recursive Oreslang VM scheduler bootstrap");
+            case NEW -> startupState = StartupState.STARTING;
+        }
+
+        try {
+            dispatchers.startRuntime();
+            startupState = StartupState.STARTED;
+        } catch (RuntimeException | Error failure) {
+            startupState = StartupState.FAILED;
+            throw failure;
+        }
+    }
+
+    int controlCarrierCount() {
+        return dispatchers.controlCarrierCount();
+    }
+
     boolean shutdown() {
         return shutdown.get();
     }
@@ -211,7 +283,7 @@ final class OresVM {
     ActorRuntime newActorRuntime(
             IsolatePolicy policyCeiling,
             ActorRuntime.TurnExecutor turnExecutor) {
-        ensureRunning();
+        startup();
         return ActorRuntime.attachToVm(this, policyCeiling, turnExecutor);
     }
 
@@ -231,7 +303,7 @@ final class OresVM {
             ActorRuntime.TurnExecutor turnExecutor,
             ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory,
             ActorRuntime.RuntimePlacement runtimePlacement) {
-        ensureRunning();
+        startup();
         ActorRuntime.ActorGenerationLeaseFactory effectiveFactory =
                 generationLeaseFactory == null
                         ? () -> () -> { }
@@ -282,7 +354,7 @@ final class OresVM {
     }
 
     ActorRuntime.DispatcherGroup dispatcherGroup() {
-        ensureRunning();
+        startup();
         return dispatchers;
     }
 
@@ -336,7 +408,16 @@ final class OresVM {
             throw new IllegalStateException(
                     "the process Oreslang VM is host-owned and cannot be shut down by a context");
         }
-        if (!shutdown.compareAndSet(false, true)) return;
+
+        /*
+         * Startup and shutdown are mutually exclusive lifecycle transitions.
+         * Hold the same monitor used by startup() while publishing the shutdown
+         * bit, then release it before closing owned resources so teardown cannot
+         * deadlock on a callback that needs this VM monitor.
+         */
+        synchronized (this) {
+            if (!shutdown.compareAndSet(false, true)) return;
+        }
 
         RuntimeException firstFailure = null;
         for (HotReloadManager manager : List.copyOf(hotReloadManagers)) {

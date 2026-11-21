@@ -44,7 +44,9 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -116,6 +118,10 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<ActorRuntime> CURRENT_ROOT_RUNTIME = new ThreadLocal<>();
     private static final ThreadLocal<ActorRuntime> CURRENT_MAILMAN_RUNTIME = new ThreadLocal<>();
     private static final ThreadLocal<Long> CURRENT_ROOT_DEADLINE_NANOS = new ThreadLocal<>();
+    private static final int AFFINITY_SCAN_LIMIT = 64;
+    private static final int AFFINITY_REHOME_AFTER_MISSES = 3;
+    private static final long AFFINITY_STEAL_GRACE_NANOS =
+            TimeUnit.MICROSECONDS.toNanos(50);
 
     private record ActorExecutionContext(
             ActorRuntime runtime,
@@ -236,6 +242,29 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Placement policy for actor turns inside their already-selected scheduler
+     * domain. This is deliberately a performance preference, never a semantic
+     * constraint: pool isolation and the per-actor execution lease are hard
+     * invariants, while a busy home carrier may be bypassed by work stealing.
+     */
+    public enum ActorAffinityPolicy {
+        PREFER_LAST_CARRIER
+    }
+
+    /**
+     * Scheduler work classes are deliberately separated. Actor-domain ready
+     * queues may carry only ACTOR_TURN work. Dense CPU data chunks and GPU
+     * kernels have region/layout/residency semantics and must be submitted to
+     * the heterogeneous compute/dataflow scheduler instead of piggybacking on
+     * actor carrier affinity.
+     */
+    enum AffinityWorkClass {
+        ACTOR_TURN,
+        CPU_DATA_CHUNK,
+        GPU_KERNEL
+    }
+
+    /**
      * Actor dispatcher configuration.
      *
      * Fairness is bounded by both mailbox throughput and wall-clock batch time.
@@ -256,6 +285,7 @@ public final class ActorRuntime implements AutoCloseable {
         public static final long DEFAULT_MAX_MESSAGE_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
         public static final int DEFAULT_MIN_POOL_THREADS = 5;
         public static final int DEFAULT_MAX_POOL_THREADS = 20;
+        public static final int HARD_MAX_POOL_THREADS = 1024;
 
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
@@ -269,6 +299,14 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (maxCompensatingThreads < 0) {
                 throw new IllegalArgumentException("maxCompensatingThreads must be >= 0");
+            }
+            if ((long) privateParallelism + maxCompensatingThreads > HARD_MAX_POOL_THREADS
+                    || (long) sharedParallelism + maxCompensatingThreads > HARD_MAX_POOL_THREADS
+                    || (long) untrustedParallelism + maxCompensatingThreads > HARD_MAX_POOL_THREADS) {
+                throw new IllegalArgumentException(
+                        "each scheduler domain is capped at "
+                                + HARD_MAX_POOL_THREADS
+                                + " carrier threads");
             }
             if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
             if (maxActors > 1_000_000) {
@@ -408,6 +446,10 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (ArithmeticException overflow) {
                 return Integer.MAX_VALUE;
             }
+        }
+
+        public ActorAffinityPolicy actorAffinityPolicy() {
+            return ActorAffinityPolicy.PREFER_LAST_CARRIER;
         }
 
         public int throughputFor(ActorKind kind) {
@@ -874,6 +916,17 @@ public final class ActorRuntime implements AutoCloseable {
             long rejectedTurns,
             int largestPoolSize) { }
 
+    /**
+     * Soft-affinity telemetry. A hit means a runnable actor returned to its
+     * preferred carrier. A migration means another carrier stole the turn.
+     * Rehomes are adaptive preference changes after repeated migration or a
+     * retired preferred carrier.
+     */
+    public record DispatcherAffinityStats(
+            long affinityHits,
+            long migrations,
+            long rehomes) { }
+
     public record ActorId(UUID value) {
         public ActorId { Objects.requireNonNull(value); }
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
@@ -1267,9 +1320,10 @@ public final class ActorRuntime implements AutoCloseable {
      * Physical carrier/control executors.
      *
      * OresContext instances in one OS process share PROCESS_DISPATCHERS so hot
-     * reload generations do not multiply the three actor carrier pools. Direct
-     * ActorRuntime construction intentionally owns a dedicated group for tests
-     * and explicit host isolation.
+     * reload generations do not multiply scheduler infrastructure. One OresVM
+     * owns four bulkheads: CONTROL/root+supervisor+mailman, SHARED_ACTOR,
+     * ISOACTOR/private, and UNTRUSTED_ACTOR. Direct ActorRuntime construction
+     * intentionally owns a dedicated group for tests and explicit host isolation.
      */
     static final class DispatcherGroup {
         private final DispatcherConfig config;
@@ -1277,6 +1331,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ThreadPoolExecutor privateDispatcher;
         private final ThreadPoolExecutor sharedDispatcher;
         private final ThreadPoolExecutor untrustedDispatcher;
+        private final CarrierRegistry privateCarrierRegistry;
+        private final CarrierRegistry sharedCarrierRegistry;
+        private final CarrierRegistry untrustedCarrierRegistry;
         private final ScheduledThreadPoolExecutor untrustedWatchdog;
         private final ScheduledThreadPoolExecutor messageWatchdog;
         private final ActorTimerWheel actorTimerWheel;
@@ -1294,6 +1351,15 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong privateRejectedTurns = new AtomicLong();
         private final AtomicLong sharedRejectedTurns = new AtomicLong();
         private final AtomicLong untrustedRejectedTurns = new AtomicLong();
+        private final AtomicLong privateAffinityHits = new AtomicLong();
+        private final AtomicLong sharedAffinityHits = new AtomicLong();
+        private final AtomicLong untrustedAffinityHits = new AtomicLong();
+        private final AtomicLong privateAffinityMigrations = new AtomicLong();
+        private final AtomicLong sharedAffinityMigrations = new AtomicLong();
+        private final AtomicLong untrustedAffinityMigrations = new AtomicLong();
+        private final AtomicLong privateAffinityRehomes = new AtomicLong();
+        private final AtomicLong sharedAffinityRehomes = new AtomicLong();
+        private final AtomicLong untrustedAffinityRehomes = new AtomicLong();
         private int actorCount;
         private int privateActorCount;
         private int sharedActorCount;
@@ -1304,41 +1370,164 @@ public final class ActorRuntime implements AutoCloseable {
         DispatcherGroup(DispatcherConfig config, String prefix) {
             this.config = Objects.requireNonNull(config);
             this.maxActorMemoryBytes = configuredProcessActorMemoryLimit();
+            Objects.requireNonNull(prefix, "prefix");
+
             int controlParallelism = config.controlParallelism();
             int rootPermits = config.rootParallelism();
             int readyQueueCapacity;
             try {
                 readyQueueCapacity = Math.addExact(config.maxActors(), rootPermits);
             } catch (ArithmeticException overflow) {
-                throw new IllegalArgumentException("dispatcher ready-queue capacity overflow", overflow);
+                throw new IllegalArgumentException(
+                        "dispatcher ready-queue capacity overflow", overflow);
             }
-            this.controlDispatcher = newDispatcher(
-                    controlParallelism,
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "control-plane-dispatcher-");
-            this.privateDispatcher = newDispatcher(
-                    config.privateParallelism(),
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "private-actor-dispatcher-");
-            this.sharedDispatcher = newDispatcher(
-                    config.sharedParallelism(),
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "shared-actor-dispatcher-");
-            this.untrustedDispatcher = newDispatcher(
-                    config.untrustedParallelism(),
-                    readyQueueCapacity,
-                    config.maxCompensatingThreads(),
-                    prefix + "untrusted-actor-dispatcher-");
-            this.untrustedWatchdog = newUntrustedWatchdog(
-                    namedFactory(prefix + "untrusted-watchdog-"));
-            this.messageWatchdog = newUntrustedWatchdog(
-                    namedFactory(prefix + "actor-turn-watchdog-"));
-            this.actorTimerWheel = new ActorTimerWheel(prefix + "actor-timer-wheel-");
-            this.rootSlots = new Semaphore(rootPermits, true);
-            this.rootSchedulerQueue = new ArrayBlockingQueue<>(readyQueueCapacity, true);
+
+            this.privateCarrierRegistry =
+                    new CarrierRegistry(config.maxParallelismFor(ActorKind.PRIVATE));
+            this.sharedCarrierRegistry =
+                    new CarrierRegistry(config.maxParallelismFor(ActorKind.SHARED));
+            this.untrustedCarrierRegistry =
+                    new CarrierRegistry(config.maxParallelismFor(ActorKind.UNTRUSTED));
+
+            ThreadPoolExecutor control = null;
+            ThreadPoolExecutor privatePool = null;
+            ThreadPoolExecutor sharedPool = null;
+            ThreadPoolExecutor untrustedPool = null;
+            ScheduledThreadPoolExecutor untrustedWatchdog = null;
+            ScheduledThreadPoolExecutor messageWatchdog = null;
+            ActorTimerWheel timerWheel = null;
+            try {
+                control = newDispatcher(
+                        controlParallelism,
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "control-plane-dispatcher-",
+                        null);
+                privatePool = newDispatcher(
+                        config.privateParallelism(),
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "private-actor-dispatcher-",
+                        privateCarrierRegistry);
+                sharedPool = newDispatcher(
+                        config.sharedParallelism(),
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "shared-actor-dispatcher-",
+                        sharedCarrierRegistry);
+                untrustedPool = newDispatcher(
+                        config.untrustedParallelism(),
+                        readyQueueCapacity,
+                        config.maxCompensatingThreads(),
+                        prefix + "untrusted-actor-dispatcher-",
+                        untrustedCarrierRegistry);
+                untrustedWatchdog = newUntrustedWatchdog(
+                        namedFactory(prefix + "untrusted-watchdog-"));
+                messageWatchdog = newUntrustedWatchdog(
+                        namedFactory(prefix + "actor-turn-watchdog-"));
+                timerWheel = new ActorTimerWheel(prefix + "actor-timer-wheel-");
+
+                this.controlDispatcher = control;
+                this.privateDispatcher = privatePool;
+                this.sharedDispatcher = sharedPool;
+                this.untrustedDispatcher = untrustedPool;
+                this.untrustedWatchdog = untrustedWatchdog;
+                this.messageWatchdog = messageWatchdog;
+                this.actorTimerWheel = timerWheel;
+                this.rootSlots = new Semaphore(rootPermits, true);
+                this.rootSchedulerQueue = new ArrayBlockingQueue<>(readyQueueCapacity, true);
+            } catch (RuntimeException | Error failure) {
+                if (timerWheel != null) {
+                    try {
+                        timerWheel.close();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (messageWatchdog != null) {
+                    try {
+                        messageWatchdog.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (untrustedWatchdog != null) {
+                    try {
+                        untrustedWatchdog.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (untrustedPool != null) {
+                    try {
+                        untrustedPool.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (sharedPool != null) {
+                    try {
+                        sharedPool.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (privatePool != null) {
+                    try {
+                        privatePool.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (control != null) {
+                    try {
+                        control.shutdownNow();
+                    } catch (Throwable cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                throw failure;
+            }
+        }
+
+        /**
+         * VM startup barrier for the CONTROL/root event-loop carriers.
+         *
+         * <p>The control pool is deliberately prestarted here rather than waiting
+         * for the first submitted task. ROOT_TASK admission, Future/await
+         * continuation dispatch, and future channel/select notifications therefore
+         * have a live carrier pool before guest main is entered.</p>
+         */
+        void startRuntime() {
+            if (controlDispatcher.isShutdown()) {
+                throw new IllegalStateException("CONTROL dispatcher is shut down");
+            }
+
+            // CONTROL is the VM bootstrap pool. Its floor must remain a real
+            // resident carrier floor: guest startup, Future/await wakeups, and
+            // channel/select continuations cannot depend on a later submission
+            // to create the first worker.
+            controlDispatcher.allowCoreThreadTimeOut(false);
+            int required = controlDispatcher.getCorePoolSize();
+            int newlyStarted = controlDispatcher.prestartAllCoreThreads();
+            int live = controlDispatcher.getPoolSize();
+
+            // ThreadPoolExecutor permits a ThreadFactory to fail to create a
+            // worker (for example by returning null). Do not publish STARTED in
+            // that case; otherwise main could enter a runtime that cannot make
+            // progress. The return value is zero when all cores were already
+            // started, so the authoritative postcondition is the live count.
+            if (live != required) {
+                throw new IllegalStateException(
+                        "CONTROL dispatcher bootstrap incomplete: required="
+                                + required
+                                + ", live=" + live
+                                + ", newlyStarted=" + newlyStarted);
+            }
+        }
+
+        int controlCarrierCount() {
+            return controlDispatcher.getPoolSize();
         }
 
         private synchronized void reserveActor(ActorKind kind) {
@@ -1378,6 +1567,45 @@ public final class ActorRuntime implements AutoCloseable {
 
         private synchronized int actorCount() {
             return actorCount;
+        }
+
+        private CarrierRegistry carrierRegistry(ActorKind kind) {
+            return switch (kind) {
+                case PRIVATE -> privateCarrierRegistry;
+                case SHARED -> sharedCarrierRegistry;
+                case UNTRUSTED -> untrustedCarrierRegistry;
+            };
+        }
+
+        private AtomicLong affinityHitCounter(ActorKind kind) {
+            return switch (kind) {
+                case PRIVATE -> privateAffinityHits;
+                case SHARED -> sharedAffinityHits;
+                case UNTRUSTED -> untrustedAffinityHits;
+            };
+        }
+
+        private AtomicLong affinityMigrationCounter(ActorKind kind) {
+            return switch (kind) {
+                case PRIVATE -> privateAffinityMigrations;
+                case SHARED -> sharedAffinityMigrations;
+                case UNTRUSTED -> untrustedAffinityMigrations;
+            };
+        }
+
+        private AtomicLong affinityRehomeCounter(ActorKind kind) {
+            return switch (kind) {
+                case PRIVATE -> privateAffinityRehomes;
+                case SHARED -> sharedAffinityRehomes;
+                case UNTRUSTED -> untrustedAffinityRehomes;
+            };
+        }
+
+        private DispatcherAffinityStats affinityStats(ActorKind kind) {
+            return new DispatcherAffinityStats(
+                    affinityHitCounter(kind).get(),
+                    affinityMigrationCounter(kind).get(),
+                    affinityRehomeCounter(kind).get());
         }
 
         private synchronized void reserveMemory(long bytes, String purpose) {
@@ -1457,7 +1685,28 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new RejectedExecutionException(
                         "root OresScheduler ready queue is full");
             }
-            pumpRootScheduler();
+
+            try {
+                pumpRootScheduler();
+            } catch (RejectedExecutionException rejected) {
+                /*
+                 * The task has already been removed from rootSchedulerQueue by
+                 * pumpRootScheduler(). Let the owning OresScheduler observe the
+                 * rejection so its TaskRunner can become terminal instead of
+                 * remaining permanently QUEUED.
+                 */
+                throw rejected;
+            }
+
+            /*
+             * CONTROL shutdown may race the initial admission check and queue
+             * offer. If shutdown prevented the task from being drained, remove
+             * it and fail the caller; silently leaving it in the queue would
+             * create an unresumable Future.
+             */
+            if (controlDispatcher.isShutdown() && rootSchedulerQueue.remove(task)) {
+                throw new RejectedExecutionException("CONTROL dispatcher shut down during admission");
+            }
         }
 
         private void pumpRootScheduler() {
@@ -1487,16 +1736,21 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (RejectedExecutionException rejected) {
                 if (controlDispatcher.isShutdown() || messageWatchdog.isShutdown()) {
                     rootSlots.release();
-                    return;
+                    throw rejected;
                 }
 
                 // CONTROL's own bounded queue can be temporarily saturated by
                 // supervisor/mailman work. Keep this logical root slot reserved
                 // and retry without running guest code on the caller thread.
-                messageWatchdog.schedule(
-                        () -> submitRootSchedulerTurn(task),
-                        1L,
-                        TimeUnit.MILLISECONDS);
+                try {
+                    messageWatchdog.schedule(
+                            () -> submitRootSchedulerTurn(task),
+                            1L,
+                            TimeUnit.MILLISECONDS);
+                } catch (RejectedExecutionException retryRejected) {
+                    rootSlots.release();
+                    throw retryRejected;
+                }
             }
         }
 
@@ -2034,6 +2288,11 @@ public final class ActorRuntime implements AutoCloseable {
                 overrunCounter(kind).get(),
                 rejectionCounter(kind).get(),
                 executor.getLargestPoolSize());
+    }
+
+    public DispatcherAffinityStats dispatcherAffinityStats(ActorKind kind) {
+        Objects.requireNonNull(kind, "kind");
+        return dispatcherGroup.affinityStats(kind);
     }
 
     /** Immutable observability for the privileged VM control-plane scheduler. */
@@ -5741,26 +6000,379 @@ public final class ActorRuntime implements AutoCloseable {
         return executor;
     }
 
+    /**
+     * Compact carrier identity table for one actor scheduler domain.
+     *
+     * <p>Hot-path affinity uses primitive tokens rather than retaining Thread
+     * objects. The low 32 bits encode the slot (+1); the high 32 bits are a
+     * generation. Slot reuse therefore cannot make a stale preference look
+     * live. The contiguous AtomicLongArray is intentionally data-oriented:
+     * scheduler metadata stays dense and bounded by the domain carrier cap.</p>
+     */
+    static final class CarrierRegistry {
+        private record Binding(CarrierRegistry registry, long token) { }
+
+        private static final ThreadLocal<Binding> CURRENT = new ThreadLocal<>();
+
+        private final AtomicLongArray liveTokens;
+        private final AtomicLong nextGeneration = new AtomicLong(1L);
+
+        CarrierRegistry(int capacity) {
+            if (capacity <= 0) {
+                throw new IllegalArgumentException("carrier registry capacity must be positive");
+            }
+            liveTokens = new AtomicLongArray(capacity);
+        }
+
+        int capacity() {
+            return liveTokens.length();
+        }
+
+        long currentToken() {
+            Binding binding = CURRENT.get();
+            return binding != null && binding.registry() == this
+                    ? binding.token()
+                    : 0L;
+        }
+
+        boolean isLive(long token) {
+            int slot = slotOf(token);
+            return slot >= 0
+                    && slot < liveTokens.length()
+                    && liveTokens.get(slot) == token;
+        }
+
+        Runnable bindWorker(Runnable worker) {
+            Objects.requireNonNull(worker, "worker");
+            return () -> {
+                long token = acquire();
+                Binding prior = CURRENT.get();
+                if (prior != null) {
+                    release(token);
+                    throw new IllegalStateException(
+                            "scheduler carrier cannot enter two affinity registries");
+                }
+                CURRENT.set(new Binding(this, token));
+                try {
+                    worker.run();
+                } finally {
+                    CURRENT.remove();
+                    release(token);
+                }
+            };
+        }
+
+        private long acquire() {
+            for (int slot = 0; slot < liveTokens.length(); slot++) {
+                long token = nextToken(slot);
+                if (liveTokens.compareAndSet(slot, 0L, token)) return token;
+            }
+            throw new IllegalStateException(
+                    "actor dispatcher started more live carriers than its configured maximum");
+        }
+
+        private void release(long token) {
+            int slot = slotOf(token);
+            if (slot < 0
+                    || slot >= liveTokens.length()
+                    || !liveTokens.compareAndSet(slot, token, 0L)) {
+                throw new IllegalStateException("carrier registry token release mismatch");
+            }
+        }
+
+        private long nextToken(int slot) {
+            long generation = nextGeneration.getAndIncrement();
+            if (generation <= 0L || generation > 0xffff_ffffL) {
+                throw new IllegalStateException(
+                        "carrier token generation space exhausted; restart the OresVM");
+            }
+            return (generation << 32) | ((slot + 1L) & 0xffff_ffffL);
+        }
+
+        private static int slotOf(long token) {
+            if (token == 0L) return -1;
+            long encoded = token & 0xffff_ffffL;
+            if (encoded == 0L || encoded > Integer.MAX_VALUE) return -1;
+            return (int) encoded - 1;
+        }
+    }
+
+    /**
+     * Scheduler work that carries primitive affinity metadata. Implementations
+     * are enqueued at most once at a time and may therefore store enqueue age
+     * directly without allocating a per-turn wrapper object.
+     */
+    interface AffinityWork extends Runnable {
+        CarrierRegistry affinityRegistry();
+        AffinityWorkClass affinityWorkClass();
+        long preferredCarrierToken();
+        long affinityEnqueuedNanos();
+        void affinityEnqueuedNanos(long value);
+    }
+
+    /**
+     * Bounded ready queue with cache-locality bias and an explicit fairness cap.
+     *
+     * <p>A worker may bypass a younger foreign-affine head item to pick work
+     * homed to itself. It may not bypass an unbound/stale item, and once the
+     * head has waited for the same small grace interval used for stealing, FIFO
+     * age wins. This preserves bounded fairness even with a one-carrier domain
+     * and a continuously hot actor.</p>
+     */
+    static final class AffinityBlockingQueue extends ArrayBlockingQueue<Runnable> {
+        private final CarrierRegistry registry;
+        private final long affinityGraceNanos;
+
+        AffinityBlockingQueue(int capacity, CarrierRegistry registry) {
+            this(capacity, registry, AFFINITY_STEAL_GRACE_NANOS);
+        }
+
+        AffinityBlockingQueue(
+                int capacity,
+                CarrierRegistry registry,
+                long affinityGraceNanos) {
+            super(capacity, true);
+            this.registry = Objects.requireNonNull(registry, "registry");
+            if (affinityGraceNanos < 0L) {
+                throw new IllegalArgumentException("affinity grace cannot be negative");
+            }
+            this.affinityGraceNanos = affinityGraceNanos;
+        }
+
+        @Override
+        public boolean offer(Runnable task) {
+            stamp(task);
+            return super.offer(task);
+        }
+
+        @Override
+        public boolean offer(
+                Runnable task,
+                long timeout,
+                TimeUnit unit) throws InterruptedException {
+            stamp(task);
+            return super.offer(task, timeout, unit);
+        }
+
+        @Override
+        public void put(Runnable task) throws InterruptedException {
+            stamp(task);
+            super.put(task);
+        }
+
+        static AffinityWork requireActorTurn(
+                Runnable task,
+                CarrierRegistry registry) {
+            if (!(task instanceof AffinityWork work)) {
+                throw new IllegalArgumentException(
+                        "actor dispatcher accepts classified ACTOR_TURN work only");
+            }
+            if (work.affinityRegistry() != registry) {
+                throw new IllegalArgumentException(
+                        "affinity work belongs to a different scheduler domain");
+            }
+            if (work.affinityWorkClass() != AffinityWorkClass.ACTOR_TURN) {
+                throw new IllegalArgumentException(
+                        "actor dispatcher cannot admit "
+                                + work.affinityWorkClass()
+                                + "; CPU data chunks and GPU kernels require "
+                                + "the heterogeneous compute/dataflow scheduler");
+            }
+            return work;
+        }
+
+        private void stamp(Runnable task) {
+            AffinityWork work = requireActorTurn(task, registry);
+            work.affinityEnqueuedNanos(System.nanoTime());
+        }
+
+        private boolean preferredHere(Runnable task, long carrierToken) {
+            if (!(task instanceof AffinityWork work)) return false;
+            long preferred = work.preferredCarrierToken();
+            return carrierToken != 0L
+                    && preferred != 0L
+                    && preferred == carrierToken;
+        }
+
+        private boolean liveForeignPreference(Runnable task, long carrierToken) {
+            if (!(task instanceof AffinityWork work)) return false;
+            long preferred = work.preferredCarrierToken();
+            return preferred != 0L
+                    && preferred != carrierToken
+                    && registry.isLive(preferred);
+        }
+
+        private boolean headMustWin(Runnable head, long carrierToken, long now) {
+            if (!(head instanceof AffinityWork work)) return true;
+            long preferred = work.preferredCarrierToken();
+            if (preferred == 0L || !registry.isLive(preferred)) return true;
+
+            long queuedAt = work.affinityEnqueuedNanos();
+            if (queuedAt == 0L) return true;
+            long age = now - queuedAt;
+            return age < 0L || age >= affinityGraceNanos;
+        }
+
+        private Runnable pollPreferred(long carrierToken) {
+            if (carrierToken == 0L) return null;
+            int scanned = 0;
+            for (Runnable candidate : this) {
+                if (++scanned > AFFINITY_SCAN_LIMIT) break;
+                if (preferredHere(candidate, carrierToken) && remove(candidate)) {
+                    return candidate;
+                }
+            }
+            return null;
+        }
+
+        private Runnable pollEligible(long carrierToken) {
+            int scanned = 0;
+            for (Runnable candidate : this) {
+                if (++scanned > AFFINITY_SCAN_LIMIT) break;
+                if (liveForeignPreference(candidate, carrierToken)) continue;
+                if (remove(candidate)) return candidate;
+            }
+            return null;
+        }
+
+        private Runnable pollAffinityFirst(long carrierToken) {
+            Runnable head = peek();
+            if (head != null
+                    && headMustWin(head, carrierToken, System.nanoTime())
+                    && remove(head)) {
+                return head;
+            }
+
+            Runnable preferred = pollPreferred(carrierToken);
+            return preferred != null ? preferred : pollEligible(carrierToken);
+        }
+
+        private static void affinityGrace(long nanos) throws InterruptedException {
+            if (nanos <= 0L) return;
+            LockSupport.parkNanos(nanos);
+            if (Thread.interrupted()) throw new InterruptedException();
+        }
+
+        @Override
+        public Runnable take() throws InterruptedException {
+            long carrierToken = registry.currentToken();
+            if (carrierToken == 0L) return super.take();
+
+            while (true) {
+                Runnable task = pollAffinityFirst(carrierToken);
+                if (task != null) return task;
+                if (isEmpty()) return super.take();
+
+                affinityGrace(AFFINITY_STEAL_GRACE_NANOS);
+                task = pollAffinityFirst(carrierToken);
+                if (task != null) return task;
+                return super.take();
+            }
+        }
+
+        @Override
+        public Runnable poll() {
+            long carrierToken = registry.currentToken();
+            if (carrierToken == 0L) return super.poll();
+
+            // Non-blocking callers must not silently turn "nothing local or
+            // old enough to steal" into an immediate foreign-affinity steal.
+            // Returning null preserves the same grace contract as take() and
+            // timed poll() without blocking the caller.
+            return pollAffinityFirst(carrierToken);
+        }
+
+        @Override
+        public Runnable poll(long timeout, TimeUnit unit) throws InterruptedException {
+            long carrierToken = registry.currentToken();
+            if (carrierToken == 0L) return super.poll(timeout, unit);
+
+            long budget = unit.toNanos(timeout);
+            if (budget <= 0L) return poll();
+
+            long started = System.nanoTime();
+            Runnable task = pollAffinityFirst(carrierToken);
+            if (task != null) return task;
+            if (isEmpty()) return super.poll(timeout, unit);
+
+            affinityGrace(Math.min(AFFINITY_STEAL_GRACE_NANOS, budget));
+            task = pollAffinityFirst(carrierToken);
+            if (task != null) return task;
+
+            long elapsed = System.nanoTime() - started;
+            long remaining = Math.max(0L, budget - elapsed);
+            return remaining == 0L ? super.poll() : super.poll(remaining, TimeUnit.NANOSECONDS);
+        }
+    }
+
+    /**
+     * Actor-domain executor admission is enforced before ThreadPoolExecutor can
+     * choose either the queue path or the direct firstTask/compensation-worker
+     * path. Queue-only validation is insufficient because execute() may hand a
+     * task directly to a newly created worker.
+     */
+    static final class ActorDomainExecutor extends ThreadPoolExecutor {
+        private final CarrierRegistry registry;
+
+        ActorDomainExecutor(
+                int corePoolSize,
+                int maximumPoolSize,
+                BlockingQueue<Runnable> workQueue,
+                ThreadFactory threadFactory,
+                CarrierRegistry registry) {
+            super(
+                    corePoolSize,
+                    maximumPoolSize,
+                    50L,
+                    TimeUnit.MILLISECONDS,
+                    workQueue,
+                    threadFactory,
+                    new ThreadPoolExecutor.AbortPolicy());
+            this.registry = Objects.requireNonNull(registry, "registry");
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            AffinityBlockingQueue.requireActorTurn(command, registry);
+            super.execute(command);
+        }
+    }
+
     private static ThreadPoolExecutor newDispatcher(
             int parallelism,
             int readyQueueCapacity,
             int maxCompensatingThreads,
-            String threadPrefix) {
+            String threadPrefix,
+            CarrierRegistry carrierRegistry) {
         int maxThreads;
         try {
             maxThreads = Math.addExact(parallelism, maxCompensatingThreads);
         } catch (ArithmeticException overflow) {
             maxThreads = Integer.MAX_VALUE;
         }
-        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+        BlockingQueue<Runnable> readyQueue = carrierRegistry == null
+                ? new ArrayBlockingQueue<>(readyQueueCapacity, true)
+                : new AffinityBlockingQueue(readyQueueCapacity, carrierRegistry);
+        ThreadFactory threadFactory = carrierRegistry == null
+                ? namedFactory(threadPrefix)
+                : affinityNamedFactory(threadPrefix, carrierRegistry);
+
+        if (carrierRegistry != null) {
+            return new ActorDomainExecutor(
+                    parallelism,
+                    maxThreads,
+                    readyQueue,
+                    threadFactory,
+                    carrierRegistry);
+        }
+        return new ThreadPoolExecutor(
                 parallelism,
                 maxThreads,
                 50L,
                 TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(readyQueueCapacity, true),
-                namedFactory(threadPrefix),
+                readyQueue,
+                threadFactory,
                 new ThreadPoolExecutor.AbortPolicy());
-        return executor;
     }
 
     private static ThreadFactory namedFactory(String prefix) {
@@ -5772,7 +6384,20 @@ public final class ActorRuntime implements AutoCloseable {
         };
     }
 
-    private final class ActorCell<M> {
+    private static ThreadFactory affinityNamedFactory(
+            String prefix,
+            CarrierRegistry registry) {
+        AtomicInteger next = new AtomicInteger();
+        return worker -> {
+            Thread thread = new Thread(
+                    registry.bindWorker(worker),
+                    prefix + next.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    private final class ActorCell<M> implements AffinityWork {
         private final ActorRef<M> ref;
         private final ActorKind kind;
         private final ActorGroupHandle<?> groupHandle;
@@ -5792,6 +6417,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final long deadlineNanos;
         private volatile Thread activeCarrier;
         private final AtomicReference<Thread> executionLease = new AtomicReference<>();
+        private volatile long preferredCarrierToken;
+        private volatile long affinityEnqueuedNanos;
+        private int affinityMissStreak;
         private volatile ScheduledFuture<?> lifetimeFuture;
         private volatile ScheduledFuture<?> messageDeadlineFuture;
         private final AtomicLong messageEpoch = new AtomicLong();
@@ -6325,17 +6953,77 @@ public final class ActorRuntime implements AutoCloseable {
                     || !inbox.isEmpty();
         }
 
+        @Override
+        public AffinityWorkClass affinityWorkClass() {
+            return AffinityWorkClass.ACTOR_TURN;
+        }
+
+        @Override
+        public CarrierRegistry affinityRegistry() {
+            return dispatcherGroup.carrierRegistry(kind);
+        }
+
+        @Override
+        public long preferredCarrierToken() {
+            return preferredCarrierToken;
+        }
+
+        @Override
+        public long affinityEnqueuedNanos() {
+            return affinityEnqueuedNanos;
+        }
+
+        @Override
+        public void affinityEnqueuedNanos(long value) {
+            affinityEnqueuedNanos = value;
+        }
+
+        @Override
+        public void run() {
+            runBatch();
+        }
+
         private void schedule() {
             if (stopped.get() || closed.get()) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
-                dispatcherFor(kind).execute(this::runBatch);
+                dispatcherFor(kind).execute(this);
                 scaleDispatcherForDemand(kind);
             } catch (RejectedExecutionException rejected) {
                 rejectionCounter(kind).incrementAndGet();
                 scheduled.set(false);
                 stop();
                 if (!closed.get()) throw rejected;
+            }
+        }
+
+        private void observeCarrierAffinity() {
+            CarrierRegistry registry = affinityRegistry();
+            long carrierToken = registry.currentToken();
+            if (carrierToken == 0L) {
+                throw new IllegalStateException(
+                        "actor turn entered without a registered scheduler carrier");
+            }
+
+            long preferred = preferredCarrierToken;
+            if (preferred == 0L) {
+                preferredCarrierToken = carrierToken;
+                affinityMissStreak = 0;
+                return;
+            }
+
+            if (preferred == carrierToken) {
+                affinityMissStreak = 0;
+                dispatcherGroup.affinityHitCounter(kind).incrementAndGet();
+                return;
+            }
+
+            dispatcherGroup.affinityMigrationCounter(kind).incrementAndGet();
+            int misses = ++affinityMissStreak;
+            if (!registry.isLive(preferred) || misses >= AFFINITY_REHOME_AFTER_MISSES) {
+                preferredCarrierToken = carrierToken;
+                affinityMissStreak = 0;
+                dispatcherGroup.affinityRehomeCounter(kind).incrementAndGet();
             }
         }
 
@@ -6348,6 +7036,7 @@ public final class ActorRuntime implements AutoCloseable {
                         "single-executor actor lease violation for " + ref.id()));
                 return;
             }
+            observeCarrierAffinity();
             boolean turnActive = beginTurn();
             long entryDeadline = 0L;
             try {
