@@ -239,38 +239,61 @@ final class NamespaceActorCriticalIrCompiler {
         }
 
         Map<String, CriticalPlan> methods = new HashMap<>();
+        Map<String, Integer> checkedScalarReaders = new HashMap<>();
         for (Ast.ExternalActorMethodDecl method : critical) {
             if (method.runtimeIngress() || !method.criticalMethod()
                     || method.visibility() != Ast.Visibility.PRIVATE
                     || !method.actorName().equals(actor.name())
-                    || !type(method.returnType(), "void")
-                    || method.parameters().size() != 1
-                    || !scalar(method.parameters().getFirst().type())
                     || method.body().isEmpty() || method.body().size() > 4) {
-                throw reject("critical method requires one int parameter, void result and 1..4 writes");
+                throw reject("critical method must be private, owned and nonempty");
+            }
+            if (method.parameters().isEmpty()) {
+                // Read-only accessor: one scalar copy from sealed actor state.
+                // No arbitrary return expression, alias, loan, suspend or FFI.
+                if (!type(method.returnType(), "int")
+                        || method.body().size() != 1
+                        || !(method.body().getFirst() instanceof Ast.ReturnStmt ret)
+                        || ret.value() == null) {
+                    throw reject("zero-argument critical read must return one owned scalar field");
+                }
+                int slot = fieldSlot(
+                        ((Ast.ReturnStmt) method.body().getFirst()).value(),
+                        method.receiverName(), slots);
+                if (checkedScalarReaders.putIfAbsent(method.name(), slot) != null
+                        || methods.containsKey(method.name())) {
+                    throw reject("duplicate critical reader");
+                }
+                continue;
+            }
+            if (!type(method.returnType(), "void")
+                    || method.parameters().size() != 1
+                    || !scalar(method.parameters().getFirst().type())) {
+                throw reject("critical write requires one int argument and void result");
             }
             String param = method.parameters().getFirst().name();
             List<Write> writes = new ArrayList<>();
             for (Ast.Stmt stmt : method.body()) {
                 if (!(stmt instanceof Ast.ExprStmt exprStmt)
                         || !(exprStmt.expression() instanceof Ast.AssignExpr assign)) {
-                    throw reject("critical method body must consist only of state writes");
+                    throw reject("critical writer body must consist only of state writes");
                 }
                 int target = fieldSlot(assign.target(), method.receiverName(), slots);
                 IntValue value = lowerValue(assign.value(), method.receiverName(), param, slots, 0);
                 writes.add(new Write(target, value));
             }
-            if (methods.putIfAbsent(method.name(), new CriticalPlan(method.name(), writes)) != null) {
-                throw reject("duplicate critical method");
+            if (methods.putIfAbsent(method.name(), new CriticalPlan(method.name(), writes)) != null
+                    || checkedScalarReaders.containsKey(method.name())) {
+                throw reject("duplicate critical writer");
             }
         }
 
         List<CriticalPlan> calls = new ArrayList<>();
+        int outputFieldSlot = -1;
         List<Ast.Stmt> statements = receive.body();
-        if (statements.size() < 2 || statements.size() > 9
+        if (statements.size() < 2 || statements.size() > 10
                 || !(statements.getLast() instanceof Ast.ReturnStmt end)
                 || end.value() != null) {
-            throw reject("receive must call 1..8 own critical methods, then return");
+            throw reject("receive requires checked critical writes, optional final self.send(critical_read()), then return");
         }
         for (int i = 0; i < statements.size() - 1; i++) {
             if (!(statements.get(i) instanceof Ast.ExprStmt exprStmt)
@@ -279,26 +302,54 @@ final class NamespaceActorCriticalIrCompiler {
                     || call.typeArgumentsPresent() || !call.typeArguments().isEmpty()
                     || call.arguments().size() != 1
                     || !(call.callee() instanceof Ast.MemberExpr member)
-                    || !isName(member.receiver(), receive.receiverName())
-                    || !(call.arguments().getFirst() instanceof Ast.MemberExpr value)
-                    || !isName(value.receiver(), mail.name()) || !value.member().equals("value")) {
-                throw reject("receive may only invoke own critical method(mail.value)");
+                    || !isName(member.receiver(), receive.receiverName())) {
+                throw reject("receive may only invoke own checked critical methods or final owned scalar output");
+            }
+            if (member.member().equals("send")) {
+                // This is the actor's own output stream, not an ActorRef
+                // mailbox send. Only its private physical turn can emit.
+                // Never expose Owned, a state alias, or a diagnostic receipt.
+                if (i != statements.size() - 2 || calls.isEmpty()) {
+                    throw reject("source actor output must follow critical calls and precede return");
+                }
+                if (!(call.arguments().getFirst() instanceof Ast.CallExpr read)
+                        || read.origin() != Ast.CallOrigin.DIRECT
+                        || read.typeArgumentsPresent() || !read.typeArguments().isEmpty()
+                        || !read.arguments().isEmpty()
+                        || !(read.callee() instanceof Ast.MemberExpr getter)
+                        || !isName(getter.receiver(), receive.receiverName())) {
+                    throw reject("actor output requires an exact owned critical scalar read");
+                }
+                Integer readSlot = checkedScalarReaders.get(getter.member());
+                if (readSlot == null) {
+                    throw reject("actor output cannot bypass the checked critical reader");
+                }
+                outputFieldSlot = readSlot;
+                continue;
+            }
+            if (!(call.arguments().getFirst() instanceof Ast.MemberExpr value)
+                    || !isName(value.receiver(), mail.name())
+                    || !value.member().equals("value")) {
+                throw reject("critical method argument must be owned ActorMail<int>.value");
             }
             CriticalPlan plan = methods.get(member.member());
             if (plan == null) throw reject("receive calls an unverified method");
+            if (calls.size() >= 8) throw reject("receive critical call budget exceeded");
             calls.add(plan);
         }
-        if (!new HashSet<>(methods.keySet()).containsAll(
+        if (calls.isEmpty() || !new HashSet<>(methods.keySet()).containsAll(
                 calls.stream().map(CriticalPlan::name).toList())) {
             throw reject("critical method call graph is not statically closed");
         }
         long[] initial = fields.stream().mapToLong(InitialField::value).toArray();
+        Set<String> checkedMethods = new HashSet<>(methods.keySet());
+        checkedMethods.addAll(checkedScalarReaders.keySet());
         VerifiedActorDescriptor descriptor = new VerifiedActorDescriptor(
                 image, program.namespace(), actor.name(),
-                slots, methods.keySet());
+                slots, checkedMethods);
         return new Executable(image, actor.name(), initial,
-                Map.copyOf(slots), List.copyOf(calls), new ConcurrentHashMap<>(),
-                descriptor);
+                Map.copyOf(slots), List.copyOf(calls), outputFieldSlot,
+                new ConcurrentHashMap<>(), descriptor);
     }
 
     private static IntValue lowerValue(Ast.Expr value, String receiver, String param,
@@ -411,7 +462,7 @@ final class NamespaceActorCriticalIrCompiler {
 
     private record Executable(SharedCodeImageStore.CodeImage codeImage,
             String actorName, long[] initial, Map<String, Integer> slots,
-            List<CriticalPlan> calls,
+            List<CriticalPlan> calls, int outputFieldSlot,
             ConcurrentHashMap<ActorRuntime.ActorId, StateReceipt> receipts,
             VerifiedActorDescriptor descriptor)
             implements ActorRuntime.ActorCodeExecutor {
@@ -471,6 +522,12 @@ final class NamespaceActorCriticalIrCompiler {
                 throw new SecurityException("mail must be a current owned ActorMail<int>");
             }
             for (CriticalPlan plan : calls) owned.apply(plan, input, context);
+            // Emit the verified critical-read scalar only on this actor's
+            // physical mailbox turn, after all checked writes commit.
+            // No mutable state alias, loan or host diagnostic receipt escapes.
+            if (outputFieldSlot >= 0) {
+                context.runtime().emitCurrentActorOutput(owned.values[outputFieldSlot]);
+            }
             StateReceipt previous = receipts.get(owned.actor.id());
             if (previous == null
                     || previous.generation() != owned.actor.generation()) {

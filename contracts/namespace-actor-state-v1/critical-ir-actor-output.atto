@@ -1,0 +1,33 @@
+use namespace foo;
+
+// Checked compiler-level actor output from the physical mailbox turn.
+// This is not yet general guest request/reply lowering.
+declare actor Probe;
+
+define state on actor Probe as {
+    let int received: 0;
+    let int budget: 10000;
+}
+
+external mtd (Probe p) init(): void {
+    return;
+}
+
+critical mtd (Probe p) add(int delta): void {
+    p.state.received = p.state.received + delta;
+}
+
+critical mtd (Probe p) debit(int delta): void {
+    p.state.budget = p.state.budget - delta;
+}
+
+critical mtd (Probe p) current(): int {
+    return p.state.received;
+}
+
+external mtd (Probe p) receive(ActorMail<int> mail): void {
+    p.add(mail.value);
+    p.debit(mail.value);
+    p.send(p.current());
+    return;
+}
