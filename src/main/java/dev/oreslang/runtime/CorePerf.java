@@ -35,6 +35,14 @@ public final class CorePerf {
     public static final int REDIS_RESP_ENCODE = 20;
     public static final int REDIS_TCP_WRITE = 21;
     public static final int REDIS_TCP_WRITE_SUBMIT = 22;
+    // Bounded core events: never encode actor identity, keys, payloads or secrets.
+    public static final int ACTOR_USER_MAIL_QUEUE = 23;
+    public static final int ACTOR_USER_MAIL_DISPATCH = 24;
+    public static final int SCHEDULER_TURN_QUEUE = 25;
+    public static final int FUTURE_WAITER_NOTIFY = 26;
+    public static final int MAP_SET = 27;
+    public static final int MAP_GET_OPTIONAL = 28;
+    public static final int MAP_DELETE = 29;
 
 
     private static final String[] NAMES = {
@@ -46,7 +54,10 @@ public final class CorePerf {
         "http.timer.schedule", "actor.spawn", "http.executor.queue",
         "stdio.write", "http.lifetime",
         "redis.resp.parse", "redis.resp.hex", "redis.resp.encode",
-        "redis.tcp.write", "redis.tcp.write.submit"
+        "redis.tcp.write", "redis.tcp.write.submit",
+        "actor.user_mail.queue", "actor.user_mail.dispatch",
+        "scheduler.turn.queue", "future.waiter.notify",
+        "map.set", "map.get_optional", "map.delete"
     };
     private static final String[] DEBUG_NAMES = {
         "unused", "actor.pools.created", "http.listener.ready",

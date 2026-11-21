@@ -815,9 +815,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             } else {
                 afterStateClaimed.run();
             }
-            RuntimeWaiterRegistration<T> waiter;
-            while ((waiter = waiters.poll()) != null) {
-                notifyWaiter(waiter, terminal);
+            // Time only the winning terminal's runtime waiter drain.
+            // Never call guest code, format logs, or block for metrics.
+            long notifyStarted = CorePerf.start();
+            try {
+                RuntimeWaiterRegistration<T> waiter;
+                while ((waiter = waiters.poll()) != null) {
+                    notifyWaiter(waiter, terminal);
+                }
+            } finally {
+                CorePerf.end(CorePerf.FUTURE_WAITER_NOTIFY, notifyStarted);
             }
             return true;
         } finally {

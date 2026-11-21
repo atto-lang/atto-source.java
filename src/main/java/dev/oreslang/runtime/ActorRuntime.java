@@ -1734,7 +1734,8 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            long admittedAtNanos) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
@@ -1743,7 +1744,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(
+                    value, release, null, sender, sequence, CorePerf.start());
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -1752,7 +1754,8 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L,
+                    0L);
         }
 
         private boolean isContinuation() {
@@ -9623,12 +9626,18 @@ public final class ActorRuntime implements AutoCloseable {
                         if (activeEnvelope.isContinuation()) {
                             activeEnvelope.continuation().run();
                         } else {
+                            // Captures admission-to-dispatch latency for real user
+                            // mail. Source actors may still schedule a separate
+                            // OresScheduler continuation; this is NOT Map time.
+                            CorePerf.end(CorePerf.ACTOR_USER_MAIL_QUEUE,
+                                    activeEnvelope.admittedAtNanos());
                             ActorInboxMail<M> mail = new ActorInboxMail<>(
                                     ref.id(),
                                     Optional.ofNullable(activeEnvelope.sender()),
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
                             activeMail = mail;
+                            long dispatchStarted = CorePerf.start();
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -9651,6 +9660,8 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
+                                CorePerf.end(CorePerf.ACTOR_USER_MAIL_DISPATCH,
+                                        dispatchStarted);
                                 if (!sourceReceiveSuspended) activeMail = null;
                             }
                         }
