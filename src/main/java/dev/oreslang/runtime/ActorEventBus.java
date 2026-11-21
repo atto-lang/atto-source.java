@@ -440,8 +440,9 @@ public final class ActorEventBus implements AutoCloseable {
     /**
      * Nonblocking, host/runtime admission primitive for RELIABLE topics only.
      * A present receipt means all current recipients passed the bounded
-     * reservation preflight; it is NOT handler acknowledgment or proof that
-     * the returned completion future has finished. Only a Full refusal maps
+     * reservation preflight with no queued/pending channel writers. In
+     * particular, an admitted receipt must not await a bounded queue slot.
+     * It is NOT a subscriber handler acknowledgment. Only Full maps
      * to Optional.empty(): revoked authority, closed topics, invalid payloads
      * and resource errors still fail explicitly and never mint a receipt.
      *
@@ -475,7 +476,8 @@ public final class ActorEventBus implements AutoCloseable {
             // On Full, publishFrozen rolls back all staged reservations and
             // releases the frozen payload before returning to this caller.
             return Optional.of(publishFrozen(
-                    topic, runtime.freezeActorGroupEventPayload(value), publisher));
+                    topic, runtime.freezeActorGroupEventPayload(value), publisher,
+                    () -> { }, true));
         } catch (EventBackpressureException full) {
             return Optional.empty();
         }
@@ -612,7 +614,7 @@ public final class ActorEventBus implements AutoCloseable {
             TopicState topic,
             ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
             ActorRuntime.ActorId publisher) {
-        return publishFrozen(topic, frozenPayload, publisher, () -> { });
+        return publishFrozen(topic, frozenPayload, publisher, () -> { }, false);
     }
 
     private PublishReceipt publishFrozen(
@@ -620,6 +622,15 @@ public final class ActorEventBus implements AutoCloseable {
             ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
             ActorRuntime.ActorId publisher,
             Runnable commitState) {
+        return publishFrozen(topic, frozenPayload, publisher, commitState, false);
+    }
+
+    private PublishReceipt publishFrozen(
+            TopicState topic,
+            ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
+            ActorRuntime.ActorId publisher,
+            Runnable commitState,
+            boolean strictNonblocking) {
         Event<Object> event = null;
         try {
             synchronized (topic.deliveryLock) {
@@ -669,11 +680,19 @@ public final class ActorEventBus implements AutoCloseable {
                     reserved = new ArrayList<>(active.size());
                     try {
                         for (Subscription<?> subscription : active) {
-                            if (!subscription.reserveReliableEvent()) {
+                            // try_publish must not return success for a
+                            // queued writer that still awaits channel space.
+                            // publish() retains its separately bounded async
+                            // pending-writer policy. Both use this one
+                            // deliveryLock-protected atomic fanout preflight.
+                            int admissionLimit = strictNonblocking
+                                    ? subscription.channel.capacity()
+                                    : subscription.reliableOutstandingLimit;
+                            if (!subscription.reserveReliableEvent(admissionLimit)) {
                                 throw new EventBackpressureException(
                                         topic.name,
                                         subscription.subscriber,
-                                        subscription.reliableOutstandingLimit);
+                                        admissionLimit);
                             }
                             reserved.add(subscription);
                         }
@@ -1060,11 +1079,11 @@ public final class ActorEventBus implements AutoCloseable {
             return read;
         }
 
-        private boolean reserveReliableEvent() {
+        private boolean reserveReliableEvent(int admissionLimit) {
             if (subscriptionClosed.get()) return false;
             while (true) {
                 int current = reliableOutstanding.get();
-                if (current >= reliableOutstandingLimit) return false;
+                if (current >= admissionLimit) return false;
                 if (reliableOutstanding.compareAndSet(current, current + 1)) {
                     if (!subscriptionClosed.get()) return true;
                     releaseReliableEvent();
