@@ -423,6 +423,12 @@ public final class OresContext implements AutoCloseable {
         return Map.copyOf(descriptor);
     }
 
+    // A timed-out drain may still own the PrintWriter monitor. Never retry
+    // synchronous flush on that same sink after the async close failed.
+    static void flushOutputAfterAsyncDrain(PrintWriter output, boolean drained) {
+        if (drained) output.flush();
+    }
+
     @Override
     public void close() {
         RuntimeException failure = null;
@@ -452,10 +458,14 @@ public final class OresContext implements AutoCloseable {
             if (failure == null) failure = vmFailure;
             else failure.addSuppressed(vmFailure);
         } finally {
+            boolean asyncStdioDrained = false;
             // Shut down guest producers before closing async logging admission.
             // Accepted finalizer/supervision records are then drained before
             // relinquishing the caller-owned host output stream.
-            try { asyncStdio.close(); } catch (RuntimeException logFailure) {
+            try {
+                asyncStdio.close();
+                asyncStdioDrained = true;
+            } catch (RuntimeException logFailure) {
                 if (failure == null) failure = logFailure;
                 else failure.addSuppressed(logFailure);
             }
@@ -465,7 +475,7 @@ public final class OresContext implements AutoCloseable {
                 sharedCodeImages.close();
             }
             garbageCollector.close();
-            output.flush();
+            flushOutputAfterAsyncDrain(output, asyncStdioDrained);
         }
         if (failure != null) throw failure;
     }
