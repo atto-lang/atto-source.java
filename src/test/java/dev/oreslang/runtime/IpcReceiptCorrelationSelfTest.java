@@ -35,6 +35,31 @@ public final class IpcReceiptCorrelationSelfTest {
     }
 
     public static void main(String[] ignored) throws InterruptedException {
+        // Every receipt-ledger operation that can acquire its monitor rejects
+        // actor carriers before touching synchronized state.
+        var carrierBook = new IpcReceiptCorrelation(2);
+        var carrierMessage = env(1, "carrier-ledger");
+        carrierBook.admit(carrierMessage);
+        RuntimeBlockingGuard.enterActorCarrier();
+        try {
+            denies(() -> carrierBook.admit(env(2, "carrier-ledger")));
+            denies(() -> carrierBook.commitDispatch(carrierMessage));
+            denies(() -> carrierBook.acceptVerified(
+                    carrierMessage, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+            denies(() -> carrierBook.rejectBeforeRemote(carrierMessage));
+            denies(() -> carrierBook.retireTransportLost(carrierMessage));
+            denies(carrierBook::counters);
+            denies(carrierBook::invariant);
+        } finally {
+            RuntimeBlockingGuard.exitActorCarrier();
+        }
+        check(carrierBook.counters().equals(
+                new IpcReceiptCorrelation.Counters(1, 1)));
+        carrierBook.rejectBeforeRemote(carrierMessage);
+        check(carrierBook.counters().equals(
+                new IpcReceiptCorrelation.Counters(0, 0)));
+        check(carrierBook.invariant());
+
         var book = new IpcReceiptCorrelation(2);
         var first = env(1, "sessionA");
         var second = env(2, "sessionB");

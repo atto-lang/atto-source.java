@@ -34,6 +34,39 @@ public final class IpcReceiptCompletionBridgeSelfTest {
     }
 
     public static void main(String[] args) throws InterruptedException {
+        // The bridge is host-side state. Actor carriers cannot enter any
+        // operation that may contend on its gate, including diagnostic reads.
+        var carrierBridge = new IpcReceiptCompletionBridge(2);
+        var carrierEnvelope = env(1, "carrier-bridge");
+        var carrierFuture = carrierBridge.admit(carrierEnvelope);
+        var carrierBindingBridge = new IpcReceiptCompletionBridge(1);
+        var carrierBindingEnvelope = env(1, "carrier-binding");
+        Object carrierOwner = new Object();
+        RuntimeBlockingGuard.enterActorCarrier();
+        try {
+            denied(() -> carrierBridge.admit(env(2, "carrier-bridge")));
+            denied(() -> carrierBridge.commitDispatch(carrierEnvelope));
+            denied(() -> carrierBridge.acceptVerified(
+                    carrierEnvelope, IpcReceiptCorrelation.Stage.REMOTE_ACCEPTED));
+            denied(() -> carrierBridge.rejectBeforeRemote(carrierEnvelope));
+            denied(() -> carrierBridge.transportLost(carrierEnvelope));
+            denied(carrierBridge::counters);
+            denied(carrierBridge::invariant);
+            denied(() -> carrierBindingBridge.claimPhysicalTransport(
+                    carrierOwner, carrierBindingEnvelope, 77));
+        } finally {
+            RuntimeBlockingGuard.exitActorCarrier();
+        }
+        check(!carrierFuture.toCompletableFuture().isDone());
+        check(carrierBridge.counters().equals(
+                new IpcReceiptCorrelation.Counters(1, 1)));
+        carrierBridge.rejectBeforeRemote(carrierEnvelope);
+        check(result(carrierFuture)
+                == IpcReceiptCorrelation.Stage.REJECTED_BEFORE_REMOTE);
+        carrierBindingBridge.claimPhysicalTransport(
+                carrierOwner, carrierBindingEnvelope, 77);
+        check(carrierBridge.invariant());
+
         var gate = new IpcReceiptCompletionBridge(3);
         var one = env(1, "old");
         var two = env(2, "new");

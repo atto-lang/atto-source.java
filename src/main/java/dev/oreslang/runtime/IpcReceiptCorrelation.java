@@ -79,37 +79,40 @@ public final class IpcReceiptCorrelation {
         this.capacity = capacity;
     }
 
-    public synchronized void admit(Envelope message) {
+    public void admit(Envelope message) {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt admission");
         Objects.requireNonNull(message, "message");
-        Stream next = new Stream(message.domain(), message.sender(),
-                message.senderIncarnation(), message.destination(),
-                message.destinationIncarnation());
-        if (stream != null && !stream.equals(next)) {
-            throw new IllegalArgumentException("cross-stream or stale incarnation");
+        synchronized (this) {
+            Stream next = new Stream(message.domain(), message.sender(),
+                    message.senderIncarnation(), message.destination(),
+                    message.destinationIncarnation());
+            if (stream != null && !stream.equals(next)) {
+                throw new IllegalArgumentException("cross-stream or stale incarnation");
+            }
+            if (message.messageSequence() <= lastSequence) {
+                throw new IllegalArgumentException("duplicate/reordered message sequence");
+            }
+            if (message.frameSequence() <= lastFrameSequence) {
+                throw new IllegalArgumentException("duplicate/reordered frame sequence");
+            }
+            if (message.routeEpoch() < lastRouteEpoch
+                    || message.capabilityGeneration() < lastCapabilityGeneration) {
+                throw new IllegalArgumentException("route or capability rollback");
+            }
+            if (pending.size() >= capacity) {
+                throw new IllegalStateException("bounded IPC correlation table exhausted");
+            }
+            // Complete throwing operations before publishing any progress fields.
+            if (pending.putIfAbsent(message.messageSequence(), new Entry(message)) != null) {
+                throw new IllegalArgumentException("duplicate message sequence");
+            }
+            stream = next;
+            lastSequence = message.messageSequence();
+            lastFrameSequence = message.frameSequence();
+            lastRouteEpoch = message.routeEpoch();
+            lastCapabilityGeneration = message.capabilityGeneration();
+            ++transportCredits;
         }
-        if (message.messageSequence() <= lastSequence) {
-            throw new IllegalArgumentException("duplicate/reordered message sequence");
-        }
-        if (message.frameSequence() <= lastFrameSequence) {
-            throw new IllegalArgumentException("duplicate/reordered frame sequence");
-        }
-        if (message.routeEpoch() < lastRouteEpoch
-                || message.capabilityGeneration() < lastCapabilityGeneration) {
-            throw new IllegalArgumentException("route or capability rollback");
-        }
-        if (pending.size() >= capacity) {
-            throw new IllegalStateException("bounded IPC correlation table exhausted");
-        }
-        // Complete throwing operations before publishing any progress fields.
-        if (pending.putIfAbsent(message.messageSequence(), new Entry(message)) != null) {
-            throw new IllegalArgumentException("duplicate message sequence");
-        }
-        stream = next;
-        lastSequence = message.messageSequence();
-        lastFrameSequence = message.frameSequence();
-        lastRouteEpoch = message.routeEpoch();
-        lastCapabilityGeneration = message.capabilityGeneration();
-        ++transportCredits;
     }
 
     /**
@@ -122,14 +125,17 @@ public final class IpcReceiptCorrelation {
      * remote terminal result arrives: it MUST NOT be turned into a definitive
      * never-sent rejection. This ledger by itself cannot fence a real socket.
      */
-    synchronized void commitDispatch(Envelope message) {
+    void commitDispatch(Envelope message) {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC dispatch commitment");
         Objects.requireNonNull(message, "message");
-        Entry entry = pending.get(message.messageSequence());
-        if (entry == null || !entry.envelope.equals(message)
-                || entry.stage != Stage.LOCAL_ADMITTED) {
-            throw new IllegalArgumentException("invalid or duplicate IPC dispatch commitment");
+        synchronized (this) {
+            Entry entry = pending.get(message.messageSequence());
+            if (entry == null || !entry.envelope.equals(message)
+                    || entry.stage != Stage.LOCAL_ADMITTED) {
+                throw new IllegalArgumentException("invalid or duplicate IPC dispatch commitment");
+            }
+            entry.stage = Stage.DISPATCH_COMMITTED;
         }
-        entry.stage = Stage.DISPATCH_COMMITTED;
     }
 
     /**
@@ -139,30 +145,33 @@ public final class IpcReceiptCorrelation {
      * A remote peer cannot manufacture uncertainty to evade durable DONE
      * verification or induce an early callback result.
      */
-    public synchronized void acceptVerified(Envelope message, Stage next) {
+    public void acceptVerified(Envelope message, Stage next) {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC verified receipt transition");
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(next, "next");
-        if (next == Stage.OUTCOME_UNKNOWN || next == Stage.REJECTED_BEFORE_REMOTE) {
-            throw new IllegalArgumentException(
-                    "local transport decision cannot be asserted by peer receipt");
-        }
-        Entry entry = pending.get(message.messageSequence());
-        if (entry == null || !entry.envelope.equals(message)) {
-            throw new IllegalArgumentException("forged/stale/unmatched receipt");
-        }
-        if (entry.stage == Stage.DISPATCH_COMMITTED) {
-            if (next == Stage.REMOTE_ACCEPTED) {
-                entry.stage = next;
-                --transportCredits;
-                return;
+        synchronized (this) {
+            if (next == Stage.OUTCOME_UNKNOWN || next == Stage.REJECTED_BEFORE_REMOTE) {
+                throw new IllegalArgumentException(
+                        "local transport decision cannot be asserted by peer receipt");
             }
-        } else if (entry.stage == Stage.REMOTE_ACCEPTED) {
-            if (next == Stage.HANDLER_COMMITTED || next == Stage.HANDLER_FAILED) {
-                pending.remove(message.messageSequence());
-                return;
+            Entry entry = pending.get(message.messageSequence());
+            if (entry == null || !entry.envelope.equals(message)) {
+                throw new IllegalArgumentException("forged/stale/unmatched receipt");
             }
+            if (entry.stage == Stage.DISPATCH_COMMITTED) {
+                if (next == Stage.REMOTE_ACCEPTED) {
+                    entry.stage = next;
+                    --transportCredits;
+                    return;
+                }
+            } else if (entry.stage == Stage.REMOTE_ACCEPTED) {
+                if (next == Stage.HANDLER_COMMITTED || next == Stage.HANDLER_FAILED) {
+                    pending.remove(message.messageSequence());
+                    return;
+                }
+            }
+            throw new IllegalArgumentException("illegal/duplicate IPC receipt transition");
         }
-        throw new IllegalArgumentException("illegal/duplicate IPC receipt transition");
     }
 
     /**
@@ -173,16 +182,19 @@ public final class IpcReceiptCorrelation {
      * This deliberately does not accept a Stage argument, preventing callers
      * from relabeling local admission failure as a remote handler result.
      */
-    synchronized void rejectBeforeRemote(Envelope message) {
+    void rejectBeforeRemote(Envelope message) {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC local receipt rejection");
         Objects.requireNonNull(message, "message");
-        Entry entry = pending.get(message.messageSequence());
-        if (entry == null || !entry.envelope.equals(message)
-                || entry.stage != Stage.LOCAL_ADMITTED) {
-            throw new IllegalArgumentException(
-                    "invalid local pre-remote IPC rejection");
+        synchronized (this) {
+            Entry entry = pending.get(message.messageSequence());
+            if (entry == null || !entry.envelope.equals(message)
+                    || entry.stage != Stage.LOCAL_ADMITTED) {
+                throw new IllegalArgumentException(
+                        "invalid local pre-remote IPC rejection");
+            }
+            pending.remove(message.messageSequence());
+            --transportCredits;
         }
-        pending.remove(message.messageSequence());
-        --transportCredits;
     }
 
     /**
@@ -193,25 +205,28 @@ public final class IpcReceiptCorrelation {
      * Copies finish before any mutation; a throwing allocation cannot
      * partially retire correlations. No message is automatically resent.
      */
-    synchronized List<LostCorrelation> retireTransportLost(Envelope trustedEpoch) {
+    List<LostCorrelation> retireTransportLost(Envelope trustedEpoch) {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC transport-loss retirement");
         Objects.requireNonNull(trustedEpoch, "trustedEpoch");
-        ArrayList<LostCorrelation> losses = new ArrayList<>();
-        for (Map.Entry<Long, Entry> item : pending.entrySet()) {
-            Entry entry = item.getValue();
-            if (sameTransportEpoch(entry.envelope, trustedEpoch)) {
-                losses.add(new LostCorrelation(entry.envelope, entry.stage));
+        synchronized (this) {
+            ArrayList<LostCorrelation> losses = new ArrayList<>();
+            for (Map.Entry<Long, Entry> item : pending.entrySet()) {
+                Entry entry = item.getValue();
+                if (sameTransportEpoch(entry.envelope, trustedEpoch)) {
+                    losses.add(new LostCorrelation(entry.envelope, entry.stage));
+                }
             }
+            // Materialize immutable return value before touching the table:
+            // List.copyOf can allocate and throw OutOfMemoryError.
+            List<LostCorrelation> immutableLosses = List.copyOf(losses);
+            // No allocation or user callbacks in the mutation/commit phase.
+            for (LostCorrelation loss : immutableLosses) {
+                Entry removed = pending.remove(loss.envelope().messageSequence());
+                if (removed.stage == Stage.LOCAL_ADMITTED
+                        || removed.stage == Stage.DISPATCH_COMMITTED) --transportCredits;
+            }
+            return immutableLosses;
         }
-        // Materialize immutable return value before touching the table:
-        // List.copyOf can allocate and throw OutOfMemoryError.
-        List<LostCorrelation> immutableLosses = List.copyOf(losses);
-        // No allocation or user callbacks in the mutation/commit phase.
-        for (LostCorrelation loss : immutableLosses) {
-            Entry removed = pending.remove(loss.envelope().messageSequence());
-            if (removed.stage == Stage.LOCAL_ADMITTED
-                    || removed.stage == Stage.DISPATCH_COMMITTED) --transportCredits;
-        }
-        return immutableLosses;
     }
 
     /**
@@ -230,20 +245,26 @@ public final class IpcReceiptCorrelation {
                 && a.capabilityGeneration() == b.capabilityGeneration();
     }
 
-    public synchronized Counters counters() {
-        return new Counters(pending.size(), transportCredits);
+    public Counters counters() {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt counters");
+        synchronized (this) {
+            return new Counters(pending.size(), transportCredits);
+        }
     }
 
-    public synchronized boolean invariant() {
-        if (transportCredits < 0 || transportCredits > pending.size()
-                || pending.size() > capacity) return false;
-        int awaitingReceipt = 0;
-        for (Entry entry : pending.values()) {
-            if (entry.stage == Stage.LOCAL_ADMITTED
-                    || entry.stage == Stage.DISPATCH_COMMITTED) ++awaitingReceipt;
-            else if (entry.stage != Stage.REMOTE_ACCEPTED) return false;
+    public boolean invariant() {
+        RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt invariant");
+        synchronized (this) {
+            if (transportCredits < 0 || transportCredits > pending.size()
+                    || pending.size() > capacity) return false;
+            int awaitingReceipt = 0;
+            for (Entry entry : pending.values()) {
+                if (entry.stage == Stage.LOCAL_ADMITTED
+                        || entry.stage == Stage.DISPATCH_COMMITTED) ++awaitingReceipt;
+                else if (entry.stage != Stage.REMOTE_ACCEPTED) return false;
+            }
+            return transportCredits == awaitingReceipt;
         }
-        return transportCredits == awaitingReceipt;
     }
 
     private static void requireToken(String value, String name) {

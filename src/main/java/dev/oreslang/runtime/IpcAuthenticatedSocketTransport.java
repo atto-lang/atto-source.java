@@ -152,12 +152,18 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                 },
                 () -> {
                     try {
+                        // Close first so a receipt reader blocked in kernel I/O
+                        // is interrupted without waiting on readGate.
                         socket.close();
                     } finally {
-                        // This is our private clone, never the broker's input.
-                        // Destroy only after the lease has drained physical
-                        // writers and entered authoritative close cleanup.
-                        Arrays.fill(this.macKey, (byte) 0);
+                        // A reader may already have consumed a complete frame
+                        // and be authenticating/applying it under readGate.
+                        // Do not destroy the key until that ordered receive
+                        // transaction exits. Taking readGate before close would
+                        // deadlock a blocked socket read.
+                        synchronized (readGate) {
+                            Arrays.fill(this.macKey, (byte) 0);
+                        }
                     }
                 },
                 this.cleanupScheduler);
@@ -220,11 +226,16 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
      */
     IpcReceiptCorrelation.Stage readVerifiedReceipt() throws IOException {
         RuntimeBlockingGuard.requireBlockingHostThread("IPC receipt read");
+        final IpcReceiptCorrelation.Stage stage;
+        final IpcReceiptCompletionBridge.DeferredVerifiedCompletion completion;
         try {
             // TCP receipt order is protocol order. Keep frame consumption,
-            // authentication, epoch validation and ledger transition under
+            // authentication, epoch validation and the ledger transition under
             // one receive gate so concurrent host readers cannot read ACK then
             // COMMIT in order but apply those state transitions out of order.
+            // Publishing a terminal completion is deliberately deferred until
+            // after readGate is released because dependent callbacks can
+            // synchronously reenter transport shutdown.
             synchronized (readGate) {
                 byte[] frame = readReceiptWireFrame(input);
                 DecodedReceipt receipt = decodeReceiptFrame(
@@ -233,10 +244,10 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
                     throw new IOException("stale IPC physical transport generation");
                 }
                 requireTrustedEpoch(receipt.envelope());
-                receipts.acceptVerified(
+                stage = receipt.stage();
+                completion = receipts.acceptVerifiedDeferred(
                         physicalOwner, receipt.envelope(),
-                        physicalGeneration, receipt.stage());
-                return receipt.stage();
+                        physicalGeneration, stage);
             }
         } catch (IOException | RuntimeException | Error failure) {
             // Authentication, framing, EOF and state-machine violations are
@@ -245,6 +256,8 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
             requestClose();
             throw failure;
         }
+        if (completion != null) completion.publish();
+        return stage;
     }
 
     void requestClose() {
@@ -287,14 +300,15 @@ final class IpcAuthenticatedSocketTransport implements AutoCloseable {
         Thread caller = Thread.currentThread();
         try {
             cleanupScheduler.enqueue(() -> {
+                // A bad scheduler may dispatch this callback onto a different
+                // actor carrier. Reject before any lease monitor acquisition
+                // or Socket.close(); a host supervisor timeout/retry keeps the
+                // generation fail-closed without parking guest execution.
+                RuntimeBlockingGuard.requireBlockingHostThread(
+                        "IPC transport abort worker");
                 if (Thread.currentThread() == caller) {
                     sessionLease.quarantineIfUnsettled(new IllegalStateException(
                             "IPC abort scheduler executed inline on requesting carrier"));
-                    return;
-                }
-                if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                    sessionLease.quarantineIfUnsettled(new IllegalStateException(
-                            "IPC abort scheduler executed on an actor carrier"));
                     return;
                 }
                 try {

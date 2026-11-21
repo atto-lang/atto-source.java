@@ -258,17 +258,21 @@ final class IpcTransportSessionLease {
      * write pins do not drain by a supervisor deadline. Never marks an
      * executing physical close as retired or interrupts its cleanup worker.
      */
-    synchronized boolean quarantineIfUnsettled(Throwable failure) {
+    boolean quarantineIfUnsettled(Throwable failure) {
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport quarantine");
         Objects.requireNonNull(failure, "failure");
-        if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
-        if (phase == Phase.FINALIZING && cleanupExecuting) {
-            if (closeFailure == null) closeFailure = failure;
-            return false;
+        synchronized (this) {
+            if (phase == Phase.RETIRED || phase == Phase.QUARANTINED) return false;
+            if (phase == Phase.FINALIZING && cleanupExecuting) {
+                if (closeFailure == null) closeFailure = failure;
+                return false;
+            }
+            closeFailure = failure;
+            phase = Phase.QUARANTINED;
+            notifyAll();
+            return true;
         }
-        closeFailure = failure;
-        phase = Phase.QUARANTINED;
-        notifyAll();
-        return true;
     }
 
     /** An explicit supervisor retry never reopens a quarantined session. */
@@ -341,6 +345,11 @@ final class IpcTransportSessionLease {
     }
 
     private void finalizePhysicalClose(long attempt) {
+        // A bad scheduler may dispatch this callback onto an actor carrier.
+        // Reject before touching the lifecycle monitor so guest execution
+        // cannot park behind a host transport lock.
+        RuntimeBlockingGuard.requireBlockingHostThread(
+                "IPC transport cleanup worker");
         synchronized (this) {
             if (phase != Phase.FINALIZING || cleanupAttempt != attempt
                     || cleanupExecuting) return;
@@ -348,13 +357,6 @@ final class IpcTransportSessionLease {
                 closeFailure = new IllegalStateException(
                         "cleanup scheduler executed inline on requesting carrier");
                 enqueueCaller = null;
-                phase = Phase.QUARANTINED;
-                notifyAll();
-                return;
-            }
-            if (RuntimeBlockingGuard.actorCarrierMarked()) {
-                closeFailure = new IllegalStateException(
-                        "cleanup scheduler executed on an actor carrier");
                 phase = Phase.QUARANTINED;
                 notifyAll();
                 return;
