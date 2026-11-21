@@ -11,7 +11,10 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -23,6 +26,103 @@ import java.util.concurrent.locks.ReentrantLock;
 
 public final class OresContext implements AutoCloseable {
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
+    // Bound to the physical embedding thread at context creation. An implicit
+    // bridge can safely resolve only a single live context on that thread.
+    // Weak thread keys prevent abandoned embedding threads being kept alive.
+    private static final Map<Thread, Set<OresContext>> HOST_CONTEXTS = new WeakHashMap<>();
+    // Value.getContext returns the EXACT embedding context, not just a host
+    // thread. This second registry makes multiple live contexts on one
+    // embedding thread safe without allowing cross-context ticket borrowing.
+    private static final Map<org.graalvm.polyglot.Context, OresContext>
+            POLYGLOT_CONTEXT_OWNERS = new WeakHashMap<>();
+
+    public static OresContext singleHostOwnedContext() {
+        synchronized (HOST_CONTEXTS) {
+            Set<OresContext> candidates = HOST_CONTEXTS.get(Thread.currentThread());
+            if (candidates == null || candidates.size() != 1) {
+                int count = candidates == null ? 0 : candidates.size();
+                throw new SecurityException(
+                        "scoped host Future entry requires exactly one context "
+                        + "created by the invoking host thread (registered="
+                        + count + ")");
+            }
+            return candidates.iterator().next();
+        }
+    }
+
+    private volatile Thread hostCreator;
+
+    public void registerHostOwner(Thread creator) {
+        if (creator != Thread.currentThread()) {
+            throw new SecurityException("context host ownership must be registered by its creator");
+        }
+        // During createContext the Polyglot embedding context is current on
+        // this exact physical thread. Never map contexts by thread alone.
+        org.graalvm.polyglot.Context hostContext =
+                org.graalvm.polyglot.Context.getCurrent();
+        if (hostContext == null) {
+            throw new SecurityException("language context lacked a current Polyglot owner");
+        }
+        synchronized (HOST_CONTEXTS) {
+            synchronized (POLYGLOT_CONTEXT_OWNERS) {
+                if (POLYGLOT_CONTEXT_OWNERS.putIfAbsent(hostContext, this) != null) {
+                    throw new SecurityException("Polyglot host context already registered");
+                }
+                hostCreator = creator;
+                HOST_CONTEXTS.computeIfAbsent(creator, ignored -> new HashSet<>()).add(this);
+            }
+        }
+    }
+
+    public static OresContext forExactHostValueContext(
+            org.graalvm.polyglot.Context polyglotContext) {
+        if (polyglotContext == null) {
+            throw new SecurityException("host Future Value has no owning Polyglot context");
+        }
+        synchronized (POLYGLOT_CONTEXT_OWNERS) {
+            OresContext owner = POLYGLOT_CONTEXT_OWNERS.get(polyglotContext);
+            if (owner == null) {
+                throw new SecurityException("host Future Value context is not registered");
+            }
+            if (owner.hostCreator != Thread.currentThread()) {
+                throw new SecurityException(
+                        "host Future entry requires its context's creating physical thread");
+            }
+            return owner;
+        }
+    }
+
+    public void unregisterHostOwner() {
+        synchronized (HOST_CONTEXTS) {
+            synchronized (POLYGLOT_CONTEXT_OWNERS) {
+                POLYGLOT_CONTEXT_OWNERS.values().removeIf(owner -> owner == this);
+                HOST_CONTEXTS.values().removeIf(contexts -> {
+                    contexts.remove(this);
+                    return contexts.isEmpty();
+                });
+                hostCreator = null;
+            }
+        }
+    }
+
+    /** A caller-owned, same-thread physical host entry lease. */
+    public interface HostEntryLease extends AutoCloseable {
+        @Override
+        void close();
+    }
+
+    public HostEntryLease acquireScopedHostEntry() {
+        // The host may enter on its owner thread, but the guest root still
+        // rejects async Future bridging for adversarial isolation. Preserve
+        // that rejection inside Polyglot so callers receive PolyglotException
+        // and no source task is scheduled.
+        if (hostCreator != Thread.currentThread()) {
+            throw new SecurityException(
+                    "host entry must use its context's creating physical thread");
+        }
+        ContextEntryCoordinator.HostLease acquired = contextEntryCoordinator.enterHost();
+        return acquired::close;
+    }
 
     private final OresLanguage language;
     private final TruffleLanguage.Env env;
@@ -46,6 +146,8 @@ public final class OresContext implements AutoCloseable {
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    private final ContextEntryCoordinator contextEntryCoordinator =
+            new ContextEntryCoordinator();
     // Separate from the context monitor used by code/image registration: an
     // unwinding guest continuation may still need that monitor while close()
     // waits for its carrier to finish.
@@ -395,15 +497,20 @@ public final class OresContext implements AutoCloseable {
 
     private void executeGuestTurn(Runnable turn, boolean serialize) {
         if (serialize) adversarialActorTurnLock.lock();
-        TruffleContext truffleContext = env.getContext();
-        Object previous = null;
-        boolean entered = false;
         try {
-            previous = truffleContext.enter(null);
-            entered = true;
-            turn.run();
+            contextEntryCoordinator.executeGuest(() -> {
+                TruffleContext truffleContext = env.getContext();
+                Object previous = null;
+                boolean entered = false;
+                try {
+                    previous = truffleContext.enter(null);
+                    entered = true;
+                    turn.run();
+                } finally {
+                    if (entered) truffleContext.leave(null, previous);
+                }
+            });
         } finally {
-            if (entered) truffleContext.leave(null, previous);
             if (serialize) adversarialActorTurnLock.unlock();
         }
     }
@@ -449,6 +556,7 @@ public final class OresContext implements AutoCloseable {
             }
             closeOwner = Thread.currentThread();
             try {
+                contextEntryCoordinator.beginRetirement();
                 // Actor-owned finalizers may still need the VM CONTROL scheduler,
                 // async workers, imported code, network or native I/O. Never
                 // retire those dependencies before actor quiescence is proven.
@@ -458,6 +566,7 @@ public final class OresContext implements AutoCloseable {
                 // even after its Future was cancelled. Its executor shutdown
                 // is a physical-exit barrier, not merely Future.isDone().
                 asyncRuntime.close();
+                contextEntryCoordinator.finishRetirement();
 
                 // Physical guest and host carriers are now retired. Only then
                 // revoke the remaining external resources and linked code.

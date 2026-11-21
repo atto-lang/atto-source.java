@@ -50,6 +50,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // this trusted-host concurrent admission exception.
         initialContextHostThread = context.isolatePolicy().adversarial()
                 ? null : Thread.currentThread();
+        context.registerHostOwner(Thread.currentThread());
         return context;
     }
 
@@ -105,6 +106,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // successful physical retirement. A failed close must remain retryable
         // because pending finally/defer cleanup can still own live carriers.
         context.close();
+        context.unregisterHostOwner();
         initialContextHostThread = null;
     }
 
