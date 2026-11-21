@@ -70,6 +70,16 @@ EXPECTED_BLOBS = {
   }
 }
 
+# Git modes are part of the reviewed source tree, not cosmetic metadata.
+# All 41 PR files are 100644 except the one recorded executable script in #52.
+# This whitelist is pinned to the exact PR heads above, not inferred from HEAD.
+EXPECTED_EXECUTABLE_FILES = {
+    "51": set(),
+    "52": {"ci/compiler/verify-int-parse-result.sh"},
+    "53": set(),
+    "58": set(),
+}
+
 def git(*args: str) -> str:
     p = subprocess.run(["git", *args], check=True, text=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -85,6 +95,8 @@ def verify() -> None:
     tree = git("rev-parse", "HEAD^{tree}")
     print(f"ATTO_FOURWAY_SOURCE_HEAD={commit}")
     print(f"ATTO_FOURWAY_SOURCE_TREE={tree}")
+    if set(PR_HEADS) != set(EXPECTED_EXECUTABLE_FILES):
+        raise RuntimeError("Git mode allowlist must match the four exact PR heads")
     if len(PR_HEADS) != 4 or set(PR_HEADS) != set(EXPECTED_BLOBS):
         raise RuntimeError("four-PR closure inventory is incomplete")
     all_names = set()
@@ -94,6 +106,8 @@ def verify() -> None:
         entries = EXPECTED_BLOBS[pr]
         if not re.fullmatch(r"[0-9a-f]{40}", head) or not entries:
             raise RuntimeError(f"invalid PR head/empty entries: {pr}")
+        if not EXPECTED_EXECUTABLE_FILES[pr].issubset(entries):
+            raise RuntimeError(f"reviewed executable path not present in PR #{pr} file inventory")
         print(f"ATTO_FOURWAY_PINNED_PR={pr}:{head}")
         for name, expected in sorted(entries.items()):
             posix = pathlib.PurePosixPath(name)
@@ -109,8 +123,9 @@ def verify() -> None:
                 raise RuntimeError(f"missing Git tree entry: {name}")
             left, actual_name = entry.split("\t", 1)
             parts = left.split()
-            if actual_name != name or len(parts) != 3 or parts[0] not in ("100644", "100755") or parts[1] != "blob":
-                raise RuntimeError(f"untrusted Git mode/type/path: {name}")
+            expected_mode = "100755" if name in EXPECTED_EXECUTABLE_FILES[pr] else "100644"
+            if actual_name != name or len(parts) != 3 or parts[0] != expected_mode or parts[1] != "blob":
+                raise RuntimeError(f"Git mode/type/path drift: {name}; expected_mode={expected_mode}; git_entry={left}")
             tree_sha = parts[2]
             worktree_sha = git("hash-object", "--no-filters", "--", name)
             if tree_sha != expected or worktree_sha != expected:
