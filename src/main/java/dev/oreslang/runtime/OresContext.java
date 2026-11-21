@@ -38,6 +38,10 @@ public final class OresContext implements AutoCloseable {
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
 
+    /** Atomically binds host child-process ownership to actor domain retirement. */
+    private final ActorChildProcessRegistry ownedChildProcesses =
+            new ActorChildProcessRegistry();
+
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final AtomicLong sourceLoopCooperates = new AtomicLong();
@@ -113,7 +117,14 @@ public final class OresContext implements AutoCloseable {
                     vm::executeControl);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
-            actors.setActorExitHook(gc::retireActorDomain);
+            RuntimeGarbageCollector actorGc = gc;
+            actors.setActorExitHook(domain -> {
+                try {
+                    retireOwnedChildProcesses(domain);
+                } finally {
+                    actorGc.retireActorDomain(domain);
+                }
+            });
 
             this.vm = vm;
             this.actors = actors;
@@ -142,6 +153,24 @@ public final class OresContext implements AutoCloseable {
     public PrintWriter output() { return output; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
+
+    /** Register only on an owning actor turn; guest code cannot choose a domain. */
+    void registerOwnedChildProcesses(ChildProcOwnedRuntime manager) {
+        Object domain = ActorRuntime.currentActorExecutionDomain();
+        if (domain == null || ActorRuntime.currentActorRuntime() != actors) {
+            throw new SecurityException("child process registry requires an actor execution domain");
+        }
+        ownedChildProcesses.register(domain, manager);
+    }
+
+    private void retireOwnedChildProcesses(Object domain) {
+        ownedChildProcesses.retire(domain);
+    }
+
+    private void closeAllOwnedChildProcesses() {
+        ownedChildProcesses.close();
+    }
+
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
@@ -428,6 +457,7 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        closeAllOwnedChildProcesses();
         nativeIo.close();
         http.close();
         RuntimeException failure = null;
