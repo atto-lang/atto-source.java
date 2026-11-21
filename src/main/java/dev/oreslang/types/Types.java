@@ -92,7 +92,15 @@ public final class Types {
     public record Union(List<Type> options) implements Type {
         public Union {
             options = List.copyOf(options);
-            if (options.size() < 2) throw new IllegalArgumentException("union needs at least two distinct types");
+            if (options.size() < 2)
+                throw new IllegalArgumentException("union needs at least two distinct types");
+            // Unknown.INSTANCE is an INTERNAL incomplete-inference sentinel,
+            // never the source-level opaque unknown type. A direct forged
+            // Union must not launder the sentinel into an apparently
+            // reifiable public value type or bypass a guarded narrowing.
+            if (options.contains(Unknown.INSTANCE))
+                throw new IllegalArgumentException(
+                        "internal incomplete inference cannot inhabit a public union");
         }
     }
 
@@ -375,6 +383,11 @@ public final class Types {
         for (Type type : types) {
             if (type == Unknown.INSTANCE) return Unknown.INSTANCE;
             if (type instanceof Union union) {
+                // Defend even against an invalid Union synthesized by a
+                // future compiler pass or deserializer without using this
+                // record's constructor. Inference holes must poison the join.
+                if (union.options().contains(Unknown.INSTANCE))
+                    return Unknown.INSTANCE;
                 for (Type option : union.options()) if (!flattened.contains(option)) flattened.add(option);
             } else if (!flattened.contains(type)) flattened.add(type);
         }
