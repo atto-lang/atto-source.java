@@ -3239,6 +3239,12 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.BinaryExpr binary) {
+                    if (binary.operator().equals("pipe")) {
+                        List<Ast.Expr> stages = new ArrayList<>();
+                        collectActorPipeStages(binary, stages);
+                        evalSuspendableActorStreamStages(task, stages, env, continuation);
+                        return;
+                    }
                     if (binary.operator().equals("&&")) {
                         evalSuspendableExpr(
                                 task,
@@ -4195,6 +4201,12 @@ public final class OresEvalRootNode extends RootNode {
                         (t, receiver, failure) -> {
                             if (failure != null) {
                                 continuation.accept(t, null, failure);
+                                return;
+                            }
+                            if (receiver == ActorUtilsNamespace.INSTANCE
+                                    && member.member().equals("pipe")) {
+                                evalSuspendableActorStreamStages(
+                                        t, call.arguments(), env, continuation);
                                 return;
                             }
                             evalSuspendableArguments(
@@ -5889,6 +5901,12 @@ public final class OresEvalRootNode extends RootNode {
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
+                if (receiver == ActorUtilsNamespace.INSTANCE
+                        && methodCall.member().equals("pipe")) {
+                    ActorRuntime.ActorStream stream =
+                            evaluateAndBindActorStream(call.arguments(), env);
+                    return invokableInvocation(ignored -> stream, List.of());
+                }
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresObject object) {
@@ -6195,6 +6213,99 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        /**
+         * Stage creation is owned only when the stage expression itself is a
+         * direct 'spawn Actor()'. Pre-existing ActorRef operands belong to
+         * their original owner and MUST NOT be cancelled on construction fail.
+         */
+        private static boolean isInlinePipeSpawn(Ast.Expr stage) {
+            return stage instanceof Ast.RuntimeCallExpr runtime
+                    && runtime.operation().equals("spawn");
+        }
+
+        private void rollbackInlinePipeSpawns(
+                List<ActorRuntime.ActorRef<?>> created, Throwable failure) {
+            for (int i = created.size() - 1; i >= 0; i--) {
+                try {
+                    created.get(i).cancel();
+                } catch (RuntimeException | Error cleanup) {
+                    if (cleanup != failure) failure.addSuppressed(cleanup);
+                }
+            }
+        }
+
+        private ActorRuntime.ActorStream evaluateAndBindActorStream(
+                List<Ast.Expr> stages, Env env) {
+            if (stages.size() < 2 || stages.size() > 16) {
+                throw new IllegalArgumentException("ActorStream requires 2..16 stages");
+            }
+            List<ActorRuntime.ActorRef<?>> created = new ArrayList<>();
+            List<Object> values = new ArrayList<>(stages.size());
+            try {
+                for (Ast.Expr stage : stages) {
+                    Object value = eval(stage, env);
+                    if (isInlinePipeSpawn(stage)
+                            && value instanceof ActorRuntime.ActorRef<?> ref) {
+                        created.add(ref);
+                    }
+                    values.add(value);
+                }
+                return createActorStream(values);
+            } catch (RuntimeException | Error failure) {
+                rollbackInlinePipeSpawns(created, failure);
+                throw failure;
+            }
+        }
+
+        private void evalSuspendableActorStreamStages(
+                SourceTask task, List<Ast.Expr> stages, Env env,
+                SourceValueCont continuation) {
+            if (stages.size() < 2 || stages.size() > 16) {
+                continuation.accept(task, null,
+                        new IllegalArgumentException("ActorStream requires 2..16 stages"));
+                return;
+            }
+            evalSuspendableActorStreamStage(
+                    task, stages, env, 0, new ArrayList<>(stages.size()),
+                    new ArrayList<>(), continuation);
+        }
+
+        private void evalSuspendableActorStreamStage(
+                SourceTask task, List<Ast.Expr> stages, Env env, int index,
+                List<Object> values,
+                List<ActorRuntime.ActorRef<?>> created,
+                SourceValueCont continuation) {
+            Ast.Expr stage = stages.get(index);
+            evalSuspendableExpr(task, stage, env, (t, value, failure) -> {
+                if (failure != null) {
+                    rollbackInlinePipeSpawns(created, failure);
+                    continuation.accept(t, null, failure);
+                    return;
+                }
+                if (isInlinePipeSpawn(stage)
+                        && value instanceof ActorRuntime.ActorRef<?> ref) {
+                    created.add(ref);
+                }
+                values.add(value);
+                if (index + 1 < stages.size()) {
+                    evalSuspendableActorStreamStage(
+                            t, stages, env, index + 1, values, created, continuation);
+                    return;
+                }
+                ActorRuntime.ActorStream stream;
+                try {
+                    stream = createActorStream(values);
+                } catch (RuntimeException | Error bindingFailure) {
+                    rollbackInlinePipeSpawns(created, bindingFailure);
+                    continuation.accept(t, null, bindingFailure);
+                    return;
+                }
+                // The pipeline is published: a downstream continuation failure
+                // must not retroactively revoke successfully bound actors.
+                continuation.accept(t, stream, null);
+            });
+        }
+
         private ActorRuntime.ActorStream createActorStream(List<Object> values) {
             if (values.size() < 2 || values.size() > 16) {
                 throw new IllegalArgumentException(
@@ -6410,11 +6521,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (binary.operator().equals("pipe")) {
                     List<Ast.Expr> stages = new ArrayList<>();
                     collectActorPipeStages(binary, stages);
-                    List<Object> values = new ArrayList<>(stages.size());
-                    for (Ast.Expr stage : stages) {
-                        values.add(eval(stage, env));
-                    }
-                    return createActorStream(values);
+                    return evaluateAndBindActorStream(stages, env);
                 }
                 if (binary.operator().equals("&&")) {
                     Object left = eval(binary.left(), env);

@@ -135,6 +135,41 @@ final class AuthenticatedActorStreamSourceTest {
     }
 
     @Test
+    void duplicatePreexistingActorIsRejectedAfterInlineSpawnInFunctionForm()
+            throws Exception {
+        String source = fixture().replace(
+                "return ActorUtils.pipe(\n        spawn Source(),\n        spawn Transform(),\n        spawn Sink()\n    );",
+                "val retained = spawn Source();\n"
+                        + "    return ActorUtils.pipe(spawn Source(), retained, retained);");
+        assertNotEquals(fixture(), source);
+        // The first inline actor is owned by this attempted construction;
+        // 'retained' was created separately and must not be cancelled by
+        // construction rollback.
+        assertTimeoutPreemptively(Duration.ofSeconds(8), () -> {
+            PolyglotException rejected = assertThrows(
+                    PolyglotException.class, () -> execute(source));
+            assertTrue(rejected.toString().contains("distinct same-runtime SHARED"),
+                    rejected::toString);
+        });
+    }
+
+    @Test
+    void duplicatePreexistingActorIsRejectedAfterInlineSpawnInInfixForm()
+            throws Exception {
+        String source = fixture().replace(
+                "return ActorUtils.pipe(\n        spawn Source(),\n        spawn Transform(),\n        spawn Sink()\n    );",
+                "val retained = spawn Source();\n"
+                        + "    return spawn Source() pipe retained pipe retained;");
+        assertNotEquals(fixture(), source);
+        assertTimeoutPreemptively(Duration.ofSeconds(8), () -> {
+            PolyglotException rejected = assertThrows(
+                    PolyglotException.class, () -> execute(source));
+            assertTrue(rejected.toString().contains("distinct same-runtime SHARED"),
+                    rejected::toString);
+        });
+    }
+
+    @Test
     void reservedPipelineTypesCannotBeRebound() {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
