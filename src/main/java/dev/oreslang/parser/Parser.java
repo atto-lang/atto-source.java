@@ -5732,7 +5732,7 @@ public final class Parser {
                 throw error(peek(), "keyword try catch body cannot use braces; use end");
             }
             catchBody = braced ? parseBlock() : parseTryKeywordBody(FINALLY, END);
-            if (check(CATCH)) throw error(peek(), "at most one catch clause is allowed");
+            if (!braced && check(CATCH)) throw error(peek(), "at most one catch clause is allowed");
         }
 
         List<Ast.Stmt> finallyBody = List.of();
@@ -5741,7 +5741,7 @@ public final class Parser {
                 throw error(peek(), "keyword try finally body cannot use braces; use end");
             }
             finallyBody = braced ? parseBlock() : parseTryKeywordBody(END);
-            if (check(CATCH) || check(FINALLY)) {
+            if (!braced && (check(CATCH) || check(FINALLY))) {
                 throw error(peek(), "catch must precede finally; at most one finally is allowed");
             }
         }
