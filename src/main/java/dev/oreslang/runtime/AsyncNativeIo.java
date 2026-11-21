@@ -65,30 +65,45 @@ public final class AsyncNativeIo implements AutoCloseable {
         long queued = CorePerf.start();
         try {
             workers.execute(() -> {
-                CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
-                long workPerf = CorePerf.start();
-                T value;
                 try {
-                    value = work.call();
-                } catch (Throwable failure) {
-                    CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
-                    synchronized (this) { admitted.remove(result); }
-                    SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
-                    result.failFromRuntime(failure);
-                    if (failure instanceof VirtualMachineError fatal) throw fatal;
-                    if (failure instanceof ThreadDeath fatal) throw fatal;
-                    if (failure instanceof LinkageError fatal) throw fatal;
-                    return;
+                    CorePerf.end(CorePerf.ASYNC_IO_QUEUE, queued);
+                    long workPerf = CorePerf.start();
+                    T value;
+                    try {
+                        value = work.call();
+                    } catch (Throwable failure) {
+                        CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 1L);
+                        // A tracing hook is diagnostic only: its failure must
+                        // never prevent publication of the original I/O error.
+                        try {
+                            SourceBoundaryTrace.record(failure, "native:io", operation, "I/O");
+                        } catch (Throwable traceFailure) {
+                            if (traceFailure != failure) failure.addSuppressed(traceFailure);
+                        }
+                        result.failFromRuntime(failure);
+                        if (failure instanceof VirtualMachineError fatal) throw fatal;
+                        if (failure instanceof ThreadDeath fatal) throw fatal;
+                        if (failure instanceof LinkageError fatal) throw fatal;
+                        return;
+                    } finally {
+                        CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
+                    }
+                    result.completeFromRuntime(value);
                 } finally {
-                    CorePerf.end(CorePerf.ASYNC_IO_WORK, workPerf);
+                    // Publish the terminal Future BEFORE releasing admission.
+                    // If an unexpected host Error interrupts terminal
+                    // publication, shutdown must still own this Future.
+                    synchronized (AsyncNativeIo.this) {
+                        if (result.isDone()) admitted.remove(result);
+                    }
                 }
-                synchronized (this) { admitted.remove(result); }
-                result.completeFromRuntime(value);
             });
         } catch (RuntimeException failure) {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_REJECTED, 1L);
-            admitted.remove(result);
-            result.failFromRuntime(failure);
+            try { result.failFromRuntime(failure); }
+            finally {
+                if (result.isDone()) admitted.remove(result);
+            }
         }
         return result;
     }

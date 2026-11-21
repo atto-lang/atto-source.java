@@ -338,4 +338,58 @@ class AsyncNativeIoTest {
     }
 
 
+    @Test
+    void completedWorkerKeepsAdmissionUntilTerminalCallbacksReturn() throws Exception {
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        var startWork = new CountDownLatch(1);
+        var releaseWork = new CountDownLatch(1);
+        var callbackEntered = new CountDownLatch(1);
+        var releaseCallback = new CountDownLatch(1);
+        try {
+            OresFuture<Integer> first = io.submit("first", () -> {
+                startWork.countDown();
+                if (!releaseWork.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("work timed out");
+                return 7;
+            });
+            assertTrue(startWork.await(3, TimeUnit.SECONDS));
+            first.whenCompleteRuntime((value, error) -> {
+                callbackEntered.countDown();
+                try {
+                    if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("completion callback timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            });
+            releaseWork.countDown();
+            assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+            var overflow = io.submit("must-reject", () -> 8);
+            assertInstanceOf(RejectedExecutionException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> overflow.get(3, TimeUnit.SECONDS)).getCause());
+            releaseCallback.countDown();
+            assertEquals(7, first.get(3, TimeUnit.SECONDS));
+            // Wait until the worker has completed its terminal callback and
+            // released the physical admission token; bounded diagnostic retry.
+            OresFuture<Integer> next = null;
+            for (int n = 0; n < 100 && next == null; n++) {
+                var candidate = io.submit("next", () -> 9);
+                try {
+                    assertEquals(9, candidate.get(1, TimeUnit.SECONDS));
+                    next = candidate;
+                } catch (ExecutionException rejected) {
+                    assertInstanceOf(RejectedExecutionException.class, rejected.getCause());
+                    Thread.sleep(2);
+                }
+            }
+            assertNotNull(next, "terminal callback did not relinquish admission");
+        } finally {
+            releaseWork.countDown();
+            releaseCallback.countDown();
+            io.close();
+        }
+    }
+
 }
