@@ -299,4 +299,65 @@ final class InvertedArrayTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(guest),
                 "no direct guest AoS lowering may occur before true compiler integration");
     }
+
+    @Test
+    void completeNominalSchemaCheckRejectsSameNamePhysicalSubstitution() {
+        Ast.ClassDecl expected = declaration("""
+                define inverted class Particle as
+                    x: f64;
+                    y: f64;
+                end
+                """);
+        Ast.ClassDecl wrongKind = declaration("""
+                define inverted class Particle as
+                    x: i64;
+                    y: f64;
+                end
+                """);
+        Ast.ClassDecl wrongOrder = declaration("""
+                define inverted class Particle as
+                    y: f64;
+                    x: f64;
+                end
+                """);
+        Ast.ClassDecl wrongRecord = declaration("""
+                define inverted class Particle as
+                    sample: record { ok: bool, x: f64 };
+                end
+                """);
+        Ast.ClassDecl otherRecord = declaration("""
+                define inverted class Particle as
+                    sample: record { ok: bool, x: i64 };
+                end
+                """);
+
+        try (var array = InvertedArray.fromClass(expected, 0);
+                var kindMismatch = InvertedArray.fromClass(wrongKind, 0);
+                var orderMismatch = InvertedArray.fromClass(wrongOrder, 0)) {
+            assertDoesNotThrow(() -> array.schema().requireMatches(expected));
+            assertEquals(
+                    array.schema().physicalFingerprint(),
+                    InvertedArray.Schema.fromClass(expected).physicalFingerprint());
+            assertNotEquals(
+                    array.schema().physicalFingerprint(),
+                    kindMismatch.schema().physicalFingerprint());
+            assertNotEquals(
+                    array.schema().physicalFingerprint(),
+                    orderMismatch.schema().physicalFingerprint());
+            assertThrows(IllegalStateException.class,
+                    () -> array.schema().requireMatches(wrongKind));
+            assertThrows(IllegalStateException.class,
+                    () -> array.schema().requireMatches(wrongOrder));
+        }
+
+        try (var array = InvertedArray.fromClass(wrongRecord, 0);
+                var other = InvertedArray.fromClass(otherRecord, 0)) {
+            assertNotEquals(
+                    array.schema().physicalFingerprint(),
+                    other.schema().physicalFingerprint());
+            assertThrows(IllegalStateException.class,
+                    () -> array.schema().requireMatches(otherRecord));
+        }
+    }
+
 }

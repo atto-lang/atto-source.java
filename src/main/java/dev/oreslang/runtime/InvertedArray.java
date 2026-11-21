@@ -118,6 +118,69 @@ public final class InvertedArray implements AutoCloseable {
         public String className() { return className; }
         public List<Field> fields() { return fields; }
         public int fieldCount() { return fields.size(); }
+
+        /**
+         * Canonical immutable physical descriptor captured by compiler
+         * admission. Field names are identifiers, so the separators below are
+         * unambiguous. Record members are already canonicalized by name and
+         * carry their physical offset and scalar kind.
+         */
+        public List<String> physicalFingerprint() {
+            ArrayList<String> fingerprint = new ArrayList<>(fields.size());
+            for (Field field : fields) {
+                StringBuilder item = new StringBuilder()
+                        .append(field.name()).append(':').append(field.kind());
+                if (field.recordLayout() != null) {
+                    item.append(':').append(field.recordLayout().bytes());
+                    for (InvertedRecordLayout.Member member
+                            : field.recordLayout().members()) {
+                        item.append(':')
+                                .append(member.name()).append('@')
+                                .append(member.offset()).append('=')
+                                .append(member.kind());
+                    }
+                }
+                fingerprint.add(item.toString());
+            }
+            return List.copyOf(fingerprint);
+        }
+
+        /**
+         * Runtime nominal checks must bind the complete physical descriptor,
+         * not only the class name. This protects embedding/host boundaries
+         * from substituting a same-name InvertedArray with a different column
+         * kind/order or fixed-record ABI.
+         */
+        public void requireMatches(Ast.ClassDecl klass) {
+            Schema expected = fromClass(klass);
+            if (!className.equals(expected.className)
+                    || fields.size() != expected.fields.size()) {
+                throw new IllegalStateException(
+                        "inverted runtime schema does not match nominal class");
+            }
+            for (int i = 0; i < fields.size(); i++) {
+                Field actualField = fields.get(i);
+                Field expectedField = expected.fields.get(i);
+                if (!actualField.name().equals(expectedField.name())
+                        || actualField.kind() != expectedField.kind()
+                        || !sameRecordLayout(
+                                actualField.recordLayout(),
+                                expectedField.recordLayout())) {
+                    throw new IllegalStateException(
+                            "inverted runtime schema mismatch at column " + i);
+                }
+            }
+        }
+
+        private static boolean sameRecordLayout(
+                InvertedRecordLayout left,
+                InvertedRecordLayout right) {
+            if (left == right) return true;
+            if (left == null || right == null || left.bytes() != right.bytes()) {
+                return false;
+            }
+            return left.members().equals(right.members());
+        }
         public int index(String name) {
             Integer index = indices.get(Objects.requireNonNull(name, "field name"));
             if (index == null) {

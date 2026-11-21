@@ -1807,12 +1807,20 @@ public final class Ast {
             String className,
             String fieldName,
             TypeRef fieldType,
+            java.util.List<String> physicalSchemaFingerprint,
             InvertedIndexAccess access) {
         public InvertedIndexTypeEvidence {
             java.util.Objects.requireNonNull(index, "inverted index expression");
             java.util.Objects.requireNonNull(className, "inverted class name");
             java.util.Objects.requireNonNull(fieldName, "inverted field name");
             java.util.Objects.requireNonNull(fieldType, "inverted field type");
+            java.util.Objects.requireNonNull(
+                    physicalSchemaFingerprint, "inverted physical schema fingerprint");
+            if (physicalSchemaFingerprint.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "inverted physical schema fingerprint must not be empty");
+            }
+            physicalSchemaFingerprint = java.util.List.copyOf(physicalSchemaFingerprint);
             java.util.Objects.requireNonNull(access, "inverted index access");
         }
     }
@@ -1855,13 +1863,19 @@ public final class Ast {
                 String className,
                 String fieldName,
                 TypeRef fieldType,
+                java.util.List<String> physicalSchemaFingerprint,
                 InvertedIndexAccess access) {
             if (member.receiver() != index) {
                 throw new IllegalArgumentException(
                         "inverted field evidence must bind the exact member receiver index");
             }
             InvertedIndexTypeEvidence evidence = new InvertedIndexTypeEvidence(
-                    index, className, fieldName, fieldType, access);
+                    index,
+                    className,
+                    fieldName,
+                    fieldType,
+                    physicalSchemaFingerprint,
+                    access);
             expunge();
             IdentityKey key = new IdentityKey(member, CLEARED);
             InvertedIndexTypeEvidence previous = EVIDENCE.putIfAbsent(key, evidence);
@@ -1884,6 +1898,7 @@ public final class Ast {
             String className,
             String fieldName,
             TypeRef fieldType,
+            java.util.List<String> physicalSchemaFingerprint,
             InvertedIndexAccess access) {
         public InvertedIndexAdmission {
             if (checkEpoch <= 0) {
@@ -1893,6 +1908,13 @@ public final class Ast {
             java.util.Objects.requireNonNull(className, "inverted class name");
             java.util.Objects.requireNonNull(fieldName, "inverted field name");
             java.util.Objects.requireNonNull(fieldType, "inverted field type");
+            java.util.Objects.requireNonNull(
+                    physicalSchemaFingerprint, "inverted physical schema fingerprint");
+            if (physicalSchemaFingerprint.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "inverted physical schema fingerprint must not be empty");
+            }
+            physicalSchemaFingerprint = java.util.List.copyOf(physicalSchemaFingerprint);
             java.util.Objects.requireNonNull(access, "inverted index access");
         }
     }
@@ -2020,6 +2042,7 @@ public final class Ast {
                                 evidence.className(),
                                 evidence.fieldName(),
                                 evidence.fieldType(),
+                                evidence.physicalSchemaFingerprint(),
                                 evidence.access()));
             }
             PROGRAM_EPOCHS.put(

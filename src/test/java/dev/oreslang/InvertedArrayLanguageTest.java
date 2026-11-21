@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.InvertedArray;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -399,6 +400,231 @@ final class InvertedArrayLanguageTest {
                     failure.getMessage().contains("non-suspending scalar expression"),
                     failure::getMessage);
         }
+    }
+
+    @Test
+    void executableAdmissionPinsTheTypecheckedPhysicalSchema() {
+        Ast.Program typed = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
+        Ast.MemberExpr member = returnedMember(typed);
+        Ast.InvertedIndexTypeEvidence evidence =
+                Ast.CheckedInvertedIndexTypes.lookup(member);
+        assertNotNull(evidence);
+
+        long epoch = Ast.CheckedInvertedIndexes.requireProgramEpoch(typed);
+        Ast.InvertedIndexAdmission admission = Ast.CheckedInvertedIndexes.require(
+                typed, member, epoch, Ast.InvertedIndexAccess.READ);
+
+        Ast.ClassDecl particle = typed.modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .filter(klass -> klass.name().equals("Particle"))
+                .findFirst()
+                .orElseThrow();
+        var expected =
+                InvertedArray.Schema.fromClass(particle).physicalFingerprint();
+
+        assertEquals(expected, evidence.physicalSchemaFingerprint());
+        assertEquals(expected, admission.physicalSchemaFingerprint());
+        assertThrows(UnsupportedOperationException.class,
+                () -> admission.physicalSchemaFingerprint().add("forged"));
+    }
+
+
+    /**
+     * Inject a host-created array into the *actual checked evaluator frame*.
+     * Guest source cannot construct this substitution, so this test deliberately
+     * uses reflection without adding a production host-injection capability.
+     * The evaluator must consult the exact Program/MemberExpr admission before
+     * invoking bindField(), index(), or any column read.
+     */
+    @Test
+    void evaluatorRejectsSameNamePhysicalSchemaSubstitutionBeforeColumnAccess()
+            throws ReflectiveOperationException {
+        Ast.Program typed = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
+        Ast.MemberExpr site = returnedMember(typed);
+        Ast.ClassDecl checkedRow = typed.modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst()
+                .orElseThrow();
+        Ast.ClassDecl substitutedRow = (Ast.ClassDecl) Parser.parse("""
+                define inverted class Particle as
+                  val i64 x;
+                  val f64 y;
+                  val bool ready;
+                end
+                """).modules().getFirst().declarations().getFirst();
+
+        try (InvertedArray valid = InvertedArray.fromClass(checkedRow, 0);
+                InvertedArray substituted = InvertedArray.fromClass(substitutedRow, 0)) {
+            valid.pushValues(1.5, 2.5, true);
+            assertEquals(1.5, evaluateCheckedInvertedField(typed, site, valid));
+
+            // With no rows, an attempted index/column read would instead fail
+            // out of bounds. The fingerprint error establishes the guard order.
+            assertEquals(0, substituted.size());
+            java.lang.reflect.InvocationTargetException rejected = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> evaluateCheckedInvertedField(typed, site, substituted));
+            IllegalStateException failure = assertInstanceOf(
+                    IllegalStateException.class, rejected.getCause());
+            assertTrue(
+                    failure.getMessage().contains("schema fingerprint changed after admission"),
+                    failure::getMessage);
+            assertEquals(0, substituted.size());
+        }
+    }
+
+
+    @Test
+    void evaluatorRejectsWrongLayoutOnAdmittedWriteBeforeMutatingColumns()
+            throws ReflectiveOperationException {
+        Ast.Program typed = TypeChecker.check(Parser.parse("""
+                define inverted class Particle as
+                  let f64 x;
+                  val f64 y;
+                  val bool ready;
+                end
+                fnc write(): void {
+                  let mut InvertedArray<Particle> particles =
+                      new InvertedArray<Particle>();
+                  particles.push(1.5, 2.5, true);
+                  particles[0].x = 9.25;
+                  return;
+                }
+                """));
+        Ast.FunctionDecl function = (Ast.FunctionDecl) typed.modules().getFirst()
+                .declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .findFirst().orElseThrow();
+        Ast.MemberExpr assignmentSite = function.body().stream()
+                .filter(Ast.ExprStmt.class::isInstance)
+                .map(Ast.ExprStmt.class::cast)
+                .map(Ast.ExprStmt::expression)
+                .filter(Ast.AssignExpr.class::isInstance)
+                .map(Ast.AssignExpr.class::cast)
+                .map(Ast.AssignExpr::target)
+                .map(Ast.MemberExpr.class::cast)
+                .findFirst().orElseThrow();
+        Ast.ClassDecl checkedRow = typed.modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst().orElseThrow();
+        Ast.ClassDecl substitutedRow = (Ast.ClassDecl) Parser.parse("""
+                define inverted class Particle as
+                  let i64 x;
+                  val f64 y;
+                  val bool ready;
+                end
+                """).modules().getFirst().declarations().getFirst();
+        try (InvertedArray valid = InvertedArray.fromClass(checkedRow, 0);
+                InvertedArray substituted = InvertedArray.fromClass(substitutedRow, 0)) {
+            var validRow = valid.pushValues(1.5, 2.5, true);
+            assertEquals(9.25,
+                    assignCheckedInvertedField(typed, assignmentSite, valid, 9.25));
+            assertEquals(9.25, valid.read(validRow, "x"));
+
+            var substitutedRowHandle = substituted.pushValues(17L, 2.5, true);
+            java.lang.reflect.InvocationTargetException rejected = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> assignCheckedInvertedField(
+                            typed, assignmentSite, substituted, 9.25));
+            IllegalStateException failure = assertInstanceOf(
+                    IllegalStateException.class, rejected.getCause());
+            assertTrue(
+                    failure.getMessage().contains("schema fingerprint changed after admission"),
+                    failure::getMessage);
+            assertEquals(17L, substituted.read(substitutedRowHandle, "x"));
+            assertEquals(1, substituted.size());
+        }
+    }
+
+
+    @Test
+    void genericEvaluatorIndexDispatchNeverExposesHostRowProjection()
+            throws ReflectiveOperationException {
+        Ast.Program typed = TypeChecker.check(Parser.parse(READ_ONLY_SOURCE));
+        Ast.IndexExpr bareIndex = (Ast.IndexExpr) returnedMember(typed).receiver();
+        Ast.ClassDecl checkedRow = typed.modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst().orElseThrow();
+        try (InvertedArray array = InvertedArray.fromClass(checkedRow, 0)) {
+            var row = array.pushValues(1.5, 2.5, true);
+
+            java.lang.reflect.InvocationTargetException read = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> evaluateCheckedInvertedField(typed, bareIndex, array));
+            IllegalStateException readFailure = assertInstanceOf(
+                    IllegalStateException.class, read.getCause());
+            assertTrue(readFailure.getMessage().contains(
+                    "InvertedArray indexing requires an admitted"));
+
+            java.lang.reflect.InvocationTargetException write = assertThrows(
+                    java.lang.reflect.InvocationTargetException.class,
+                    () -> assignCheckedInvertedField(typed, bareIndex, array, 9.25));
+            IllegalStateException writeFailure = assertInstanceOf(
+                    IllegalStateException.class, write.getCause());
+            assertTrue(writeFailure.getMessage().contains(
+                    "InvertedArray indexed writes require an admitted"));
+
+            assertEquals(1.5, array.read(row, "x"));
+            assertEquals(1, array.size());
+        }
+    }
+
+    private static Object assignCheckedInvertedField(
+            Ast.Program typed, Ast.Expr site, InvertedArray array, Object value)
+            throws ReflectiveOperationException {
+        return executeCheckedInvertedField(typed, site, array, value, true);
+    }
+
+    private static Object evaluateCheckedInvertedField(
+            Ast.Program typed, Ast.Expr site, InvertedArray array)
+            throws ReflectiveOperationException {
+        return executeCheckedInvertedField(typed, site, array, null, false);
+    }
+
+    private static Object executeCheckedInvertedField(
+            Ast.Program typed, Ast.Expr site, InvertedArray array,
+            Object value, boolean writing)
+            throws ReflectiveOperationException {
+        Class<?> evaluatorClass = Class.forName(
+                "dev.oreslang.nodes.OresEvalRootNode$Evaluator");
+        Class<?> envClass = Class.forName(
+                "dev.oreslang.nodes.OresEvalRootNode$Env");
+
+        var constructor = evaluatorClass.getDeclaredConstructor(
+                Ast.Program.class,
+                dev.oreslang.runtime.OresContext.class,
+                String.class,
+                long.class,
+                long.class);
+        constructor.setAccessible(true);
+        Object evaluator = constructor.newInstance(
+                typed,
+                null,
+                "<inverted-substitution-test>",
+                Ast.CheckedTaskCaptures.requireProgramEpoch(typed),
+                Ast.CheckedInvertedIndexes.requireProgramEpoch(typed));
+
+        var envConstructor = envClass.getDeclaredConstructor(envClass);
+        envConstructor.setAccessible(true);
+        Object env = envConstructor.newInstance((Object) null);
+        var define = envClass.getDeclaredMethod(
+                "define", String.class, Object.class, Ast.BindingKind.class);
+        define.setAccessible(true);
+        define.invoke(env, "particles", array, Ast.BindingKind.LET);
+
+        if (writing) {
+            var assign = evaluatorClass.getDeclaredMethod(
+                    "assignEvaluated", Ast.Expr.class, Object.class, envClass);
+            assign.setAccessible(true);
+            return assign.invoke(evaluator, site, value, env);
+        }
+        var eval = evaluatorClass.getDeclaredMethod("eval", Ast.Expr.class, envClass);
+        eval.setAccessible(true);
+        return eval.invoke(evaluator, site, env);
     }
 
     @Test

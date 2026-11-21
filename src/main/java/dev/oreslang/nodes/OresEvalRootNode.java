@@ -5814,6 +5814,12 @@ public final class OresEvalRootNode extends RootNode {
                 Object index,
                 Env env,
                 Ast.Expr receiverExpression) {
+            // A bare InvertedArray index is never a guest row value. Do not
+            // let future generic-index implementations expose host RowView.
+            if (receiver instanceof InvertedArray) {
+                throw new IllegalStateException(
+                        "InvertedArray indexing requires an admitted [i].field read");
+            }
             java.util.Set<String> checkedStructuralDomain =
                     Ast.CheckedStructuralFieldDomain.lookup(receiverExpression);
             if (checkedStructuralDomain != null) {
@@ -5964,6 +5970,12 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 Env env,
                 Ast.Expr receiverExpression) {
+            // Writes must likewise pass the exact-site ownership admission,
+            // never a generic index assignment or host row projection.
+            if (receiver instanceof InvertedArray) {
+                throw new IllegalStateException(
+                        "InvertedArray indexed writes require an admitted [i].field assignment");
+            }
             if (receiver instanceof OresObject object) {
                 if (!object.klass.actorKind().equals(Ast.ActorKind.NONE)) {
                     throw new IllegalArgumentException(
@@ -7930,11 +7942,16 @@ public final class OresEvalRootNode extends RootNode {
                         "checked inverted bracket receiver is not an InvertedArray");
             }
             Ast.ClassDecl rowClass = findClass(admission.className());
-            if (rowClass == null || !rowClass.inverted()
-                    || !array.schema().className().equals(rowClass.name())) {
+            if (rowClass == null || !rowClass.inverted()) {
                 throw new IllegalStateException(
                         "checked inverted bracket runtime schema does not match its nominal class");
             }
+            if (!array.schema().physicalFingerprint().equals(
+                    admission.physicalSchemaFingerprint())) {
+                throw new IllegalStateException(
+                        "checked inverted bracket runtime schema fingerprint changed after admission");
+            }
+            array.schema().requireMatches(rowClass);
             return array;
         }
 

@@ -7,6 +7,7 @@ import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.ast.CheckedDispatchPlansV1;
 import dev.oreslang.compiler.AotDispatchPlannerV1;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.InvertedArray;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
@@ -7198,12 +7199,15 @@ public final class TypeChecker {
                 }
                 Type fieldType = resolve(
                         field.type(), Set.of(), nominalClassType(row));
+                List<String> physicalSchemaFingerprint =
+                        InvertedArray.Schema.fromClass(row).physicalFingerprint();
                 Ast.CheckedInvertedIndexTypes.record(
                         member,
                         indexed,
                         qualifiedClassName(row),
                         field.name(),
                         field.type(),
+                        physicalSchemaFingerprint,
                         writing
                                 ? Ast.InvertedIndexAccess.WRITE
                                 : Ast.InvertedIndexAccess.READ);
