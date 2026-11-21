@@ -3728,6 +3728,20 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            // Direct bare declaration names are not runtime call arguments, even
+            // on builtin/variadic paths that do not invoke requireAssignable.
+            // Lexical value bindings still take precedence over type names.
+            for (Ast.Expr argument : call.arguments()) {
+                if (argument instanceof Ast.NameExpr name
+                        && env.lookup(name.name()) == null
+                        && (findClass(name.name()) != null
+                            || findInterface(name.name()) != null
+                            || findTypeAlias(name.name()) != null)) {
+                    throw new IllegalArgumentException(
+                            "E_TYPE_NOT_VALUE: call argument cannot use type declaration '"
+                                    + name.name() + "' as a runtime value");
+                }
+            }
             if (call.arguments().stream().anyMatch(Ast.NamedArgExpr.class::isInstance)) {
                 throw new IllegalArgumentException(
                         "NAMED_CALL_BINDING_UNSUPPORTED: named arguments are parsed and preserved, "
@@ -13103,6 +13117,19 @@ public final class TypeChecker {
                     "E_TYPE_NOT_VALUE: " + where + " cannot use class declaration '"
                             + namespace.className() + "' as a runtime value; "
                             + "construct an instance or access a static member");
+        }
+        // Inferred aggregate and lambda types must not launder a nominal
+        // declaration through a list/tuple/record or callback signature.
+        if (actual instanceof Record record) {
+            record.members().forEach((name, member) ->
+                    requireRuntimeValue(member, where + "." + name));
+        } else if (actual instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) requireRuntimeValue(element, where + " tuple element");
+        } else if (actual instanceof ListType list) {
+            requireRuntimeValue(list.element(), where + " list element");
+        } else if (actual instanceof Function function) {
+            requireRuntimeValue(function.result(), where + " callable result");
+            for (Type param : function.parameters()) requireRuntimeValue(param, where + " callable parameter");
         }
     }
 
