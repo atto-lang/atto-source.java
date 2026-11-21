@@ -489,4 +489,97 @@ public final class ActorSlabHeap implements AutoCloseable {
         }
         return out;
     }
+
+    /** Canonical status codes shared by every backend (golden v2). */
+    public static int code(Status s) {
+        return switch (s) {
+            case OK -> 0;
+            case OUT_OF_MEMORY -> 1;
+            case BUDGET_EXCEEDED -> 2;
+            case INVALID_SIZE -> 3;
+            case INVALID_ALIGNMENT -> 4;
+            case INVALID_REF -> 5;
+            case STALE_HANDLE -> 6;
+            case HANDLE_TABLE_FULL -> 7;
+            case RETIRED -> 8;
+            case INVALID_CONFIG -> 99;
+        };
+    }
+
+    private static int fail(Status s) { return 0x8000_0000 | code(s); }
+
+    private static void remember(List<Integer> v, int w) {
+        v.add(w);
+        if (v.size() > 8) v.remove(0);
+    }
+
+    private static void swapRemove(List<Integer> v, int i) {
+        v.set(i, v.get(v.size() - 1));
+        v.remove(v.size() - 1);
+    }
+
+    /**
+     * Golden v2: failure paths and edge cases; same script as the C++
+     * {@code tests/actor_slab_heap_golden_v2_test.cpp} (see it for the format).
+     * Words are unsigned 32-bit values carried in {@code int}.
+     */
+    public static List<Integer> goldenScriptV2() {
+        List<Integer> out = new ArrayList<>();
+        try (ActorSlabHeap h = new ActorSlabHeap(256 * 1024, 128 * 1024, 16 * 1024, 8, 3)) {
+            int[] lcg = {99};
+            java.util.function.IntSupplier nextR = () -> { lcg[0] = lcg[0] * 1664525 + 1013904223; return lcg[0] >>> 8; };
+            long[] sizes = {0, 1, 8, 16, 17, 33, 48, 63, 64, 65, 100, 127, 128, 129, 255, 256, 257, 500, 1000, 2047, 2048, 2049};
+            long[] aligns = {1, 8, 16, 32, 64, 128, 3};
+            long[] larges = {3000, 4033, 4032, 8000, 12000, 20000};
+            List<Integer> live = new ArrayList<>(), freed = new ArrayList<>(),
+                handles = new ArrayList<>(), freedHandles = new ArrayList<>();
+            for (int op = 0; op < 3000; op++) {
+                int v = Integer.remainderUnsigned(nextR.getAsInt(), 16);
+                if (v <= 5) {
+                    long s = sizes[Integer.remainderUnsigned(nextR.getAsInt(), 22)];
+                    long a = aligns[Integer.remainderUnsigned(nextR.getAsInt(), 7)];
+                    Result r = h.allocate(s, a);
+                    if (r.ok()) { out.add(r.word()); live.add(r.word()); } else out.add(fail(r.status()));
+                } else if (v <= 8) {
+                    if (live.isEmpty()) continue;
+                    int i = Integer.remainderUnsigned(nextR.getAsInt(), live.size());
+                    int w = live.get(i);
+                    Status st = h.free(w);
+                    out.add(st == Status.OK ? 0 : fail(st));
+                    swapRemove(live, i);
+                    remember(freed, w);
+                } else if (v == 9) {
+                    if (freed.isEmpty()) continue;
+                    int w = freed.get(Integer.remainderUnsigned(nextR.getAsInt(), freed.size()));
+                    Status st = h.free(w);
+                    out.add(st == Status.OK ? 0 : fail(st));
+                    if (st == Status.OK) { int i = live.indexOf(w); if (i >= 0) swapRemove(live, i); }
+                } else if (v <= 11) {
+                    Result x = h.allocateHandle(sizes[1 + Integer.remainderUnsigned(nextR.getAsInt(), 12)], 8);
+                    if (x.ok()) { out.add(x.word()); handles.add(x.word()); } else out.add(fail(x.status()));
+                } else if (v <= 13) {
+                    if (handles.isEmpty()) continue;
+                    int i = Integer.remainderUnsigned(nextR.getAsInt(), handles.size());
+                    int w = handles.get(i);
+                    Status st = h.freeHandle(w);
+                    out.add(st == Status.OK ? 0 : fail(st));
+                    swapRemove(handles, i);
+                    remember(freedHandles, w);
+                } else if (v == 14) {
+                    if (freedHandles.isEmpty()) continue;
+                    Result r = h.resolveHandle(freedHandles.get(Integer.remainderUnsigned(nextR.getAsInt(), freedHandles.size())));
+                    out.add(r.ok() ? r.word() : fail(r.status()));
+                } else {
+                    Result r = h.allocate(larges[Integer.remainderUnsigned(nextR.getAsInt(), 6)], 8);
+                    if (r.ok()) { out.add(r.word()); live.add(r.word()); } else out.add(fail(r.status()));
+                }
+            }
+            out.add((int) h.liveObjects());
+            out.add((int) h.livePages());
+            out.add((int) h.freePages());
+            out.add(h.quarantinedHandles());
+            out.add((int) h.committedBytes());
+        }
+        return out;
+    }
 }

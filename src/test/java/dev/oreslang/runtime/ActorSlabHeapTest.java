@@ -129,6 +129,21 @@ final class ActorSlabHeapTest {
     }
 
     @Test
+    void goldenV2FailurePathsMatchLlvmRsAndNet() throws Exception {
+        Path golden = null;
+        for (Path dir = Path.of("").toAbsolutePath(); dir != null; dir = dir.getParent()) {
+            Path candidate = dir.resolve("contracts/actor-slab-heap/v1/actor_slab_heap_golden_v2.txt");
+            if (Files.isRegularFile(candidate)) { golden = candidate; break; }
+        }
+        assertNotNull(golden, "golden v2 fixture");
+        String[] words = Files.readString(golden).trim().split("\\s+");
+        List<Integer> got = ActorSlabHeap.goldenScriptV2();
+        assertEquals(words.length, got.size(), "golden v2 length");
+        for (int i = 0; i < words.length; i++)
+            assertEquals(Long.parseLong(words[i]), Integer.toUnsignedLong(got.get(i)), "golden v2 word " + i);
+    }
+
+    @Test
     void goldenMatchesLlvmRsAndNet() throws Exception {
         Path golden = null;
         for (Path dir = Path.of("").toAbsolutePath(); dir != null; dir = dir.getParent()) {
