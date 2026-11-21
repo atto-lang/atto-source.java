@@ -44,6 +44,7 @@ public final class OwnershipChecker {
     private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
+    private final NominalEnumRegistry.Registry nominalEnums;
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
@@ -57,6 +58,7 @@ public final class OwnershipChecker {
     private boolean currentAsyncGenerator;
 
     private OwnershipChecker(Ast.Program program) {
+        nominalEnums = NominalEnumRegistry.forProgram(program);
         index(program);
     }
 
@@ -1290,6 +1292,36 @@ public final class OwnershipChecker {
             }
         }
 
+        if (call.callee() instanceof Ast.MemberExpr enumMember
+                && enumMember.receiver() instanceof Ast.NameExpr enumOwner) {
+            NominalEnumRegistry.Case enumCase =
+                    nominalEnums.caseOrNull(
+                            enumOwner.name() + "." + enumMember.member());
+            if (enumCase != null) {
+                int expected = enumCase.payload() == null ? 0 : 1;
+                if (call.typeArgumentsPresent()
+                        || call.arguments().stream()
+                                .anyMatch(argument -> argument instanceof Ast.SpreadExpr)
+                        || call.arguments().size() != expected) {
+                    throw error(
+                            "invalid nominal enum constructor "
+                                    + enumCase.qualifiedName());
+                }
+                if (expected == 1) {
+                    checkExpr(call.arguments().getFirst(), scope, true);
+                }
+                Ast.TypeRef caseType =
+                        Ast.TypeRef.simple(enumCase.qualifiedName());
+                return new ValueInfo(
+                        caseType,
+                        enumCase.payload() == null
+                                        || isCopyType(enumCase.payload())
+                                ? ValueKind.COPY
+                                : ValueKind.MOVE_ONLY,
+                        null);
+            }
+        }
+
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -2386,13 +2418,35 @@ public final class OwnershipChecker {
             List<Ast.TypeRef> argTypes = constructorPatternTypes(constructor.constructor(), subjectType);
             for (int i = 0; i < constructor.arguments().size(); i++) {
                 Ast.TypeRef argType = i < argTypes.size() ? argTypes.get(i) : Ast.TypeRef.inferred();
-                definePatternAliases(constructor.arguments().get(i), argType, source, destination);
+                definePatternAliases(
+                        constructor.arguments().get(i),
+                        argType,
+                        isCopyType(argType) ? null : source,
+                        destination);
             }
         }
     }
 
     private List<Ast.TypeRef> constructorPatternTypes(String constructor, Ast.TypeRef subjectType) {
         if (subjectType == null) return List.of();
+        NominalEnumRegistry.Case enumCase =
+                nominalEnums.caseOrNull(constructor);
+        if (enumCase != null) {
+            Ast.TypeRef domain =
+                    subjectType.isBorrow()
+                            ? subjectType.borrowedTarget()
+                            : subjectType;
+            if (!domain.arguments().isEmpty()
+                    || !domain.name().equals(enumCase.owner())) {
+                throw error(
+                        "enum case " + enumCase.qualifiedName()
+                                + " does not belong to match subject "
+                                + domain.name());
+            }
+            return enumCase.payload() == null
+                    ? List.of()
+                    : List.of(enumCase.payload());
+        }
         if (constructor.equals("Some") && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {
             return List.of(subjectType.arguments().getFirst());
         }
@@ -3268,6 +3322,21 @@ public final class OwnershipChecker {
         if (type == null || type.isBorrow()) return false;
         if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
         if (type.isTupleType()) return type.arguments().stream().allMatch(this::isCopyType);
+        if (type.arguments().isEmpty()) {
+            NominalEnumRegistry.EnumType enumeration =
+                    nominalEnums.enums().get(type.name());
+            if (enumeration != null) {
+                return enumeration.cases().stream().allMatch(
+                        variant -> variant.payload() == null
+                                || isCopyType(variant.payload()));
+            }
+            NominalEnumRegistry.Case enumCase =
+                    nominalEnums.caseOrNull(type.name());
+            if (enumCase != null) {
+                return enumCase.payload() == null
+                        || isCopyType(enumCase.payload());
+            }
+        }
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",

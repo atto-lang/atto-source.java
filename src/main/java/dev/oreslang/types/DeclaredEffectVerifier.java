@@ -23,9 +23,15 @@ public final class DeclaredEffectVerifier {
             "prepare_scalar_publication",
             "publish_scalar_publication");
 
+    private static final ThreadLocal<NominalEnumRegistry.Registry> NOMINAL_ENUMS =
+            new ThreadLocal<>();
+
     private DeclaredEffectVerifier() { }
 
     public static void verify(Ast.Program program) {
+        NominalEnumRegistry.Registry previous = NOMINAL_ENUMS.get();
+        NOMINAL_ENUMS.set(NominalEnumRegistry.forProgram(program));
+        try {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
@@ -55,6 +61,10 @@ public final class DeclaredEffectVerifier {
                     }
                 }
             }
+        }
+        } finally {
+            if (previous == null) NOMINAL_ENUMS.remove();
+            else NOMINAL_ENUMS.set(previous);
         }
     }
 
@@ -138,6 +148,14 @@ public final class DeclaredEffectVerifier {
                     callableName + " binds reserved sealed ML intrinsic name '"
                             + bound + "'");
         }
+        NominalEnumRegistry.Registry registry = NOMINAL_ENUMS.get();
+        if (bound != null
+                && registry != null
+                && registry.enums().containsKey(bound)) {
+            throw new IllegalArgumentException(
+                    callableName + " shadows nominal enum namespace '"
+                            + bound + "'");
+        }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) {
                 rejectReservedMlBindings(item, callableName);
@@ -215,6 +233,32 @@ public final class DeclaredEffectVerifier {
                 }
                 effects.addAll(callbackEffects);
                 return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr enumMember
+                    && enumMember.receiver() instanceof Ast.NameExpr enumOwner) {
+                NominalEnumRegistry.Registry registry = NOMINAL_ENUMS.get();
+                NominalEnumRegistry.Case enumCase =
+                        registry == null ? null
+                                : registry.caseOrNull(
+                                        enumOwner.name() + "." + enumMember.member());
+                if (enumCase != null) {
+                    int expected = enumCase.payload() == null ? 0 : 1;
+                    if (call.typeArgumentsPresent()
+                            || call.arguments().stream()
+                                    .anyMatch(argument -> argument instanceof Ast.SpreadExpr)
+                            || call.arguments().size() != expected) {
+                        throw new IllegalArgumentException(
+                                "invalid nominal enum constructor "
+                                        + enumCase.qualifiedName());
+                    }
+                    collect(
+                            call.arguments(),
+                            effects,
+                            stateAccess,
+                            callableName,
+                            serial);
+                    return;
+                }
             }
             if (call.callee() instanceof Ast.NameExpr intrinsic) {
                 String name = intrinsic.name();

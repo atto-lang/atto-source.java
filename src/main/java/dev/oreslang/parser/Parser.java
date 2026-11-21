@@ -132,7 +132,13 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, or trait after 'define'");
+                if (match(ENUM)) {
+                    validateNoModifiers(modifiers, "enums");
+                    rejectCallableStructuralAnnotation(annotations, "enum declarations");
+                    rootDeclarations.add(parseTaggedEnum());
+                    continue;
+                }
+                throw error(previous(), "expected module, class, enum, interface, or trait after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -1051,6 +1057,70 @@ public final class Parser {
             return namespace + "." + symbol;
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
+    }
+
+    /**
+     * Closed nominal enum declaration. Newlines, commas, or semicolons separate
+     * cases. Tags are stable positive identities; omitted tags increase from 1.
+     */
+    private Ast.EnumDecl parseTaggedEnum() {
+        String name = consume(IDENT, "expected enum name").lexeme();
+        consume(AS, "expected 'as' after enum name");
+        List<Ast.EnumCase> cases = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        java.util.Set<Integer> tags = new java.util.HashSet<>();
+        int nextTag = 1;
+        while (!check(END) && !check(EOF)) {
+            Token start = consume(IDENT, "expected enum case name");
+            if (!names.add(start.lexeme())) {
+                throw error(start, "duplicate enum case " + start.lexeme());
+            }
+            Ast.TypeRef payload = match(COLON) ? parseTypeRef() : null;
+            int tag;
+            if (match(EQUAL)) {
+                long raw = Long.parseLong(
+                        consume(INT, "expected positive enum tag")
+                                .lexeme().replace("_", ""));
+                if (raw < 1 || raw > Integer.MAX_VALUE) {
+                    throw error(previous(),
+                            "enum tags must be positive 32-bit integers");
+                }
+                tag = (int) raw;
+            } else {
+                tag = nextTag;
+            }
+            if (tag < nextTag) {
+                throw error(start,
+                        "enum tags must increase monotonically; retired tags cannot be reused");
+            }
+            if (!tags.add(tag)) {
+                throw error(start, "duplicate enum tag " + tag);
+            }
+            cases.add(new Ast.EnumCase(start.lexeme(), payload, tag));
+            if (tag == Integer.MAX_VALUE) {
+                nextTag = Integer.MAX_VALUE;
+            } else {
+                nextTag = tag + 1;
+            }
+            boolean separator = match(COMMA, SEMICOLON);
+            if (tag == Integer.MAX_VALUE && !check(END)) {
+                throw error(start,
+                        "cannot implicitly increment enum tag after INT32_MAX");
+            }
+            if (!separator && !check(END)
+                    && peek().line() <= previous().line()) {
+                throw error(peek(),
+                        "enum cases require separate lines, commas, or semicolons");
+            }
+        }
+        consume(END, "expected 'end' after enum " + name);
+        if (cases.isEmpty()) {
+            throw error(previous(), "enum must declare at least one case");
+        }
+        if (cases.size() > 4096) {
+            throw error(previous(), "enum exceeds 4096 cases");
+        }
+        return new Ast.EnumDecl(name, cases);
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
@@ -2607,6 +2677,13 @@ public final class Parser {
 
         if (check(IDENT)) {
             String name = advance().lexeme();
+            boolean qualifiedConstructor = false;
+            if (match(DOT)) {
+                qualifiedConstructor = true;
+                name += "." + consume(
+                        IDENT,
+                        "expected enum case after '.' in match pattern").lexeme();
+            }
             if (match(LPAREN)) {
                 List<Ast.Pattern> args = new ArrayList<>();
                 if (!check(RPAREN)) {
@@ -2615,8 +2692,11 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after constructor pattern");
                 return new Ast.ConstructorPattern(name, args);
             }
-            // Upper-case bare names are zero-arity constructors; lower-case names bind.
-            if (!name.isEmpty() && Character.isUpperCase(name.charAt(0))) {
+            // A qualified Enum.Case spelling is always a constructor.
+            // For legacy unqualified patterns, retain the upper-case convention.
+            if (qualifiedConstructor
+                    || (!name.isEmpty()
+                            && Character.isUpperCase(name.charAt(0)))) {
                 return new Ast.ConstructorPattern(name, List.of());
             }
             return new Ast.BindingPattern(name);
@@ -3080,7 +3160,7 @@ public final class Parser {
     private static boolean isMemberNameToken(Token.Type type) {
         return switch (type) {
             case IDENT,
-                    DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
+                    DEFINE, CLASS, ENUM, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
                     NEW, SPAWN, STOP, DONE, AWAIT, ASYNC, NLEX, TRAP, NB, SELECT, READCH, WRITECH, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, EQ, NEQ, IS, WHEN, CASE, DEFAULT, FIRST, CB, UNTRUSTED, TYPE, TYPES, TYPEOF,
                     INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,

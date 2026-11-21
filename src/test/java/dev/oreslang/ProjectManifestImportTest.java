@@ -426,6 +426,83 @@ final class ProjectManifestImportTest {
     }
 
     @Test
+    void equalSpellingAndTagFromDifferentSourceUnitsRemainNominallyDistinct() throws Exception {
+        Path app = temp.resolve("enum-unit-identity");
+        Files.createDirectories(app);
+        Path foreign = app.resolve("foreign.ores");
+        Path main = app.resolve("main.ores");
+
+        Files.writeString(foreign, """
+                define enum TrainingError as
+                    INVALID_INPUT = 1
+                end
+
+                pub fnc foreign_error(): TrainingError {
+                    return TrainingError.INVALID_INPUT();
+                }
+                """);
+
+        Files.writeString(main, """
+                import fnc foreign_error from "./foreign.ores";
+
+                define enum TrainingError as
+                    INVALID_INPUT = 1
+                end
+
+                pub routine main(): void {
+                    stdio.stdout.write(
+                        TrainingError.INVALID_INPUT() == foreign_error());
+                    return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                Map.of(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals("false", out.toString(StandardCharsets.UTF_8),
+                "nominal enum identity must include the defining source unit");
+
+        Path smuggle = app.resolve("smuggle.ores");
+        Files.writeString(smuggle, """
+                import fnc foreign_error from "./foreign.ores";
+
+                define enum TrainingError as
+                    INVALID_INPUT = 1
+                end
+
+                fnc wrapped(): TrainingError {
+                    return foreign_error();
+                }
+
+                pub routine main(): void {
+                    stdio.stdout.write(wrapped());
+                    return;
+                }
+                """);
+
+        PolyglotException mismatch = assertThrows(
+                PolyglotException.class,
+                () -> LinkedProgramRunner.run(
+                        smuggle,
+                        IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(),
+                        Set.of(),
+                        Map.of(),
+                        new ByteArrayOutputStream(),
+                        new ByteArrayOutputStream()));
+        assertTrue(mismatch.getMessage().contains("returned")
+                        && mismatch.getMessage().contains("TrainingError"),
+                mismatch.getMessage());
+    }
+
+    @Test
     void resolvedSelfImportByFilenameCannotBypassActorLexicalBoundary() throws Exception {
         Path app = temp.resolve("actor-self-import");
         Files.createDirectories(app);
