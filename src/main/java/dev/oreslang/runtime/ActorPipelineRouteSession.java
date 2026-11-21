@@ -100,6 +100,12 @@ final class ActorPipelineRouteSession {
         }
         this.generation = generation;
         this.capacity = maxActiveFrames;
+        // Seed every source+generation RR cursor before actor routing begins.
+        // Updating an existing HashMap entry during a turn must not allocate a
+        // first-use selector node; this matches the other native/host backends.
+        for (ActorPipelineRoutePlan.Edge edge : graph.edges()) {
+            roundRobin.putIfAbsent(edge.source(), 0);
+        }
     }
 
     public synchronized long generation() { return generation; }
@@ -130,7 +136,8 @@ final class ActorPipelineRouteSession {
     public synchronized MailFrame forwardRoundRobin(MailFrame current) {
         requireForward(current);
         List<ActorPipelineRoutePlan.Edge> options = graph.forwardAll(current.receiver());
-        int cursor = roundRobin.getOrDefault(current.receiver(), 0);
+        Integer cursor = roundRobin.get(current.receiver());
+        if (cursor == null) throw new IllegalStateException("round-robin cursor missing");
         roundRobin.put(current.receiver(), cursor + 1 == options.size() ? 0 : cursor + 1);
         // Attempt consumes a turn even when subsequent capacity admission fails.
         return child(current, options.get(cursor));
@@ -266,7 +273,7 @@ final class ActorPipelineRouteSession {
             throw new IllegalStateException(
                     "pipeline reconfiguration requires a quiescent message barrier");
         }
-        roundRobin.clear();
+        roundRobin.replaceAll((source, cursor) -> 0);
         generation = successor;
     }
 
@@ -278,7 +285,7 @@ final class ActorPipelineRouteSession {
         validateSuccessor(successor);
         int cancelled = active.size();
         active.clear();
-        roundRobin.clear();
+        roundRobin.replaceAll((source, cursor) -> 0);
         generation = successor;
         return cancelled;
     }
@@ -344,9 +351,14 @@ final class ActorPipelineRouteSession {
 
     private MailFrame newFrame(long flowId, List<String> path) {
         reserveRouteIds(1);
+        // Do not consume route identity until the frame has been published.
+        // IdentityHashMap.put may allocate and fail; an unpublished child must
+        // not advance the VM's routing ledger on that failure path.
+        long candidateRouteId = nextRouteId;
         MailFrame frame = new MailFrame(this, generation, flowId,
-                nextRouteId++, path);
+                candidateRouteId, path);
         active.put(frame, Boolean.TRUE);
+        nextRouteId = candidateRouteId + 1;
         return frame;
     }
 
