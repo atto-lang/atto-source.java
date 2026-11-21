@@ -38,6 +38,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
     private long nextEpoch;
     private boolean closed;
     private boolean publishing;
+    /** close() is still notifying rejected waiters, possibly on blocked host callbacks. */
+    private boolean failingPendingCallbacks;
     private final Runnable retirementWakeup;
     private boolean retirementWakeupDelivered;
 
@@ -65,7 +67,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
 
     private boolean physicallyRetiredLocked() {
         return closed && writer == null && readers.isEmpty()
-                && pending.isEmpty() && completions.isEmpty() && !publishing;
+                && pending.isEmpty() && completions.isEmpty() && !publishing
+                && !failingPendingCallbacks;
     }
 
     private void maybeWakeRetirement() {
@@ -245,6 +248,12 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 else firstFailure.addSuppressed(failure);
             }
         }
+        // A completion callback may close the last loan while publishing is
+        // true. Its local retirement check then correctly sees a publisher
+        // still in flight and declines to wake. Recheck AFTER publishing is
+        // cleared or actor memory can remain pinned forever with no future
+        // event left to perform the retirement handoff.
+        maybeWakeRetirement();
         if (firstFailure != null) {
             if (firstFailure instanceof Error fatal) throw fatal;
             if (firstFailure instanceof RuntimeException failure) throw failure;
@@ -358,13 +367,36 @@ public final class ActorStateRwLoans implements AutoCloseable {
             abandoned = new ArrayDeque<>(pending);
             pending.clear();
             for (Pending waiter : abandoned) reserved.remove(waiter.authority);
+            // Clearing pending is NOT a physical cancellation receipt:
+            // failFromRuntime can synchronously invoke a blocked subscriber.
+            failingPendingCallbacks = !abandoned.isEmpty();
         }
-        for (Pending waiter : abandoned) {
-            waiter.future.failFromRuntime(new IllegalStateException(
-                    "actor state RW loans closed"));
+        Throwable firstFailure = null;
+        try {
+            for (Pending waiter : abandoned) {
+                try {
+                    waiter.future.failFromRuntime(new IllegalStateException(
+                            "actor state RW loans closed"));
+                } catch (Throwable callbackFailure) {
+                    if (firstFailure == null) firstFailure = callbackFailure;
+                    else firstFailure.addSuppressed(callbackFailure);
+                }
+            }
+        } finally {
+            synchronized (monitor) {
+                failingPendingCallbacks = false;
+            }
+            // Publication must physically quiesce before notifying actor
+            // finalization; even throwing completion callbacks cannot skip it.
+            maybeWakeRetirement();
+        }
+        if (firstFailure instanceof Error fatal) throw fatal;
+        if (firstFailure instanceof RuntimeException failure) throw failure;
+        if (firstFailure != null) {
+            throw new IllegalStateException(
+                    "state RW close completion failed", firstFailure);
         }
         // Active loans remain physically held until handler cleanup closes them;
         // logical close merely fences further state access.
-        maybeWakeRetirement();
     }
 }
