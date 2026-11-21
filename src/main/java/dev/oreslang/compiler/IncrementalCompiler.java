@@ -67,12 +67,22 @@ public final class IncrementalCompiler {
             abiHashes.put(entry.getKey(), abiDigest(program));
         }
 
+        // Namespace conformance is proved across the complete explicit
+        // source-set before any cached unit may be reused.
+        NamespaceContractChecker.validate(parsed);
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
         ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
+        Map<String, Set<String>> importDependencies =
+                ImportGraph.resolveDependencies(
+                        parsed, normalized.keySet(), normalizedImportResolutions);
         Map<String, Set<String>> dependencies =
-                ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
-        List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
+                NamespaceContractChecker.addNamespaceDependencies(parsed, importDependencies);
+        // Namespace peers are compiler ABI invalidation dependencies, NOT
+        // runtime init/import edges. Never let a namespace contract collapse
+        // unrelated source-unit init hooks into an artificial SCC barrier.
+        List<List<String>> initializationGroups =
+                ImportGraph.initializationGroups(importDependencies);
 
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
@@ -118,11 +128,20 @@ public final class IncrementalCompiler {
             Map<String, Ast.InterfaceDecl> contracts = linkedImportedContracts(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
             try {
+                Ast.Program original = Parser.parse(normalized.get(id));
+                // Only the complete source-set validator may discharge this
+                // per-file header obligation. Single-file APIs fail closed.
+                Ast.Program validatedUnit = original.namespaceContracts().isEmpty()
+                        ? original
+                        : new Ast.Program(original.namespace(), original.imports(),
+                                original.modules());
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
-                                Parser.parse(normalized.get(id)),
-                                linked.classes(), linked.aliases(), contracts);
-                checked = analysis.program();
+                                validatedUnit, linked.classes(), linked.aliases(), contracts);
+                checked = original.namespaceContracts().isEmpty()
+                        ? analysis.program()
+                        : new Ast.Program(original.namespace(), original.namespaceContracts(),
+                                analysis.program().imports(), analysis.program().modules());
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.ownershipClasses(), analysis.shortInferredAliases());
             } catch (IllegalArgumentException invalid) {
@@ -288,7 +307,7 @@ public final class IncrementalCompiler {
                 for (Ast.ModuleDecl module : target.modules()) {
                     for (Ast.Decl declaration : module.declarations()) {
                         if (declaration instanceof Ast.InterfaceDecl iface
-                                && iface.moduleContract()
+                                && iface.moduleContract() && !iface.namespaceContract()
                                 && iface.visibility() == Ast.Visibility.PUBLIC
                                 && iface.name().equals(sourceName)) {
                             if (match != null) {
@@ -386,6 +405,10 @@ public final class IncrementalCompiler {
     private static String abiDigest(Ast.Program program) {
         StringBuilder abi = new StringBuilder("ores-abi-v3\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
+        for (String contract : program.namespaceContracts().stream()
+                .map(IncrementalCompiler::typeRef).sorted().toList()) {
+            abi.append(" namespace-conforms ").append(contract).append('\n');
+        }
 
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
@@ -482,9 +505,13 @@ public final class IncrementalCompiler {
             return;
         }
         if (decl instanceof Ast.InterfaceDecl iface) {
-            // Private contracts/traits/interfaces are not part of the imported ABI.
-            if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(iface.moduleContract() ? "contract " : "interface ")
+            // Namespace conformance is a package-wide ABI obligation even
+            // when the contract declaration is private to its namespace.
+            // Ordinary private interfaces and module contracts stay private.
+            if (iface.visibility() != Ast.Visibility.PUBLIC
+                    && !iface.namespaceContract()) return;
+            abi.append(iface.namespaceContract() ? "namespace-contract "
+                    : iface.moduleContract() ? "contract " : "interface ")
                     .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");

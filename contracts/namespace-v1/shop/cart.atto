@@ -1,0 +1,3 @@
+// The public actor witness may be in another source file.
+namespace shop;
+pub define actor Cart;

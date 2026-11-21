@@ -209,6 +209,10 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        if (!program.namespaceContracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "namespace contract conformance requires a complete, validated multi-file compilation");
+        }
         rejectUnloweredCheckedEffects(program);
         program = AnnotationExpander.expand(program);
         // Expansion can synthesize declarations; recheck before type or
@@ -254,6 +258,10 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        if (!program.namespaceContracts().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "namespace contract conformance requires a complete, validated multi-file compilation");
+        }
         rejectUnloweredCheckedEffects(program);
         for (Ast.ClassDecl linked : linkedClasses.values()) {
             rejectUnloweredCheckedClassEffects(linked);
@@ -273,7 +281,7 @@ public final class TypeChecker {
             String localName = entry.getKey();
             Ast.InterfaceDecl declaration = entry.getValue();
             if (localName == null || localName.isBlank() || declaration == null
-                    || !declaration.moduleContract()
+                    || !declaration.moduleContract() || declaration.namespaceContract()
                     || declaration.visibility() != Ast.Visibility.PUBLIC
                     || !declaration.parents().isEmpty()) {
                 throw new IllegalArgumentException("invalid linked module contract metadata");
@@ -605,8 +613,11 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("module '" + module.name() + "' lists contract '" + ref.name() + "' more than once");
             }
             Ast.InterfaceDecl contract = findInterface(ref.name());
-            if (contract == null || !contract.moduleContract()) {
-                throw new IllegalArgumentException("unknown module contract '" + ref.name() + "'");
+            if (contract == null || !contract.moduleContract()
+                    || contract.namespaceContract()) {
+                throw new IllegalArgumentException(
+                        "unknown module contract '" + ref.name()
+                                + "'; namespace contracts cannot be used by modules");
             }
             Type resolvedRef = resolveModuleContractRef(ref, contract);
             if (!(resolvedRef instanceof Named namedRef)) {

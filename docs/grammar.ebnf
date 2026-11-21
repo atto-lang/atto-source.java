@@ -1,7 +1,11 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
 source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
-namespace_decl  = "namespace" IDENT ";" ;
+namespace_decl  = "namespace" IDENT
+                  [ "conforms" type_ref { "," type_ref } ] ";" ;
+(* One namespace conformance header per complete package source-set.
+   Sibling source units use 'namespace IDENT;' without conformance.
+   This does not search directories or confer implicit cross-file imports. *)
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
@@ -116,7 +120,11 @@ static_function_decl
                   "(" [ param_list ] ")" return_spec block ;
 
 contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
+                  [ "for" "namespace" ]
                   [ "extends" type_ref { "," type_ref } ] module_contract_body ;
+(* A 'for namespace' contract is file-root-only and distinct from a module
+   contract. The first linked slice supports only non-generic, non-inherited
+   public actor/fnc requirements; other requirements fail closed. *)
 module_contract_body = "{" { module_contract_member } "}"
                      | { module_contract_member } "end" ;
 module_contract_member = interface_member

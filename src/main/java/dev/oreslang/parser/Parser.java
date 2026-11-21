@@ -118,9 +118,16 @@ public final class Parser {
             }
         }
         String namespace = null;
+        List<Ast.TypeRef> namespaceContracts = List.of();
         if (match(NAMESPACE)) {
             namespace = consume(IDENT, "expected flat namespace name").lexeme();
             if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
+            if (match(CONFORMS)) {
+                namespaceContracts = List.copyOf(parseTypeRefList());
+                if (namespaceContracts.isEmpty()) {
+                    throw error(peek(), "namespace conformance requires a contract");
+                }
+            }
             consume(SEMICOLON, "namespace declaration must end with ';'");
         }
 
@@ -251,8 +258,10 @@ public final class Parser {
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), List.of(), rootDeclarations));
         }
-        if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
-        return new Ast.Program(namespace, imports, modules);
+        if (modules.isEmpty() && namespaceContracts.isEmpty()) {
+            throw error(peek(), "a source file must define at least one module or top-level declaration");
+        }
+        return new Ast.Program(namespace, namespaceContracts, imports, modules);
     }
 
     private Ast.ImportDecl parseImport() {
@@ -1277,8 +1286,12 @@ public final class Parser {
     }
 
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
-        Ast.InterfaceDecl iface = parseInterface(visibility, true);
-        return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
+        Ast.InterfaceDecl contract = parseInterface(visibility, true);
+        if (contract.namespaceContract() && moduleForwards != null) {
+            throw error(previous(),
+                    "'for namespace' contracts must be declared at file root, not inside a module");
+        }
+        return contract;
     }
 
     private Ast.InterfaceDecl parseDefinedInterface(Ast.Visibility visibility, Token.Type kind) {
@@ -1292,6 +1305,11 @@ public final class Parser {
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
         String name = consumeTypeDeclarationName("expected interface name");
         List<String> generics = parseGenericParameters();
+        boolean namespaceContract = false;
+        if (moduleContract && match(FOR)) {
+            consume(NAMESPACE, "contract target must be 'namespace'");
+            namespaceContract = true;
+        }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
@@ -1416,7 +1434,8 @@ public final class Parser {
         }
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
-        return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+        return new Ast.InterfaceDecl(name, visibility, generics, parents, members,
+                moduleContract, namespaceContract);
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {

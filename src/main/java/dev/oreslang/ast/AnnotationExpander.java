@@ -32,7 +32,7 @@ public final class AnnotationExpander {
     public static Ast.Program expand(Ast.Program program) {
         List<Ast.ModuleDecl> modules = new ArrayList<>(program.modules().size());
         for (Ast.ModuleDecl module : program.modules()) modules.add(expandModule(module));
-        return new Ast.Program(program.namespace(), program.imports(), modules);
+        return new Ast.Program(program.namespace(), program.namespaceContracts(), program.imports(), modules);
     }
 
     public static boolean isGeneratedFromJsonSetter(Ast.MethodDecl method) {

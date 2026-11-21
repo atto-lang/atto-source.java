@@ -25,13 +25,26 @@ public final class Ast {
         return name;
     }
 
-    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+    public record Program(String namespace, List<TypeRef> namespaceContracts,
+                          List<ImportDecl> imports, List<ModuleDecl> modules) {
         public Program {
+            namespaceContracts = List.copyOf(namespaceContracts);
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
+            if (!namespaceContracts.isEmpty() && (namespace == null || namespace.isBlank())) {
+                throw new IllegalArgumentException("namespace contract requires an explicit namespace");
+            }
         }
-        public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
-        public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
+        /** Compatibility for existing parser, linker, compiler and host callers. */
+        public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(namespace, List.of(), imports, modules);
+        }
+        public Program(List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(null, List.of(), imports, modules);
+        }
+        public Program(List<ModuleDecl> modules) {
+            this(null, List.of(), List.of(), modules);
+        }
     }
 
     public enum ImportKind { MODULE, ACTOR, CLASS, FUNCTION, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES, ALL }
@@ -657,11 +670,21 @@ public final class Ast {
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members,
-            boolean moduleContract) implements Decl {
+            boolean moduleContract,
+            boolean namespaceContract) implements Decl {
         public InterfaceDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
+            if (namespaceContract && !moduleContract) {
+                throw new IllegalArgumentException("namespace contracts are contract declarations, not nominal interfaces");
+            }
+        }
+        /** Compatibility for existing interface/module contract producers. */
+        public InterfaceDecl(String name, Visibility visibility, List<String> genericParameters,
+                             List<TypeRef> parents, List<InterfaceMember> members,
+                             boolean moduleContract) {
+            this(name, visibility, genericParameters, parents, members, moduleContract, false);
         }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
             this(name, Visibility.PRIVATE, genericParameters, List.of(), members, false);
