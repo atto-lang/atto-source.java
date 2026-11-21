@@ -10,9 +10,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -116,7 +120,8 @@ final class SourceActorPubSubExecutionTest {
         // immutable scalar. It is NOT portable atomic try_publish verification.
         assertEquals(
                 "subscribed|p-1",
-                run(fixture("actor-pubsub-share-bang-v1.atto"),
+                run(pinnedFixture("actor-pubsub-share-bang-v1.atto",
+                        "00f311e2f569cf66009ba533282b63d35571853f"),
                         "source-pubsub-share-bang-v1.atto"));
     }
 
@@ -213,7 +218,8 @@ final class SourceActorPubSubExecutionTest {
 
     @Test
     void shareBangPortableTryPublishIsRejectedBeforeGuestExecution() throws Exception {
-        String source = fixture("actor-pubsub-reject-unlowered-share-bang-try-publish.atto");
+        String source = pinnedFixture("actor-pubsub-reject-unlowered-share-bang-try-publish.atto",
+                "d26c291c7af7fbdc8361de0cf26e9572fe6ce3b7");
         Parser.parse(source);
         IllegalArgumentException denied = assertThrows(
                 IllegalArgumentException.class,
@@ -375,6 +381,29 @@ final class SourceActorPubSubExecutionTest {
                         fixture("actor-pubsub-reject-nested-callable-topic.ores"),
                         "source-pubsub-nested-callable-topic-rejected.ores"));
         assertTrue(error.getMessage().contains("Topic payload"), error.getMessage());
+    }
+
+    /**
+     * Pin new share! fixtures to reviewed Git blob IDs before handing their
+     * source to the parser or Truffle guest. A zero-step runner is still NOT_EXECUTED.
+     */
+    private static String pinnedFixture(String name, String expectedSha) throws Exception {
+        Path file = Path.of("contracts", "v1", "fixtures", name);
+        for (Path component = file; component != null; component = component.getParent()) {
+            assertFalse(Files.isSymbolicLink(component),
+                    "pubsub guest fixture path contains symlink: " + component);
+        }
+        byte[] bytes;
+        try (InputStream stream = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+            bytes = stream.readNBytes(8193);
+        }
+        assertTrue(bytes.length > 0 && bytes.length <= 8192,
+                "pubsub guest fixture must be bounded: " + name);
+        MessageDigest digest = MessageDigest.getInstance("SHA-1");
+        digest.update(("blob " + bytes.length + "\0").getBytes(StandardCharsets.US_ASCII));
+        assertEquals(expectedSha, HexFormat.of().formatHex(digest.digest(bytes)),
+                "pubsub guest fixture bytes drifted: " + name);
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     private static String fixture(String name) throws Exception {
