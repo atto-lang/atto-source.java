@@ -1,0 +1,120 @@
+name: DOP inverted two-i64 exact-head Java HOST reference
+on:
+  pull_request:
+    paths:
+      - 'contracts/dop-inverted-v1/*.atto'
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/compiler/DopInvertedScalarCompilerV1.java'
+      - 'src/main/java/dev/oreslang/compiler/InvertedSchemaStorageBridge.java'
+      - 'src/test/java/dev/oreslang/**/*DopInverted*.java'
+      - 'src/test/java/dev/oreslang/compiler/InvertedSchemaStorageBridgeTest.java'
+      - '.github/workflows/dop-inverted-i64-source-reference.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  dop-java-host-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Admit only source-owned pull requests or manual source-owned runs
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_REPO: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          EXPECTED_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" == pull_request || "$EVENT_NAME" == workflow_dispatch ]]
+          test "$EXPECTED_REPO" = ores-truffle-oreslang/oreslang-source.java
+          test "$SOURCE_REPO" = "$EXPECTED_REPO"
+          echo DOP_JAVA_SOURCE_ORG_ONLY=true
+      - name: Checkout immutable PR HEAD
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify exact source HEAD and tree before any JUnit
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git ls-files --others --exclude-standard)"
+          git diff --quiet --exit-code
+          printf 'DOP_JAVA_SOURCE_HEAD=%s\nDOP_JAVA_SOURCE_TREE=%s\nDOP_RUN_ID=%s\nDOP_RUN_ATTEMPT=%s\n' \
+            "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')" \
+            "$EXPECTED_RUN_ID" "$EXPECTED_RUN_ATTEMPT"
+      - name: Install pinned GraalVM Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run restricted source-parser and SoA host-reference JUnit suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          java --version
+          mvn -B -ntp \
+            -DfailIfNoTests=true \
+            -Dtest=DopInvertedGuestAdmissionTest,InvertedSchemaStorageBridgeTest,DopInvertedScalarCompilerV1Test,DopInvertedScalarAdmissionHardeningTest,DopInvertedScalarStateMachineTest \
+            test
+      - name: Verify complete five-class executed JUnit XML inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+
+          required = {
+              "DopInvertedGuestAdmissionTest",
+              "InvertedSchemaStorageBridgeTest",
+              "DopInvertedScalarCompilerV1Test",
+              "DopInvertedScalarAdmissionHardeningTest",
+              "DopInvertedScalarStateMachineTest",
+          }
+          reports = sorted(Path("target/surefire-reports").glob("TEST-*.xml"))
+          if not reports:
+              raise SystemExit("DOP_JAVA_JUNIT_NO_EXECUTED_REPORTS")
+          observed = set()
+          cases = 0
+          for report in reports:
+              raw = report.read_bytes()
+              if len(raw) > 1024 * 1024 or b"<!DOCTYPE" in raw:
+                  raise SystemExit("DOP_JAVA_JUNIT_UNSAFE_REPORT")
+              root = ET.fromstring(raw)
+              suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+              if not suites:
+                  raise SystemExit("DOP_JAVA_JUNIT_INVALID_SUITE")
+              for suite in suites:
+                  for testcase in suite.findall("testcase"):
+                      full_name = testcase.get("classname", "")
+                      if not full_name or not testcase.get("name"):
+                          raise SystemExit("DOP_JAVA_JUNIT_MISSING_IDENTITY")
+                      if testcase.find("failure") is not None or (
+                              testcase.find("error") is not None or
+                              testcase.find("skipped") is not None):
+                          raise SystemExit("DOP_JAVA_JUNIT_FAILED_OR_SKIPPED")
+                      observed.add(full_name.rsplit(".", 1)[-1])
+                      cases += 1
+          missing = sorted(required - observed)
+          if missing or cases < len(required):
+              raise SystemExit("DOP_JAVA_JUNIT_MISSING_REQUIRED_CASES:" + ",".join(missing))
+          print(f"DOP_JAVA_JUNIT_EXECUTED_CLASSES={len(required)}")
+          print(f"DOP_JAVA_JUNIT_EXECUTED_CASES={cases}")
+          PY
+      - name: Record evidence class after the JUnit process actually ran
+        run: |
+          echo DOP_JAVA_COMPILER_TYPED_HOST_REFERENCE_TESTED=true
+          echo DOP_TRUFFLE_GUEST_NATIVE_IMAGE_EXECUTION=NOT_TESTED
+          echo DOP_TWO_BACKEND_GUEST_PARITY=NOT_TESTED
+          echo DOP_MERGE_OR_RELEASE_AUTHORIZATION=NOT_GRANTED
