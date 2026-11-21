@@ -13,6 +13,9 @@ import java.util.Set;
  * replaced by interprocedural typed effect inference in the shared IR.
  */
 public final class DeclaredEffectVerifier {
+    private static final ThreadLocal<Set<String>> ENUM_NAMES =
+            ThreadLocal.withInitial(Set::of);
+
     private static final Set<String> ML_SCALAR_INTRINSICS = Set.of(
             "state_snapshot",
             "snapshot_int",
@@ -26,6 +29,19 @@ public final class DeclaredEffectVerifier {
     private DeclaredEffectVerifier() { }
 
     public static void verify(Ast.Program program) {
+        java.util.LinkedHashSet<String> enumNames = new java.util.LinkedHashSet<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.EnumDecl enumeration) {
+                    enumNames.add(enumeration.name());
+                    if (!module.name().equals(dev.oreslang.parser.Parser.ROOT_MODULE)) {
+                        enumNames.add(module.name() + "." + enumeration.name());
+                    }
+                }
+            }
+        }
+        ENUM_NAMES.set(Set.copyOf(enumNames));
+        try {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
@@ -55,6 +71,9 @@ public final class DeclaredEffectVerifier {
                     }
                 }
             }
+        }
+        } finally {
+            ENUM_NAMES.remove();
         }
     }
 
@@ -214,6 +233,19 @@ public final class DeclaredEffectVerifier {
                             "read-only handle_state cannot write state, regardless of declared with effects");
                 }
                 effects.addAll(callbackEffects);
+                return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr enumCall
+                    && enumCall.receiver() instanceof Ast.NameExpr enumName
+                    && ENUM_NAMES.get().contains(enumName.name())) {
+                collect(call.arguments(), effects, stateAccess, callableName, serial);
+                return;
+            }
+            if (call.callee() instanceof Ast.NameExpr sumConstructor
+                    && (sumConstructor.name().equals("Some")
+                            || sumConstructor.name().equals("Ok")
+                            || sumConstructor.name().equals("Err"))) {
+                collect(call.arguments(), effects, stateAccess, callableName, serial);
                 return;
             }
             if (call.callee() instanceof Ast.NameExpr intrinsic) {
