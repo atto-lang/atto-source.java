@@ -42,6 +42,47 @@ end
   defined receiver methods. The existing class-like actor declaration remains
   the executable definition.
 
+## Implemented in stacked Java stage two (draft / unexecuted)
+
+The static module contract may also require a method on its named actor:
+
+```atto
+define contract CartModule as
+  actor Cart;
+  pub mtd get_count(Cart cart)(): int;
+end
+
+define module carts conforms CartModule as
+  pub define actor Cart as
+    pub get_count(): int { return 1; }
+  end
+end
+```
+
+The first parenthesis names a **non-generic nominal actor**, not a value
+argument or a transferable receiver token. The second parenthesis contains
+method parameters. The checker requires an existing method declared within
+the matching public non-generic actor, an exact name+arity slot, matching
+argument/return types, and public visibility when specified. Duplicate
+contract receiver slots of the same actor/name/arity are rejected (argument
+types cannot overload the same slot). Inherited contract actor requirements
+are usable without repeating `actor Cart;`. This does **not** mint an
+`ActorContext<Cart>` or any state-loan authority and does not let module
+functions invoke actor methods without the mailbox. Stage two rejects
+unproven generic contract substitution, borrowed receiver types,
+structural method arguments, and checked actor effects.
+
+Runtime-only lifecycle/control names such as `tear_down`,
+`on_panic`, `on_restart`, and compiler-owned `handle_state` cannot be
+declared as ordinary receiver-method requirements. The module must not
+turn a supervisor/control operation into a user-invokable mailbox API.
+Likewise, an ordinary module `fnc` with the same name does not satisfy
+a receiver requirement.
+
+The Java frontend and linked/export ABI paths are changed; the corpus in
+`contracts/actor-receiver-v1/` and JUnit source tests are **UNEXECUTED**.
+Backend support, real guest execution, and parity remain unverified.
+
 ## Proposed next stage: standalone actors and receiver methods
 
 The intended surface grammar is:

@@ -113,10 +113,17 @@ contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
 module_contract_body = "{" { module_contract_member } "}"
                      | { module_contract_member } "end" ;
 module_contract_member = interface_member
-                       | "actor" IDENT member_terminator ;
-(* Stage 1: 'actor IDENT;' requires a public nominal actor declaration in
-   the conforming module. External 'mtd(Actor receiver)' implementations and
-   per-actor method requirements are NOT yet part of this grammar. *)
+                       | "actor" IDENT member_terminator
+                       | [ visibility ] "mtd" IDENT "(" type_ref IDENT ")"
+                         "(" [ param_list ] ")" [ (":" | "=>") type_ref ]
+                         member_terminator ;
+(* Stage 1: 'actor IDENT;' requires a public nominal actor declaration.
+   Stage 2: 'pub mtd f(Actor a)(Args...): T;' requires an existing
+   mailbox-dispatched actor method with an exact signature and visibility.
+   No external executable 'define mtd' declarations, standalone actor alias,
+   runtime witness, or actor-state capability is introduced by this rule.
+   Stage 2 currently rejects checked effects, generic receiver types,
+   structural arguments, and generic contracts with receiver requirements. *)
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]

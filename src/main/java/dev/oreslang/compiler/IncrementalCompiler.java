@@ -349,6 +349,13 @@ public final class IncrementalCompiler {
                 }
                 validatePortableContractType(
                         fn.returnType(), generics, targetId, contract.name() + "." + fn.name());
+            } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                for (Ast.Param param : method.parameters()) {
+                    validatePortableContractType(param.type(), contractGenerics, targetId,
+                            contract.name() + "." + method.actorName() + "." + method.name());
+                }
+                validatePortableContractType(method.returnType(), contractGenerics, targetId,
+                        contract.name() + "." + method.actorName() + "." + method.name());
             }
         }
     }
@@ -485,6 +492,14 @@ public final class IncrementalCompiler {
                     // A required nominal actor is contract ABI even though it
                     // contributes no ordinary module-value member.
                     memberEntries.add(" contract-actor " + actor.name() + "\n");
+                } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                    StringBuilder signature = new StringBuilder(" contract-actor-mtd ");
+                    signature.append(method.visibility()).append(' ')
+                            .append(method.actorName()).append('.').append(method.name())
+                            .append("#arity").append(method.parameters().size());
+                    appendParams(signature, method.parameters());
+                    signature.append("=>").append(typeRef(method.returnType())).append('\n');
+                    memberEntries.add(signature.toString());
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
                     String requirement = iface.moduleContract()
                             ? (field.bindingKind() == null ? "readable"

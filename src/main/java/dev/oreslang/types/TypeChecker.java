@@ -664,6 +664,71 @@ public final class TypeChecker {
                 }
                 continue;
             }
+            if (member instanceof Ast.InterfaceActorMethodDecl required) {
+                // Static witness checking only. No implicit receiver body or
+                // actor-state capability can be materialized by this contract.
+                Ast.ClassDecl receiver = null;
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.ClassDecl klass
+                            && klass.name().equals(required.actorName())) {
+                        receiver = klass;
+                        break;
+                    }
+                }
+                if (receiver == null || receiver.actorKind() == Ast.ActorKind.NONE
+                        || receiver.visibility() != Ast.Visibility.PUBLIC
+                        || !receiver.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "module '" + module.name() + "' is missing required public non-generic actor '"
+                                    + required.actorName() + "' for receiver method '"
+                                    + required.name() + "'");
+                }
+                Ast.MethodDecl implementation = null;
+                for (Ast.MethodDecl method : receiver.methods()) {
+                    if (!method.isStatic() && method.name().equals(required.name())
+                            && method.arity() == required.parameters().size()) {
+                        implementation = method;
+                        break;
+                    }
+                }
+                if (implementation == null || implementation.isAbstract()) {
+                    throw new IllegalArgumentException(
+                            "actor '" + receiver.name() + "' is missing required receiver method '"
+                                    + required.name() + "' of arity " + required.parameters().size());
+                }
+                if (required.visibility() == Ast.Visibility.PUBLIC
+                        && implementation.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "actor '" + receiver.name() + "." + required.name()
+                                    + "' must be public to satisfy its receiver contract");
+                }
+                if (implementation.async() || implementation.suspends()
+                        || !implementation.genericParameters().isEmpty()
+                        || !implementation.effects().isEmpty()
+                        || implementation.structural()) {
+                    throw new IllegalArgumentException(
+                            "actor '" + receiver.name() + "." + required.name()
+                                    + "' has unsupported receiver method effects or generics");
+                }
+                for (int index = 0; index < required.parameters().size(); index++) {
+                    Ast.Param expectedParam = required.parameters().get(index);
+                    Ast.Param actualParam = implementation.parameters().get(index);
+                    if (actualParam.structural() || expectedParam.mutable() != actualParam.mutable()
+                            || !resolve(expectedParam.type(), Set.of(), null)
+                                    .equals(resolve(actualParam.type(), Set.of(), null))) {
+                        throw new IllegalArgumentException(
+                                "actor '" + receiver.name() + "." + required.name()
+                                        + "' has incompatible parameter " + (index + 1));
+                    }
+                }
+                if (!resolve(required.returnType(), Set.of(), null)
+                        .equals(resolve(implementation.returnType(), Set.of(), null))) {
+                    throw new IllegalArgumentException(
+                            "actor '" + receiver.name() + "." + required.name()
+                                    + "' has incompatible receiver contract return type");
+                }
+                continue;
+            }
             if (!(member instanceof Ast.InterfaceFieldDecl required)) continue;
             Ast.FieldDecl actual = actualFields.get(required.name());
             if (actual == null) {
@@ -798,6 +863,46 @@ public final class TypeChecker {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
+            } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                if (!iface.moduleContract()) {
+                    throw new IllegalArgumentException("receiver requirements are permitted only in module contracts");
+                }
+                if (!generics.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "generic module contract receiver methods require type-substitution witness lowering");
+                }
+                // These names are runtime/control-plane hooks or compiler-owned
+                // intrinsics. Matching a source method may not establish a
+                // mailbox-callable user API or grant supervisor authority.
+                if (Set.of("tear_down", "handle_state", "on_panic", "on_throw",
+                        "on_throws", "on_raise", "on_recover", "on_start",
+                        "on_stop", "on_restart").contains(method.name())) {
+                    throw new IllegalArgumentException(
+                            "reserved actor lifecycle/control hook '" + method.name()
+                                    + "' is not a mailbox receiver contract method");
+                }
+                Set<String> declaredActors = new LinkedHashSet<>();
+                collectModuleContractActorNames(iface, declaredActors, new LinkedHashSet<>());
+                if (!declaredActors.contains(method.actorName())) {
+                    throw new IllegalArgumentException(
+                            "receiver method '" + method.name() + "' refers to unrequired actor '"
+                                    + method.actorName() + "'; declare actor " + method.actorName() + ";");
+                }
+                String key = "actor-mtd:" + method.actorName() + ":" + method.name()
+                        + "#" + method.parameters().size();
+                if (!memberKeys.add(key)) {
+                    throw new IllegalArgumentException(
+                            "duplicate contract receiver method slot '" + method.actorName()
+                                    + "." + method.name() + "' with arity " + method.parameters().size());
+                }
+                for (Ast.Param param : method.parameters()) {
+                    if (param.structural()) {
+                        throw new IllegalArgumentException(
+                                "structural argument cannot cross an actor receiver boundary");
+                    }
+                    resolveParam(param, generics, null);
+                }
+                resolve(method.returnType(), generics, null);
             } else if (member instanceof Ast.InterfaceActorDecl actor) {
                 if (!iface.moduleContract()) {
                     throw new IllegalArgumentException("nominal interfaces cannot require actor declarations");
