@@ -577,6 +577,9 @@ public final class OresEvalRootNode extends RootNode {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
             }
             OresObject object = new OresObject(this, klass, fields);
+            // Bind sealed state to this specific authenticated actor
+            // incarnation before any field initializer or on_start runs.
+            object.actorOwnerId = actorContext.self().id();
 
             // Field initializers are actor-local state construction. They run
             // only after ActorRuntime has installed this actor's execution
@@ -11029,6 +11032,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private static ActorStateLoanView open(OresObject object, boolean writable) {
+            requireActorOwnership(object);
             LinkedHashSet<String> fields = new LinkedHashSet<>();
             for (Ast.FieldDecl field : object.klass.fields()) {
                 if (isActorStateSchemaField(field)) fields.add(field.name());
@@ -11036,11 +11040,25 @@ public final class OresEvalRootNode extends RootNode {
             return new ActorStateLoanView(object, fields, writable);
         }
 
+        private static void requireActorOwnership(OresObject object) {
+            ActorRuntime.ActorId ownerId = object.actorOwnerId;
+            ActorRuntime activeRuntime = ActorRuntime.currentActorRuntime();
+            if (ownerId == null || activeRuntime == null || object.owner == null
+                    || activeRuntime != object.owner.context.actors()
+                    || !ownerId.equals(ActorRuntime.currentActorId().orElse(null))) {
+                throw new SecurityException(
+                        "sealed actor state requires the owning admitted actor incarnation");
+            }
+        }
+
         private void requireActive() {
             if (!active) {
                 throw new IllegalStateException(
                         "actor state loan escaped its self.handle_state callback");
             }
+            // Never reuse a lexical view from another actor, physical carrier,
+            // hot-reload incarnation or supervisor callback.
+            requireActorOwnership(object);
         }
 
         private Ast.FieldDecl requireField(String name) {
@@ -11109,6 +11127,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
+        /** Set only when ActorRuntime initializes one owning actor incarnation. */
+        private ActorRuntime.ActorId actorOwnerId;
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
             this.klass = klass;
