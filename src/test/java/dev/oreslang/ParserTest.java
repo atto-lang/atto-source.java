@@ -993,8 +993,8 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak(): &mut Account {
-                        return &mut self;
+                      pub fnc leak(): borrow mut Account {
+                        return rt mut borrow self;
                       }
                     }
                     """));
@@ -1006,8 +1006,8 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak(): &mut Account {
-                        val alias = &mut self;
+                      pub fnc leak(): borrow mut Account {
+                        val alias = rt mut borrow self;
                         return alias;
                       }
                     }
@@ -1046,7 +1046,7 @@ final class ParserTest {
 
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    fnc inspect(&Account account): int {
+                    fnc inspect(borrow Account account): int {
                       return 1;
                     }
 
@@ -1054,7 +1054,7 @@ final class ParserTest {
                       let balance = 100;
 
                       pub fnc inspectSelf(): int {
-                        return inspect(&self);
+                        return inspect(rt borrow self);
                       }
                     }
                     """));
@@ -1306,6 +1306,93 @@ final class ParserTest {
             assertTrue(
                     failure.getMessage().contains("no implicit CPU fallback"),
                     failure::toString);
+        }
+    }
+
+    @Test
+    void acceptsCanonicalRtMutBorrowSyntax() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = rt mut borrow value;
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void rejectsPointerSigilsAndLegacyMutableBorrowSyntaxAtParseTime() {
+        List<String> invalid = List.of(
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = &value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = &mut value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val invalid = *value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(int* value): void {
+                  return;
+                }
+                """,
+                """
+                pub fnc leak(borrow Account account): &Account {
+                  return account;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val loan = rt borrow mut value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = 1;
+                  val pointer = rt ref value;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = rt deref pointer;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(): void {
+                  val value = rt unref pointer;
+                  return;
+                }
+                """,
+                """
+                pub fnc main(Pointer<int> pointer): void {
+                  return;
+                }
+                """,
+                """
+                pub fnc main(RawPointer<int> pointer): void {
+                  return;
+                }
+                """
+        );
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source));
         }
     }
 

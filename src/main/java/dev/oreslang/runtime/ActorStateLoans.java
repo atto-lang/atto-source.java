@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -41,6 +42,37 @@ public final class ActorStateLoans implements AutoCloseable {
     }
 
     /**
+     * Immediate, non-queueing admission for a try-critical region. A contended
+     * guard returns empty without adding a waiter, retaining handler identity,
+     * or bypassing an earlier FIFO waiter. Logical ownership follows the
+     * supplied handler identity rather than the current carrier thread.
+     *
+     * This is an internal runtime primitive, NOT source-level critical{}
+     * lowering. The compiler must still prove no suspension inside its body.
+     */
+    public Optional<ExclusiveLoan> tryAcquire(Object handlerIdentity) {
+        Objects.requireNonNull(handlerIdentity, "handlerIdentity");
+        synchronized (monitor) {
+            if (closed) throw new IllegalStateException("actor state loans closed");
+            if (owners.contains(handlerIdentity)) {
+                throw new IllegalStateException(
+                        "handler already holds or awaits a state loan");
+            }
+            if (active != null || !pending.isEmpty()) return Optional.empty();
+            // Never reserve an identity or enqueue on the losing path.
+            if (nextEpoch == Long.MAX_VALUE)
+                throw new IllegalStateException("actor state loan epochs exhausted");
+            owners.add(handlerIdentity);
+            try {
+                return Optional.of(createLocked(handlerIdentity));
+            } catch (RuntimeException | Error failure) {
+                owners.remove(handlerIdentity);
+                throw failure;
+            }
+        }
+    }
+
+    /**
      * Runtime supplies a unique identity for each logical handler. Re-entry
      * by the same handler is rejected rather than self-deadlocking.
      */
@@ -56,9 +88,14 @@ public final class ActorStateLoans implements AutoCloseable {
                 try {
                     ExclusiveLoan loan = createLocked(handlerIdentity);
                     return OresFuture.completed(loan);
-                } catch (RuntimeException | Error failure) {
+                } catch (RuntimeException failure) {
+                    // Epoch exhaustion is an expected admission failure, not
+                    // a synchronous exception from this async API.
                     owners.remove(handlerIdentity);
-                    throw failure;
+                    return OresFuture.failed(failure);
+                } catch (Error fatal) {
+                    owners.remove(handlerIdentity);
+                    throw fatal;
                 }
             }
             if (pending.size() >= maxPending) {
@@ -82,6 +119,20 @@ public final class ActorStateLoans implements AutoCloseable {
 
     private void promoteLocked() {
         if (closed || active != null) return;
+        // Epoch exhaustion is terminal for this arbiter: fail every queued
+        // waiter without throwing out of ExclusiveLoan.close(), which would
+        // otherwise strand owners and bypass the normal completion drain.
+        // Runtime callbacks are scheduled and run by publish() OUTSIDE the
+        // monitor, never inline with grant metadata changes.
+        if (nextEpoch == Long.MAX_VALUE) {
+            while (!pending.isEmpty()) {
+                Pending waiter = pending.removeFirst();
+                owners.remove(waiter.owner);
+                completions.addLast(() -> waiter.future.failFromRuntime(
+                        new IllegalStateException("actor state loan epochs exhausted")));
+            }
+            return;
+        }
         while (!pending.isEmpty()) {
             Pending waiter = pending.removeFirst();
             if (waiter.future.isCancelled()) {
@@ -90,8 +141,28 @@ public final class ActorStateLoans implements AutoCloseable {
             }
             ExclusiveLoan loan = createLocked(waiter.owner);
             completions.addLast(() -> {
-                // The Future may have been cancelled after its queue removal.
-                // A losing grant must release its loan and promote the next.
+                // A queued completion can outlive actor retirement: the
+                // previous loan callback may close its loan and queue this
+                // grant, then the arbiter closes before publication runs.
+                // Do not publish a *known retired* loan as a success.
+                // Recheck outside the monitor before settling the Future;
+                // heldBy() also fences races with close after this check.
+                boolean retired;
+                synchronized (monitor) {
+                    retired = closed;
+                }
+                if (retired) {
+                    try {
+                        waiter.future.failFromRuntime(new IllegalStateException(
+                                "actor state loans closed before queued grant publication"));
+                    } finally {
+                        // The queued grant was already marked active. Release
+                        // it even if a runtime notification callback throws.
+                        loan.close();
+                    }
+                    return;
+                }
+                // A cancellation after dequeue also loses the grant.
                 if (!waiter.future.completeFromRuntime(loan)) loan.close();
             });
             return;

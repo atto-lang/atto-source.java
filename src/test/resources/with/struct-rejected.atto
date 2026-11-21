@@ -1,0 +1,5 @@
+pub routine main(): void {
+    const point = infer struct{x: 1};
+    const next = (rt take point) with {x => 2};
+    return;
+}

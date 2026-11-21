@@ -27,9 +27,9 @@ The built-in `integrate(position, velocity, dt)` executes a dense in-actor
 kernel over every row without per-entity message dispatch.
 `copyColumnInto(field, destination, offset)` offers a bounded allocation-free
 copy into preallocated trusted-host storage. The legacy `snapshotColumn`
-allocates an unmetered detached array and is deprecated for host compatibility;
-it MUST NOT be exposed through guest lowering before quota-owned snapshot
-handles are implemented (P0 #1531).
+signature remains only as a source-compatibility trap and now fails closed:
+it cannot allocate or return an unmetered detached array. Callers must use
+`snapshotColumnLeased` or `copyColumnInto` (P0 #1531).
 
 The host-only `snapshotColumnLeased(field)` provides that first accounting
 substrate: its immutable `ColumnSnapshot` reads are billed to the producing
@@ -37,9 +37,11 @@ actor's heap policy and to ActorRuntime's aggregate shared budget until
 `close()` or the owner's physical finalization. Closing zeros the backing
 array, clears its reference for GC, and refunds once. Finalization revokes
 every outstanding handle. An out-of-actor trusted host may read/close, but a
-foreign actor turn cannot read, inspect or close the handle. The unmetered
-`snapshotColumn()` compatibility method remains deprecated and must never
-be lowered into guest code. Tests: `ActorShardSnapshotLeaseTest`
+foreign actor turn cannot read, inspect, copy or close the handle.
+`ColumnSnapshot.copyInto` performs a bounds-checked copy into caller-owned
+storage without exposing its backing array. The unmetered `snapshotColumn()`
+compatibility signature throws and must never be lowered into guest code.
+Tests: `ActorShardSnapshotLeaseTest`
 (1000 retained snapshots, quota refunds, cross-actor denial and actor stop).
 No general source-language or cross-domain capability is provided.
 

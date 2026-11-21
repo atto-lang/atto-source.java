@@ -1,0 +1,35 @@
+// Compiler admission and formatter round-trip fixture for return-type-first callables.
+// Both <- and • are equivalent declaration markers; end, end. and end; close
+// their explicit begin blocks. Legacy fnc methods remain compiler-compatible,
+// but the formatter changes their marker to mtd.
+int <- foo()
+begin
+  return 42;
+end.
+
+int• bar()
+begin
+  return 42;
+end.
+
+fnc int <- baz()
+begin
+  return 42;
+end;
+
+fnc int• qux()
+begin
+  return 42;
+end
+
+define class ReturnFirst as
+  fnc int <- legacy_method()
+  begin
+    return 42;
+  end.
+
+  mtd int• canonical_method()
+  begin
+    return 42;
+  end;
+end
