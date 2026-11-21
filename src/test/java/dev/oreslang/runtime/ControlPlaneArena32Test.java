@@ -26,6 +26,32 @@ public final class ControlPlaneArena32Test {
             check(a.readI64(parent, 8) == Long.MIN_VALUE, "128-bit payload (two i64 limbs)");
             a.writeRef32(parent, child);
             check(a.readRef32(parent) == child, "checked four-byte child Ref32");
+            // The result is host JVM-hotpath evidence ONLY, not Atto compiled guest proof.
+            // Warm before reading the allocating-thread counter, keeping diagnostics outside.
+            for (int i = 0; i < 16_384; i++) {
+                a.writeI64(parent, 0, i);
+                if (a.readI64(parent, 0) != i) throw new AssertionError("warmup mismatch");
+            }
+            var bean = java.lang.management.ManagementFactory.getThreadMXBean();
+            if (bean instanceof com.sun.management.ThreadMXBean measured
+                    && measured.isThreadAllocatedMemorySupported()) {
+                if (!measured.isThreadAllocatedMemoryEnabled())
+                    measured.setThreadAllocatedMemoryEnabled(true);
+                long thread = Thread.currentThread().threadId();
+                long before = measured.getThreadAllocatedBytes(thread);
+                for (int i = 0; i < 16_384; i++) {
+                    a.writeI64(parent, 0, i);
+                    if (a.readI64(parent, 0) != i)
+                        throw new AssertionError("hotpath read mismatch");
+                }
+                long after = measured.getThreadAllocatedBytes(thread);
+                if (before < 0 || after < before || after - before != 0)
+                    throw new AssertionError("Java control heap managed hotpath allocated "
+                            + (after - before) + " bytes");
+                System.out.println("PASS java control host warmed i64 read/write managed-byte delta=0");
+            } else {
+                System.out.println("NOT_EXECUTED Java control allocation counter unsupported");
+            }
             denied(() -> a.writeI64(parent, 16, 10L)); // field kind mismatch
             denied(a::allocate); // bounded physical metadata and payload quota
             a.drop(child);
