@@ -957,6 +957,17 @@ public final class Parser {
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
     private Ast.Expr parseAssignment() {
+        // Generator yield is deliberately lower-precedence than the ordinary
+        // expression operators so "yield a + b" yields the complete RHS, and
+        // "val reply = yield value" can receive the next(value) payload.
+        if (match(YIELD)) {
+            Token keyword = previous();
+            if (check(SEMICOLON) || isSafeStatementBoundary()) {
+                throw error(keyword, "yield requires a value");
+            }
+            return new Ast.YieldExpr(parseAssignment());
+        }
+
         Ast.Expr expr = parseConditional();
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {

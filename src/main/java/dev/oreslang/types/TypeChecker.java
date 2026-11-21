@@ -30,6 +30,7 @@ import java.util.Set;
 public final class TypeChecker {
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
+    private record GeneratorProtocol(Type yielded, Type returned, Type sent) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -48,6 +49,7 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
+    private GeneratorProtocol currentGenerator;
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -232,6 +234,16 @@ public final class TypeChecker {
                     param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
         Type returns = resolve(fn.returnType(), generics, null);
+        GeneratorProtocol generator = generatorProtocol(returns);
+        if (generator != null && fn.async()) {
+            throw new IllegalArgumentException(
+                    "async generators require a distinct AsyncGenerator contract; use synchronous Generator<...> or async Future<...>");
+        }
+        if (generator != null && fn.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "actor callable '" + module + "." + fn.name()
+                            + "' cannot return a local Generator frame across an actor boundary");
+        }
         if (fn.actorKind() != Ast.ActorKind.NONE) {
             validateActorCallableBoundaryType(
                     returns,
@@ -239,14 +251,18 @@ public final class TypeChecker {
                     true,
                     "return type of actor callable '" + module + "." + fn.name() + "'");
         }
+        Type bodyReturn = generator == null ? returns : generator.returned();
         Ast.ActorKind previousActorKind = currentActorKind;
+        GeneratorProtocol previousGenerator = currentGenerator;
         currentActorKind = fn.actorKind();
+        currentGenerator = generator;
         try {
-            checkBlock(fn.body(), env, generics, returns, null);
+            checkBlock(fn.body(), env, generics, bodyReturn, null);
         } finally {
             currentActorKind = previousActorKind;
+            currentGenerator = previousGenerator;
         }
-        if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
+        if (bodyReturn != Primitive.VOID && !definitelyReturns(fn.body())) {
             throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
         }
         if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
@@ -344,14 +360,28 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            GeneratorProtocol generator = generatorProtocol(returns);
+            if (generator != null && method.async()) {
+                throw new IllegalArgumentException(
+                        "async generators require a distinct AsyncGenerator contract; use synchronous Generator<...> or async Future<...>");
+            }
+            if (generator != null && !method.isStatic() && klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "actor method '" + module + "." + klass.name() + "." + method.name()
+                                + "' cannot expose a local Generator frame outside its mailbox turn");
+            }
+            Type bodyReturn = generator == null ? returns : generator.returned();
             Ast.ActorKind previousActorKind = currentActorKind;
+            GeneratorProtocol previousGenerator = currentGenerator;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
+            currentGenerator = generator;
             try {
-                checkBlock(method.body(), env, generics, returns, callableSelf);
+                checkBlock(method.body(), env, generics, bodyReturn, callableSelf);
             } finally {
                 currentActorKind = previousActorKind;
+                currentGenerator = previousGenerator;
             }
-            if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
+            if (!method.isAbstract() && bodyReturn != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
             }
@@ -965,6 +995,22 @@ public final class TypeChecker {
             }
             return Unknown.INSTANCE;
         }
+        if (expr instanceof Ast.YieldExpr yielded) {
+            if (currentGenerator == null) {
+                throw new IllegalArgumentException(
+                        "yield is only legal inside a callable declared to return Generator<...>");
+            }
+            Type actual = typeOfAgainstExpected(
+                    yielded.expression(),
+                    currentGenerator.yielded(),
+                    env,
+                    generics,
+                    self);
+            requireAssignable(actual, currentGenerator.yielded(), "yield value");
+            // The value produced by generator.next(value) becomes the result of
+            // the suspended yield expression when the frame resumes.
+            return currentGenerator.sent();
+        }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
             Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
@@ -997,7 +1043,13 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
-            checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            GeneratorProtocol previousGenerator = currentGenerator;
+            currentGenerator = null;
+            try {
+                checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            } finally {
+                currentGenerator = previousGenerator;
+            }
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
@@ -1090,7 +1142,13 @@ public final class TypeChecker {
         requireAssignable(declared, expectedParameter, "mutex callback parameter " + param.name());
         Env lambdaEnv = new Env(parent);
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-        checkBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
+        GeneratorProtocol previousGenerator = currentGenerator;
+        currentGenerator = null;
+        try {
+            checkBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
+        } finally {
+            currentGenerator = previousGenerator;
+        }
     }
 
 
@@ -1117,7 +1175,13 @@ public final class TypeChecker {
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
-        checkBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+        GeneratorProtocol previousGenerator = currentGenerator;
+        currentGenerator = null;
+        try {
+            checkBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+        } finally {
+            currentGenerator = previousGenerator;
+        }
         if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
         }
@@ -1157,7 +1221,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " cannot be void");
         }
         if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof Borrow
-                || type instanceof Function || type instanceof ClassNamespace) {
+                || type instanceof Function || type instanceof ClassNamespace
+                || (type instanceof Named named && named.name().equals("Generator"))) {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
         }
@@ -1260,6 +1325,7 @@ public final class TypeChecker {
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")
+                || named.name().equals("Generator")
                 || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option")) {
@@ -1515,6 +1581,9 @@ public final class TypeChecker {
             return result;
         }
         if (iterable instanceof Named named) {
+            if (named.name().equals("Generator") && named.arguments().size() == 3) {
+                return named.arguments().getFirst();
+            }
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
                 ResolvedMethod iteratorTarget = findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
@@ -1530,7 +1599,7 @@ public final class TypeChecker {
                 }
             }
         }
-        throw new IllegalArgumentException("for-of requires an array/list, tuple, or a class with [Symbol.iterator]()");
+        throw new IllegalArgumentException("for-of requires an array/list, tuple, Generator<T,...>, or a class with [Symbol.iterator]()");
     }
 
     private Type widenCollectionElement(Type type) {
@@ -1977,6 +2046,8 @@ public final class TypeChecker {
             }
         } else if (expression instanceof Ast.AwaitExpr awaited) {
             rejectStaticClassGenericReferences(awaited.expression(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.YieldExpr yielded) {
+            rejectStaticClassGenericReferences(yielded.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.SpawnExpr spawned) {
             rejectStaticClassGenericReferences(spawned.call(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ListExpr list) {
@@ -2283,6 +2354,23 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Future<void> is invalid");
                 yield new Named("Future", List.of(element));
             }
+            case "Generator" -> {
+                if (ref.inferArguments() || (ref.arguments().size() != 1 && ref.arguments().size() != 3)) {
+                    throw new IllegalArgumentException(
+                            "Generator requires Generator<Yield> or Generator<Yield, Return, Next>");
+                }
+                Type yielded = resolve(ref.arguments().getFirst(), generics, self);
+                if (yielded == Primitive.VOID) {
+                    throw new IllegalArgumentException("Generator<void> is invalid; yield requires a value");
+                }
+                Type returned = ref.arguments().size() == 3
+                        ? resolve(ref.arguments().get(1), generics, self)
+                        : Primitive.VOID;
+                Type sent = ref.arguments().size() == 3
+                        ? resolve(ref.arguments().get(2), generics, self)
+                        : Primitive.VOID;
+                yield new Named("Generator", List.of(yielded, returned, sent));
+            }
             case "SharedMutex" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("SharedMutex requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
@@ -2317,6 +2405,18 @@ public final class TypeChecker {
                 yield new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
             }
         };
+    }
+
+    private GeneratorProtocol generatorProtocol(Type type) {
+        if (!(type instanceof Named named)
+                || !named.name().equals("Generator")
+                || named.arguments().size() != 3) {
+            return null;
+        }
+        return new GeneratorProtocol(
+                named.arguments().get(0),
+                named.arguments().get(1),
+                named.arguments().get(2));
     }
 
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
@@ -2603,6 +2703,7 @@ public final class TypeChecker {
         else if (expr instanceof Ast.IndexExpr e) { collectCalls(e.receiver(), module, out); collectCalls(e.index(), module, out); }
         else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) collectCalls(arg, module, out);
         else if (expr instanceof Ast.AwaitExpr e) collectCalls(e.expression(), module, out);
+        else if (expr instanceof Ast.YieldExpr e) collectCalls(e.expression(), module, out);
         else if (expr instanceof Ast.SpawnExpr e) collectCalls(e.call(), module, out);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
