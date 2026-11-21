@@ -267,4 +267,32 @@ class AsyncNativeIoTest {
         assertEquals(2, closes.get());
     }
 
+    @Test
+    void uncheckedHostCleanupFailureCannotStrandOtherResourcesOrDisableRetry() throws Exception {
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        AtomicInteger flakyAttempts = new AtomicInteger();
+        AtomicInteger healthyAttempts = new AtomicInteger();
+        AutoCloseable flaky = () -> {
+            if (flakyAttempts.incrementAndGet() == 1) {
+                throw new AssertionError("injected host callback failure");
+            }
+        };
+        AutoCloseable healthy = healthyAttempts::incrementAndGet;
+        io.register(flaky);
+        io.register(healthy);
+
+        IllegalStateException first = assertThrows(IllegalStateException.class, io::close);
+        assertTrue(first.getMessage().contains("native I/O resources did not release"));
+        assertEquals(1, healthyAttempts.get(),
+                "unchecked Error must not skip independent accepted resource cleanup");
+        assertEquals(1, flakyAttempts.get());
+        assertTrue(java.util.Arrays.stream(first.getSuppressed())
+                        .anyMatch(ex -> ex instanceof AssertionError),
+                "host Error must remain visible in physical-shutdown failure receipt");
+        assertDoesNotThrow(io::close, "failed resource must remain retryable");
+        assertEquals(2, flakyAttempts.get());
+        assertEquals(1, healthyAttempts.get(),
+                "successfully closed resource must not close a second time");
+    }
+
 }

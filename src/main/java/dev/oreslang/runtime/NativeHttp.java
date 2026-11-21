@@ -975,17 +975,21 @@ public final class NativeHttp implements AutoCloseable {
     static void runCancellationThenCleanup(Runnable cancel, Runnable cleanup) {
         Objects.requireNonNull(cancel, "cancel");
         Objects.requireNonNull(cleanup, "cleanup");
-        RuntimeException cancellationFailure = null;
+        Throwable cancellationFailure = null;
         try { cancel.run(); }
-        catch (RuntimeException failure) { cancellationFailure = failure; }
+        catch (RuntimeException | Error failure) { cancellationFailure = failure; }
         try { cleanup.run(); }
-        catch (RuntimeException cleanupFailure) {
-            if (cancellationFailure == null) throw cleanupFailure;
+        catch (RuntimeException | Error cleanupFailure) {
+            if (cancellationFailure == null) {
+                if (cleanupFailure instanceof Error fatal) throw fatal;
+                throw (RuntimeException) cleanupFailure;
+            }
             if (cancellationFailure != cleanupFailure) {
                 cancellationFailure.addSuppressed(cleanupFailure);
             }
         }
-        if (cancellationFailure != null) throw cancellationFailure;
+        if (cancellationFailure instanceof Error fatal) throw fatal;
+        if (cancellationFailure instanceof RuntimeException failure) throw failure;
     }
 
     /** Only an active runtime/listener can admit a new actor transfer. */
@@ -1041,9 +1045,15 @@ public final class NativeHttp implements AutoCloseable {
         RuntimeException first = null;
         for (T state : accepted) {
             try { abort.accept(state); }
-            catch (RuntimeException failure) {
-                if (first == null) first = failure;
-                else if (first != failure) first.addSuppressed(failure);
+            catch (RuntimeException | Error failure) {
+                // A failed host callback must not strand later accepted HTTP
+                // states. Preserve non-runtime Errors as the cause of a
+                // terminal failure; never convert failed abort into success.
+                RuntimeException reported = failure instanceof RuntimeException runtime
+                        ? runtime
+                        : new IllegalStateException("HTTP accepted-state cleanup failed", failure);
+                if (first == null) first = reported;
+                else if (first != reported) first.addSuppressed(reported);
             }
         }
         return first;
