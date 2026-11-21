@@ -18,8 +18,9 @@ constructs a closed `DopInvertedScalarCompilerV1.Plan`. Ordinary
 Accepted source is exactly one nominal two-`int` inverted struct and one
 synchronous `fnc main(): int` with no inputs, generics, imports, user effects,
 extra declarations, actor lifecycle or annotations. The body must start with
-`let rows = InvertedArray<Row>.with_capacity(N);`, with `0 <= N <= 4096`,
-then contain no more than 4096 statements consisting solely of:
+`let rows = InvertedArray<Row>.with_capacity(N);`, with `1 <= N <= 256`,
+then contain no more than 1024 owner operations (including the terminal
+return), consisting solely of:
 
 - `rows.push(i64Literal, i64Literal);`
 - `rows.set(denseIndex, mutableFieldName, i64Literal);`
@@ -30,6 +31,14 @@ All operands must be static signed i64 literals or declared static field names.
 No arbitrary functions, callbacks, host reflection, source imports, aliasing,
 operator overloads, suspension, layout conversion or silent backend fallback.
 Writes to fields lacking `let` fail during plan construction.
+
+This **shared source parity envelope** is intentionally narrower than the
+underlying Java-only `InvertedSchemaStorageBridge` host primitive:
+the production LLVM inverted verifier currently admits row capacity
+`[1, 256]` and operation count `[1, 1024]`. The opt-in Java compiler
+therefore rejects capacity `0`, `257` and higher, and operation stream
+length `1025` or higher at compilation. Broader Java host backing stores
+must never be described as compiled Java/LLVM parity.
 
 The plan has immutable typed operations and a private constructor. Its
 `executeHostReference()` creates a new bounded

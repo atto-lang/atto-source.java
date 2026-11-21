@@ -18,6 +18,12 @@ import java.util.Objects;
 public final class DopInvertedScalarCompilerV1 {
     private DopInvertedScalarCompilerV1() { }
 
+    // Keep the Java opt-in SOURCE subset within LLVM's production verifier
+    // envelope. Larger Java host-store capacity is a separate capability,
+    // never evidence of shared compiler-backed AttoLang parity.
+    public static final int MAX_SHARED_CAPACITY = 256;
+    public static final int MAX_SHARED_OPERATIONS = 1024;
+
     public enum Op { PUSH, WRITE, ERASE_SWAP, RETURN_READ }
 
     /** Typed/closed operation: no source expressions, callbacks or aliases escape. */
@@ -155,7 +161,8 @@ public final class DopInvertedScalarCompilerV1 {
                 || fn.returnType() == null || !"int".equals(fn.returnType().name())
                 || fn.returnType().inferArguments()
                 || !fn.returnType().arguments().isEmpty()
-                || fn.body().size() < 2 || fn.body().size() > 4096) {
+                || fn.body().size() < 2
+                || fn.body().size() - 1 > MAX_SHARED_OPERATIONS) {
             throw reject("only a synchronous scalar int main with a bounded body");
         }
         if (!(fn.body().getFirst() instanceof Ast.BindingStmt binding)
@@ -175,8 +182,8 @@ public final class DopInvertedScalarCompilerV1 {
             throw reject("expected one local let owner initialized by InvertedArray<Schema>");
         }
         long requested = scalar(alloc.arguments().getFirst(), "owner capacity");
-        if (requested < 0 || requested > 4096) {
-            throw reject("owner capacity exceeds bounded two-i64 prototype");
+        if (requested < 1 || requested > MAX_SHARED_CAPACITY) {
+            throw reject("owner capacity outside shared LLVM/Java [1,256] contract");
         }
         int capacity = (int) requested;
         String owner = binding.name();
