@@ -291,6 +291,66 @@ final class DirectionalPipeEndpointSourceTest {
     }
 
     @Test
+    void laterDomainMismatchIsDiagnosedBeforeFirstUnimplementedBridge() {
+        IllegalArgumentException mismatch = rejects("""
+                define class Source implements HasOutputChannel<int> as
+                    pub output: ReadChannel<int>;
+                end
+
+                define class Transform
+                    implements HasInputChannel<int>, HasOutputChannel<string>
+                as
+                    pub input: WriteChannel<int>;
+                    pub output: ReadChannel<string>;
+                end
+
+                define class Sink implements HasInputChannel<int> as
+                    pub input: WriteChannel<int>;
+                end
+
+                pub fnc connect(Source source, Transform transform, Sink sink): void {
+                    val graph = source pipe transform pipe sink;
+                    return;
+                }
+                """);
+        assertTrue(mismatch.getMessage().contains("pipe endpoint domains must match exactly"),
+                mismatch::toString);
+        assertFalse(mismatch.getMessage().contains("bridge lowering"),
+                mismatch::toString);
+    }
+
+    @Test
+    void laterMissingInputIsDiagnosedBeforeFirstUnimplementedBridge() {
+        IllegalArgumentException wrongDirection = rejects("""
+                define class Source implements HasOutputChannel<int> as
+                    pub output: ReadChannel<int>;
+                end
+
+                define class Transform
+                    implements HasInputChannel<int>, HasOutputChannel<string>
+                as
+                    pub input: WriteChannel<int>;
+                    pub output: ReadChannel<string>;
+                end
+
+                define class OtherSource implements HasOutputChannel<string> as
+                    pub output: ReadChannel<string>;
+                end
+
+                pub fnc connect(
+                    Source source, Transform transform, OtherSource other
+                ): void {
+                    val graph = source pipe transform pipe other;
+                    return;
+                }
+                """);
+        assertTrue(wrongDirection.getMessage().contains("no input channel"),
+                wrongDirection::toString);
+        assertFalse(wrongDirection.getMessage().contains("bridge lowering"),
+                wrongDirection::toString);
+    }
+
+    @Test
     void protocolTypedValuesParticipateWithoutConcreteClassKnowledge() {
         IllegalArgumentException bridge = rejects("""
                 pub fnc connect(

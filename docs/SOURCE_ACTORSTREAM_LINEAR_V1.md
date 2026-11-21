@@ -74,6 +74,18 @@ This first source topology is linear and single-flow. A successful first
 `ActorStream.send` permanently consumes root admission; replay is rejected.
 A synchronous failed admission releases that one credit.
 
+Reverse `self.backward` and `self.reply` now reserve a second bounded
+correlation frame while the source DATA turn is still live. The source frame
+is retired only after successful destination-mailbox admission; if a capacity
+check or destination admission fails, the attempted child is retired and the
+source remains authenticated. A full frame ledger rejects reverse selection
+rather than violating the bound or silently dropping the source's authority.
+This is a staging/receipt rule, **not** a guarantee that the destination will
+eventually execute after mailbox admission. ActorStream physical DONE remains
+a separate barrier. Continue to test post-publication scheduling failures
+and terminal supervisor shutdown on an actual source-local runner.
+
+
 The generic type `ActorStream<T>` records the common mailbox domain, so
 `route.send(value)` is checked against `T`.
 
