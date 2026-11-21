@@ -27,10 +27,8 @@ final class NativeOtpSupervisorPolicyTest {
         }
         assertEquals("@std/otp/supervisor.ores", CoreLibrarySources.unitId("std/otp/supervisor"));
         assertTrue(CoreLibrarySources.packagedSourcePaths().contains("otp/supervisor.ores"));
-        assertFalse(CoreLibrarySources.packagedSourcePaths().contains("otp/gen_server.ores"),
-                "do not advertise missing full GenServer implementation");
-        assertThrows(IllegalArgumentException.class,
-                () -> CoreLibrarySources.source("std/otp/gen_server"));
+        assertTrue(CoreLibrarySources.packagedSourcePaths().contains("otp/gen_server.ores"),
+                "GenServer protocol slice is now an explicitly registered source module");
         assertThrows(IllegalArgumentException.class,
                 () -> CoreLibrarySources.unitId("std/otp/../core"));
     }

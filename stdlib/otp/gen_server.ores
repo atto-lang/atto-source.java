@@ -1,0 +1,90 @@
+// Oreslang-native typed callback/result protocol for OTP-style GenServer.
+//
+// FIRST EXECUTABLE SOURCE SLICE ONLY.
+//
+// This module deliberately does NOT implement call_async, actor dispatch,
+// one-shot reply capabilities, deadlines, cancellation, supervisor CONTROL,
+// hot upgrades, or mailbox transport. Those require trusted runtime support.
+// In particular, do not emulate replies by reading an actor's public output
+// stream: concurrent callers need opaque correlation and incarnation fencing.
+//
+// The types below let GenServer implementations express init/call/cast/info
+// state transitions in ordinary Oreslang source without importing any host
+// service. They are usable on a freestanding actor target once the target
+// provides the actor runtime itself.
+define module OtpGenServer as
+
+  pub define class InitResult<State> as
+    pub val State state;
+  end
+
+  pub define class CallResult<State, Reply> as
+    pub val State state;
+    pub val Reply reply;
+    pub val bool stop;
+  end
+
+  pub define class CastResult<State> as
+    pub val State state;
+    pub val bool stop;
+  end
+
+  pub define class InfoResult<State> as
+    pub val State state;
+    pub val bool stop;
+  end
+
+  pub fnc initialized<State>(State state): InitResult<State> {
+    return new InitResult<State>(state);
+  }
+
+  // Canonical handle_call result: reply exactly once, then continue.
+  // The trusted runtime will eventually consume this result and settle an
+  // opaque reply capability; the capability itself is never guest DATA.
+  pub fnc reply<State, Reply>(
+    State next_state,
+    Reply value
+  ): CallResult<State, Reply> {
+    return new CallResult<State, Reply>(next_state, value, false);
+  }
+
+  // Reply and request graceful server termination after the reply is accepted.
+  pub fnc reply_and_stop<State, Reply>(
+    State next_state,
+    Reply value
+  ): CallResult<State, Reply> {
+    return new CallResult<State, Reply>(next_state, value, true);
+  }
+
+  // Canonical handle_cast result: no reply channel exists for casts.
+  pub fnc continue_cast<State>(State next_state): CastResult<State> {
+    return new CastResult<State>(next_state, false);
+  }
+
+  pub fnc stop_cast<State>(State next_state): CastResult<State> {
+    return new CastResult<State>(next_state, true);
+  }
+
+  pub fnc continue_info<State>(State next_state): InfoResult<State> {
+    return new InfoResult<State>(next_state, false);
+  }
+
+  pub fnc stop_info<State>(State next_state): InfoResult<State> {
+    return new InfoResult<State>(next_state, true);
+  }
+
+  // Pure bounded-admission helper. This does not reserve a mailbox slot;
+  // runtime send admission remains authoritative and must be atomic.
+  pub fnc pending_capacity_allows(
+    int pending,
+    int capacity
+  ): Result<bool, String> {
+    if pending < 0; do
+      return Err("pending call count cannot be negative");
+    fi
+    if capacity < 1 || capacity > 1000000; do
+      return Err("call capacity must be 1..1000000");
+    fi
+    return Ok(pending < capacity);
+  }
+end
