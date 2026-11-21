@@ -8,7 +8,7 @@ Implementation snapshot (2026-10-16): the synchronous top-level/module `fnc`/`ro
 
 The central guarantee is:
 
-> A successfully compiled `trap` callable never lets an ordinary `throw` cross its call boundary. The compiler converts the uncaught throw into an explicit two-slot result. `raise` and `panic` are deliberately different control effects: they bypass `trap` and unwind to the nearest `recover` boundary.
+> A successfully compiled `trap` callable never lets an ordinary `throw` cross its call boundary. The compiler converts the uncaught throw into an explicit two-slot result. `raise` and `panic` are deliberately different control effects: they bypass `trap`. Only `raise` can be consumed by an eligible local `recover` boundary; `panic` continues to supervisor/termination control after cleanup.
 
 This is a language and ABI contract, not merely parser sugar around a handwritten `try/catch`.
 
@@ -277,6 +277,94 @@ This is dynamic, not merely transitive/static. A synchronous callback invoked wh
 
 If no dynamic `trap` boundary exists, `throw` retains normal Oreslang `try/catch` / unhandled-exception behavior.
 
+## Trusted guest-effect issuance (Java interpreter staging)
+
+The Java interpreter now stamps exceptional signals with **direct caller Class
+identity** (the VM-owned `OresEvalRootNode` and its real JVM nestmates).
+The `GuestControlSignal.Throw/Raise/Panic` diagnostic constructors are still
+public for compatibility, but a host/FFI-created instance carries
+`compilerIssued() == false` and cannot be admitted as a guest `throw` into
+`trap`/`catch` or as a guest `raise` into `recover`. Guest exception
+types, mutable Java stack trace strings, and an exception's public class name
+are not sufficient admission credentials.
+
+`TrapFailurePolicy` also refuses overridden host `getCause()` accessors
+when classifying either a trap/catch failure or an eligible raise. These host
+scans are intentionally bounded and fail closed on malformed graphs.
+
+**Not yet a production security boundary:** this first stage only proves that
+the Java signal was constructed directly by trusted evaluator code. It does
+not bind the signal to its original logical Task/actor incarnation, prevent a
+foreign Java adapter from replaying a previously emitted signal, or guarantee
+GraalVM Native Image and LLVM parity. The previous legacy `isMappedGuestFailure` fallback that admitted ordinary
+JDK exceptions based on mutable `StackTraceElement` strings has now been
+removed. Instead, only a dedicated `OresEvalRootNode$OresCastError` class
+with the exact evaluator JVM nest-host identity remains implicitly mapped.
+Other built-in faults must be explicitly emitted as trusted guest Throw
+signals; until migrated, generic JDK exceptions **fail closed**, potentially
+changing trap/catch behavior. Restoring language conformance for those known
+built-ins without reintroducing host exception spoofing is a merge blocker. Any host
+interop capable of unrestricted reflection/Unsafe access to VM objects
+must remain outside the untrusted security model.
+
+**Executed focused local evidence, 2026-10-23:** OpenJDK 21 compiled exact
+Git blob `02dcdc593f3cd3a9b6f63e09749e1fc4ead449fc` for
+`GuestControlSignal.java` and
+`7eff2826ac36a1aa5ce9e4985e09da1606a4f747` for
+`TrapFailurePolicy.java`. A minimal evaluator class stub and
+`SourceBoundaryTrace` stub enabled **31/31 manual isolated assertions**
+(7 issuance, 18 effect-admission, 6 adversarial cause-accessor assertions).
+This does *not* count as execution of the committed JUnit suite, the actual
+GraalVM evaluator, guest parser/source fixtures or LLVM native code. Both
+files' local bytes were independently verified against the named Git blobs.
+Cross-organization private CI remains blocked pending the independently
+reviewed allowlist in security issue #1501.
+
+### 2026-10-23 fail-closed trap/catch hardening
+
+`TrapFailurePolicy` now traverses each throwable cause/suppression graph
+**once**, tracking which nodes belong to the primary cause chain and refusing
+cycles or overlarge graphs. This avoids authorizing ordinary catch/trap from
+a second read of a potentially mutated host graph. Explicit security denial
+remains guest-catchable (but never trappable); guest `raise`, panic, shutdown,
+cancellation, timeout, and host fatal remain non-consumable at these boundaries.
+
+**Compatibility gate:** this change intentionally removes the unsafe
+`StackTraceElement`-based admission of generic JDK exceptions. Verified
+interpreter-issued `throw` and the dedicated cast fault still participate.
+Remaining language-generated arithmetic, assertion, indexing or other
+stdlib faults require compiler-issued carriers, not guessed Java class names
+or caller-modifiable stack traces. Until those call sites are migrated and
+full source-level tests pass, this branch remains DRAFT.
+
+### Verified focused hardening evidence — 2026-10-23
+
+After the stack-trace admission heuristic was removed, the exact checked-in
+Java blobs were reconstructed in an isolated local test directory and their
+`git hash-object` identities independently verified:
+
+- `TrapFailurePolicy.java`: `9d57a9697981169ca95b86441267b3305a1bf396`
+- `GuestControlSignal.java`: `02dcdc593f3cd3a9b6f63e09749e1fc4ead449fc`
+
+OpenJDK 21 compiled both files (`javac --release 21 -Xlint:all`) using a
+minimal `OresEvalRootNode` class stub. The 60/60 **standalone** Java
+policy assertions passed: real evaluator-nest issued throw/raise, panic
+bypass, dedicated cast-error identity, public-constructor host forgery,
+modified Java stack traces, suppressed terminal control, wrapped
+denials, cyclic/deep/wide error graphs and virtual hostile causes.
+
+This is not execution of the committed JUnit fixtures or full Truffle,
+actor, GraalVM Native Image, LLVM and guest-source tests. The normal
+source-org GitHub Actions have recently failed without running any
+steps; private-source cross-org CI remains blocked by the independent
+security review and allowlist tracked in #1501.
+
+The strict change may cause existing built-in runtime errors previously
+recognized only through JDK stack-frame names to escape `trap` or
+`catch`. Convert each intentionally guest-originated built-in error to
+a trusted, explicit effect carrier and add guest-language behavior
+regressions before advancing this draft PR.
+
 ## `raise`: deliberate trap escape
 
 `raise` is a distinct reserved control-flow keyword/effect.
@@ -322,7 +410,7 @@ This gives library/application code an explicit way to say:
 
 `panic` is also a distinct reserved control-flow keyword/effect.
 
-Like `raise`, `panic` bypasses `trap` and unwinds to the nearest `recover` boundary.
+Unlike `raise`, `panic` bypasses both `trap` and local `recover`. It unwinds through safe non-consuming cleanup to the supervisor/termination boundary.
 
 It exists for invariant violations, impossible states, compiler/runtime assertions exposed to guest semantics, and failures that should not be mistaken for an ordinary trappable application error.
 
@@ -340,11 +428,11 @@ pub trap fnc decode(Packet p): Message {
 
 A panic must never silently become the ordinary `err` slot of the trap result.
 
-`raise` and `panic` may share an internal unwinding mechanism, but their kinds must remain distinct in diagnostics, metadata, tracing, and `recover` handling.
+`raise` and `panic` may share an internal unwinding mechanism, but only `raise` is locally recoverable. Their kinds remain distinct in diagnostics, metadata and tracing.
 
 ## `recover` boundary
 
-`recover` is the dynamic boundary that can intercept `raise` and `panic`.
+`recover` is the dynamic boundary that can intercept an eligible typed `raise`. Panic, cancellation, authority denial and host-fatal control bypass local recovery.
 
 The initial surface form is:
 
@@ -352,14 +440,14 @@ The initial surface form is:
 recover {
   perform_work();
 } catch (signal) {
-  // signal.kind is "raise" or "panic"; signal.message is guest-safe text.
+  // signal.kind is "raise"; signal.message is guest-safe text.
   handle_signal(signal.kind, signal.message);
 } finally {
   cleanup();
 }
 ```
 
-The handler is outside the boundary it handles. A new `raise` or `panic` inside the handler cannot be caught again by the same frame; it continues to the next outer recover boundary.
+The handler is outside the boundary it handles. A new `raise` inside the handler continues outward to a previous eligible recovery boundary; a `panic` is never consumed locally.
 
 The compiler/runtime must preserve this boundary explicitly so control flow cannot be silently rewritten into a trapped `throw`.
 
@@ -367,15 +455,15 @@ The exact final surface syntax for typed/selective recovery may evolve independe
 
 1. `throw` does not skip a trap boundary.
 2. `raise` skips every trap boundary until recover.
-3. `panic` skips every trap boundary until recover.
+3. `panic` skips trap and recover boundaries; only cleanup and supervision/termination can observe it.
 4. `defer` / `finally` execute according to normal unwinding rules.
-5. If no recover boundary exists, an unhandled `raise` or `panic` terminates the current top-level execution domain according to runtime policy (process, actor, isolate, or untrusted actor), rather than being fabricated into a trap result.
+5. An unhandled `raise`, or any `panic`, reaches supervision/termination policy rather than being fabricated into a local trap or recover result.
 
-A future/selective `recover` syntax may choose to recover only `raise`, only `panic`, or specific payload types. The semantic distinction must already exist in compiler metadata.
+A future typed/selective `recover` syntax may select `raise` payload types. It must never authorize local panic recovery.
 
-A recover handler is **outside** the boundary it handles. If the handler executes another `raise` or `panic`, that new signal cannot be caught again by the same recover frame; it continues to the next matching outer recover boundary. This prevents self-recursive recovery loops.
+A recover handler is **outside** the boundary it handles. A new `raise` from the handler continues to outer eligible handlers rather than re-entering the same frame. A panic exits toward supervisor CONTROL. This prevents self-recursive recovery loops.
 
-Recovery may explicitly convert a signal into ordinary control flow, including returning a value or deliberately issuing a new ordinary `throw`. That conversion is explicit; the runtime never silently downgrades `raise`/`panic` into `throw`.
+Recovery may explicitly convert a handled `raise` into ordinary control flow. Panic cannot be converted to successful control flow by a local handler.
 
 ## Interaction with explicit `try/catch`
 
@@ -388,12 +476,12 @@ Therefore:
 ```text
 try/catch  -> throw
 trap       -> uncaught throw at callable boundary
-recover    -> raise / panic
+recover    -> eligible raise only
 ```
 
 This separation prevents a broad local catch from accidentally swallowing a deliberate trap escape.
 
-A future explicit syntax may allow a recover block to classify or rethrow a raised/panicked signal.
+A future explicit syntax may allow a recover block to classify or rethrow a raised signal, but cannot consume panic.
 
 ## Cleanup precedence: `defer` / `finally`
 
@@ -546,7 +634,7 @@ The trap boundary spans the complete asynchronous computation, including code re
 
 - an ordinary `throw` before or after an `await` completes the future successfully with `TrapResult.error(...)`;
 - a `raise`/`panic` completes the future with its distinct non-trappable control signal;
-- awaiting that future re-emits the same `raise`/`panic` at the await site so a surrounding recover boundary can handle it;
+- awaiting that future re-emits the same `raise`/`panic` at the await site so a surrounding recover boundary can handle an eligible raise; panic always escapes;
 - a detached/unawaited task has no dynamic caller recover frame, so unrecovered `raise`/`panic` is routed to task supervision rather than fabricated into `TrapError`;
 - runtime cancellation of the future remains the non-trappable cancellation channel described above;
 - callbacks/tasks explicitly detached from the async computation do not inherit its trap/recover frames.
@@ -713,7 +801,7 @@ The same semantic channels apply inside actor execution.
 
 A `throw` leaving a trap actor helper/entrypoint becomes its trap error result.
 
-A `raise` or `panic` bypasses trap and unwinds to the nearest recover boundary **within that execution domain**.
+A `raise` bypasses trap and may reach the nearest eligible recover boundary **within that execution domain**; `panic` bypasses local recovery altogether.
 
 A recover boundary never implicitly spans an actor, isolate, process, or detached-task boundary. Those boundaries are supervision/transport boundaries, not shared call stacks. An unrecovered signal from a child domain is converted into the domain's typed exit/supervision outcome; the original mutable error object/capability is not smuggled into the parent. Safe immutable metadata may be reported according to policy.
 

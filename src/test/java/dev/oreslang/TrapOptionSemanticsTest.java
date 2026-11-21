@@ -250,18 +250,12 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void raiseAndPanicBypassTrapAndReachNearestRecover() throws Exception {
+    void raiseBypassesTrapAndReachesNearestRecover() throws Exception {
         String source = """
                 trap fnc raises(): int {
                   raise new Error("abort");
                   return 1;
                 }
-
-                trap fnc panics(): int {
-                  panic new Error("invariant");
-                  return 2;
-                }
-
                 pub fnc main(): void {
                   recover {
                     [const [ignored], const ignored_error] = raises();
@@ -270,20 +264,33 @@ final class TrapOptionSemanticsTest {
                     stdio.stdout.write(":");
                     stdio.stdout.write(signal.message);
                   }
-                  stdio.stdout.write("|");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("raise:abort", run(source));
+    }
+
+    @Test
+    void explicitGuestPanicBypassesTrapAndRecover() throws Exception {
+        String source = """
+                trap fnc panics(): int {
+                  panic new Error("invariant");
+                  return 1;
+                }
+                pub fnc main(): void {
                   recover {
                     [const [ignored], const ignored_error] = panics();
                   } catch (signal) {
-                    stdio.stdout.write(signal.kind);
-                    stdio.stdout.write(":");
-                    stdio.stdout.write(signal.message);
+                    stdio.stdout.write("INCORRECT_PANIC_RECOVERY");
                   }
                   return;
                 }
                 """;
-
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("raise:abort|panic:invariant", run(source));
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run(source));
+        assertTrue(failure.toString().toLowerCase(java.util.Locale.ROOT).contains("panic")
+                || failure.toString().contains("invariant"));
     }
 
     @Test
@@ -336,30 +343,20 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void cleanupFailuresFollowPanicRaiseThrowPrecedence() throws Exception {
-        String source = """
+    void cleanupRaiseTakesPrecedenceButPanicCannotBeRecovered() throws Exception {
+        String raiseSource = """
                 fnc cleanupThrow(): void { throw new Error("cleanup throw"); }
                 fnc cleanupRaise(): void { raise new Error("cleanup raise"); }
-                fnc cleanupPanic(): void { panic new Error("cleanup panic"); }
-
                 trap fnc raising(): int {
                   defer cleanupThrow();
                   raise new Error("primary raise");
                   return 1;
                 }
-
                 trap fnc throwing(): int {
                   defer cleanupRaise();
                   throw new Error("primary throw");
                   return 2;
                 }
-
-                trap fnc raisingThenPanicking(): int {
-                  defer cleanupPanic();
-                  raise new Error("primary raise");
-                  return 3;
-                }
-
                 pub fnc main(): void {
                   recover {
                     [const [ignored], const ignored_error] = raising();
@@ -376,47 +373,48 @@ final class TrapOptionSemanticsTest {
                     stdio.stdout.write(":");
                     stdio.stdout.write(signal.message);
                   }
-                  stdio.stdout.write("|");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(raiseSource));
+        assertEquals("raise:primary raise|raise:cleanup raise", run(raiseSource));
+
+        String panicSource = """
+                fnc cleanupPanic(): void { panic new Error("cleanup panic"); }
+                trap fnc raisingThenPanicking(): int {
+                  defer cleanupPanic();
+                  raise new Error("primary raise");
+                  return 3;
+                }
+                pub fnc main(): void {
                   recover {
                     [const [ignored], const ignored_error] = raisingThenPanicking();
                   } catch (signal) {
-                    stdio.stdout.write(signal.kind);
-                    stdio.stdout.write(":");
-                    stdio.stdout.write(signal.message);
+                    stdio.stdout.write("INCORRECT_PANIC_RECOVERY");
                   }
                   return;
                 }
                 """;
-
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals(
-                "raise:primary raise|raise:cleanup raise|panic:cleanup panic",
-                run(source));
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(panicSource));
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> run(panicSource));
+        assertTrue(failure.toString().toLowerCase(java.util.Locale.ROOT).contains("panic"));
     }
 
     @Test
-    void deferRunsExactlyOnceBeforeTrapAndRecoveryObservation() throws Exception {
+    void deferRunsExactlyOnceBeforeTrapAndRaiseRecovery() throws Exception {
         String source = """
                 fnc mark(): void { stdio.stdout.write("D"); }
-
                 trap fnc throws(): int {
                   defer mark();
                   throw new Error("ordinary");
                   return 1;
                 }
-
                 trap fnc raises(): int {
                   defer mark();
                   raise new Error("elevated");
                   return 2;
                 }
-
-                trap fnc panics(): int {
-                  defer mark();
-                  panic new Error("fatal");
-                  return 3;
-                }
-
                 pub fnc main(): void {
                   [const [unused], const err] = throws();
                   stdio.stdout.write("throw|");
@@ -424,43 +422,34 @@ final class TrapOptionSemanticsTest {
                     [const [unusedRaise], const errorRaise] = raises();
                   } catch (signal) {
                     stdio.stdout.write(signal.kind);
-                    stdio.stdout.write("|");
-                  }
-                  recover {
-                    [const [unusedPanic], const errorPanic] = panics();
-                  } catch (signal) {
-                    stdio.stdout.write(signal.kind);
                   }
                   return;
                 }
                 """;
-
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("Dthrow|Draise|Dpanic", run(source));
+        assertEquals("Dthrow|Draise", run(source));
     }
 
     @Test
-    void internalOptionUnwrapPanicStillBypassesTrapButCanBeRecovered() throws Exception {
+    void internalOptionUnwrapPanicCannotBeLocallyRecovered() throws Exception {
         String source = """
                 trap fnc panics(): int {
                   val Option<int> missing = None;
                   return missing.unwrap();
                 }
-
                 pub fnc main(): void {
                   recover {
                     [const [ignored], const ignored_error] = panics();
                   } catch (signal) {
-                    stdio.stdout.write(signal.kind);
-                    stdio.stdout.write(":");
-                    stdio.stdout.write(signal.message);
+                    stdio.stdout.write("INCORRECT_PANIC_RECOVERY");
                   }
                   return;
                 }
                 """;
-
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("panic:called Option::unwrap() on a None value", run(source));
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run(source));
+        assertTrue(failure.toString().toLowerCase(java.util.Locale.ROOT).contains("panic")
+                || failure.toString().contains("unwrap"));
     }
 
     @Test
