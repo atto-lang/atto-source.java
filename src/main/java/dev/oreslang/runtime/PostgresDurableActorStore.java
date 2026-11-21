@@ -101,8 +101,27 @@ public final class PostgresDurableActorStore implements DurableActorStore {
         });
     }
 
-    /** Returned owner is a host-only fencing credential, not a guest actor value. */
-    public record LeaseActivation(Activation activation, UUID owner) { }
+    /**
+     * A host-only, store-issued activation capability. Unlike a public record,
+     * callers cannot manufacture an owner credential or detach one activation
+     * from the tenant-scoped address at which its lease was acquired.
+     * Never expose this object to untrusted guest code.
+     */
+    public static final class LeaseActivation {
+        private final Address address;
+        private final Activation activation;
+        private final UUID owner;
+
+        private LeaseActivation(Address address, Activation activation, UUID owner) {
+            this.address = Objects.requireNonNull(address, "address");
+            this.activation = Objects.requireNonNull(activation, "activation");
+            this.owner = Objects.requireNonNull(owner, "owner");
+        }
+
+        public Address address() { return address; }
+        public Activation activation() { return activation; }
+        public UUID owner() { return owner; }
+    }
 
     private static final Duration LEASE_LENGTH = Duration.ofSeconds(30);
 
@@ -175,7 +194,7 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                     while (rs.next()) outbox.add(new Outbound(rs.getString(1), rs.getString(2), rs.getBytes(3)));
                 }
             }
-            return new LeaseActivation(new Activation(current + 1, snap, inbox, outbox), owner);
+            return new LeaseActivation(key, new Activation(current + 1, snap, inbox, outbox), owner);
         });
     }
 
@@ -203,15 +222,24 @@ public final class PostgresDurableActorStore implements DurableActorStore {
         Objects.requireNonNull(key);
         Objects.requireNonNull(owner);
         transact(c -> {
-            try (PreparedStatement p = c.prepareStatement(
-                    "UPDATE ores_durable_actor SET active=false,lease_owner=NULL," +
-                    "lease_until=NULL WHERE " + KEY +
-                    " AND activation_epoch=? AND active AND lease_owner=? AND lease_until>clock_timestamp()")) {
-                bind(p,key); p.setLong(5,epoch); p.setObject(6,owner);
-                if (p.executeUpdate()!=1) throw new StaleActivationException("lease release fenced");
-            }
+            hibernateLeaseInTransaction(c, key, epoch, owner);
             return null;
         });
+    }
+
+    private static void hibernateLeaseInTransaction(
+            Connection c, Address key, long epoch, UUID owner) throws SQLException {
+        try (PreparedStatement p = c.prepareStatement(
+                "UPDATE ores_durable_actor SET active=false,lease_owner=NULL," +
+                "lease_until=NULL WHERE " + KEY +
+                " AND activation_epoch=? AND active AND lease_owner=? AND lease_until>clock_timestamp()")) {
+            bind(p, key);
+            p.setLong(5, epoch);
+            p.setObject(6, owner);
+            if (p.executeUpdate() != 1) {
+                throw new StaleActivationException("lease release fenced");
+            }
+        }
     }
 
     private record Pending(long count, long bytes) { }
@@ -289,7 +317,28 @@ public final class PostgresDurableActorStore implements DurableActorStore {
     public long commitOwnedTurn(Turn turn, UUID owner) {
         Objects.requireNonNull(turn);
         Objects.requireNonNull(owner);
+        return transact(c -> commitOwnedTurnInTransaction(c, turn, owner));
+    }
+
+    /**
+     * Persist one consumed inbox message, next snapshot, and outbox intents;
+     * release the same owner/epoch lease in the SAME PostgreSQL transaction.
+     * If the release cannot be fenced, the state mutation rolls back too.
+     * A supervisor must hold a real ActorRuntime quiescence proof across this
+     * call, not just the advisory coordinator predicate.
+     */
+    public long commitAndHibernateOwnedTurn(Turn turn, UUID owner) {
+        Objects.requireNonNull(turn);
+        Objects.requireNonNull(owner);
         return transact(c -> {
+            long version = commitOwnedTurnInTransaction(c, turn, owner);
+            hibernateLeaseInTransaction(c, turn.address(), turn.epoch(), owner);
+            return version;
+        });
+    }
+
+    private long commitOwnedTurnInTransaction(Connection c, Turn turn, UUID owner)
+            throws SQLException {
             Address key = turn.address();
             // Lock the actor before checking its epoch. Activate and hibernate use the same lock.
             Snapshot prior;
@@ -363,7 +412,6 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                 if (p.executeUpdate() != 1) throw new StaleActivationException("fenced actor update");
             }
             return next.stateVersion();
-        });
     }
 
     @Override

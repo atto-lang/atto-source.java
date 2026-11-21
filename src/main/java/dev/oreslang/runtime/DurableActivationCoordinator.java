@@ -55,6 +55,43 @@ public final class DurableActivationCoordinator {
         } finally { guard.unlock(); }
     }
 
+    /**
+     * The only durable turn+hibernate entrypoint that accepts a real runtime
+     * scheduler proof. The proof is host-only and must refer to the exact
+     * incarnation the supervisor has bound to this persistent address.
+     * No advisory isQuiescent() callback can substitute for this evidence.
+     *
+     * Both state commit and owner lease release run in ONE database transaction.
+     * The caller is responsible for immediately terminating the fenced runtime
+     * actor after success, and failing it closed after any uncertain error.
+     */
+    public long commitAndHibernateLeased(
+            DurableActorStore.Turn turn,
+            UUID owner,
+            ActorRuntime.ActorId expectedActor,
+            ActorRuntime.DurableQuiescence proof) {
+        Objects.requireNonNull(turn, "turn");
+        Objects.requireNonNull(owner, "owner");
+        Objects.requireNonNull(expectedActor, "expectedActor");
+        Objects.requireNonNull(proof, "proof");
+        if (!expectedActor.equals(proof.actorId()) || !proof.valid()) {
+            throw new IllegalStateException("missing current runtime quiescence proof");
+        }
+        ReentrantLock guard = lock(turn.address());
+        guard.lock();
+        try {
+            if (!expectedActor.equals(proof.actorId()) || !proof.valid()) {
+                throw new IllegalStateException("runtime quiescence was revoked");
+            }
+            if (!(store instanceof PostgresDurableActorStore postgres)) {
+                throw new IllegalStateException("owner-aware PostgreSQL store is required");
+            }
+            return postgres.commitAndHibernateOwnedTurn(turn, owner);
+        } finally {
+            guard.unlock();
+        }
+    }
+
     /** A durable mailbox can accept messages while the runtime is frozen. */
     public boolean deliver(DurableActorStore.Address address, DurableActorStore.Inbound mail) {
         Objects.requireNonNull(address, "address");

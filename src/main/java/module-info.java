@@ -1,5 +1,8 @@
 module dev.oreslang {
     requires java.management;
+    // PostgreSQL durable-host adapter compiles against SQL without imposing
+    // a mandatory runtime dependency on the freestanding actor substrate.
+    requires static java.sql;
     requires java.net.http;
     requires jdk.httpserver;
     requires java.base;
