@@ -10,17 +10,38 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Host TaskScope and compiler loan verifier integration; guest syntax stays gated. */
 final class TaskRegionHostScopeIntegrationTest {
+    private static final ThreadSafetyTraits.NominalProof CORE =
+            new ThreadSafetyTraits.NominalProof() {
+                @Override
+                public boolean has(
+                        Types.Named type,
+                        ThreadSafetyTraits.Trait trait) {
+                    return false;
+                }
+            };
+
+    private static TaskAccessVerifier.Admission admit(
+            TaskAccessVerifier verifier,
+            TaskAccessVerifier.Claim claim) {
+        return verifier.admitScopedTyped(
+                List.of(new TaskAccessVerifier.TypedClaim(
+                        claim, Types.Primitive.INT)),
+                CORE,
+                place -> Types.Primitive.INT);
+    }
+
     @Test void twoHostTasksFinishBeforeReleasingStaticLoans() throws Exception {
         var ledger = new TaskAccessVerifier();
         var column = TaskAccessVerifier.Place.whole(
-                new TaskAccessVerifier.Root("PROCESS", 198, 1, true))
+                new TaskAccessVerifier.Root(
+                        "PROCESS", "process-main", 198, 1, true))
                 .field("position", true);
         var leftClaim = new TaskAccessVerifier.Claim(
                 column.range(0, 256, true), TaskAccessVerifier.Mode.WRITE);
         var rightClaim = new TaskAccessVerifier.Claim(
                 column.range(256, 512, true), TaskAccessVerifier.Mode.WRITE);
-        var leftTicket = ledger.admit(List.of(leftClaim));
-        var rightTicket = ledger.admit(List.of(rightClaim));
+        var leftAdmission = admit(ledger, leftClaim);
+        var rightAdmission = admit(ledger, rightClaim);
         int[] values = new int[512];
         CountDownLatch entered = new CountDownLatch(2);
         CountDownLatch finish = new CountDownLatch(1);
@@ -42,19 +63,25 @@ final class TaskRegionHostScopeIntegrationTest {
                 assertTrue(entered.await(3, TimeUnit.SECONDS));
                 assertEquals(2, ledger.activeChildren());
                 assertFalse(ledger.parentMayAccess(
-                        new TaskAccessVerifier.Claim(column, TaskAccessVerifier.Mode.WRITE)));
+                        new TaskAccessVerifier.Claim(
+                                column, TaskAccessVerifier.Mode.WRITE)));
                 assertThrows(IllegalStateException.class, ledger::finishScope);
             } finally {
                 finish.countDown();
             }
+
+            // getDone, not result settlement, is the host physical barrier.
             assertNull(AsyncRuntime.await(left.getDone()));
-            ledger.quiescent(leftTicket);
+            leftAdmission.completion().releaseAfterPhysicalQuiescence();
             assertNull(AsyncRuntime.await(right.getDone()));
-            ledger.quiescent(rightTicket);
+            rightAdmission.completion().releaseAfterPhysicalQuiescence();
+
             assertEquals(0, ledger.activeChildren());
+            ledger.seal();
             ledger.finishScope();
-            for (int i = 0; i < values.length; ++i)
+            for (int i = 0; i < values.length; ++i) {
                 assertEquals(i < 256 ? 10 : 20, values[i]);
+            }
         }
     }
 }

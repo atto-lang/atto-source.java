@@ -20,13 +20,15 @@ import java.util.Objects;
  *
  * <p>Admission is atomic across a Task's claims and ledger operations are
  * synchronized (this is a compiler analysis helper, not runtime host admission).
- * Cancellation does not release loans: the emitted TaskScope quiescence barrier
- * must be proven before
- * calling {@link #quiescent(Ticket)}.
+ * Cancellation does not release loans. Admission returns a one-shot physical
+ * completion capability which trusted lowering binds to Task.getDone() or the
+ * scheduler's onPhysicalExit callback; no raw ticket-release API exists.
  */
 final class TaskAccessVerifier {
     private static final int MAX_LABEL_CHARS = 256;
     private static final int MAX_PROJECTION_DEPTH = 64;
+    private static final java.util.Set<String> TRUST_DOMAINS = java.util.Set.of(
+            "PROCESS", "ACTOR_SHARED", "ACTOR_PRIVATE", "UNTRUSTED");
     public enum Mode { READ, WRITE }
 
     /**
@@ -39,7 +41,8 @@ final class TaskAccessVerifier {
         public Root {
             if (domain == null || domain.isBlank() || ownerId == null || ownerId.isBlank()
                     || domain.length() > MAX_LABEL_CHARS || ownerId.length() > MAX_LABEL_CHARS
-                    || allocationId <= 0 || generation <= 0) {
+                    || allocationId <= 0 || generation <= 0
+                    || !TRUST_DOMAINS.contains(domain)) {
                 throw new IllegalArgumentException("invalid allocation provenance");
             }
             if (!domain.equals("PROCESS") && ownerId.equals(domain)) {
@@ -136,32 +139,209 @@ final class TaskAccessVerifier {
         }
     }
 
-    /** A source-level admission claim with its precisely resolved referent type. */
+    /** A scoped-loan claim with its precisely resolved REFERENT type. */
     public record TypedClaim(Claim claim, Types.Type type) {
         public TypedClaim {
             Objects.requireNonNull(claim, "claim");
             Objects.requireNonNull(type, "type");
+            if (containsBorrowCapability(type)) {
+                throw new IllegalArgumentException(
+                        "nested borrowed referents require an explicit outlives proof");
+            }
+            // Keep erased-interface loans behind a proof separate from auto traits.
+            // Future dyn I + Send/Sync must not silently mint concrete layout,
+            // implementation identity or a scope-bound lifetime.
+            if (Types.containsDynWitness(type)) {
+                throw new IllegalArgumentException(
+                        "scoped dyn referents require concrete implementation and lifetime proof");
+            }
         }
     }
 
     /**
-     * Validates the Send/Sync proof before reserving any access, using the
-     * existing internal auto-trait checker. READ requires T:Sync; WRITE
-     * requires T:Send. A passing proof still does NOT establish lifetime,
-     * actor-domain authorization, pinned code, or task quiescence.
+     * Trusted typed-place lookup from compiler MIR/place analysis. A caller
+     * cannot gain a loan by pairing an unsafe place with a convenient type.
      */
-    public synchronized Ticket admitTyped(List<TypedClaim> requested,
-                             ThreadSafetyTraits.NominalProof nominalProof) {
-        Objects.requireNonNull(nominalProof, "nominalProof");
-        List<TypedClaim> typed = List.copyOf(Objects.requireNonNull(requested, "claims"));
-        for (TypedClaim claim : typed) {
-            ThreadSafetyTraits.Trait needed = claim.claim().mode() == Mode.READ
-                    ? ThreadSafetyTraits.Trait.SYNC : ThreadSafetyTraits.Trait.SEND;
-            if (!ThreadSafetyTraits.has(claim.type(), needed, nominalProof)) {
-                throw new IllegalArgumentException("Task access requires proven " + needed);
+    @FunctionalInterface
+    public interface PlaceTypeProof {
+        Types.Type resolvedReferent(Place place);
+    }
+
+    private static boolean containsBorrowCapability(Types.Type root) {
+        record Pending(Types.Type type, int depth) { }
+        java.util.ArrayDeque<Pending> pending = new java.util.ArrayDeque<>();
+        java.util.Set<Types.Type> seen =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        pending.push(new Pending(root, 0));
+        int nodes = 0;
+        while (!pending.isEmpty()) {
+            Pending current = pending.pop();
+            Types.Type type = current.type();
+            if (type == null || current.depth() > 256 || ++nodes > 4096) return true;
+            if (!seen.add(type)) continue;
+            if (type instanceof Types.Borrow) return true;
+            int next = current.depth() + 1;
+            if (type instanceof Types.Named named) {
+                for (Types.Type item : named.arguments()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Dyn dyn) {
+                pending.push(new Pending(dyn.interfaceType(), next));
+            } else if (type instanceof Types.ListType list) {
+                pending.push(new Pending(list.element(), next));
+            } else if (type instanceof Types.Tuple tuple) {
+                for (Types.Type item : tuple.elements()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Record record) {
+                for (Types.Type item : record.members().values()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Union union) {
+                for (Types.Type item : union.options()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Function function) {
+                for (Types.Type item : function.parameters()) pending.push(new Pending(item, next));
+                pending.push(new Pending(function.result(), next));
+            } else if (type instanceof Types.SelfType self) {
+                pending.push(new Pending(self.bound(), next));
+            } else if (type instanceof Types.Not not) {
+                pending.push(new Pending(not.excluded(), next));
             }
         }
-        return admit(typed.stream().map(TypedClaim::claim).toList());
+        return false;
+    }
+
+    private static boolean containsReadonlyRecordCapability(Types.Type root) {
+        record Pending(Types.Type type, int depth) { }
+        java.util.ArrayDeque<Pending> pending = new java.util.ArrayDeque<>();
+        java.util.Set<Types.Type> seen =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        pending.push(new Pending(root, 0));
+        int nodes = 0;
+        while (!pending.isEmpty()) {
+            Pending current = pending.pop();
+            Types.Type type = current.type();
+            if (type == null || current.depth() > 256 || ++nodes > 4096) return true;
+            if (!seen.add(type)) continue;
+            if (type instanceof Types.Record record && record.readOnly()) return true;
+            int next = current.depth() + 1;
+            if (type instanceof Types.Named named) {
+                for (Types.Type item : named.arguments()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Dyn dyn) {
+                pending.push(new Pending(dyn.interfaceType(), next));
+            } else if (type instanceof Types.ListType list) {
+                pending.push(new Pending(list.element(), next));
+            } else if (type instanceof Types.Tuple tuple) {
+                for (Types.Type item : tuple.elements()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Record record) {
+                for (Types.Type item : record.members().values()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Union union) {
+                for (Types.Type item : union.options()) pending.push(new Pending(item, next));
+            } else if (type instanceof Types.Function function) {
+                for (Types.Type item : function.parameters()) pending.push(new Pending(item, next));
+                pending.push(new Pending(function.result(), next));
+            } else if (type instanceof Types.SelfType self) {
+                pending.push(new Pending(self.bound(), next));
+            } else if (type instanceof Types.Not not) {
+                pending.push(new Pending(not.excluded(), next));
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Scoped READ requires T:Sync; scoped WRITE requires T:Send. Neither route
+     * calls isOwnedSend because a scoped loan is not a detached move.
+     */
+    public synchronized Admission admitScopedTyped(
+            List<TypedClaim> requested,
+            ThreadSafetyTraits.NominalProof nominalProof,
+            PlaceTypeProof trustedPlaceTypes) {
+        if (admissionInProgress) {
+            throw new IllegalStateException("reentrant Task access admission");
+        }
+        admissionInProgress = true;
+        try {
+            Objects.requireNonNull(nominalProof, "nominalProof");
+            Objects.requireNonNull(trustedPlaceTypes, "trusted place types");
+            Objects.requireNonNull(requested, "claims");
+            preflightAdmissionSize(requested.size());
+            List<TypedClaim> typed = List.copyOf(requested);
+            if (typed.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "scoped Task access requires at least one loan claim");
+            }
+
+            Map<PlaceIdentity, Types.Type> pendingTypes = new HashMap<>();
+            for (TypedClaim claim : typed) {
+                Claim access = claim.claim();
+                Types.Type actual = trustedPlaceTypes.resolvedReferent(access.place());
+                if (actual == null || !actual.equals(claim.type())) {
+                    throw new IllegalArgumentException(
+                            "Task claim referent type does not match compiler-resolved place type");
+                }
+                recordPlaceTypeCandidate(
+                        access.place(), actual, pendingTypes);
+                validateScopedResolvedClaim(access, actual, nominalProof);
+            }
+            validateNewPlaceCapacity(pendingTypes);
+            Ticket ticket = admitClaims(
+                    typed.stream().map(TypedClaim::claim).toList());
+            knownPlaceTypes.putAll(pendingTypes);
+            return new Admission(ticket, new PhysicalCompletion(this, ticket));
+        } finally {
+            admissionInProgress = false;
+        }
+    }
+
+    private void preflightAdmissionSize(int requestedCount) {
+        if (sealed) throw new IllegalStateException("TaskScope is sealed");
+        if (live.size() >= MAX_CHILDREN
+                || requestedCount > MAX_CLAIMS_PER_CHILD
+                || requestedCount > MAX_LIVE_CLAIMS - liveClaimCount) {
+            throw new IllegalStateException("TaskScope access capacity exceeded");
+        }
+        long potentialChecks = (long) requestedCount * liveClaimCount
+                + (long) requestedCount * (requestedCount - 1) / 2;
+        if (potentialChecks > MAX_PAIRWISE_CHECKS_PER_ADMISSION) {
+            throw new IllegalStateException(
+                    "TaskScope proof-comparison budget exceeded");
+        }
+    }
+
+    private void recordPlaceTypeCandidate(
+            Place place,
+            Types.Type actual,
+            Map<PlaceIdentity, Types.Type> pendingTypes) {
+        PlaceIdentity identity = PlaceIdentity.of(place);
+        Types.Type previous = knownPlaceTypes.get(identity);
+        Types.Type duplicate = pendingTypes.putIfAbsent(identity, actual);
+        if ((previous != null && !previous.equals(actual))
+                || (duplicate != null && !duplicate.equals(actual))) {
+            throw new IllegalStateException(
+                    "Task place changed type without a generation barrier");
+        }
+    }
+
+    private void validateNewPlaceCapacity(
+            Map<PlaceIdentity, Types.Type> pendingTypes) {
+        long newPlaces = pendingTypes.keySet().stream()
+                .filter(place -> !knownPlaceTypes.containsKey(place))
+                .count();
+        if (newPlaces > MAX_TRACKED_PLACES - knownPlaceTypes.size()) {
+            throw new IllegalStateException(
+                    "Task place type tracking capacity exceeded");
+        }
+    }
+
+    private static void validateScopedResolvedClaim(
+            Claim claim,
+            Types.Type type,
+            ThreadSafetyTraits.NominalProof nominalProof) {
+        if (claim.mode() == Mode.WRITE && containsReadonlyRecordCapability(type)) {
+            throw new IllegalArgumentException(
+                    "scoped Task WRITE requires mutable referent authority");
+        }
+        ThreadSafetyTraits.Trait needed = claim.mode() == Mode.READ
+                ? ThreadSafetyTraits.Trait.SYNC : ThreadSafetyTraits.Trait.SEND;
+        if (!ThreadSafetyTraits.has(type, needed, nominalProof)) {
+            throw new IllegalArgumentException(
+                    "scoped Task access requires proven " + needed);
+        }
     }
 
     /**
@@ -186,37 +366,72 @@ final class TaskAccessVerifier {
      * Unsupported nominal/record layouts deny until a trusted resolved
      * identity + field-layout witness exists.
      */
-    public synchronized Ticket admitCoherentTyped(
-            List<CoherentTypedClaim> requested, SendSyncTraits sourceProof,
-            ThreadSafetyTraits.NominalProof resolvedNominals) {
-        Objects.requireNonNull(sourceProof, "sourceProof");
-        Objects.requireNonNull(resolvedNominals, "resolvedNominals");
-        List<CoherentTypedClaim> typed = List.copyOf(
-                Objects.requireNonNull(requested, "claims"));
-        // An empty list is NOT evidence of a pure child: unchecked FFI,
-        // global effects and unknown aliases require a separate effect proof.
-        if (typed.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "empty scoped Task footprint requires a compiler-proven pure effect");
+    public synchronized Admission admitCoherentTyped(
+            List<CoherentTypedClaim> requested,
+            SendSyncTraits sourceProof,
+            ThreadSafetyTraits.NominalProof resolvedNominals,
+            PlaceTypeProof trustedPlaceTypes) {
+        if (admissionInProgress) {
+            throw new IllegalStateException("reentrant Task access admission");
         }
-        for (CoherentTypedClaim entry : typed) {
-            if (!corresponds(entry.sourceType(), entry.resolvedType(), 0)) {
+        admissionInProgress = true;
+        try {
+            Objects.requireNonNull(sourceProof, "sourceProof");
+            Objects.requireNonNull(resolvedNominals, "resolvedNominals");
+            Objects.requireNonNull(trustedPlaceTypes, "trusted place types");
+            Objects.requireNonNull(requested, "claims");
+            preflightAdmissionSize(requested.size());
+            List<CoherentTypedClaim> typed = List.copyOf(requested);
+            if (typed.isEmpty()) {
                 throw new IllegalArgumentException(
-                        "source and lowered Task types lack a matching trusted layout");
+                        "empty scoped Task footprint requires a compiler-proven pure effect");
             }
-            boolean send = entry.claim().mode() == Mode.WRITE;
-            boolean sourceAllowed = send ? sourceProof.isSend(entry.sourceType())
-                    : sourceProof.isSync(entry.sourceType());
-            ThreadSafetyTraits.Trait needed = send
-                    ? ThreadSafetyTraits.Trait.SEND : ThreadSafetyTraits.Trait.SYNC;
-            if (!sourceAllowed || !ThreadSafetyTraits.has(
-                    entry.resolvedType(), needed, resolvedNominals)) {
-                throw new IllegalArgumentException(
-                        "Task access lacks matching source/resolved " + needed + " proof");
+
+            Map<PlaceIdentity, Types.Type> pendingTypes = new HashMap<>();
+            for (CoherentTypedClaim entry : typed) {
+                Types.Type actual =
+                        trustedPlaceTypes.resolvedReferent(entry.claim().place());
+                if (actual == null || !actual.equals(entry.resolvedType())) {
+                    throw new IllegalArgumentException(
+                            "Task claim referent type does not match compiler-resolved place type");
+                }
+                recordPlaceTypeCandidate(
+                        entry.claim().place(), actual, pendingTypes);
+                if (!corresponds(entry.sourceType(), actual, 0)) {
+                    throw new IllegalArgumentException(
+                            "source and lowered Task types lack a matching trusted layout");
+                }
+                if (containsBorrowCapability(actual)) {
+                    throw new IllegalArgumentException(
+                            "scoped Task referent contains a nested borrow without outlives proof");
+                }
+                if (Types.containsDynWitness(actual)) {
+                    throw new IllegalArgumentException(
+                            "scoped dyn referents require concrete implementation and lifetime proof");
+                }
+                boolean send = entry.claim().mode() == Mode.WRITE;
+                boolean sourceAllowed = send
+                        ? sourceProof.isSend(entry.sourceType())
+                        : sourceProof.isSync(entry.sourceType());
+                ThreadSafetyTraits.Trait needed = send
+                        ? ThreadSafetyTraits.Trait.SEND
+                        : ThreadSafetyTraits.Trait.SYNC;
+                if (!sourceAllowed) {
+                    throw new IllegalArgumentException(
+                            "Task source preflight lacks matching "
+                                    + needed + " candidate");
+                }
+                validateScopedResolvedClaim(
+                        entry.claim(), actual, resolvedNominals);
             }
+            validateNewPlaceCapacity(pendingTypes);
+            Ticket ticket = admitClaims(
+                    typed.stream().map(CoherentTypedClaim::claim).toList());
+            knownPlaceTypes.putAll(pendingTypes);
+            return new Admission(ticket, new PhysicalCompletion(this, ticket));
+        } finally {
+            admissionInProgress = false;
         }
-        // Reuses the SAME ledger and all-or-nothing alias/generation rules.
-        return admit(typed.stream().map(CoherentTypedClaim::claim).toList());
     }
 
     /** Intentionally small trusted ABI subset; no nominal name guessing. */
@@ -254,6 +469,44 @@ final class TaskAccessVerifier {
         return false;
     }
 
+    /** Opaque compiler admission; only its physical completion can retire the loan. */
+    public static final class Admission {
+        private final Ticket ticket;
+        private final PhysicalCompletion completion;
+
+        private Admission(Ticket ticket, PhysicalCompletion completion) {
+            this.ticket = ticket;
+            this.completion = completion;
+        }
+
+        public Ticket ticket() { return ticket; }
+        public PhysicalCompletion completion() { return completion; }
+    }
+
+    /**
+     * One-shot capability intended to be passed as the trusted runtime's
+     * onPhysicalExit callback. Result settlement/cancellation cannot invoke it.
+     */
+    public static final class PhysicalCompletion {
+        private final TaskAccessVerifier owner;
+        private final Ticket ticket;
+        private boolean released;
+
+        private PhysicalCompletion(TaskAccessVerifier owner, Ticket ticket) {
+            this.owner = owner;
+            this.ticket = ticket;
+        }
+
+        public synchronized void releaseAfterPhysicalQuiescence() {
+            if (released) {
+                throw new IllegalStateException(
+                        "Task physical completion already consumed");
+            }
+            owner.releaseAfterPhysicalQuiescence(ticket);
+            released = true;
+        }
+    }
+
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
     public static final class Ticket {
         private final long id;
@@ -269,18 +522,58 @@ final class TaskAccessVerifier {
     private record AllocationKey(String domain, String ownerId, long id) { }
     private record ScopeKey(String domain, String ownerId) { }
 
+    private record ProjectionIdentity(
+            String kind, String name, long start, long end, String unit) { }
+
+    private record PlaceIdentity(
+            AllocationKey allocation,
+            long generation,
+            List<ProjectionIdentity> projections) {
+        static PlaceIdentity of(Place place) {
+            Root root = place.root();
+            ArrayList<ProjectionIdentity> path =
+                    new ArrayList<>(place.projections().size());
+            for (Projection projection : place.projections()) {
+                if (projection instanceof Field field) {
+                    path.add(new ProjectionIdentity(
+                            "field", field.name(), 0, 0, ""));
+                } else if (projection instanceof Range range) {
+                    path.add(new ProjectionIdentity(
+                            "range", "", range.start(), range.end(),
+                            range.unit().name()));
+                } else {
+                    throw new IllegalArgumentException(
+                            "unverified Task place projection");
+                }
+            }
+            return new PlaceIdentity(
+                    new AllocationKey(
+                            root.domain(), root.ownerId(), root.allocationId()),
+                    root.generation(),
+                    List.copyOf(path));
+        }
+    }
+
     // Bounded compiler analysis: rejecting a huge scope is safer than unbounded
     // memory use or integer overflow. A future MIR implementation can shard.
     private static final int MAX_CHILDREN = 4096;
     private static final int MAX_CLAIMS_PER_CHILD = 1024;
+    private static final int MAX_LIVE_CLAIMS = 8192;
+    private static final long MAX_PAIRWISE_CHECKS_PER_ADMISSION = 2_000_000L;
     private static final int MAX_TRACKED_ALLOCATIONS = 65536;
+    private static final int MAX_TRACKED_PLACES = 65536;
 
     private final Map<Ticket, Child> live = new LinkedHashMap<>();
     private final Map<AllocationKey, Long> knownGenerations = new HashMap<>();
+    private final Map<AllocationKey, Boolean> knownUniqueness = new HashMap<>();
+    private final Map<PlaceIdentity, Types.Type> knownPlaceTypes = new HashMap<>();
     /** Single trusted allocation/trust domain per scope, including READ-only claims. */
     private ScopeKey scopeDomain;
     private long nextId = 1;
+    private int liveClaimCount;
     private boolean sealed;
+    /** Java monitor locking is reentrant; proof callbacks may not mutate this ledger. */
+    private boolean admissionInProgress;
 
     /**
      * True means locations *may* alias. An UNKNOWN proof never establishes
@@ -298,6 +591,11 @@ final class TaskAccessVerifier {
         }
         // A stale generation must not be turned into a disjointness proof.
         if (left.generation() != right.generation()) return true;
+        // Projection-level separation cannot discharge aliases outside this
+        // scope unless the backing allocation itself is compiler-proven unique.
+        if (!left.uniqueAllocationProven() || !right.uniqueAllocationProven()) {
+            return true;
+        }
         List<Projection> la = a.projections(), lb = b.projections();
         for (int i = 0; i < Math.min(la.size(), lb.size()); i++) {
             Projection ap = la.get(i), bp = lb.get(i);
@@ -341,13 +639,27 @@ final class TaskAccessVerifier {
      * Conservatively reserves all child borrows, or none. The frontend must
      * verify Send/Sync and task scope lifetime *before* invoking this method.
      */
-    public synchronized Ticket admit(List<Claim> requested) {
+    private synchronized Ticket admitClaims(List<Claim> requested) {
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         List<Claim> claims = List.copyOf(Objects.requireNonNull(requested, "claims"));
-        if (live.size() >= MAX_CHILDREN || claims.size() > MAX_CLAIMS_PER_CHILD) {
+        if (claims.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "scoped Task access requires at least one loan claim");
+        }
+        if (live.size() >= MAX_CHILDREN
+                || claims.size() > MAX_CLAIMS_PER_CHILD
+                || claims.size() > MAX_LIVE_CLAIMS - liveClaimCount) {
             throw new IllegalStateException("TaskScope access capacity exceeded");
         }
+        long claimCount = claims.size();
+        long comparisons = claimCount * liveClaimCount
+                + claimCount * (claimCount - 1) / 2;
+        if (comparisons > MAX_PAIRWISE_CHECKS_PER_ADMISSION) {
+            throw new IllegalStateException(
+                    "TaskScope proof-comparison budget exceeded");
+        }
         Map<AllocationKey, Long> incomingGenerations = new HashMap<>();
+        Map<AllocationKey, Boolean> incomingUniqueness = new HashMap<>();
         ScopeKey requestedDomain = scopeDomain;
         for (Claim claim : claims) {
             Root root = claim.place().root();
@@ -364,8 +676,20 @@ final class TaskAccessVerifier {
                 throw new IllegalStateException("conflicting allocation generations in one Task");
             }
             Long established = knownGenerations.get(key);
-            if (established != null && established != claim.place().root().generation()) {
-                throw new IllegalStateException("stale or conflicting allocation generation");
+            if (established != null
+                    && established != claim.place().root().generation()) {
+                throw new IllegalStateException(
+                        "stale or conflicting allocation generation");
+            }
+            Boolean sameBatchUniqueness = incomingUniqueness.putIfAbsent(
+                    key, root.uniqueAllocationProven());
+            Boolean knownProof = knownUniqueness.get(key);
+            if ((sameBatchUniqueness != null
+                    && sameBatchUniqueness != root.uniqueAllocationProven())
+                    || (knownProof != null
+                    && knownProof != root.uniqueAllocationProven())) {
+                throw new IllegalStateException(
+                        "allocation identity changed its uniqueness proof");
             }
             for (Child other : live.values()) {
                 for (Claim existing : other.claims) {
@@ -392,16 +716,21 @@ final class TaskAccessVerifier {
         // Only now commit the scope domain, claims and allocation generations.
         scopeDomain = requestedDomain;
         live.put(ticket, new Child(claims));
+        liveClaimCount += claims.size();
         for (Claim claim : claims) {
             Root root = claim.place().root();
-            knownGenerations.putIfAbsent(
-                    new AllocationKey(root.domain(), root.ownerId(), root.allocationId()), root.generation());
+            AllocationKey key = new AllocationKey(
+                    root.domain(), root.ownerId(), root.allocationId());
+            knownGenerations.putIfAbsent(key, root.generation());
+            knownUniqueness.putIfAbsent(
+                    key, root.uniqueAllocationProven());
         }
         return ticket;
     }
 
     /** Cancellation is an intent; a still-running Task continues to own loans. */
     public synchronized void requestCancel(Ticket ticket) {
+        rejectAdmissionReentrancy();
         child(ticket).cancelRequested = true;
     }
 
@@ -429,9 +758,11 @@ final class TaskAccessVerifier {
      * Called only after child execution, defers, FFI pins and cleanup are
      * physically quiescent. The ledger itself cannot prove runtime quiescence.
      */
-    public synchronized void quiescent(Ticket ticket) {
-        child(ticket); // validates this exact ticket belongs to this scope
+    private synchronized void releaseAfterPhysicalQuiescence(Ticket ticket) {
+        rejectAdmissionReentrancy();
+        Child completed = child(ticket);
         live.remove(ticket);
+        liveClaimCount -= completed.claims.size();
     }
 
     /**
@@ -440,6 +771,7 @@ final class TaskAccessVerifier {
      * Callers must independently prove owner authority and real quiescence.
      */
     public synchronized void structuralBarrier(Root oldRoot, long newGeneration) {
+        rejectAdmissionReentrancy();
         Objects.requireNonNull(oldRoot, "oldRoot");
         if (sealed) throw new IllegalStateException("TaskScope is sealed");
         if (newGeneration <= oldRoot.generation()) {
@@ -453,6 +785,12 @@ final class TaskAccessVerifier {
         if (current == null || current != oldRoot.generation()) {
             throw new IllegalStateException("stale structural generation");
         }
+        Boolean witnessedUnique = knownUniqueness.get(key);
+        if (witnessedUnique == null
+                || witnessedUnique != oldRoot.uniqueAllocationProven()) {
+            throw new IllegalStateException(
+                    "structural barrier has inconsistent owner proof");
+        }
         for (Child child : live.values()) {
             for (Claim claim : child.claims) {
                 // A different numeric allocation ID is NOT enough to prove
@@ -463,20 +801,41 @@ final class TaskAccessVerifier {
             }
         }
         knownGenerations.put(key, newGeneration);
+        knownPlaceTypes.keySet().removeIf(
+                place -> place.allocation().equals(key));
+    }
+
+    /** Stop new admissions without releasing any live loan. */
+    public synchronized void seal() {
+        rejectAdmissionReentrancy();
+        sealed = true;
     }
 
     public synchronized void finishScope() {
-        if (!live.isEmpty()) {
-            throw new IllegalStateException("TaskScope cannot finish before child quiescence");
+        rejectAdmissionReentrancy();
+        if (!sealed) {
+            throw new IllegalStateException(
+                    "TaskScope must be sealed before provenance retirement");
         }
-        sealed = true;
-        // No source permission is valid after scope teardown; retire
-        // provenance bookkeeping rather than retaining every old allocation.
+        if (!live.isEmpty() || liveClaimCount != 0) {
+            throw new IllegalStateException(
+                    "TaskScope cannot finish before physical child quiescence");
+        }
         knownGenerations.clear();
+        knownUniqueness.clear();
+        knownPlaceTypes.clear();
         scopeDomain = null;
     }
 
     public synchronized int activeChildren() { return live.size(); }
+    public synchronized int activeClaims() { return liveClaimCount; }
+
+    private void rejectAdmissionReentrancy() {
+        if (admissionInProgress) {
+            throw new IllegalStateException(
+                    "Task proof callback cannot mutate its own ledger");
+        }
+    }
 
     private Child child(Ticket ticket) {
         Child result = live.get(Objects.requireNonNull(ticket, "ticket"));

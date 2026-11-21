@@ -5,29 +5,46 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * TEST-ONLY cross-package seam. Production TaskAccessVerifier intentionally
- * stays package-private: guest/runtime callers may not mint region claims.
- * This fixture creates exactly two compiler-owned disjoint loan tickets
- * and exposes only narrow observations/physical-release callbacks to the
- * runtime scheduler integration test.
+ * TEST-ONLY cross-package seam. Production TaskAccessVerifier stays
+ * package-private. The runtime sees only callbacks; it cannot mint or retire
+ * compiler loans by ticket.
  */
 public final class TaskRegionTestLedger {
+    private static final ThreadSafetyTraits.NominalProof CORE =
+            new ThreadSafetyTraits.NominalProof() {
+                @Override
+                public boolean has(
+                        Types.Named type,
+                        ThreadSafetyTraits.Trait trait) {
+                    return false;
+                }
+            };
+
     private final TaskAccessVerifier ledger = new TaskAccessVerifier();
     private final TaskAccessVerifier.Place column =
             TaskAccessVerifier.Place.whole(
-                    new TaskAccessVerifier.Root("PROCESS", 203, 1, true))
+                    new TaskAccessVerifier.Root(
+                            "PROCESS", "process-main", 203, 1, true))
                     .field("position", true);
-    private final TaskAccessVerifier.Ticket left;
-    private final TaskAccessVerifier.Ticket right;
+    private final TaskAccessVerifier.Admission left;
+    private final TaskAccessVerifier.Admission right;
 
     public TaskRegionTestLedger() {
-        left = ledger.admit(List.of(write(0, 128)));
-        right = ledger.admit(List.of(write(128, 256)));
+        left = admit(write(0, 128));
+        right = admit(write(128, 256));
     }
 
     private TaskAccessVerifier.Claim write(long from, long to) {
         return new TaskAccessVerifier.Claim(
                 column.range(from, to, true), TaskAccessVerifier.Mode.WRITE);
+    }
+
+    private TaskAccessVerifier.Admission admit(TaskAccessVerifier.Claim claim) {
+        return ledger.admitScopedTyped(
+                List.of(new TaskAccessVerifier.TypedClaim(
+                        claim, Types.Primitive.INT)),
+                CORE,
+                place -> Types.Primitive.INT);
     }
 
     public int activeChildren() {
@@ -40,22 +57,22 @@ public final class TaskRegionTestLedger {
     }
 
     public void cancelLeft() {
-        ledger.requestCancel(left);
+        ledger.requestCancel(left.ticket());
     }
 
-    /** Only the runtime's trusted onPhysicalExit callback may call this. */
+    /** Only the runtime's trusted onPhysicalExit callback calls this seam. */
     public void physicalExitLeft() {
-        ledger.quiescent(left);
+        left.completion().releaseAfterPhysicalQuiescence();
     }
 
-    /** Only the runtime's trusted onPhysicalExit callback may call this. */
+    /** Only the runtime's trusted onPhysicalExit callback calls this seam. */
     public void physicalExitRight() {
-        ledger.quiescent(right);
+        right.completion().releaseAfterPhysicalQuiescence();
     }
 
     public void verifyOverlapRejected() {
-        assertThrows(IllegalArgumentException.class, () ->
-                ledger.admit(List.of(write(127, 129))));
+        assertThrows(IllegalArgumentException.class,
+                () -> admit(write(127, 129)));
     }
 
     public void verifyPrematureFinishRejected() {
@@ -63,6 +80,7 @@ public final class TaskRegionTestLedger {
     }
 
     public void finishScope() {
+        ledger.seal();
         ledger.finishScope();
     }
 }

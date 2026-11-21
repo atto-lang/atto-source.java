@@ -30,44 +30,76 @@ final class ScopedTaskTypeBridgeTest {
     private static final ThreadSafetyTraits.NominalProof NO_GUEST_UNSAFE =
             (type, trait) -> false;
 
+    private static TaskAccessVerifier.Admission admitCoherent(
+            TaskAccessVerifier verifier,
+            List<TaskAccessVerifier.CoherentTypedClaim> claims,
+            SendSyncTraits sourceProof,
+            ThreadSafetyTraits.NominalProof nominalProof) {
+        java.util.Map<TaskAccessVerifier.Place, Types.Type> resolved =
+                new java.util.HashMap<>();
+        for (TaskAccessVerifier.CoherentTypedClaim claim : claims) {
+            resolved.putIfAbsent(
+                    claim.claim().place(), claim.resolvedType());
+        }
+        return verifier.admitCoherentTyped(
+                claims, sourceProof, nominalProof, resolved::get);
+    }
+
     @Test
     void twoDisjointArrayWriterTasksCanBeAdmittedAndRejoined() {
         var ledger = new TaskAccessVerifier();
         var array = src("Array", src("int"));
         var resolved = new Types.ListType(Types.Primitive.INT);
-        var left = ledger.admitCoherentTyped(List.of(claim(
+        var left = admitCoherent(ledger, List.of(claim(
                 TaskAccessVerifier.Mode.WRITE, 0, 4096, array, resolved)),
                 SOURCE, NO_GUEST_UNSAFE);
-        var right = ledger.admitCoherentTyped(List.of(claim(
+        var right = admitCoherent(ledger, List.of(claim(
                 TaskAccessVerifier.Mode.WRITE, 4096, 8192, array, resolved)),
                 SOURCE, NO_GUEST_UNSAFE);
         assertEquals(2, ledger.activeChildren());
         assertFalse(ledger.parentMayAccess(new TaskAccessVerifier.Claim(
                 POSITIONS.range(0, 8192, true), TaskAccessVerifier.Mode.WRITE)));
         assertThrows(IllegalArgumentException.class, () ->
-                ledger.admitCoherentTyped(List.of(claim(
+                admitCoherent(ledger, List.of(claim(
                         TaskAccessVerifier.Mode.WRITE, 4095, 4097, array, resolved)),
                         SOURCE, NO_GUEST_UNSAFE));
-        ledger.requestCancel(left);
+        ledger.requestCancel(left.ticket());
         assertFalse(ledger.parentMayAccess(new TaskAccessVerifier.Claim(
                 POSITIONS.range(0, 4096, true), TaskAccessVerifier.Mode.READ)));
         assertThrows(IllegalStateException.class, ledger::finishScope);
         // Runtime must call quiescent only AFTER actual physical Task exit.
-        ledger.quiescent(left);
-        ledger.quiescent(right);
+        left.completion().releaseAfterPhysicalQuiescence();
+        right.completion().releaseAfterPhysicalQuiescence();
+        ledger.seal();
         ledger.finishScope();
+    }
+
+    @Test
+    void claimedSafeTypeCannotOverrideTrustedPlaceType() {
+        var ledger = new TaskAccessVerifier();
+        var entry = claim(
+                TaskAccessVerifier.Mode.WRITE, 0, 16,
+                src("int"), Types.Primitive.INT);
+        assertThrows(IllegalArgumentException.class, () ->
+                ledger.admitCoherentTyped(
+                        List.of(entry),
+                        SOURCE,
+                        NO_GUEST_UNSAFE,
+                        place -> new Types.Named(
+                                "NativeHandle", List.of())));
+        assertEquals(0, ledger.activeChildren());
     }
 
     @Test
     void sourceAndLoweredTypeMismatchCannotLaunderSend() {
         var ledger = new TaskAccessVerifier();
         assertThrows(IllegalArgumentException.class, () ->
-                ledger.admitCoherentTyped(List.of(claim(
+                admitCoherent(ledger, List.of(claim(
                         TaskAccessVerifier.Mode.WRITE, 0, 32, src("int"),
                         Types.Primitive.STRING)), SOURCE, NO_GUEST_UNSAFE));
         assertEquals(0, ledger.activeChildren());
         assertThrows(IllegalArgumentException.class, () ->
-                ledger.admitCoherentTyped(List.of(claim(
+                admitCoherent(ledger, List.of(claim(
                         TaskAccessVerifier.Mode.WRITE, 0, 32, src("Array", src("int")),
                         new Types.ListType(Types.Primitive.STRING))),
                         SOURCE, NO_GUEST_UNSAFE));
@@ -80,12 +112,12 @@ final class ScopedTaskTypeBridgeTest {
         var source = src("Array", src("int"));
         var lowered = new Types.ListType(Types.Primitive.INT);
         assertThrows(IllegalArgumentException.class, () ->
-                ledger.admitCoherentTyped(List.of(claim(
+                admitCoherent(ledger, List.of(claim(
                         TaskAccessVerifier.Mode.READ, 0, 16, source, lowered)),
                         SOURCE, NO_GUEST_UNSAFE));
         assertEquals(0, ledger.activeChildren());
         // A primitive can be Sync when both representations prove it.
-        assertNotNull(ledger.admitCoherentTyped(List.of(claim(
+        assertNotNull(admitCoherent(ledger, List.of(claim(
                 TaskAccessVerifier.Mode.READ, 0, 16, src("int"),
                 Types.Primitive.INT)), SOURCE, NO_GUEST_UNSAFE));
     }
@@ -105,11 +137,11 @@ final class ScopedTaskTypeBridgeTest {
             // type *names*. Without resolved intrinsic identity the bridge
             // must deny, even when both element types are Send+Sync.
             assertThrows(IllegalArgumentException.class,
-                    () -> ledger.admitCoherentTyped(List.of(claim(
+                    () -> admitCoherent(ledger, List.of(claim(
                             TaskAccessVerifier.Mode.READ, 0, 16, source, internal)),
                             SOURCE, NO_GUEST_UNSAFE));
             assertThrows(IllegalArgumentException.class,
-                    () -> ledger.admitCoherentTyped(List.of(claim(
+                    () -> admitCoherent(ledger, List.of(claim(
                             TaskAccessVerifier.Mode.WRITE, 0, 16, source, internal)),
                             SOURCE, NO_GUEST_UNSAFE));
         }
@@ -123,10 +155,35 @@ final class ScopedTaskTypeBridgeTest {
             Ast.TypeRef source = Ast.TypeRef.borrowed(src("int"), mutable);
             Types.Type resolved = new Types.Borrow(Types.Primitive.INT, mutable);
             assertThrows(IllegalArgumentException.class,
-                    () -> ledger.admitCoherentTyped(List.of(claim(
+                    () -> admitCoherent(ledger, List.of(claim(
                             TaskAccessVerifier.Mode.WRITE, 0, 16, source, resolved)),
                             SOURCE, NO_GUEST_UNSAFE));
         }
+        assertEquals(0, ledger.activeChildren());
+    }
+
+    @Test
+    void semanticDynCannotEnterCoherentScopedLoanEvenWithPermissiveNominalProof() {
+        var ledger = new TaskAccessVerifier();
+        Types.Type dyn = new Types.Dyn(
+                new Types.Named("Worker", List.of()));
+        // No source dyn syntax exists on this stack. A forged surface type and
+        // permissive nominal callback must not bypass the independent dyn gate.
+        assertThrows(IllegalArgumentException.class, () ->
+                admitCoherent(ledger, List.of(claim(
+                        TaskAccessVerifier.Mode.WRITE, 0, 16,
+                        src("Worker"), dyn)),
+                        SOURCE, new ThreadSafetyTraits.NominalProof() {
+                            @Override public boolean has(
+                                    Types.Named type,
+                                    ThreadSafetyTraits.Trait trait) {
+                                return true;
+                            }
+                            @Override public boolean trustedIntrinsic(
+                                    Types.Named type) {
+                                return true;
+                            }
+                        }));
         assertEquals(0, ledger.activeChildren());
     }
 
@@ -136,7 +193,7 @@ final class ScopedTaskTypeBridgeTest {
         for (String name : List.of("ActorRef", "Task", "Channel", "ThreadBound",
                 "ExecutionPermit", "NativeHandle", "RawPointer", "MutexGuard")) {
             assertThrows(IllegalArgumentException.class, () ->
-                    ledger.admitCoherentTyped(List.of(claim(
+                    admitCoherent(ledger, List.of(claim(
                             TaskAccessVerifier.Mode.WRITE, 0, 16,
                             src(name, src("int")),
                             new Types.Named(name, List.of(Types.Primitive.INT)))),
@@ -149,14 +206,14 @@ final class ScopedTaskTypeBridgeTest {
     void aFailedMultiClaimDoesNotReserveAnyLoan() {
         var ledger = new TaskAccessVerifier();
         assertThrows(IllegalArgumentException.class, () ->
-                ledger.admitCoherentTyped(List.of(
+                admitCoherent(ledger, List.of(
                         claim(TaskAccessVerifier.Mode.WRITE, 0, 10,
                                 src("int"), Types.Primitive.INT),
                         claim(TaskAccessVerifier.Mode.WRITE, 10, 20,
                                 src("int"), Types.Primitive.STRING)),
                         SOURCE, NO_GUEST_UNSAFE));
         assertEquals(0, ledger.activeChildren());
-        assertNotNull(ledger.admitCoherentTyped(List.of(claim(
+        assertNotNull(admitCoherent(ledger, List.of(claim(
                 TaskAccessVerifier.Mode.WRITE, 0, 20, src("int"), Types.Primitive.INT)),
                 SOURCE, NO_GUEST_UNSAFE));
     }
@@ -165,7 +222,7 @@ final class ScopedTaskTypeBridgeTest {
     void emptyFootprintsCannotPretendUnknownEffectsArePure() {
         var ledger = new TaskAccessVerifier();
         assertThrows(IllegalArgumentException.class, () ->
-                ledger.admitCoherentTyped(List.of(), SOURCE, NO_GUEST_UNSAFE));
+                admitCoherent(ledger, List.of(), SOURCE, NO_GUEST_UNSAFE));
         assertEquals(0, ledger.activeChildren());
     }
 
@@ -181,7 +238,7 @@ final class ScopedTaskTypeBridgeTest {
         Ast.TypeRef input = deep;
         Types.Type resolved = lowered;
         assertThrows(IllegalArgumentException.class, () ->
-                ledger.admitCoherentTyped(List.of(claim(
+                admitCoherent(ledger, List.of(claim(
                         TaskAccessVerifier.Mode.WRITE, 0, 32, input, resolved)),
                         SOURCE, NO_GUEST_UNSAFE));
     }
