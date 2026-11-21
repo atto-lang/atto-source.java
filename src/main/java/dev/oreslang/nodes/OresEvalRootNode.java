@@ -7719,6 +7719,17 @@ public final class OresEvalRootNode extends RootNode {
                         return new java.util.ArrayList<>(java.util.Arrays.asList(text.split(java.util.regex.Pattern.quote(delimiter), -1)));
                     };
                 }
+                if (name.equals("utf8_bytes")) {
+                    return (Invokable) args -> {
+                        requireZero(args, "string.utf8_bytes");
+                        byte[] encoded = Utf8StringAbi.encode(text).bytes();
+                        ArrayList<Long> bytes = new ArrayList<>(encoded.length);
+                        for (byte value : encoded) {
+                            bytes.add((long) (value & 0xff));
+                        }
+                        return bytes;
+                    };
+                }
                 if (name.equals("trim")) {
                     return (Invokable) args -> { requireZero(args, "string.trim"); return text.trim(); };
                 }
@@ -8484,6 +8495,22 @@ public final class OresEvalRootNode extends RootNode {
                         List<Object> list = (List<Object>) rawList;
                         list.set(checkedSequenceIndex(index, list.size()), args.get(1));
                         return null;
+                    };
+                    case "utf8_string" -> (Invokable) args -> {
+                        requireZero(args, "List<int>.utf8_string");
+                        byte[] bytes = new byte[rawList.size()];
+                        for (int index = 0; index < rawList.size(); index++) {
+                            Object value = rawList.get(index);
+                            if (!(value instanceof Number number)
+                                    || !isIntegral(number)
+                                    || number.longValue() < 0
+                                    || number.longValue() > 255) {
+                                throw new IllegalArgumentException(
+                                        "List<int>.utf8_string bytes must be integers in 0..255");
+                            }
+                            bytes[index] = (byte) number.intValue();
+                        }
+                        return Utf8StringAbi.decode(bytes, bytes.length);
                     };
                     default -> throw new IllegalArgumentException(
                             "unknown List member " + name);

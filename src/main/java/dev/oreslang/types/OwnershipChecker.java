@@ -1656,6 +1656,8 @@ public final class OwnershipChecker {
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
             if (stringCall != null) return stringCall;
+            ValueInfo utf8ListCall = checkBuiltinUtf8ListCall(member, call.arguments(), scope);
+            if (utf8ListCall != null) return utf8ListCall;
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
             // A const/let read-only view must not gain mutation via .add/.set.
@@ -2149,6 +2151,11 @@ public final class OwnershipChecker {
                 result = new Ast.TypeRef(
                         "List", List.of(Ast.TypeRef.simple("String")), false);
             }
+            case "utf8_bytes" -> {
+                arity = 0;
+                result = new Ast.TypeRef(
+                        "List", List.of(Ast.TypeRef.simple("int")), false);
+            }
             case "trim" -> {
                 arity = 0;
                 result = Ast.TypeRef.simple("String");
@@ -2174,6 +2181,28 @@ public final class OwnershipChecker {
         for (Ast.Expr argument : arguments) {
             checkExpr(argument, scope, false);
         }
+        return new ValueInfo(result, kindOfType(result), null);
+    }
+
+    private ValueInfo checkBuiltinUtf8ListCall(
+            Ast.MemberExpr member,
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        if (!member.member().equals("utf8_string")) return null;
+        Ast.TypeRef receiver = receiverType(member.receiver(), scope);
+        if (receiver == null) return null;
+        Ast.TypeRef concrete = receiver.isBorrow() ? receiver.borrowedTarget() : receiver;
+        if (!concrete.name().equals("List")
+                || concrete.arguments().size() != 1
+                || !concrete.arguments().getFirst().name().equals("int")) {
+            return null;
+        }
+        if (!arguments.isEmpty()) {
+            throw error("built-in List<int>.utf8_string expects 0 argument(s), got "
+                    + arguments.size());
+        }
+        checkExpr(member.receiver(), scope, false);
+        Ast.TypeRef result = Ast.TypeRef.simple("String");
         return new ValueInfo(result, kindOfType(result), null);
     }
 

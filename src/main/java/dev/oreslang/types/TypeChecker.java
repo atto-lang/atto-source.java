@@ -3946,6 +3946,7 @@ public final class TypeChecker {
                 return switch (member.member()) {
                     case "replace_literal" -> new Function(List.of(Primitive.STRING, Primitive.STRING), Primitive.STRING);
                     case "split_literal" -> new Function(List.of(Primitive.STRING), new ListType(Primitive.STRING));
+                    case "utf8_bytes" -> new Function(List.of(), new ListType(Primitive.INT));
                     case "trim" -> new Function(List.of(), Primitive.STRING);
                     case "is_identifier", "is_route_segment" -> new Function(List.of(), Primitive.BOOL);
                     case "starts_with", "ends_with", "contains_literal" ->
@@ -7536,6 +7537,9 @@ public final class TypeChecker {
                 case "set" -> new Function(
                         List.of(Primitive.INT, list.element()),
                         Primitive.VOID);
+                case "utf8_string" -> list.element() == Primitive.INT
+                        ? new Function(List.of(), Primitive.STRING)
+                        : null;
                 default -> null;
             };
         }
