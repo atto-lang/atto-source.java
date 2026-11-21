@@ -21,6 +21,16 @@ public final class OresCompiler {
         return ProtectedScalarMirV1.lower(Parser.parse(source));
     }
 
+    /**
+     * Opt-in restricted two-i64 inverted-struct guest execution slice.
+     * Uses the production lexer, a closed instruction verifier and owner-local
+     * physical SoA columns. The ordinary Parser/TypeChecker remains fail-closed
+     * for generic inverted types; this does not grant AOT or actor parity.
+     */
+    public static DopInvertedGuestI64V1.Plan compileInvertedI64Guest(String source) {
+        return DopInvertedGuestI64V1.compile(source);
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
         return analyze(Parser.parse(source));
     }

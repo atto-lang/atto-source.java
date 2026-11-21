@@ -1,0 +1,72 @@
+name: AttoLang DOP inverted Java restricted guest exact-head
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/compiler/DopInvertedGuestI64V1.java'
+      - 'src/main/java/dev/oreslang/compiler/OresCompiler.java'
+      - 'src/main/java/dev/oreslang/runtime/InvertedColumnStore.java'
+      - 'src/test/java/dev/oreslang/compiler/DopInvertedGuestI64V1Test.java'
+      - 'src/test/java/dev/oreslang/DopInvertedGuestAdmissionTest.java'
+      - 'contracts/dop-inverted-v1/**'
+      - '.github/workflows/dop-inverted-java-guest-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restricted-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: checkout-head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: verify-head
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_HEAD" ]]
+          git diff --quiet --exit-code
+          [[ -z "$(git ls-files --others --exclude-standard)" ]]
+          echo "DOP_EXACT_HEAD=$EXPECTED_HEAD"
+          echo "DOP_SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: verify-fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r name expected; do
+            file="contracts/dop-inverted-v1/$name"
+            [[ -f "$file" && ! -L "$file" ]]
+            [[ "$(wc -c < "$file")" -le 65536 ]]
+            observed="$(git hash-object --no-filters -- "$file")"
+            if [[ "$observed" != "$expected" ]]; then
+              echo "FAIL: canonical AttoLang source blob mismatch: $name" >&2
+              exit 1
+            fi
+          done <<'DOP_EXPECTED_BLOBS'
+          swap-reuse.atto 8f5599a9e0b11ded2929110b4936441fceb2ef21
+          removed-index-trap.atto c3c87cfd2515707932734e183bb5768436526a96
+          positive-immutable-column-swap.atto 863b1f20137656a277fc7bc04415a6f001f76512
+          DOP_EXPECTED_BLOBS
+          echo "DOP_CANONICAL_SOURCE_BLOBS_MATCHED=3"
+      - name: setup-graalvm
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: compile-guest
+        run: mvn -B -ntp -DskipTests package
+      - name: execute-guest
+        run: mvn -B -ntp -Dtest=DopInvertedGuestI64V1Test,DopInvertedGuestAdmissionTest test
+      - name: verify-junit-report
+        run: java tools/VerifyDopInvertedJUnit.java
