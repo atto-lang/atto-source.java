@@ -109,14 +109,18 @@ public final class IncrementalCompiler {
             Ast.Program checked;
             LinkedClasses linked = linkedPublicClasses(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
-            if (linked.classes().isEmpty()) {
+            // A validated exported name is not itself a structural type
+            // witness. Expand and link its actual target before typechecking.
+            Map<String, Ast.TypeAliasDecl> linkedTypes = PublicTypeAliasLinker.link(
+                    id, parsed.get(id), parsed, normalizedImportResolutions);
+            if (linked.classes().isEmpty() && linkedTypes.isEmpty()) {
                 checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
             } else {
                 try {
                     // Foreign layouts are used for type and ownership proofs;
                     // their declarations are never executed in the importer.
                     checked = TypeChecker.checkTypesWithImportedClasses(
-                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases());
+                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases(), linkedTypes);
                     OwnershipChecker.checkWithImportedClasses(checked, linked.classes());
                 } catch (IllegalArgumentException invalid) {
                     throw new IllegalArgumentException(

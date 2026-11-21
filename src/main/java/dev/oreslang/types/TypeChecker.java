@@ -68,7 +68,18 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
-    private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    /** TYPE/TYPES imports are not structural witnesses until the trusted linker supplies them. */
+    private final Set<String> unlinkedImportedTypes = new HashSet<>();
+    /** Imported aliases have verified type shapes, but not foreign ownership layouts. */
+    private final Set<String> linkedImportedAliasNames = new HashSet<>();
+    // Track concrete instantiations, not declaration identity alone:
+    // Alias<Alias<int>> is finite, while Alias<int> -> Alias<int> is a cycle.
+    private final IdentityHashMap<Ast.TypeAliasDecl, Set<List<Ast.TypeRef>>> resolvingAliases =
+            new IdentityHashMap<>();
+    private int aliasResolutionDepth;
+    private int aliasExpansionNodes;
+    private static final int MAX_ALIAS_RESOLUTION_DEPTH = 64;
+    private static final int MAX_ALIAS_EXPANSION_NODES = 16_384;
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
     // Unlike private-member access, declaration origin must survive nlex.
@@ -120,7 +131,19 @@ public final class TypeChecker {
     public static Ast.Program checkTypesWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
-        if (linkedClasses == null || linkedAliases == null) {
+        return checkTypesWithImportedClasses(program, linkedClasses, linkedAliases, Map.of());
+    }
+
+    /**
+     * Add only linker-verified exported aliases. Import declarations alone
+     * are not evidence of structural layout or public type provenance.
+     * Targets must be normalized by the trusted source-unit linker first.
+     */
+    public static Ast.Program checkTypesWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.TypeAliasDecl> linkedPublicTypeAliases) {
+        if (linkedClasses == null || linkedAliases == null || linkedPublicTypeAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
         program = AnnotationExpander.expand(program);
@@ -164,6 +187,26 @@ public final class TypeChecker {
         if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
+        for (Map.Entry<String, Ast.TypeAliasDecl> entry : linkedPublicTypeAliases.entrySet()) {
+            String name = entry.getKey();
+            Ast.TypeAliasDecl alias = entry.getValue();
+            if (name == null || name.isBlank() || alias == null
+                    || alias.visibility() != Ast.Visibility.PUBLIC || !name.equals(alias.name())) {
+                throw new IllegalArgumentException("invalid linked public type alias: " + name);
+            }
+            boolean uniquelyImported = program.imports().stream().filter(use ->
+                    use.kind() == Ast.ImportKind.TYPE || use.kind() == Ast.ImportKind.TYPES)
+                    .flatMap(use -> ImportRules.exposedBindings(use).stream())
+                    .filter(name::equals).count() == 1;
+            if (!uniquelyImported || checker.typeAliases.containsKey(name)
+                    || checker.ambiguousTypeAliases.contains(name)
+                    || checker.classes.containsKey(name) || checker.interfaces.containsKey(name)) {
+                throw new IllegalArgumentException(
+                        "linked public type alias was not uniquely imported: " + name);
+            }
+            checker.typeAliases.put(name, alias);
+            checker.linkedImportedAliasNames.add(name);
+        }
         checker.validate(program);
         return program;
     }
@@ -197,6 +240,10 @@ public final class TypeChecker {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
+                }
+                if (imported.kind() == Ast.ImportKind.TYPE
+                        || imported.kind() == Ast.ImportKind.TYPES) {
+                    unlinkedImportedTypes.add(name);
                 }
                 // Cross-file imports are opaque to this per-unit typechecker.
                 // Runtime-bearing imports enter the value namespace. Oreslang
@@ -7305,20 +7352,54 @@ public final class TypeChecker {
         Ast.TypeAliasDecl alias = resolvingLinkedFieldAliases.get(ref.name());
         if (alias == null) alias = findTypeAlias(ref.name());
         if (alias != null) {
+            if (linkedImportedAliasNames.contains(ref.name())) {
+                // OwnershipChecker currently does not resolve imported alias
+                // generic arguments. Reject borrowed parameters here rather
+                // than allowing an alias to hide a loan in an actor payload.
+                for (Ast.TypeRef arg : ref.arguments()) {
+                    rejectBorrowedForeignAliasArgument(arg);
+                }
+            }
             if (alias.genericParameters().size() != ref.arguments().size()) {
                 throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
                         + " type argument(s), got " + ref.arguments().size());
             }
-            if (!resolvingAliases.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+            if (aliasResolutionDepth == 0) aliasExpansionNodes = 0;
+            if (aliasResolutionDepth >= MAX_ALIAS_RESOLUTION_DEPTH) {
+                throw new IllegalArgumentException("type alias expansion exceeds "
+                        + MAX_ALIAS_RESOLUTION_DEPTH + " levels");
+            }
+            // Generic recursion can build a compact DAG whose structural
+            // hash/equality costs are exponential (Grow<T> = Grow<Tuple[T,T]>).
+            // Bound its *logical* size before putting it into a HashSet.
+            validateAliasArgumentsBudget(ref.arguments());
+            Set<List<Ast.TypeRef>> active = resolvingAliases.computeIfAbsent(alias,
+                    ignored -> new HashSet<>());
+            if (!active.add(ref.arguments())) {
+                throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+            }
+            aliasResolutionDepth++;
             try {
                 Map<String, Ast.TypeRef> substitutions = new HashMap<>();
                 for (int i = 0; i < alias.genericParameters().size(); i++) {
                     substitutions.put(alias.genericParameters().get(i), ref.arguments().get(i));
                 }
-                return resolve(substituteAliasType(alias.target(), substitutions), generics, self, allowNullMarker);
+                Type expanded = resolve(substituteAliasType(alias.target(), substitutions),
+                        generics, self, allowNullMarker);
+                if (linkedImportedAliasNames.contains(ref.name())) {
+                    rejectBorrowedResolvedForeignAlias(expanded);
+                }
+                return expanded;
             } finally {
-                resolvingAliases.remove(alias);
+                aliasResolutionDepth--;
+                active.remove(ref.arguments());
+                if (active.isEmpty()) resolvingAliases.remove(alias);
             }
+        }
+
+        if (unlinkedImportedTypes.contains(ref.name())) {
+            throw new IllegalArgumentException("imported type '" + ref.name()
+                    + "' has no verified linked signature; a bare import cannot prove its structure");
         }
 
         return switch (ref.name()) {
@@ -7459,7 +7540,77 @@ public final class TypeChecker {
         };
     }
 
+    private static void validateAliasArgumentsBudget(List<Ast.TypeRef> arguments) {
+        java.util.ArrayDeque<Ast.TypeRef> stack = new java.util.ArrayDeque<>(arguments);
+        int nodes = 0;
+        while (!stack.isEmpty()) {
+            if (++nodes > MAX_ALIAS_EXPANSION_NODES) {
+                throw new IllegalArgumentException("type alias expansion exceeds "
+                        + MAX_ALIAS_EXPANSION_NODES + " nodes");
+            }
+            Ast.TypeRef ref = stack.removeLast();
+            for (Ast.TypeRef child : ref.arguments()) stack.addLast(child);
+        }
+    }
+
+    private static void rejectBorrowedResolvedForeignAlias(Type type) {
+        java.util.ArrayDeque<Type> pending = new java.util.ArrayDeque<>();
+        pending.add(type);
+        int seen = 0;
+        while (!pending.isEmpty()) {
+            if (++seen > MAX_ALIAS_EXPANSION_NODES) {
+                throw new IllegalArgumentException("resolved imported alias exceeds "
+                        + MAX_ALIAS_EXPANSION_NODES + " ownership nodes");
+            }
+            Type current = pending.removeLast();
+            if (current instanceof Borrow) {
+                throw new IllegalArgumentException(
+                        "imported type alias expands to borrowed ownership; "
+                        + "foreign ownership proof is required");
+            }
+            if (current instanceof Record record) {
+                pending.addAll(record.members().values());
+            } else if (current instanceof Tuple tuple) {
+                pending.addAll(tuple.elements());
+            } else if (current instanceof Union union) {
+                pending.addAll(union.options());
+            } else if (current instanceof Named named) {
+                pending.addAll(named.arguments());
+            } else if (current instanceof ListType list) {
+                pending.add(list.element());
+            } else if (current instanceof Function function) {
+                pending.addAll(function.parameters());
+                pending.add(function.result());
+            } else if (current instanceof SelfType selfType) {
+                pending.add(selfType.bound());
+            }
+        }
+    }
+
+    private static void rejectBorrowedForeignAliasArgument(Ast.TypeRef argument) {
+        java.util.ArrayDeque<Ast.TypeRef> pending = new java.util.ArrayDeque<>();
+        pending.add(argument);
+        int visits = 0;
+        while (!pending.isEmpty()) {
+            if (++visits > MAX_ALIAS_EXPANSION_NODES) {
+                throw new IllegalArgumentException("imported alias generic arguments exceed "
+                        + MAX_ALIAS_EXPANSION_NODES + " nodes");
+            }
+            Ast.TypeRef node = pending.removeLast();
+            if (node.isBorrow()) {
+                throw new IllegalArgumentException(
+                        "borrowed generic arguments cannot be used with an imported "
+                        + "type alias until foreign ownership proof is available");
+            }
+            for (Ast.TypeRef child : node.arguments()) pending.addLast(child);
+        }
+    }
+
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
+        if (++aliasExpansionNodes > MAX_ALIAS_EXPANSION_NODES) {
+            throw new IllegalArgumentException("type alias expansion exceeds "
+                    + MAX_ALIAS_EXPANSION_NODES + " nodes");
+        }
         Ast.TypeRef replacement = substitutions.get(ref.name());
         if (replacement != null && ref.arguments().isEmpty() && !ref.inferArguments()) return replacement;
         return new Ast.TypeRef(

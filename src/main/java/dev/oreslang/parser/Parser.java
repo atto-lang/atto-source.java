@@ -132,7 +132,14 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, or trait after 'define'");
+                if (match(TYPE)) {
+                    modifiers = mergeModifiers(modifiers, parseModifiers());
+                    validateOnlyVisibilityModifiers(modifiers, "type aliases");
+                    rejectCallableStructuralAnnotation(annotations, "type aliases");
+                    rootDeclarations.add(parseTypeAlias(modifiers.visibility));
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, trait, or type after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -295,7 +302,13 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 return parseInterface(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, or trait after 'define'");
+            if (match(TYPE)) {
+                modifiers = mergeModifiers(modifiers, parseModifiers());
+                validateOnlyVisibilityModifiers(modifiers, "type aliases");
+                rejectCallableStructuralAnnotation(annotations, "type aliases");
+                return parseTypeAlias(modifiers.visibility);
+            }
+            throw error(previous(), "expected class, interface, trait, or type after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -373,9 +386,10 @@ public final class Parser {
             return parseInterface(modifiers.visibility);
         }
         if (match(TYPE)) {
-            validateNoModifiers(modifiers, "type aliases");
+            modifiers = mergeModifiers(modifiers, parseModifiers());
+            validateOnlyVisibilityModifiers(modifiers, "type aliases");
             rejectCallableStructuralAnnotation(annotations, "type aliases");
-            return parseTypeAlias();
+            return parseTypeAlias(modifiers.visibility);
         }
         if (isBindingKind(peek().type())) {
             validateOnlyVisibilityModifiers(modifiers, "module bindings");
@@ -991,13 +1005,21 @@ public final class Parser {
         return consumeCallableName("expected method name (methods omit 'fnc')");
     }
 
-    private Ast.TypeAliasDecl parseTypeAlias() {
+    private Ast.TypeAliasDecl parseTypeAlias(Ast.Visibility visibility) {
+        // Contextual alias marker: 'type alias = int' retains 'alias' as its name.
+        // 'type alias Pair as Entry' introduces no new runtime type or identity.
+        boolean namedAlias = check(IDENT) && peek().lexeme().equals("alias") && checkNext(IDENT);
+        if (namedAlias) advance();
         String name = consume(IDENT, "expected type alias name").lexeme();
         List<String> generics = parseGenericParameters();
-        consume(EQUAL, "expected '=' in type alias");
+        if (namedAlias) {
+            consume(AS, "expected 'as' after named type alias");
+        } else {
+            consume(EQUAL, "expected '=' in type alias");
+        }
         Ast.TypeRef target = parseTypeRef();
         consumeStatementTerminator("type alias should end with ';'");
-        return new Ast.TypeAliasDecl(name, generics, target);
+        return new Ast.TypeAliasDecl(name, visibility, generics, target);
     }
 
     private List<Ast.Annotation> parseAnnotations() {

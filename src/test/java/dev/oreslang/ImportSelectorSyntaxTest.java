@@ -72,7 +72,7 @@ final class ImportSelectorSyntaxTest {
         Path main = temp.resolve("main.ores");
 
         Files.writeString(child, """
-                define module Service
+                define module Service as
                   pub fnc value(): int { return 1; }
                 end
 
@@ -91,8 +91,8 @@ final class ImportSelectorSyntaxTest {
                   fnc value() => int;
                 }
 
-                type Identifier = int;
-                type OtherIdentifier = int;
+                define pub type Identifier = int;
+                define pub type OtherIdentifier = int;
                 """);
 
         Files.writeString(main, """
