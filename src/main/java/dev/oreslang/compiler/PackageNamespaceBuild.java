@@ -207,6 +207,20 @@ public final class PackageNamespaceBuild {
         return auditSnapshot(snapshot());
     }
 
+    /**
+     * Produce a typed, non-executable pre-HIR from exactly one manifest-owned
+     * source snapshot. The public result is not actor/runtime authority.
+     * Calls, captured globals, critical loans and async/control flow are
+     * explicitly refused pending the full owner/effect-sensitive HIR pass.
+     */
+    public synchronized ActorTypedMethodIR.Result typecheckDeclaredActorMethods()
+            throws IOException {
+        SourceSnapshot source = snapshot();
+        ActorAudit audit = auditSnapshot(source);
+        return ActorTypedMethodIR.checkSnapshot(
+                packageIdentity, source.parsed(), audit);
+    }
+
     public synchronized Result build() throws IOException {
         SourceSnapshot source = snapshot();
         if (hasDeclaredActors(source.parsed())) {
@@ -214,11 +228,17 @@ public final class PackageNamespaceBuild {
             // caching or guest code generation. A successful static witness
             // cannot bypass the missing typed receiver/HIR/MIR lowering.
             ActorAudit audit = auditSnapshot(source);
+            // Safe subset of external method bodies must pass *before* any
+            // executable lowering attempt. Even verified pre-HIR is NEVER
+            // sufficient to enable runtime dispatch or sealed-state loans.
+            ActorTypedMethodIR.Result typed = ActorTypedMethodIR.checkSnapshot(
+                    packageIdentity, source.parsed(), audit);
             throw new IllegalArgumentException(
                     "DECLARED_ACTOR_CODEGEN_UNSUPPORTED: verified "
                             + audit.contractWitness().actors().size()
-                            + " declaration-only actor(s) but executable "
-                            + "external method dispatch/state loans are not lowered");
+                            + " declared actor(s) and " + typed.methods().size()
+                            + " typed scalar pre-HIR method(s), but executable "
+                            + "actor dispatch/checked arithmetic/state loans are not lowered");
         }
         ActorMethodIndex index = ActorMethodIndex.collect(packageIdentity, source.parsed());
         IncrementalCompiler.BuildResult compiled = compiler.compile(source.text());

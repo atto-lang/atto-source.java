@@ -12,6 +12,7 @@ on:
       - 'src/main/java/dev/oreslang/compiler/PackageNamespaceBuild.java'
       - 'src/main/java/dev/oreslang/compiler/ActorMethodIndex.java'
       - 'src/main/java/dev/oreslang/compiler/ActorDescriptorIndex.java'
+      - 'src/main/java/dev/oreslang/compiler/ActorTypedMethodIR.java'
       - 'src/main/java/dev/oreslang/compiler/IncrementalCompiler.java'
       - 'src/main/java/dev/oreslang/compiler/ExportInterfaceCollector.java'
       - 'src/test/java/dev/oreslang/CrossFileActorReceiverBindingTest.java'
@@ -22,6 +23,7 @@ on:
       - 'src/test/java/dev/oreslang/ActorContractTargetCompilerIntegrationTest.java'
       - 'src/test/java/dev/oreslang/PackageNamespaceBuildTest.java'
       - 'src/test/java/dev/oreslang/ActorDescriptorIndexTest.java'
+      - 'src/test/java/dev/oreslang/ActorTypedMethodIRTest.java'
       - 'src/test/java/dev/oreslang/compiler/ActorDescriptorProvenanceTest.java'
       - 'contracts/declared-actor-witness-v1/**'
       - 'contracts/namespace-actor-state-v1/**'
@@ -87,7 +89,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,ActorDescriptorIndexTest,ActorDescriptorProvenanceTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,DeclaredActorCompilerManifestGateTest,ActorContractTargetCompilerIntegrationTest,PackageNamespaceBuildTest,ActorDescriptorIndexTest,ActorTypedMethodIRTest,ActorDescriptorProvenanceTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
@@ -102,6 +104,7 @@ jobs:
               ActorContractTargetCompilerIntegrationTest \
               PackageNamespaceBuildTest \
               ActorDescriptorIndexTest \
+              ActorTypedMethodIRTest \
               ActorDescriptorProvenanceTest \
               ActorReceiverBinderTest \
               ExternalActorReceiverAstAdmissionTest; do
