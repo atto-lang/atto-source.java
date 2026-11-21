@@ -10,7 +10,7 @@ public final class ControlPlaneArena32Test {
         catch (IllegalArgumentException | IllegalStateException expected) { rejected = true; }
         if (!rejected) throw new AssertionError("expected fail-closed control ref rejection");
     }
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         check(ControlPlaneArena32.ABI.equals("control_generation12_slot20_v1"), "ABI must be explicit");
         check(ControlPlaneArena32.RECORD_BYTES == 32, "record layout");
         final long huge = 9_000_000_000L;
@@ -26,6 +26,29 @@ public final class ControlPlaneArena32Test {
             check(a.readI64(parent, 0) == huge, "full i64 behind four-byte Ref32");
             a.writeI64(parent, 8, Long.MIN_VALUE);
             check(a.readI64(parent, 8) == Long.MIN_VALUE, "128-bit payload (two i64 limbs)");
+            // One caller-owned buffer; full 128-bit read/write uses one arena lock
+            // even on a CPU without a native 128-bit scalar register.
+            long[] limbs = new long[2];
+            a.writeI128(parent, 0x0123456789abcdefL, 0xfedcba9876543210L);
+            a.readI128(parent, limbs);
+            check(limbs[0] == 0x0123456789abcdefL &&
+                    limbs[1] == 0xfedcba9876543210L, "full i128 pair round trip");
+            denied(() -> a.readI128(parent, new long[1]));
+            denied(() -> b.writeI128(parent, 1, 2)); // foreign issuer
+            // Concurrent pair writer must not expose a torn 128-bit scalar.
+            a.writeI128(parent, 0L, ~0L);
+            var pairWriter = new Thread(() -> {
+                for (int n = 0; n < 32_768; n++)
+                    a.writeI128(parent, n, ~((long) n));
+            });
+            pairWriter.start();
+            for (int n = 0; n < 32_768; n++) {
+                a.readI128(parent, limbs);
+                check(limbs[1] == ~limbs[0], "torn control i128 scalar");
+            }
+            pairWriter.join();
+            a.readI128(parent, limbs);
+            check(limbs[1] == ~limbs[0], "final coherent scalar");
             a.writeRef32(parent, child);
             check(a.readRef32(parent) == child, "checked four-byte child Ref32");
             // The result is host JVM-hotpath evidence ONLY, not Atto compiled guest proof.
