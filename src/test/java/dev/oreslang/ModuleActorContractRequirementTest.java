@@ -285,7 +285,7 @@ final class ModuleActorContractRequirementTest {
                 define module cart_mod as
                   pub define actor Cart as
                   end
-                  define pub mtd receive(Cart a)(): void { return; }
+                  define pub mtd get_count(Cart a)(): int { return 42; }
                 end
                 """);
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,

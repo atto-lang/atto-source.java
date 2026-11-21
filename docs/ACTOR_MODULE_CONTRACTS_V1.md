@@ -294,3 +294,37 @@ methods. Future lowering must prove module-local actor binding, static
 contract satisfaction, no capability escape, actor-turn nonreentrancy,
 generation-fenced invocation and cross-backend guest parity. This stage's
 seven added JUnit tests are authored but **not executed**.
+
+## Stage 7 (draft): static nominal binding and coherence of external `mtd`
+
+`ActorReceiverBinder` resolves each `ExternalActorMethodDecl` to exactly one
+**local nominal actor declaration** in the same named module, regardless of
+source-order. The actor may use the class-like spelling or the new
+`define actor Worker as worker;` syntax. The matching key is
+`(module, actor, method name, arity)`; parameter and return types do not
+create additional overload slots.
+
+The binder rejects missing or foreign-module actors, ordinary-class impostors,
+duplicate type identities, duplicate receiver aliases, duplicate external
+method slots, collisions with existing in-class actor methods, and generic
+class actor targets without a generic static witness. The runtime-owned
+`receive` and current lifecycle hooks retain their restricted signatures.
+An `fnc` with an actor argument does not enter the binder or grant state
+authority. The binder returns immutable, static-only metadata.
+
+**Execution remains blocked:** `TypeChecker` calls the binder before it
+issues `STANDALONE_ACTOR_LOWERING_UNSUPPORTED` or
+`EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED`. No executable methods,
+trusted actor-state loans, mailbox dispatch, `ActorContext` capability,
+restart generation permit, or native witness is emitted.
+
+**Multi-file limitation:** current `IncrementalCompiler` compiles source
+files as separate units. A later linker stage must validate common package
+and module ownership through authenticated compilation-unit metadata before
+binding methods across files; equal textual module names must never imply
+authority across files, packages, symlinks, or imported actors. Stage 7
+validates module-local declarations in one compilation unit only.
+
+Tests: 25 new Java JUnit methods, six portable .atto fixtures, plus two
+updated predecessor tests. **Not executed** until an exact-head, stepful
+source-local or independently authorized private CI run exists.

@@ -157,6 +157,9 @@ public final class TypeChecker {
      * projection could silently discard the metadata.
      */
     private static void rejectUnloweredCheckedEffects(Ast.Program program) {
+        // Validate external receiver coherence before the still-mandatory
+        // executable-lowering rejection. This pass confers no actor authority.
+        ActorReceiverBinder.bind(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.ExternalActorMethodDecl method) {
