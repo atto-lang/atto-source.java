@@ -1,0 +1,510 @@
+package dev.oreslang;
+
+import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.OresFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@Timeout(20)
+final class ActorTicketedStopCleanupIntegrationTest {
+    @Test
+    void cancelledAwaitRunsCleanupOnOwningActorContinuationLane() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<OresFuture.Callback<Integer>> producerCallback =
+                    new AtomicReference<>();
+            OresFuture<Integer> pendingProducer =
+                    OresFuture.fromCallback(producerCallback::set);
+            AtomicReference<OresFuture<Void>> taskFuture = new AtomicReference<>();
+            AtomicInteger cleanupRuns = new AtomicInteger();
+            AtomicInteger actorMessages = new AtomicInteger();
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch taskPublished = new CountDownLatch(1);
+            CountDownLatch cleanupCompleted = new CountDownLatch(1);
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                if (message.equals("start")) {
+                    actorMessages.incrementAndGet();
+                    OresFuture<Void> task = context.runtime().startActorTask(
+                            new OresScheduler.CleanupAwareTask<Void>() {
+                                private int pc;
+
+                                @Override
+                                public OresScheduler.Step<Void> resume(
+                                        OresScheduler.Resume resume) {
+                                    assertTrue(ActorRuntime.inActorExecution(),
+                                            "source cleanup must run under actor turn authority");
+                                    if (pc++ == 0) {
+                                        started.countDown();
+                                        return OresScheduler.await(pendingProducer);
+                                    }
+                                    assertInstanceOf(
+                                            java.util.concurrent.CancellationException.class,
+                                            resume.failure());
+                                    cleanupRuns.incrementAndGet();
+                                    cleanupCompleted.countDown();
+                                    return OresScheduler.done(null);
+                                }
+                            });
+                    taskFuture.set(context.runtime().ownCurrentActorFuture(task));
+                    taskPublished.countDown();
+                    return;
+                }
+                actorMessages.incrementAndGet();
+                assertEquals(1, cleanupRuns.get(),
+                        "next user mail cannot precede completed source cleanup");
+                context.self().stop();
+            });
+
+            actor.send("start");
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            assertTrue(taskPublished.await(5, TimeUnit.SECONDS));
+            OresFuture<Void> task = taskFuture.get();
+            assertNotNull(task);
+            assertTrue(task.cancel(false));
+            assertTrue(cleanupCompleted.await(5, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> taskFuture.get().get(5, TimeUnit.SECONDS));
+            // Late producer settlement must not revive the completed task.
+            producerCallback.get().resolve(1);
+            actor.send("finish");
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+            assertEquals(2, actorMessages.get());
+            assertEquals(1, cleanupRuns.get());
+        }
+    }
+
+    @Test
+    void actorStopWaitsForOwnedAsyncLexicalCleanupBeforeDone() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<OresFuture.Callback<Integer>> producer = new AtomicReference<>();
+            AtomicReference<OresFuture.Callback<Integer>> cleanup = new AtomicReference<>();
+            OresFuture<Integer> waiting = OresFuture.fromCallback(producer::set);
+            OresFuture<Integer> cleanupGate = OresFuture.fromCallback(cleanup::set);
+            AtomicInteger cleanupRuns = new AtomicInteger();
+            AtomicInteger userMessages = new AtomicInteger();
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch taskPublished = new CountDownLatch(1);
+            CountDownLatch cleanupStarted = new CountDownLatch(1);
+            CountDownLatch cleanupFinished = new CountDownLatch(1);
+            AtomicReference<OresFuture<Void>> taskFuture = new AtomicReference<>();
+
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                userMessages.incrementAndGet();
+                OresFuture<Void> task = context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            private int state;
+
+                            @Override public OresScheduler.Step<Void> resume(
+                                    OresScheduler.Resume resume) {
+                                assertTrue(ActorRuntime.inActorExecution(),
+                                        "post-stop cleanup must use the owning actor lane");
+                                if (state++ == 0) {
+                                    entered.countDown();
+                                    return OresScheduler.await(waiting);
+                                }
+                                if (state == 2) {
+                                    assertInstanceOf(
+                                            java.util.concurrent.CancellationException.class,
+                                            resume.failure());
+                                    cleanupRuns.incrementAndGet();
+                                    cleanupStarted.countDown();
+                                    return OresScheduler.await(cleanupGate);
+                                }
+                                assertNull(resume.failure(),
+                                        "cleanup await must not receive cancellation twice");
+                                cleanupFinished.countDown();
+                                return OresScheduler.done(null);
+                            }
+                        });
+                taskFuture.set(task);
+                taskPublished.countDown();
+            });
+
+            actor.send("start");
+            assertTrue(taskPublished.await(5, TimeUnit.SECONDS));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            // Host stop is deliberately a completion barrier. Run it on a
+            // separate supervisor thread so the test can release async cleanup.
+            var stopRequest = java.util.concurrent.CompletableFuture.runAsync(actor::stop);
+            assertTrue(cleanupStarted.await(5, TimeUnit.SECONDS),
+                    "source must unwind despite user mailbox being sealed");
+            assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                    "get_done must not retire state while lexical cleanup awaits");
+            producer.get().resolve(17);
+            assertEquals(1, cleanupRuns.get(),
+                    "late abandoned producer completion must not replay source work");
+            cleanup.get().resolve(33);
+            assertTrue(cleanupFinished.await(5, TimeUnit.SECONDS));
+            stopRequest.get(5, TimeUnit.SECONDS);
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+            assertEquals(1, cleanupRuns.get());
+            assertEquals(1, userMessages.get());
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> taskFuture.get().get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void stopCancelsQueuedCleanupAwareTasksWithoutEnteringGuestCode() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicInteger guestEntries = new AtomicInteger();
+            CountDownLatch registered = new CountDownLatch(1);
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                // These initial turns cannot run before this actor turn ends.
+                for (int i = 0; i < 64; i++) {
+                    context.runtime().startActorTask(
+                            (OresScheduler.CleanupAwareTask<Void>) resume -> {
+                                guestEntries.incrementAndGet();
+                                return OresScheduler.done(null);
+                            });
+                }
+                registered.countDown();
+                context.self().stop();
+            });
+
+            actor.send(1);
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(0, guestEntries.get(),
+                    "STOP must not run source guest frames that never started");
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void gracefulStopCancelsQueuedSourceTasksWithoutRunningThem() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            int tasks = 256;
+            CountDownLatch entered = new CountDownLatch(1);
+            AtomicInteger taskBodies = new AtomicInteger();
+
+            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                for (int i = 0; i < tasks; i++) {
+                    context.runtime().startActorTask(resume -> {
+                        taskBodies.incrementAndGet();
+                        return OresScheduler.done(null);
+                    });
+                }
+                context.self().stop();
+            });
+
+            ref.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(10, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isEmpty());
+            assertEquals(0, taskBodies.get(),
+                    "source continuations queued behind a stopped actor must not run");
+        }
+    }
+    @Test
+    void actorCancelRetainsCleanupLaneUntilAsyncFinallyFinishes() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<OresFuture.Callback<Integer>> producer = new AtomicReference<>();
+            AtomicReference<OresFuture.Callback<Integer>> cleanupProducer = new AtomicReference<>();
+            OresFuture<Integer> pending = OresFuture.fromCallback(producer::set);
+            OresFuture<Integer> cleanupGate = OresFuture.fromCallback(cleanupProducer::set);
+            CountDownLatch suspended = new CountDownLatch(1);
+            CountDownLatch cleanupEntered = new CountDownLatch(1);
+            AtomicReference<OresFuture<Void>> taskFuture = new AtomicReference<>();
+            AtomicInteger cleanupRuns = new AtomicInteger();
+            AtomicInteger userMessages = new AtomicInteger();
+
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                if (!message.equals("start")) {
+                    userMessages.incrementAndGet();
+                    return;
+                }
+                OresFuture<Void> task = context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            private int pc;
+
+                            @Override
+                            public OresScheduler.Step<Void> resume(OresScheduler.Resume resume) {
+                                assertTrue(ActorRuntime.inActorExecution());
+                                if (pc++ == 0) {
+                                    suspended.countDown();
+                                    return OresScheduler.await(pending);
+                                }
+                                if (pc == 2) {
+                                    assertInstanceOf(
+                                            java.util.concurrent.CancellationException.class,
+                                            resume.failure());
+                                    cleanupEntered.countDown();
+                                    return OresScheduler.await(cleanupGate);
+                                }
+                                assertEquals(77, resume.value());
+                                cleanupRuns.incrementAndGet();
+                                return OresScheduler.done(null);
+                            }
+                        });
+                taskFuture.set(task);
+                context.runtime().suspendCurrentUserMailboxUntil(task);
+            });
+
+            actor.send("start");
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            // A held source receive must never release its queued user mail
+            // while the actor is STOPPING or executing lexical cleanup.
+            actor.send("must-not-run");
+            assertTrue(actor.cancel());
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                    "get_done must wait for the resumed async finally");
+            assertFalse(taskFuture.get().isDone());
+            cleanupProducer.get().resolve(77);
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> taskFuture.get().get(5, TimeUnit.SECONDS));
+            producer.get().resolve(1);
+            assertEquals(0, userMessages.get());
+            assertEquals(1, cleanupRuns.get());
+        }
+    }
+
+    @Test
+    void actorStopDeadlineRevokesParkedCleanupWithoutRunningItOffLane() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<OresFuture.Callback<Integer>> abandoned = new AtomicReference<>();
+            OresFuture<Integer> producer = OresFuture.fromCallback(abandoned::set);
+            AtomicReference<OresFuture<Void>> taskFuture = new AtomicReference<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            CountDownLatch cleanupEntered = new CountDownLatch(1);
+            AtomicInteger cleanupRuns = new AtomicInteger();
+
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                OresFuture<Void> task = context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            private int pc;
+
+                            @Override
+                            public OresScheduler.Step<Void> resume(OresScheduler.Resume resume) {
+                                assertTrue(ActorRuntime.inActorExecution());
+                                if (pc++ == 0) {
+                                    suspended.countDown();
+                                    return OresScheduler.await(producer);
+                                }
+                                cleanupRuns.incrementAndGet();
+                                cleanupEntered.countDown();
+                                // The cleanup Future never settles. The actor's
+                                // bounded STOP deadline must revoke the waiter.
+                                return OresScheduler.await(new OresFuture<Integer>());
+                            }
+                        });
+                taskFuture.set(task);
+                context.runtime().suspendCurrentUserMailboxUntil(task);
+            });
+
+            actor.send("start");
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS),
+                    "source state retirement cannot wait forever for cleanup");
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> taskFuture.get().get(5, TimeUnit.SECONDS));
+            abandoned.get().resolve(9);
+            assertEquals(1, cleanupRuns.get(),
+                    "revoking parked cleanup cannot resume guest code again");
+        }
+    }
+
+    @Test
+    void stopPrunesQueuedOrdinaryControlBeforeResumingLexicalCleanup() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<OresFuture.Callback<Integer>> abandoned = new AtomicReference<>();
+            OresFuture<Integer> pending = OresFuture.fromCallback(abandoned::set);
+            CountDownLatch firstAwait = new CountDownLatch(1);
+            CountDownLatch cleanupCompleted = new CountDownLatch(1);
+            AtomicInteger ordinaryTaskRuns = new AtomicInteger();
+            AtomicInteger neverEnteredCleanupRuns = new AtomicInteger();
+            AtomicInteger cleanupRuns = new AtomicInteger();
+            AtomicReference<OresFuture<Void>> cleanupFuture = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                if (message.equals("start")) {
+                    cleanupFuture.set(context.runtime().startActorTask(
+                            new OresScheduler.CleanupAwareTask<Void>() {
+                                private boolean awaiting;
+
+                                @Override
+                                public OresScheduler.Step<Void> resume(OresScheduler.Resume resume) {
+                                    assertTrue(ActorRuntime.inActorExecution());
+                                    if (!awaiting) {
+                                        awaiting = true;
+                                        firstAwait.countDown();
+                                        return OresScheduler.await(pending);
+                                    }
+                                    assertInstanceOf(
+                                            java.util.concurrent.CancellationException.class,
+                                            resume.failure());
+                                    cleanupRuns.incrementAndGet();
+                                    cleanupCompleted.countDown();
+                                    return OresScheduler.done(null);
+                                }
+                            }));
+                    return;
+                }
+                // All ordinary continuations are queued behind this user-mail
+                // turn. STOP must reclaim them without losing an already-
+                // entered cleanup-aware task's resumed terminal continuation.
+                for (int i = 0; i < 256; i++) {
+                    context.runtime().startActorTask(resume -> {
+                        ordinaryTaskRuns.incrementAndGet();
+                        return OresScheduler.done(null);
+                    });
+                }
+                // These are cleanup-aware but NEVER entered a source frame.
+                // STOP must drop their queued initial CONTROL envelopes
+                // before a real suspended task requests terminal cleanup.
+                for (int i = 0; i < 256; i++) {
+                    context.runtime().startActorTask(
+                            (OresScheduler.CleanupAwareTask<Void>) resume -> {
+                                neverEnteredCleanupRuns.incrementAndGet();
+                                return OresScheduler.done(null);
+                            });
+                }
+                context.self().stop();
+            });
+
+            actor.send("start");
+            assertTrue(firstAwait.await(5, TimeUnit.SECONDS));
+            actor.send("fill");
+            assertTrue(cleanupCompleted.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(0, ordinaryTaskRuns.get());
+            assertEquals(0, neverEnteredCleanupRuns.get(),
+                    "unentered source tasks must not gain STOP cleanup authority");
+            assertEquals(1, cleanupRuns.get());
+            assertTrue(actor.failure().isEmpty());
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> cleanupFuture.get().get(5, TimeUnit.SECONDS));
+            abandoned.get().resolve(12);
+            assertEquals(1, cleanupRuns.get(), "late producer settlement cannot replay cleanup");
+        }
+    }
+
+    @Test
+    void cancellationRequestDoesNotAuthorizeAlreadyRunningGuestFrame()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch running = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicReference<OresFuture<Void>> taskFuture = new AtomicReference<>();
+            AtomicInteger cleanupRuns = new AtomicInteger();
+            AtomicInteger ordinaryFrameDenied = new AtomicInteger();
+            AtomicInteger earlyPrivilege = new AtomicInteger();
+
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                OresFuture<Void> task = context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            private int resumes;
+
+                            @Override public OresScheduler.Step<Void> resume(
+                                    OresScheduler.Resume resume) throws Exception {
+                                if (resumes++ == 0) {
+                                    running.countDown();
+                                    assertTrue(release.await(5, TimeUnit.SECONDS));
+                                    if (OresScheduler.currentTaskInCleanup()) {
+                                        earlyPrivilege.incrementAndGet();
+                                    }
+                                    try {
+                                        context.runtime().schedulerSafepoint();
+                                    } catch (ActorRuntime.ActorCancellationSignal stopped) {
+                                        ordinaryFrameDenied.incrementAndGet();
+                                    }
+                                    return OresScheduler.cooperate();
+                                }
+                                assertInstanceOf(
+                                        java.util.concurrent.CancellationException.class,
+                                        resume.failure());
+                                assertTrue(OresScheduler.currentTaskInCleanup(),
+                                        "only injected terminal cleanup has STOP authority");
+                                cleanupRuns.incrementAndGet();
+                                return OresScheduler.done(null);
+                            }
+                        });
+                taskFuture.set(task);
+            });
+            actor.send(1);
+            try {
+                assertTrue(running.await(5, TimeUnit.SECONDS));
+                assertTrue(actor.cancel());
+            } finally {
+                // Never pin a worker carrier if the stop assertion fails.
+                release.countDown();
+            }
+
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(0, earlyPrivilege.get(),
+                    "a cancellation request alone cannot authorize ordinary guest code");
+            assertEquals(1, ordinaryFrameDenied.get(),
+                    "STOP must still be enforced at the next ordinary safepoint");
+            assertEquals(1, cleanupRuns.get());
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> taskFuture.get().get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void fatalCleanupFailureOutranksEarlierActorCancellation() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<OresFuture.Callback<Integer>> abandoned = new AtomicReference<>();
+            OresFuture<Integer> producer = OresFuture.fromCallback(abandoned::set);
+            CountDownLatch suspended = new CountDownLatch(1);
+            AtomicReference<OresFuture<Void>> taskFuture = new AtomicReference<>();
+            LinkageError fatal = new LinkageError("fatal during terminal cleanup");
+            AtomicInteger cleanupResumes = new AtomicInteger();
+
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                taskFuture.set(context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            private boolean first = true;
+
+                            @Override
+                            public OresScheduler.Step<Void> resume(OresScheduler.Resume resume) {
+                                if (first) {
+                                    first = false;
+                                    suspended.countDown();
+                                    return OresScheduler.await(producer);
+                                }
+                                assertInstanceOf(
+                                        java.util.concurrent.CancellationException.class,
+                                        resume.failure());
+                                cleanupResumes.incrementAndGet();
+                                throw fatal;
+                            }
+                        }));
+            });
+            actor.send(1);
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertSame(fatal, actor.failure().orElseThrow(),
+                    "fatal cleanup must reach actor get_done/parent supervision");
+            var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> taskFuture.get().get(5, TimeUnit.SECONDS));
+            assertSame(fatal, failure.getCause());
+            abandoned.get().resolve(3);
+            assertEquals(1, cleanupResumes.get(), "fatal unwind cannot replay");
+        }
+    }
+
+}

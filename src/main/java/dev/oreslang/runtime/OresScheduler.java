@@ -71,12 +71,20 @@ public final class OresScheduler implements AutoCloseable {
         private final OresScheduler owner;
         private final Runnable action;
         private final java.util.function.BooleanSupplier cleanupAuthorized;
+        private final java.util.function.BooleanSupplier sourceFrameEntered;
 
         private CleanupTurn(OresScheduler owner, Runnable action,
-                java.util.function.BooleanSupplier cleanupAuthorized) {
+                java.util.function.BooleanSupplier cleanupAuthorized,
+                java.util.function.BooleanSupplier sourceFrameEntered) {
             this.owner = owner;
             this.action = action;
             this.cleanupAuthorized = cleanupAuthorized;
+            this.sourceFrameEntered = sourceFrameEntered;
+        }
+
+        /** An initial queued task has no lexical scope for STOP to unwind. */
+        boolean mayNeedLexicalCleanup() {
+            return sourceFrameEntered.getAsBoolean();
         }
 
         /**
@@ -408,7 +416,8 @@ public final class OresScheduler implements AutoCloseable {
     private void executeTurn(Runnable turn, Runnable afterTurn,
             java.util.function.Consumer<Throwable> admissionFailure,
             Executor taskPlacement,
-            java.util.function.BooleanSupplier cleanupAuthorized) {
+            java.util.function.BooleanSupplier cleanupAuthorized,
+            java.util.function.BooleanSupplier sourceFrameEntered) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
@@ -434,7 +443,8 @@ public final class OresScheduler implements AutoCloseable {
             }
         };
         taskPlacement.execute(cleanupAuthorized == null ? dispatch
-                : new CleanupTurn(this, dispatch, cleanupAuthorized));
+                : new CleanupTurn(this, dispatch, cleanupAuthorized,
+                        Objects.requireNonNull(sourceFrameEntered, "sourceFrameEntered")));
     }
 
     private void ensureOpen() {
@@ -490,6 +500,8 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
         private final AtomicBoolean cancellationInjected = new AtomicBoolean();
+        /** Monotonic: the task has executed its first guest source frame. */
+        private final AtomicBoolean guestSourceEntered = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -521,7 +533,8 @@ public final class OresScheduler implements AutoCloseable {
                     }
                 }, this::afterCarrierTurn, this::failTerminal,
                         taskPlacement,
-                        task instanceof CleanupAwareTask<?> ? this::cleanupAuthorized : null);
+                        task instanceof CleanupAwareTask<?> ? this::cleanupAuthorized : null,
+                        task instanceof CleanupAwareTask<?> ? guestSourceEntered::get : null);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
@@ -569,6 +582,10 @@ public final class OresScheduler implements AutoCloseable {
 
                 final Step<T> step;
                 try {
+                    // The initial queued CleanupTurn does not yet own lexical
+                    // scopes and can be pruned on STOP. Once a task actually
+                    // begins source execution, all later turns keep this bit.
+                    guestSourceEntered.set(true);
                     step = Objects.requireNonNull(
                             task.resume(resume),
                             "OresScheduler task returned null Step");

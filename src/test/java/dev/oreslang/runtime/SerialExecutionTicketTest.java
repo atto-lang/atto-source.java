@@ -52,6 +52,29 @@ final class SerialExecutionTicketTest {
         gate.close();
     }
 
+    @Test void localTicketRevokedByStopIsBenignButForeignIncarnationRemainsFatal() {
+        Object incarnation = new Object();
+        AtomicBoolean alive = new AtomicBoolean(true);
+        SerialActorAdmission gate = new SerialActorAdmission(2);
+        var originalLease = gate.submit(MESSAGE).join();
+        var ticket = new SerialExecutionTicket(
+                "actor", incarnation, 29L, gate, originalLease, alive::get);
+        ticket.requireAdmissible("actor", incarnation, originalLease);
+        // Reproduce STOP after an already-queued continuation has passed its
+        // carrier's mailbox gate, but before requireAdmissible executes.
+        alive.set(false);
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> ticket.requireAdmissible("actor", incarnation, originalLease),
+                "an authenticated local STOP race must be benign cancellation");
+        assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("actor", new Object(), originalLease),
+                "a genuinely foreign incarnation must remain a fatal violation");
+        assertThrows(IllegalStateException.class,
+                () -> ticket.requireAdmissible("foreign-actor", incarnation, originalLease));
+        originalLease.close();
+        gate.close();
+    }
+
     @Test void stopCleanupCannotBorrowNewHandlerAfterOldLeaseFinishes() {
         Object epoch = new Object();
         SerialActorAdmission gate = new SerialActorAdmission(2);

@@ -167,11 +167,14 @@ final class SerialExecutionTicket {
             Object executingIncarnation,
             SerialActorAdmission.Lease activeReceive) {
         if (retired.get()) throw new RetiredTaskException();
-        if (!actorAlive.getAsBoolean()
-                || !actorId.equals(executingActorId)
-                || incarnation != executingIncarnation) {
-            throw new IllegalStateException("stale or foreign actor continuation ticket");
+        if (!issuedFor(executingActorId, executingIncarnation)) {
+            throw new IllegalStateException("foreign actor continuation ticket or incarnation");
         }
+        // STOP can race the instant after a queued turn passed its actor-lane
+        // gate. Valid *local* tickets then become benignly revoked, not an
+        // apparent foreign guest failure that poisons supervision. Always
+        // validate incarnation first so a genuinely foreign task stays fatal.
+        if (!actorAlive.getAsBoolean()) throw new RetiredTaskException();
         // A finished receive can leave an already-queued continuation behind
         // before the scheduler's own terminal callback retires the ticket.
         // It is a stale completion to drop, not a foreign guest failure that

@@ -17,34 +17,6 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(20)
 final class ActorContinuationTeardownTest {
     @Test
-    void unsupportedCleanupAwareActorTaskFailsClosedBeforeConsumingSerialTicket()
-            throws Exception {
-        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
-        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
-            CountDownLatch denied = new CountDownLatch(1);
-            AtomicInteger executed = new AtomicInteger();
-            var ref = runtime.<Integer>spawnShared(() -> (message, context) -> {
-                UnsupportedOperationException failure = assertThrows(
-                        UnsupportedOperationException.class,
-                        () -> context.runtime().startActorTask(
-                                (OresScheduler.CleanupAwareTask<Void>) resume -> {
-                                    executed.incrementAndGet();
-                                    return OresScheduler.done(null);
-                                }));
-                assertTrue(failure.getMessage().contains("STOP-safe ticketed"),
-                        "guest actor cleanup must not silently fail after STOP");
-                denied.countDown();
-                context.self().stop();
-            });
-            ref.send(1);
-            assertTrue(denied.await(5, TimeUnit.SECONDS));
-            assertTrue(ref.awaitTermination(5, TimeUnit.SECONDS));
-            assertEquals(0, executed.get());
-            assertTrue(ref.failure().isEmpty());
-        }
-    }
-
-    @Test
     void gracefulStopCancelsQueuedSourceTasksWithoutRunningThem() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
