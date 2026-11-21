@@ -31,6 +31,10 @@ final class ActorGuestReturnRecord implements AutoCloseable {
     private final ExecutionContext execution;
     private final ActorFrameArena.FrameRef handle;
     private final Thread carrier;
+    /** Physical dispatch identity, not an actor-wide execution domain. */
+    private final Object physicalTurn;
+    /** Exact scheduler task identity where the record was admitted, if any. */
+    private final ExecutionContext sourceExecution;
     private boolean closed;
 
     private ActorGuestReturnRecord(ActorFrameArena arena, ExecutionContext execution,
@@ -39,6 +43,8 @@ final class ActorGuestReturnRecord implements AutoCloseable {
         this.execution = execution;
         this.handle = handle;
         this.carrier = Thread.currentThread();
+        this.physicalTurn = ActorRuntime.currentMutexExecutionSegment();
+        this.sourceExecution = OresScheduler.currentExecutionContext();
     }
 
     static ActorGuestReturnRecord enter(Cursor cursor) {
@@ -97,8 +103,13 @@ final class ActorGuestReturnRecord implements AutoCloseable {
     private void requireOwnerTurn() {
         if (closed) throw new IllegalStateException("guest call/return record retired");
         if (Thread.currentThread() != carrier
-                || ActorRuntime.currentActorFrameArena() != arena) {
-            throw new SecurityException("foreign actor call/return record access");
+                || ActorRuntime.currentActorFrameArena() != arena
+                || ActorRuntime.currentMutexExecutionSegment() != physicalTurn
+                || OresScheduler.currentExecutionContext() != sourceExecution) {
+            // The same OS carrier may dispatch another handler/SourceTask in
+            // this actor after the original one exits. Never confuse carrier
+            // affinity or the shared arena with a live physical-turn lease.
+            throw new SecurityException("foreign or stale actor call/return record turn");
         }
     }
 

@@ -10695,6 +10695,16 @@ public final class OresEvalRootNode extends RootNode {
                                     + entry.getKey() + "'");
                 }
                 Slot source = lookupSlot(entry.getKey());
+                if (source != null && source.actorScalarBound) {
+                    // The Java Slot.value is only a compatibility shadow:
+                    // a live scalar source slot is authoritative in the
+                    // owning actor SourceTask arena. Copying/moving this
+                    // shadow into a detached task would evade generation
+                    // fencing and potentially use an obsolete value.
+                    throw new SecurityException(
+                            "cannot detach actor-owned lexical scalar '" +
+                                    entry.getKey() + "' into a Task");
+                }
                 if (source == null || source.value == MISSING) {
                     throw new IllegalStateException(
                             "ownership-checked Task capture '"
@@ -10735,6 +10745,13 @@ public final class OresEvalRootNode extends RootNode {
                         admissions.get(entry.getKey());
                 if (transfer == null) continue;
                 Slot source = entry.getValue();
+                if (source.actorScalarBound) {
+                    // Defense in depth: no detached Task can capture the
+                    // JVM shadow even if an upstream admission check is
+                    // mistakenly omitted or an Env changes after preflight.
+                    throw new SecurityException(
+                            "actor-owned lexical scalar cannot cross Task capture boundary");
+                }
                 Object captured = source.value;
 
                 // COPY types are statically proven immutable/synchronized

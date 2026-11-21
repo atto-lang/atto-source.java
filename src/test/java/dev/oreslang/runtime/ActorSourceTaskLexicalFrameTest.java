@@ -232,4 +232,150 @@ final class ActorSourceTaskLexicalFrameTest {
             assertTrue(actor.failure().isEmpty());
         }
     }
+    private static void corruptActorSlot(
+            ActorSourceTaskFrame source, int offset, byte[] bytes)
+            throws ReflectiveOperationException {
+        var frameField = ActorSourceTaskFrame.class.getDeclaredField("frame");
+        var executionField = ActorSourceTaskFrame.class.getDeclaredField("execution");
+        frameField.setAccessible(true);
+        executionField.setAccessible(true);
+        var handle = (ActorFrameArena.FrameRef) frameField.get(source);
+        var execution = (ExecutionContext) executionField.get(source);
+        source.arena().write(execution, handle, offset, bytes);
+    }
+
+    @Test
+    void forgedValidTypeTagInActorBytesFailsPinnedSlotIdentity() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                if ("stop".equals(mail)) { turn.self().stop(); return; }
+                arena.set(ActorRuntime.currentActorFrameArena());
+                result.set(runtime.startActorTask(resume -> {
+                    ActorSourceTaskFrame source = OresScheduler.currentActorSourceTaskFrame();
+                    assertTrue(source.bindLexicalScalar(701L, "value", 42L));
+                    // Offset 4 is the first local slot tag; BOOLEAN=7 is
+                    // otherwise a valid type, but cannot replace LONG=4.
+                    corruptActorSlot(source, 4, new byte[] { 7 });
+                    assertThrows(IllegalStateException.class,
+                            () -> source.readLexicalScalar(701L, "value"));
+                    assertTrue(arena.get().isPoisoned());
+                    return OresScheduler.done(1);
+                }));
+            });
+            actor.send("test");
+            until(() -> result.get() != null && result.get().isDone());
+            assertTrue(arena.get().isPoisoned());
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, arena.get().usedBytes());
+        }
+    }
+
+    @Test
+    void corruptNoncanonicalBooleanPayloadIsRejectedAndPoisonsActor()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                arena.set(ActorRuntime.currentActorFrameArena());
+                result.set(runtime.startActorTask(resume -> {
+                    ActorSourceTaskFrame source = OresScheduler.currentActorSourceTaskFrame();
+                    assertTrue(source.bindLexicalScalar(702L, "flag", true));
+                    // BOOLEAN payload may be 0 or 1 only. Offset 4+8 is
+                    // the low payload byte of the first 9-byte slot.
+                    corruptActorSlot(source, 12, new byte[] { 3 });
+                    assertThrows(IllegalArgumentException.class,
+                            () -> source.readLexicalScalar(702L, "flag"));
+                    assertTrue(arena.get().isPoisoned());
+                    return OresScheduler.done(1);
+                }));
+            });
+            actor.send("corrupt");
+            until(() -> result.get() != null && result.get().isDone());
+            assertTrue(arena.get().isPoisoned());
+            actor.stop();
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void rawFloatNaNPayloadSurvivesPhysicalCooperateWithSameActorFrame()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
+            AtomicInteger phases = new AtomicInteger();
+            int raw = 0x7fc0_1234;
+            var actor = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                if ("stop".equals(mail)) { turn.self().stop(); return; }
+                arena.set(ActorRuntime.currentActorFrameArena());
+                result.set(runtime.startActorTask(resume -> {
+                    if (phases.getAndIncrement() == 0) {
+                        assertTrue(OresScheduler.bindCompilerScalarLocal(
+                                703L, "floating", Float.intBitsToFloat(raw)));
+                        return OresScheduler.cooperate();
+                    }
+                    Object restored = OresScheduler.readCompilerScalarLocal(
+                            703L, "floating");
+                    assertInstanceOf(Float.class, restored);
+                    assertEquals(raw, Float.floatToRawIntBits((Float) restored));
+                    assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES,
+                            arena.get().usedBytes());
+                    return OresScheduler.done(1);
+                }));
+            });
+            actor.send("start");
+            until(() -> result.get() != null && result.get().isDone());
+            assertEquals(1, result.get().get(3, TimeUnit.SECONDS));
+            assertEquals(2, phases.get());
+            assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES,
+                    arena.get().peakBytes());
+            assertEquals(0, arena.get().usedBytes());
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void invalidLexicalIdentityIsRejectedWithoutChargingOrPoisoning()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8))) {
+            AtomicReference<OresFuture<Integer>> result = new AtomicReference<>();
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(factory -> (mail, turn) -> {
+                if ("stop".equals(mail)) { turn.self().stop(); return; }
+                arena.set(ActorRuntime.currentActorFrameArena());
+                result.set(runtime.startActorTask(resume -> {
+                    ActorSourceTaskFrame source = OresScheduler.currentActorSourceTaskFrame();
+                    assertThrows(IllegalArgumentException.class,
+                            () -> source.bindLexicalScalar(0, "x", 1L));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> source.bindLexicalScalar(1, "", 1L));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> source.bindLexicalScalar(1, null, 1L));
+                    assertEquals(0, source.lexicalScalarCount());
+                    assertEquals(ActorSourceTaskFrame.FRAME_CHARGE_BYTES,
+                            arena.get().usedBytes());
+                    assertFalse(arena.get().isPoisoned());
+                    return OresScheduler.done(7);
+                }));
+            });
+            actor.send("test");
+            until(() -> result.get() != null && result.get().isDone());
+            assertEquals(7, result.get().get(3, TimeUnit.SECONDS));
+            assertEquals(0, arena.get().usedBytes());
+            actor.send("stop");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
+
 }
