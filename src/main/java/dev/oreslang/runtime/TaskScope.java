@@ -72,6 +72,16 @@ public final class TaskScope {
     }
 
     /**
+     * Compiler-only retirement notification, including a failed child outcome.
+     * This observes physical drain; it neither closes nor cancels the scope.
+     * The callback must only retire trusted runtime bookkeeping, never run guest code.
+     */
+    public void afterPhysicalDrain(Runnable retirement) {
+        Objects.requireNonNull(retirement, "retirement");
+        drained.whenCompleteRuntime((ignored, failure) -> retirement.run());
+    }
+
+    /**
      * Revoke all admitted children without allowing one blocking Future
      * subscriber to prevent revocation of its siblings. Claims happen first,
      * revocation second, publication last.
