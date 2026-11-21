@@ -258,10 +258,40 @@ public final class OresProjectConfig {
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
 
-        if (unix.startsWith(".")) {
-            Path parent = importer.toAbsolutePath().normalize().getParent();
+        if (ImportRules.isExplicitRelativePath(unix)) {
+            Path lexicalImporter = importer.toAbsolutePath().normalize();
+            ResolvedSource physicalImporter = existingSource(lexicalImporter)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "relative import importer does not resolve to a regular source: "
+                                    + lexicalImporter));
+            Path parent = physicalImporter.path().getParent();
             if (parent == null) parent = Path.of("").toAbsolutePath().normalize();
-            return existingSource(parent.resolve(raw).normalize());
+
+            Optional<ResolvedSource> resolved = existingSource(parent.resolve(raw).normalize());
+            if (resolved.isEmpty() || manifestPath == null) return resolved;
+
+            Path physicalRoot;
+            try {
+                physicalRoot = projectRoot.toRealPath();
+            } catch (IOException failure) {
+                throw new IllegalArgumentException(
+                        "cannot establish physical project root for relative import '"
+                                + importPath + "'",
+                        failure);
+            }
+            if (!Files.isDirectory(physicalRoot, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(
+                        "project root for relative import is not a directory: " + physicalRoot);
+            }
+
+            Path physicalSource = resolved.get().path();
+            if (!physicalSource.startsWith(physicalRoot)) {
+                throw new IllegalArgumentException(
+                        "relative import '" + importPath
+                                + "' escapes physical project root '" + physicalRoot + "'");
+            }
+            rejectNestedRelativePackage(physicalRoot, physicalSource, importPath);
+            return resolved;
         }
 
         for (Path root : searchRoots()) {
@@ -276,6 +306,22 @@ public final class OresProjectConfig {
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
+    }
+
+    private static void rejectNestedRelativePackage(
+            Path physicalRoot,
+            Path physicalSource,
+            String importPath) {
+        for (Path cursor = physicalSource.getParent();
+                cursor != null && !cursor.equals(physicalRoot);
+                cursor = cursor.getParent()) {
+            Path marker = cursor.resolve(MANIFEST_NAME);
+            if (Files.exists(marker, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(
+                        "relative import '" + importPath
+                                + "' crosses nested package boundary at '" + cursor + "'");
+            }
+        }
     }
 
     /**

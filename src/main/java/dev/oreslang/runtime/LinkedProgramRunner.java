@@ -58,7 +58,10 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             IsolatePolicy policy,
             PermissionCheckMode permissionCheckMode) throws IOException {
-        Path entry = entryFile.toRealPath();
+        Path lexicalEntry = entryFile.toAbsolutePath().normalize();
+        OresProjectConfig projectConfig = OresProjectConfig.discover(lexicalEntry, environment);
+
+        Path entry = lexicalEntry.toRealPath();
         if (!Files.isRegularFile(entry, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalArgumentException("not a regular physical file: " + entry);
         }
@@ -67,7 +70,6 @@ public final class LinkedProgramRunner {
                 entry,
                 java.nio.file.attribute.BasicFileAttributes.class,
                 java.nio.file.LinkOption.NOFOLLOW_LINKS);
-        OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
@@ -181,7 +183,10 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             OutputStream out,
             OutputStream err) throws IOException {
-        Path entry = entryFile.toRealPath();
+        Path lexicalEntry = entryFile.toAbsolutePath().normalize();
+        OresProjectConfig projectConfig = OresProjectConfig.discover(lexicalEntry, environment);
+
+        Path entry = lexicalEntry.toRealPath();
         if (!Files.isRegularFile(entry, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalArgumentException("not a regular physical file: " + entry);
         }
@@ -190,7 +195,6 @@ public final class LinkedProgramRunner {
                 entry,
                 java.nio.file.attribute.BasicFileAttributes.class,
                 java.nio.file.LinkOption.NOFOLLOW_LINKS);
-        OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         projectConfig.requireStdJavaBackend();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
@@ -436,7 +440,7 @@ public final class LinkedProgramRunner {
             java.util.Optional<OresProjectConfig.ResolvedSource> target =
                     projectConfig.resolveImportSource(normalized, imported.path());
             if (target.isEmpty()) {
-                if (raw.startsWith(".") || Path.of(raw).isAbsolute()) {
+                if (ImportRules.isExplicitRelativePath(raw) || Path.of(raw).isAbsolute()) {
                     throw new IllegalArgumentException(
                             "filesystem import '" + imported.path() + "' from '" + id + "' does not resolve to a file");
                 }
@@ -582,7 +586,6 @@ public final class LinkedProgramRunner {
                     budget, depth + 1);
         }
     }
-
     private static void recordImportResolution(
             Map<String, Map<String, String>> importResolutions,
             String importerId,

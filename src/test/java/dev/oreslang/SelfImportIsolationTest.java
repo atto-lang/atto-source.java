@@ -88,6 +88,36 @@ final class SelfImportIsolationTest {
         assertTrue(failure.getMessage().contains("cannot import itself"), failure.getMessage());
     }
 
+
+    @Test
+    void symlinkAliasToSamePhysicalFileIsRejected() throws Exception {
+        Path main = temp.resolve("main-symlink.ores");
+        Files.writeString(main, """
+                import * as file from "./alias-symlink.ores";
+
+                pub routine main(): void { return; }
+                """);
+
+        Path alias = temp.resolve("alias-symlink.ores");
+        try {
+            Files.createSymbolicLink(alias, main);
+        } catch (UnsupportedOperationException | SecurityException unavailable) {
+            Assumptions.assumeTrue(false, "symlinks unavailable: " + unavailable);
+        } catch (IOException failure) {
+            if (System.getProperty("os.name", "").toLowerCase().contains("win")) {
+                Assumptions.assumeTrue(false, "symlinks unavailable: " + failure);
+            }
+            throw failure;
+        }
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(main));
+
+        assertTrue(failure.getMessage().contains("cannot import itself"),
+                failure.getMessage());
+    }
+
     @Test
     void compilerSourceMapRejectsLexicallyResolvedSelfEdge() {
         IncrementalCompiler compiler = new IncrementalCompiler();
