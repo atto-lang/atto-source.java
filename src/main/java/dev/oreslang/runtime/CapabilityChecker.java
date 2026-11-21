@@ -71,6 +71,17 @@ public final class CapabilityChecker {
             Ast.Program program,
             IsolatePolicy policy,
             PermissionCheckMode permissionCheckMode) {
+        // A direct evaluator or isolate caller must not bypass OresCompiler
+        // and link a supervisor declaration as an ordinary value/no-op.
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.SupervisorDecl supervisor) {
+                    throw new SecurityException(
+                            "source supervisor '" + supervisor.name()
+                            + "' requires compiler-lowered CONTROL turns");
+                }
+            }
+        }
         new CapabilityChecker(program, permissionCheckMode).checkProgram(program, policy);
     }
 

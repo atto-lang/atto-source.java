@@ -185,7 +185,9 @@ final class SupervisorControlLivenessTest {
                 n -> CompletableFuture.completedFuture(
                         SupervisorProcess.Directive.RESTART),
                 r -> fail("rejected CONTROL cannot apply lifecycle decision"))) {
-            process.accept(notice(supervisor, group));
+            assertThrows(IllegalStateException.class,
+                    () -> process.accept(notice(supervisor, group)),
+                    "rejected CONTROL dispatch must signal failed admission");
             assertFalse(process.healthy());
             assertTrue(process.failure().isPresent());
             assertEquals(1, process.undelivered());

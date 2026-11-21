@@ -1480,7 +1480,8 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
-        if (cell == null || cell.stopped.get() || closed.get()) return false;
+        if (cell == null || cell.stopped.get() || closed.get()
+                || cell.restartUnpublished) return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -1490,7 +1491,8 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.stopped.get() || cell.finalized || closed.get()) return false;
+                if (cell.stopped.get() || cell.finalized || closed.get()
+                        || cell.restartUnpublished) return false;
                 if (!cell.continuationMailbox.tryWrite(
                         MessageEnvelope.continuation(continuation))) {
                     throw new IllegalStateException(
@@ -1621,7 +1623,12 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> ready() {
             ActorCell<?> cell = actors.get(id);
-            if (cell != null && !cell.stopped.get()) cell.schedule();
+            if (cell != null) {
+                if (cell.restartUnpublished)
+                    throw new IllegalStateException(
+                            "unpublished RESTART candidate cannot initialize");
+                if (!cell.stopped.get()) cell.schedule();
+            }
             return readyFuture;
         }
 
@@ -1938,10 +1945,16 @@ public final class ActorRuntime implements AutoCloseable {
      * bus. It does not own a dispatcher and is not itself an actor, so group
      * communication never serializes through a central mailbox.</p>
      */
+    /** Immutable registry association stored on the actual actor cell. */
+    private record SupervisedChild(
+            SupervisorChildRegistry registry,
+            SupervisorChildRegistry.Snapshot admitted) { }
+
     public final class ActorGroup implements AutoCloseable {
         private final ActorGroupId id;
         private final SupervisorId supervisorId = SupervisorId.create();
         private final SupervisorFailureControl supervisorControl;
+        private final SupervisorChildRegistry childRegistry;
         private final ActorId creator;
         private final int memberLimit;
         private final int eventTopicLimit;
@@ -1949,6 +1962,19 @@ public final class ActorRuntime implements AutoCloseable {
         // Explicitly lifecycle-managed workers, distinct from cooperating
         // members: membership never grants cancellation authority.
         private final Map<ActorId, ActorRef<?>> managedWorkers = new ConcurrentHashMap<>();
+        // Pending physical RESTART candidates are not yet logical children,
+        // but MUST be cancelled by group close even if publication loses.
+        // Guarded by authorityLock; never expose their refs to ordinary users.
+        private final Map<ActorId, ActorRef<?>> pendingRestartCandidates =
+                new java.util.HashMap<>();
+        // Exact immutable spawn authority for each physical candidate.
+        // Unlike ActorRefs, retain these small identity tokens across group
+        // close so a post-shutdown cleanup cannot substitute a different
+        // terminated actor for the originally authorized candidate.
+        // Every entry is removed only by successful commit or DONE-backed
+        // exact abort; guarded by authorityLock.
+        private final Map<ActorId, SupervisorChildRegistry.RestartReservation>
+                pendingRestartPermits = new java.util.HashMap<>();
         // Guarded by authorityLock: a stop-admitted actor cannot be released
         // into a different supervisor before stop actually dispatches.
         private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
@@ -1983,6 +2009,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.supervisorControl = new SupervisorFailureControl(
                     supervisorId, id, supervisorDispatcher,
                     Math.max(8, Math.min(256, memberLimit)));
+            this.childRegistry = new SupervisorChildRegistry(supervisorId, id);
             if (creator != null) members.add(creator);
         }
 
@@ -1991,6 +2018,369 @@ public final class ActorRuntime implements AutoCloseable {
         public SupervisorId supervisorId() {
             requireObserver("inspect ActorGroup supervisor");
             return supervisorId;
+        }
+
+        /** Value-only identity inspection, never a lifecycle capability. */
+        public SupervisorChildRegistry.Snapshot childSnapshot(
+                SupervisorChildRegistry.ChildId child) {
+            requireObserver("inspect supervised logical child");
+            return childRegistry.snapshot(child);
+        }
+
+        public int trackedLogicalChildren() {
+            requireObserver("inspect supervised logical child count");
+            return childRegistry.trackedChildren();
+        }
+
+        /** Trusted identity lookup for the existing physical child only. */
+        SupervisorChildRegistry.Snapshot supervisedWorkerSnapshot(
+                ActorRef<?> worker) {
+            requireSupervisorContext("inspect physical supervised child identity");
+            Objects.requireNonNull(worker);
+            if (!worker.ownedBy(ActorRuntime.this))
+                throw new SecurityException("foreign actor runtime");
+            ActorCell<?> cell = actors.get(worker.id());
+            if (cell == null || cell.supervisedChild.get() == null
+                    || cell.supervisedChild.get().registry() != childRegistry)
+                throw new IllegalStateException("actor is not supervised here");
+            return childRegistry.snapshot(cell.supervisedChild.get().admitted().child());
+        }
+
+        /** Claim one finalized incarnation before creating a replacement. */
+        SupervisorChildRegistry.RestartReservation reserveFinalizedRestart(
+                SupervisorChildRegistry.ChildId child, ActorId actor,
+                long incarnation) {
+            requireSupervisorContext("reserve finalized supervisor RESTART");
+            return childRegistry.beginRestart(child, actor, incarnation);
+        }
+
+        /**
+         * Trusted host-only RESTART spawn. The real ActorCell exists, but
+         * remains invisible to ordinary mail, initializers and other groups
+         * until this ActorGroup commits its exact logical child identity.
+         * Rejected candidates must be physically stopped before registry
+         * cleanup/abort; no guest can call these package-private methods.
+         */
+        <M> ActorRef<M> spawnUnpublishedRestartCandidate(
+                SupervisorChildRegistry.RestartReservation permit,
+                ActorKind kind, IsolatePolicy policy,
+                BehaviorFactory<M> factory) {
+            requireSupervisorContext("spawn unpublished supervisor RESTART");
+            Objects.requireNonNull(permit);
+            if (!supervisorId.equals(permit.child().supervisorId())
+                    || !id.equals(permit.child().groupId()))
+                throw new SecurityException("foreign RESTART spawn reservation");
+            if (currentActor.get() != null)
+                throw new IllegalStateException("RESTART spawn requires host CONTROL");
+            // Match runtime.close()'s runtimeLifecycleLock -> group ownership
+            // order. Do not acquire authorityLock and then try to spawn under
+            // runtimeLifecycleLock: that inverts teardown and can deadlock.
+            synchronized (runtimeLifecycleLock) {
+                synchronized (authorityLock) {
+                    requireOpen();
+                    childRegistry.requireOpenRestartReservation(permit);
+                    if (pendingRestartPermits.values().stream().anyMatch(
+                            existing -> existing.child().equals(permit.child())))
+                        throw new IllegalStateException(
+                                "logical child already has a pending physical replacement");
+                    if (managedWorkers.size() + pendingRestartCandidates.size()
+                            >= memberLimit)
+                        throw new IllegalStateException(
+                                "supervisor has no capacity for a RESTART candidate");
+                    ActorRef<M> candidate = ActorRuntime.this.spawnInternal(
+                            kind, policy, factory, true,
+                            null, null, null, true);
+                    pendingRestartCandidates.put(candidate.id(), candidate);
+                    pendingRestartPermits.put(candidate.id(), permit);
+                    return candidate;
+                }
+            }
+        }
+
+        /**
+         * An unpublished replacement is owned until physical DONE, even when
+         * a precommit rejection or supervisor close prevents publication.
+         * This does not force-stop it: the trusted host must first stop or
+         * cancel the exact ActorRef and observe its terminal done barrier.
+         */
+        SupervisorChildRegistry.Snapshot abortCleanedUnpublishedRestart(
+                SupervisorChildRegistry.RestartReservation permit,
+                ActorRef<?> candidate) {
+            requireSupervisorContext("abort physically cleaned supervisor RESTART");
+            Objects.requireNonNull(permit);
+            Objects.requireNonNull(candidate);
+            if (!candidate.ownedBy(ActorRuntime.this)
+                    || !supervisorId.equals(permit.child().supervisorId())
+                    || !id.equals(permit.child().groupId()))
+                throw new SecurityException("foreign RESTART abort authority");
+            synchronized (authorityLock) {
+                if (!permit.equals(pendingRestartPermits.get(candidate.id()))
+                        || (!groupClosed.get()
+                            && pendingRestartCandidates.get(candidate.id()) != candidate))
+                    throw new IllegalStateException(
+                            "physical candidate was not spawned by this exact RESTART permit");
+                childRegistry.acknowledgeCleanupIfStaged(
+                        permit, candidate.id(),
+                        () -> candidate.done().isDone()
+                                && !actors.containsKey(candidate.id()));
+                var restored = childRegistry.abortRestart(permit);
+                pendingRestartCandidates.remove(candidate.id(), candidate);
+                pendingRestartPermits.remove(candidate.id(), permit);
+                return restored;
+            }
+        }
+
+        /**
+         * Publication is linearized while holding physical actor lifecycle,
+         * group ownership and registry admission locks, in that order.
+         * No host callback or user behavior is invoked under these locks.
+         * The candidate is still hidden on every exceptional exit before
+         * the registry commit and must be cleaned before aborting RESTART.
+         */
+        SupervisorChildRegistry.Snapshot commitUnpublishedRestart(
+                SupervisorChildRegistry.RestartReservation permit,
+                ActorRef<?> replacement) {
+            requireSupervisorContext("commit scheduler-guarded RESTART");
+            Objects.requireNonNull(permit);
+            Objects.requireNonNull(replacement);
+            if (!replacement.ownedBy(ActorRuntime.this)
+                    || !supervisorId.equals(permit.child().supervisorId())
+                    || !id.equals(permit.child().groupId()))
+                throw new SecurityException("foreign RESTART candidate or owner");
+            ActorCell<?> cell = actors.get(replacement.id());
+            if (cell == null)
+                throw new IllegalStateException("replacement is not physically present");
+            synchronized (cell.lifecycleLock) {
+                synchronized (authorityLock) {
+                    requireOpen();
+                    if (actors.get(replacement.id()) != cell
+                            || cell.stopped.get() || cell.finalized
+                            || cell.forceKillFenced || !cell.restartUnpublished
+                            || cell.activeTurns != 0 || cell.carrierActive
+                            || cell.scheduled.get() || cell.parent != null
+                            || cell.managedByGroup.get() != null
+                            || cell.supervisedChild.get() != null
+                            || !cell.children.isEmpty()
+                            || managedWorkers.containsKey(replacement.id())
+                            || pendingRestartCandidates.get(replacement.id()) != replacement
+                            || !permit.equals(pendingRestartPermits.get(replacement.id()))) {
+                        throw new IllegalStateException(
+                                "replacement is not an idle, unpublished ActorCell");
+                    }
+                    if (managedWorkers.size() >= memberLimit)
+                        throw new IllegalStateException(
+                                "supervisor managed-worker capacity exhausted");
+                    // Prepare all allocating ownership records in advance.
+                    var expected = new SupervisorChildRegistry.Snapshot(
+                            permit.child(), replacement.id(),
+                            Math.addExact(permit.incarnation(), 1),
+                            SupervisorChildRegistry.Phase.ACTIVE);
+                    var tracking = new SupervisedChild(childRegistry, expected);
+                    childRegistry.stageReplacement(permit, replacement.id());
+                    // This callback is a pure, nonblocking ActorCell read,
+                    // kept stable by lifecycleLock, never an external probe.
+                    childRegistry.acknowledgeReplacementAdmission(
+                            permit, replacement.id(),
+                            () -> actors.get(replacement.id()) == cell
+                                    && !cell.stopped.get() && !cell.finalized
+                                    && cell.restartUnpublished);
+                    // A close racing after commit must see and stop this
+                    // physical worker when it snapshots managedWorkers.
+                    managedWorkers.put(replacement.id(), replacement);
+                    try {
+                        var committed = childRegistry.replace(permit, replacement.id());
+                        cell.managedByGroup.set(id);
+                        cell.supervision.set(supervisorControl);
+                        cell.supervisedChild.set(tracking);
+                        // The routing flip itself cannot allocate or fail.
+                        cell.restartUnpublished = false;
+                        pendingRestartCandidates.remove(replacement.id());
+                        pendingRestartPermits.remove(replacement.id());
+                        return committed;
+                    } catch (RuntimeException | Error failure) {
+                        managedWorkers.remove(replacement.id(), replacement);
+                        throw failure;
+                    }
+                }
+            }
+        }
+
+        /**
+         * Trusted host acknowledgement for an already-finalized STOP-only
+         * failure. A successful host decision must be bound to the exact
+         * physical actor, logical child and CONTROL turn; stale generations
+         * cannot stop a subsequent replacement.
+         *
+         * This records terminal disposition; it does not stop a live actor,
+         * synthesize an authoritative restart, or expose guest authority.
+         */
+        public SupervisorChildRegistry.Snapshot acknowledgeFinalizedStop(
+                SupervisorProcess.Resolution resolution) {
+            requireSupervisorContext("acknowledge finalized supervisor STOP");
+            Objects.requireNonNull(resolution);
+            var notice = resolution.notice();
+            if (resolution.directive() != SupervisorProcess.Directive.STOP
+                    || resolution.turnGeneration() < 1
+                    || !notice.supervisorId().equals(supervisorId)
+                    || !notice.groupId().equals(id)
+                    || notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
+                throw new SecurityException("invalid supervisor STOP authority");
+            }
+            var child = notice.logicalChild().orElseThrow(
+                    () -> new IllegalStateException("STOP notice lacks verified logical child"));
+            return childRegistry.stop(child, notice.actorId(), notice.incarnation());
+        }
+
+        /**
+         * Compiler-owned terminal STOP claim. Call before invoking the host
+         * effect; retain the logical reservation across asynchronous waits.
+         */
+        public SupervisorChildRegistry.StopReservation reserveFinalizedStop(
+                SupervisorProcess.Resolution resolution) {
+            requireSupervisorContext("reserve finalized supervisor STOP");
+            Objects.requireNonNull(resolution);
+            var notice = resolution.notice();
+            if (resolution.directive() != SupervisorProcess.Directive.STOP
+                    || resolution.turnGeneration() < 1
+                    || !notice.supervisorId().equals(supervisorId)
+                    || !notice.groupId().equals(id)
+                    || notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
+                throw new SecurityException("invalid supervisor STOP reservation");
+            }
+            var child = notice.logicalChild().orElseThrow(() ->
+                    new IllegalStateException("STOP has no verified logical child"));
+            return childRegistry.beginStop(
+                    child, notice.actorId(), notice.incarnation(),
+                    resolution.turnGeneration());
+        }
+
+        /**
+         * Trusted-only receipt inspection. StopReceipt embeds the reservation
+         * nonce, so ordinary actor observers must not receive this object.
+         * Use childSnapshot for value-only observational lifecycle state.
+         */
+        public SupervisorChildRegistry.StopReceipt stopReceipt(
+                SupervisorChildRegistry.ChildId child) {
+            requireSupervisorContext("inspect supervisor STOP receipt reservation");
+            return childRegistry.stopReceipt(Objects.requireNonNull(child));
+        }
+
+        /**
+         * Source-compiled host STOP invocation entry: a one-use claim bound to
+         * the reserved nonce and logical CONTROL turn, before the external
+         * effect is called. It is NOT evidence that the effect succeeded.
+         */
+        public void claimReservedStopInvocation(
+                SupervisorChildRegistry.StopReservation reservation) {
+            requireSupervisorContext("claim reserved STOP host effect invocation");
+            childRegistry.claimHostStopInvocation(Objects.requireNonNull(reservation));
+        }
+
+        /** Commit an authenticated, applied host effect to the STOP ledger. */
+        public SupervisorChildRegistry.StopReceipt recordAppliedStop(
+                SupervisorChildRegistry.StopReservation reservation) {
+            requireSupervisorContext("record applied supervisor STOP");
+            return childRegistry.markStopApplied(Objects.requireNonNull(reservation));
+        }
+
+        /** Quarantine uncertain host effects; never automatically retry them. */
+        public SupervisorChildRegistry.StopReceipt recordUncertainStop(
+                SupervisorChildRegistry.StopReservation reservation) {
+            requireSupervisorContext("record uncertain supervisor STOP");
+            return childRegistry.markStopUncertain(Objects.requireNonNull(reservation));
+        }
+
+        /** Host acknowledgment of one previously applied exact STOP turn. */
+        public SupervisorChildRegistry.Snapshot commitReservedStop(
+                SupervisorChildRegistry.StopReservation reservation) {
+            requireSupervisorContext("commit reserved supervisor STOP");
+            return childRegistry.commitStop(Objects.requireNonNull(reservation));
+        }
+
+        /**
+         * Only trusted CONTROL may recover an outstanding STOP reservation.
+         * The compiler does not hold its own copy: the lifecycle registry is
+         * the authoritative owner, including after the process closes.
+         */
+        public SupervisorChildRegistry.StopReservation reservedStopFor(
+                SupervisorProcess.Resolution resolution) {
+            requireSupervisorContext("inspect reserved supervisor STOP");
+            Objects.requireNonNull(resolution);
+            var notice = resolution.notice();
+            if (resolution.directive() != SupervisorProcess.Directive.STOP
+                    || resolution.turnGeneration() < 1
+                    || !supervisorId.equals(notice.supervisorId())
+                    || !id.equals(notice.groupId())
+                    || notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
+                throw new SecurityException("invalid STOP turn");
+            }
+            var child = notice.logicalChild().orElseThrow(() ->
+                    new IllegalStateException("missing supervisor child in STOP turn"));
+            var receipt = childRegistry.stopReceipt(child);
+            var reserved = receipt.reservation();
+            if (receipt.status() == SupervisorChildRegistry.StopReceiptStatus.ACKNOWLEDGED
+                    || !reserved.failedActor().equals(notice.actorId())
+                    || reserved.incarnation() != notice.incarnation()
+                    || reserved.turnGeneration() != resolution.turnGeneration()) {
+                throw new IllegalStateException("stale or mismatched reserved STOP turn");
+            }
+            return reserved;
+        }
+
+        /**
+         * A successful authoritative host Future may race a trusted
+         * reconciliation of that same STOP. Accept the exact same turn
+         * idempotently; a stale or unrelated notice cannot borrow the ticket.
+         * This never invokes the external host effect again.
+         */
+        public SupervisorChildRegistry.Snapshot acknowledgeReservedStopEffect(
+                SupervisorProcess.Resolution resolution) {
+            requireSupervisorContext("acknowledge reserved STOP host effect");
+            Objects.requireNonNull(resolution);
+            var notice = resolution.notice();
+            if (resolution.directive() != SupervisorProcess.Directive.STOP
+                    || resolution.turnGeneration() < 1
+                    || !supervisorId.equals(notice.supervisorId())
+                    || !id.equals(notice.groupId())
+                    || notice.kind() != SupervisorFailureControl.Kind.TERMINAL_FAILURE) {
+                throw new SecurityException("invalid supervisor STOP effect acknowledgment");
+            }
+            var child = notice.logicalChild().orElseThrow(() ->
+                    new IllegalStateException("missing acknowledged STOP child"));
+            var receipt = childRegistry.stopReceipt(child);
+            var permit = receipt.reservation();
+            if (!permit.failedActor().equals(notice.actorId())
+                    || permit.incarnation() != notice.incarnation()
+                    || permit.turnGeneration() != resolution.turnGeneration()) {
+                throw new IllegalStateException("stale STOP effect acknowledgment");
+            }
+            return childRegistry.acknowledgeHostStop(permit);
+        }
+
+        /** Unresolved receipt snapshots survive supervisor process closure. */
+        public java.util.List<SupervisorChildRegistry.StopReceipt> unresolvedSupervisorStops() {
+            requireSupervisorContext("inspect supervisor STOP reconciliation inventory");
+            return childRegistry.unresolvedStops();
+        }
+
+        /**
+         * Reconcile only with an independently verified, read-only host proof.
+         * Never run or retry STOP here. A false result or throwing probe has
+         * no registry effect; exact ticket checks are revalidated atomically.
+         */
+        public SupervisorChildRegistry.Snapshot reconcileConfirmedStop(
+                SupervisorChildRegistry.StopReservation reservation,
+                java.util.function.BooleanSupplier hostEffectAlreadyApplied) {
+            requireSupervisorContext("reconcile confirmed supervisor STOP");
+            Objects.requireNonNull(reservation);
+            Objects.requireNonNull(hostEffectAlreadyApplied);
+            // Reject foreign and stale tickets BEFORE invoking trusted host
+            // integration code, then revalidate after that code returns.
+            childRegistry.validateReconciliationCandidate(reservation);
+            if (!hostEffectAlreadyApplied.getAsBoolean()) {
+                throw new IllegalStateException("host STOP effect was not independently verified");
+            }
+            return childRegistry.reconcileVerifiedStop(reservation);
         }
 
         /** Host-only callback: delivered on shared CONTROL carriers, never inline. */
@@ -2021,6 +2411,47 @@ public final class ActorRuntime implements AutoCloseable {
             SupervisorProcess process = new SupervisorProcess(
                     supervisorId, id, supervisorDispatcher, mailboxCapacity,
                     onFailure, onDecision);
+            try {
+                supervisorControl.install(process::accept);
+            } catch (RuntimeException | Error admissionFailure) {
+                process.close();
+                throw admissionFailure;
+            }
+            return process;
+        }
+
+        /**
+         * Async lifecycle effects run on CONTROL and retain the logical
+         * supervisor lease until the trusted host acknowledges completion.
+         * A foreign Future completion cannot finalize a child: the supplied
+         * onAcknowledged callback runs on a newly admitted CONTROL turn.
+         */
+        public SupervisorProcess installSupervisorProcessAwaitingDecision(
+                int mailboxCapacity,
+                java.util.function.Function<SupervisorFailureControl.Notice,
+                        java.util.concurrent.CompletionStage<SupervisorProcess.Directive>> onFailure,
+                java.util.function.Function<SupervisorProcess.Resolution,
+                        java.util.concurrent.CompletionStage<Void>> onDecision,
+                Consumer<SupervisorProcess.Resolution> onAcknowledged) {
+            return installSupervisorProcessAwaitingDecision(
+                    mailboxCapacity, onFailure, onDecision, onAcknowledged,
+                    ignored -> { });
+        }
+
+        /** Classify a failed authoritative host effect on the CONTROL lane. */
+        public SupervisorProcess installSupervisorProcessAwaitingDecision(
+                int mailboxCapacity,
+                java.util.function.Function<SupervisorFailureControl.Notice,
+                        java.util.concurrent.CompletionStage<SupervisorProcess.Directive>> onFailure,
+                java.util.function.Function<SupervisorProcess.Resolution,
+                        java.util.concurrent.CompletionStage<Void>> onDecision,
+                Consumer<SupervisorProcess.Resolution> onAcknowledged,
+                Consumer<SupervisorProcess.Resolution> onEffectFailure) {
+            requireSupervisorContext("install awaiting supervisor process");
+            requireOpen();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisorId, id, supervisorDispatcher, mailboxCapacity,
+                    onFailure, onDecision, onAcknowledged, onEffectFailure);
             try {
                 supervisorControl.install(process::accept);
             } catch (RuntimeException | Error admissionFailure) {
@@ -2088,7 +2519,8 @@ public final class ActorRuntime implements AutoCloseable {
                 requireOpen();
                 ActorCell<?> cell = actors.get(worker.id());
                 if (cell != admissionCell || cell.stopped.get() || cell.finalized
-                        || stoppingWorkers.contains(worker.id())) {
+                        || cell.restartUnpublished
+                    || stoppingWorkers.contains(worker.id())) {
                     throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
                 }
                 if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
@@ -2099,6 +2531,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Other cooperation groups may still admit it as a member,
                 // but no second manager may acquire independent stop rights.
                 ActorGroupId owningGroup = cell.managedByGroup.get();
+                boolean acquiredGroupOwnership = false;
                 if (owningGroup == null) {
                     if (!cell.children.isEmpty()) {
                         throw new IllegalStateException(
@@ -2106,6 +2539,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     if (cell.managedByGroup.compareAndSet(null, id)) {
                         owningGroup = id;
+                        acquiredGroupOwnership = true;
                     } else {
                         owningGroup = cell.managedByGroup.get();
                     }
@@ -2113,6 +2547,17 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!id.equals(owningGroup)) {
                     throw new IllegalStateException(
                             "actor is already managed by a different ActorGroup");
+                }
+                if (cell.supervisedChild.get() == null) {
+                    try {
+                        var admittedChild = childRegistry.register(worker.id());
+                        cell.supervisedChild.set(new SupervisedChild(childRegistry, admittedChild));
+                    } catch (RuntimeException | Error admissionFailure) {
+                        if (acquiredGroupOwnership) {
+                            cell.managedByGroup.compareAndSet(id, null);
+                        }
+                        throw admissionFailure;
+                    }
                 }
                 managedWorkers.putIfAbsent(worker.id(), worker);
                 cell.supervision.set(supervisorControl);
@@ -2186,8 +2631,24 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "cannot transfer worker with live structured descendants");
                 }
-                if (!cell.managedByGroup.compareAndSet(id, null)) {
-                    throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
+                // Retire the exact old identity before publishing a transfer
+                // into the unmanaged state. A failed registry check must leave
+                // the old owner's authority and CONTROL association intact.
+                var binding = cell.supervisedChild.get();
+                if (binding == null || binding.registry() != childRegistry) {
+                    throw new IllegalStateException(
+                            "managed worker lacks its owner's logical child binding");
+                }
+                binding.registry().detachActive(
+                        binding.admitted().child(), worker.id(),
+                        binding.admitted().incarnation());
+                // Both metadata fields are protected by lifecycleLock followed
+                // by authorityLock; no competing adoption can observe half
+                // a transfer. These CAS operations must be uncontended.
+                if (!cell.managedByGroup.compareAndSet(id, null)
+                        || !cell.supervisedChild.compareAndSet(binding, null)) {
+                    throw new IllegalStateException(
+                            "logical child ownership changed during fenced transfer");
                 }
                 cell.supervision.compareAndSet(supervisorControl, null);
                 managedWorkers.remove(worker.id(), worker);
@@ -2511,14 +2972,24 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
+            // Fence runtime-owned RESTART publication BEFORE group revocation
+            // and cancellation callbacks. This lock is independent from
+            // authorityLock: no foreign host callback is invoked under it.
+            childRegistry.closeRestartAdmission();
             List<ActorRef<?>> owned;
             synchronized (authorityLock) {
                 if (!groupClosed.compareAndSet(false, true)) return;
                 // Revocation is part of close: even a capability held by code
                 // racing teardown can no longer pass validation.
                 joinSecret = UUID.randomUUID();
-                owned = List.copyOf(managedWorkers.values());
+                // A hidden replacement has no logical child association yet,
+                // but remains an owned physical actor requiring termination.
+                // Keep it in the same non-cancellable group-close drain.
+                var live = new ArrayList<ActorRef<?>>(managedWorkers.values());
+                live.addAll(pendingRestartCandidates.values());
+                owned = List.copyOf(live);
                 managedWorkers.clear();
+                pendingRestartCandidates.clear();
                 stoppingWorkers.clear();
             }
             // Attach completion handlers before requesting cancellation: an
@@ -3788,6 +4259,19 @@ public final class ActorRuntime implements AutoCloseable {
             SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor,
             String codeActorType) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory,
+                codeImage, codeExecutor, codeActorType, false);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType,
+            boolean restartUnpublished) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -3865,6 +4349,7 @@ public final class ActorRuntime implements AutoCloseable {
                         codeExecutor,
                         codeActorType,
                         parent);
+                cell.restartUnpublished = restartUnpublished;
 
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
@@ -3902,6 +4387,9 @@ public final class ActorRuntime implements AutoCloseable {
                                 }
                                 cell.managedByGroup.set(inheritedId);
                                 cell.supervision.set(inherited.supervisorControl);
+                                var admittedChild = inherited.childRegistry.register(id);
+                                cell.supervisedChild.set(
+                                        new SupervisedChild(inherited.childRegistry, admittedChild));
                                 inherited.managedWorkers.put(id, ref);
                                 parent.children.add(cell);
                                 linkedToParent = true;
@@ -3921,6 +4409,18 @@ public final class ActorRuntime implements AutoCloseable {
                 // Roll back every registry when spawn admission fails. In
                 // particular, never strand an inherited group ownership ref.
                 if (cell != null) actors.remove(id, cell);
+                if (cell != null) {
+                    var tracking = cell.supervisedChild.getAndSet(null);
+                    if (tracking != null) {
+                        try {
+                            tracking.registry().detachActive(
+                                    tracking.admitted().child(), id,
+                                    tracking.admitted().incarnation());
+                        } catch (RuntimeException cleanup) {
+                            failure.addSuppressed(cleanup);
+                        }
+                    }
+                }
                 if (linkedToParent && cell != null) parent.children.remove(cell);
                 if (cell != null) {
                     ActorGroupId inheritedId = cell.managedByGroup.get();
@@ -4214,22 +4714,58 @@ public final class ActorRuntime implements AutoCloseable {
         // invoke the supervisor on this child actor's physical carrier.
         // The control lane survives removal of a closed ActorGroup registry.
         SupervisorFailureControl lane = cell.supervision.get();
+        SupervisedChild tracking = cell.supervisedChild.get();
         Throwable failure = cell.ref.terminationCause.get();
-        if (lane != null && failure != null) {
-            SupervisorFailureControl.Kind failureKind =
-                    failure instanceof CancellationException
-                            ? SupervisorFailureControl.Kind.CANCELLED
-                            : SupervisorFailureControl.Kind.TERMINAL_FAILURE;
-            ActorGroupId ownerGroup = cell.managedByGroup.get();
-            if (ownerGroup != null) {
-                lane.publish(new SupervisorFailureControl.Notice(
-                        lane.supervisorId(), ownerGroup, cell.ref.id(),
-                        cell.parent == null
-                                ? Optional.empty() : Optional.of(cell.parent.ref.id()),
-                        failureKind,
-                        failure.getClass().getName(),
-                        failure.getMessage() == null ? "" : failure.getMessage()));
-            }
+        ActorGroupId ownerGroup = cell.managedByGroup.get();
+        if (lane != null && ownerGroup != null
+                && (tracking != null || failure != null)) {
+            // Finalize the trusted exact child generation only after the actor
+            // has crossed the physical teardown / TurnExecutor barrier.
+            // Retain registry identity after the owning group registry closes.
+            cell.finalizedFuture.whenCompleteRuntime((ignored, barrierFailure) -> {
+                if (barrierFailure != null) {
+                    lane.rejectUnfinalizedFailure();
+                    return;
+                }
+                try {
+                    if (tracking != null) {
+                        var admitted = tracking.admitted();
+                        var registry = tracking.registry();
+                        registry.finalized(admitted.child(), cell.ref.id(),
+                                admitted.incarnation());
+                        if (failure == null) {
+                            // A normally terminated incarnation does not
+                            // reserve an unbounded restartable failure record.
+                            registry.stop(admitted.child(), cell.ref.id(),
+                                    admitted.incarnation());
+                            registry.retireStopped(admitted.child());
+                        }
+                    }
+                } catch (RuntimeException | Error invalidFinalization) {
+                    // Never publish a supposedly verified logical child if
+                    // its identity/finalization check failed.
+                    lane.rejectUnfinalizedFailure();
+                    return;
+                }
+                if (failure != null) {
+                    SupervisorFailureControl.Kind kind =
+                            failure instanceof CancellationException
+                                    ? SupervisorFailureControl.Kind.CANCELLED
+                                    : SupervisorFailureControl.Kind.TERMINAL_FAILURE;
+                    var child = tracking == null
+                            ? Optional.<SupervisorChildRegistry.ChildId>empty()
+                            : Optional.of(tracking.admitted().child());
+                    long incarnation = tracking == null
+                            ? 0 : tracking.admitted().incarnation();
+                    lane.publish(new SupervisorFailureControl.Notice(
+                            lane.supervisorId(), ownerGroup, cell.ref.id(),
+                            cell.parent == null ? Optional.empty()
+                                    : Optional.of(cell.parent.ref.id()),
+                            kind, failure.getClass().getName(),
+                            failure.getMessage() == null ? "" : failure.getMessage(),
+                            child, incarnation));
+                }
+            });
         }
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()
@@ -4596,6 +5132,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell.restartUnpublished)
+            throw new IllegalStateException(
+                    "RESTART candidate is not yet published: " + ref.id());
         if (!cell.reserveMailboxSlot()) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -4672,6 +5211,9 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get()) {
                         throw terminated(ref);
                     }
+                    if (cell.restartUnpublished)
+                        throw new IllegalStateException(
+                                "RESTART candidate is not yet published: " + ref.id());
                     if (cell.forceKillFenced) {
                         throw new IllegalStateException(
                                 "actor " + ref.id()
@@ -6120,11 +6662,16 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        /** Physically spawned, but not yet published to the message router. */
+        private volatile boolean restartUnpublished;
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
         /** Trusted, process-local supervisor lane. Not a guest capability. */
         private final AtomicReference<SupervisorFailureControl> supervision =
+                new AtomicReference<>();
+        /** Exact trusted group child association; survives group close. */
+        private final AtomicReference<SupervisedChild> supervisedChild =
                 new AtomicReference<>();
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
@@ -6314,7 +6861,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
-                if (stopped.get() || forceKillFenced || finalized) return false;
+                if (stopped.get() || forceKillFenced || finalized
+                        || restartUnpublished) return false;
                 if (activeTurns != 0) {
                     throw new IllegalStateException(
                             "actor single-writer execution lease violation for " + ref.id()
@@ -6565,7 +7113,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void schedule() {
-            if (stopped.get() || forceKillFenced || closed.get()) return;
+            if (stopped.get() || forceKillFenced || closed.get()
+                    || restartUnpublished) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);

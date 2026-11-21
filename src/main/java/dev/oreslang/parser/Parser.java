@@ -96,6 +96,15 @@ public final class Parser {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
                 }
+                if (isContextualIdentifier("supervisor")) {
+                    validateOnlyVisibilityModifiers(modifiers, "supervisor declarations");
+                    if (!annotations.isEmpty()) {
+                        throw error(peek(), "supervisor type annotations require explicit compiler lowering");
+                    }
+                    advance(); // contextual supervisor, not a global reserved word
+                    rootDeclarations.add(parseSupervisor(modifiers.visibility));
+                    continue;
+                }
                 if (modifiers.shared) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
@@ -272,6 +281,14 @@ public final class Parser {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             if (match(ACTOR, ISOACTOR)) {
                 return parseDefinedActorClass(previous(), modifiers, annotations);
+            }
+            if (isContextualIdentifier("supervisor")) {
+                validateOnlyVisibilityModifiers(modifiers, "supervisor declarations");
+                if (!annotations.isEmpty()) {
+                    throw error(peek(), "supervisor type annotations require explicit compiler lowering");
+                }
+                advance();
+                return parseSupervisor(modifiers.visibility);
             }
             if (modifiers.shared || modifiers.untrusted) {
                 throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
@@ -719,6 +736,69 @@ public final class Parser {
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+    }
+
+    /**
+     * Compiler-visible supervisor declaration, not an executable actor or
+     * ordinary class. Exactly one typed on_panic hook is mandatory in this
+     * initial contract. It is intentionally rejected at build admission until
+     * both effect checking and source CONTROL lowering are implemented.
+     */
+    private Ast.SupervisorDecl parseSupervisor(Ast.Visibility visibility) {
+        String name = consume(IDENT, "expected supervisor name").lexeme();
+        boolean braces = match(LBRACE);
+        if (!braces) consume(AS, "expected 'as' after supervisor name");
+        Token.Type end = braces ? RBRACE : END;
+        List<Ast.MethodDecl> hooks = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        while (!check(end) && !check(EOF)) {
+            List<Ast.Annotation> annotations = parseAnnotations();
+            Modifiers mods = parseModifiers();
+            if (isBindingKind(peek().type()) || check(DEFINE) || check(CLASS)
+                    || check(ACTOR) || check(MODULE)) {
+                throw error(peek(), "supervisors declare lifecycle hooks, not actor fields or nested types");
+            }
+            validateActorMethodModifiers(mods);
+            if (mods.isStatic || mods.isAbstract || mods.generator || mods.structural
+                    || mods.trapped || mods.nonLexical || mods.shared || mods.untrusted) {
+                throw error(peek(), "supervisor hooks cannot use static, abstract, generator, trap or actor modifiers");
+            }
+            if (match(FNC)) {
+                throw error(previous(), "supervisor hooks omit 'fnc'; declare the lifecycle method name");
+            }
+            Ast.MethodDecl hook = parseMethod(annotations, mods);
+            if (!names.add(hook.name())) {
+                throw error(previous(), "duplicate supervisor hook '" + hook.name() + "'");
+            }
+            if (!java.util.Set.of("on_start", "on_throw", "on_raise", "on_panic", "tear_down")
+                    .contains(hook.name())) {
+                throw error(previous(), "unknown supervisor lifecycle hook '" + hook.name() + "'");
+            }
+            if (hook.isStatic() || hook.isAbstract() || !hook.genericParameters().isEmpty()
+                    || hook.explicitReceiverType() != null || hook.structural()) {
+                throw error(previous(), "supervisor lifecycle hooks require concrete nongeneric instance methods");
+            }
+            if (hook.name().equals("on_panic")) {
+                if (hook.arity() != 1
+                        || !hook.parameters().getFirst().type().name().equals("Failure")
+                        || !hook.parameters().getFirst().type().arguments().isEmpty()) {
+                    throw error(previous(), "on_panic requires exactly one typed Failure parameter");
+                }
+            } else if (hook.arity() != 0 && !hook.name().equals("on_raise")
+                    && !hook.name().equals("on_throw")) {
+                throw error(previous(), "supervisor lifecycle hook '" + hook.name() + "' takes no arguments");
+            }
+            if (!hook.returnType().name().equals("void")) {
+                throw error(previous(), "supervisor lifecycle hooks must return void");
+            }
+            hooks.add(hook);
+        }
+        consume(end, braces ? "expected '}' after supervisor declaration"
+                            : "expected 'end' after supervisor declaration");
+        if (!names.contains("on_panic")) {
+            throw error(previous(), "supervisor must define on_panic(Failure)");
+        }
+        return new Ast.SupervisorDecl(name, visibility, hooks);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {

@@ -35,7 +35,17 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, SupervisorDecl { }
+
+    /**
+     * Source-visible supervisor declaration. It is NOT an ordinary class or
+     * actor, and must not silently inherit either one's invocation behavior.
+     * The compiler requires explicit CONTROL lowering before execution.
+     */
+    public record SupervisorDecl(
+            String name, Visibility visibility, List<MethodDecl> hooks) implements Decl {
+        public SupervisorDecl { hooks = List.copyOf(hooks); }
+    }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }

@@ -15,8 +15,19 @@ public final class OresCompiler {
         return analyze(Parser.parse(source));
     }
 
+    /**
+     * Opt-in, STOP-only source supervisor compilation. This does not change
+     * general program admission, which still rejects unlowered on_panic hooks.
+     * The result is a compiler-validated CONTROL policy, not an actor method.
+     */
+    public static SourceSupervisorLowering.StopOnlySupervisor compileStopOnlySupervisor(
+            String source) {
+        return SourceSupervisorLowering.compile(source);
+    }
+
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
+        rejectUnloweredSupervisors(program);
         program = TypeChecker.checkTypes(program);
         OwnershipChecker.check(program);
         return program;
@@ -32,9 +43,30 @@ public final class OresCompiler {
     }
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
+        rejectUnloweredSupervisors(program);
         TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
         OwnershipChecker.check(checked.program());
         return new AnalysisResult(checked.program(), checked.warnings());
+    }
+
+    /**
+     * Fail closed: a declaration entering the AST does NOT imply its guest
+     * lifecycle hook can execute. A source supervisor requires generated
+     * CONTROL delivery, effect checking and separate logical context. Until
+     * those exist, admitting it would silently turn on_panic into an ordinary
+     * method and violate the native/Java shared supervision contract.
+     */
+    private static void rejectUnloweredSupervisors(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.SupervisorDecl supervisor) {
+                    throw new IllegalArgumentException(
+                            "source supervisor '" + supervisor.name()
+                                    + "' requires compiler-lowered CONTROL turns; "
+                                    + "define supervisor / on_panic is parsed but not executable yet");
+                }
+            }
+        }
     }
 
     /**

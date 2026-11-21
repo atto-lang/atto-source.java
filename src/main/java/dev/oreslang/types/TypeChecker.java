@@ -91,6 +91,17 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        // Direct TypeChecker callers must not bypass the canonical compiler
+        // source CONTROL admission guard and silently erase a supervisor.
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.SupervisorDecl supervisor) {
+                    throw new IllegalArgumentException(
+                            "source supervisor '" + supervisor.name()
+                            + "' requires compiler-lowered CONTROL turns");
+                }
+            }
+        }
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
