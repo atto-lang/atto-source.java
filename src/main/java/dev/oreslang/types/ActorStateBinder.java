@@ -70,6 +70,7 @@ public final class ActorStateBinder {
         Map<Slot, Ast.Decl> actors = new LinkedHashMap<>();
         Map<Slot, String> actorOrigins = new LinkedHashMap<>();
         Map<Slot, Set<String>> existingMembers = new LinkedHashMap<>();
+        Map<Slot, Set<String>> criticalSignatures = new LinkedHashMap<>();
         Map<Slot, Binding> states = new LinkedHashMap<>();
         Map<Ast.Decl, String> origins = new IdentityHashMap<>();
         int declarationCount = 0;
@@ -127,6 +128,22 @@ public final class ActorStateBinder {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.ExternalActorMethodDecl method) {
                         Slot slot = new Slot(packageIdentity, namespace, method.actorName());
+                        existingMembers.computeIfAbsent(
+                                slot, ignored -> new LinkedHashSet<>()).add(method.name());
+                    }
+                    if (decl instanceof Ast.CriticalActorMethodDecl method) {
+                        Slot slot = new Slot(packageIdentity, namespace, method.actorName());
+                        if (!actors.containsKey(slot)) {
+                            throw new IllegalArgumentException(
+                                    "critical actor method has no nominal actor in package namespace: "
+                                            + method.actorName());
+                        }
+                        String signature = method.name() + "/" + method.parameters().size();
+                        if (!criticalSignatures.computeIfAbsent(
+                                slot, ignored -> new LinkedHashSet<>()).add(signature)) {
+                            throw new IllegalArgumentException(
+                                    "duplicate private critical actor method slot: " + signature);
+                        }
                         existingMembers.computeIfAbsent(
                                 slot, ignored -> new LinkedHashSet<>()).add(method.name());
                     }
