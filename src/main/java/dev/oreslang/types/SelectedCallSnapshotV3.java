@@ -1,8 +1,13 @@
 package dev.oreslang.types;
 
+import dev.oreslang.ast.Ast;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -39,18 +44,49 @@ public final class SelectedCallSnapshotV3 {
         private final String fingerprint;
         private final Target target;
         private final DefaultCallShapeV3.Plan plan;
+        // Optional non-serializable AST identity: the caller must verify this
+        // before using a plan for a particular source expression.
+        private final Ast.Expr callSite;
 
-        private Receipt(String fingerprint, Target target, DefaultCallShapeV3.Plan plan) {
+        private Receipt(String fingerprint, Target target,
+                        DefaultCallShapeV3.Plan plan, Ast.Expr callSite) {
             this.fingerprint = fingerprint;
             this.target = target;
             this.plan = plan;
+            this.callSite = callSite;
         }
         public String fingerprint() { return fingerprint; }
         public Target target() { return target; }
         public DefaultCallShapeV3.Plan plan() { return plan; }
 
+        /**
+         * Stronger check for a specific AST occurrence, including the source
+         * expressions themselves by object identity. It is NOT proof that
+         * the AST or compiler's selected symbol has been type-checked.
+         */
+        public void verifyForCallSite(Ast.Expr expectedSite, Target expected,
+                List<DefaultCallShapeV3.Formal> formals,
+                List<DefaultCallShapeV3.Item> items) {
+            if (expectedSite == null || callSite == null || expectedSite != callSite) {
+                throw new IllegalArgumentException(
+                        "call plan not bound to this exact checked AST occurrence");
+            }
+            verifySnapshot(expected, formals, items);
+        }
+
+        /** Shape-only verification cannot downgrade an AST-bound receipt. */
         public void verify(Target expected, List<DefaultCallShapeV3.Formal> formals,
                            List<DefaultCallShapeV3.Item> items) {
+            if (callSite != null) {
+                throw new IllegalArgumentException(
+                        "call-site-bound receipt requires verifyForCallSite");
+            }
+            verifySnapshot(expected, formals, items);
+        }
+
+        private void verifySnapshot(Target expected,
+                List<DefaultCallShapeV3.Formal> formals,
+                List<DefaultCallShapeV3.Item> items) {
             Objects.requireNonNull(expected, "selected target");
             if (!target.equals(expected)) {
                 throw new IllegalArgumentException("call plan belongs to a different declaration or ABI");
@@ -70,7 +106,20 @@ public final class SelectedCallSnapshotV3 {
         formals = List.copyOf(formals);
         items = List.copyOf(items);
         DefaultCallShapeV3.Plan plan = DefaultCallShapeV3.bind(formals, items);
-        return new Receipt(digest(target, formals, items, plan), target, plan);
+        return new Receipt(digest(target, formals, items, plan), target, plan, null);
+    }
+
+    /** Bind to an actual immutable AST occurrence; do not use for unverified dispatch. */
+    public static Receipt bindForCallSite(
+            Target target, Ast.Expr callSite,
+            List<DefaultCallShapeV3.Formal> formals,
+            List<DefaultCallShapeV3.Item> items) {
+        Objects.requireNonNull(target, "selected target");
+        Objects.requireNonNull(callSite, "AST call occurrence");
+        formals = List.copyOf(formals);
+        items = List.copyOf(items);
+        DefaultCallShapeV3.Plan plan = DefaultCallShapeV3.bind(formals, items);
+        return new Receipt(digest(target, formals, items, plan), target, plan, callSite);
     }
 
     private static String digest(
@@ -123,7 +172,21 @@ public final class SelectedCallSnapshotV3 {
     }
 
     private static void write(DataOutputStream out, String value) throws IOException {
-        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        // String#getBytes uses replacement for malformed UTF-16 and is NOT
+        // collision-free. Reject unpaired surrogates instead of hashing two
+        // different Java Strings to the same UTF-8 replacement bytes.
+        byte[] bytes;
+        try {
+            ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(value));
+            bytes = new byte[encoded.remaining()];
+            encoded.get(bytes);
+        } catch (CharacterCodingException e) {
+            throw new IllegalArgumentException(
+                    "checked-call digest contains malformed Unicode", e);
+        }
         out.writeInt(bytes.length);
         out.write(bytes);
     }

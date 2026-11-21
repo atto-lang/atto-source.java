@@ -63,6 +63,46 @@ final class SelectedCallSnapshotV3Test {
                 selected, formals, List.of(Item.value("a"), Item.value("b"))));
     }
 
+    @Test void differentAstOccurrencesCannotReuseSameShapeProof() {
+        var target = target("a".repeat(64));
+        List<Formal> params = List.of(plain("a"));
+        List<Item> items = List.of(Item.value(null));
+        var firstCall = new dev.oreslang.ast.Ast.NameExpr("call");
+        var otherCall = new dev.oreslang.ast.Ast.NameExpr("call");
+        var receipt = SelectedCallSnapshotV3.bindForCallSite(
+                target, firstCall, params, items);
+        assertDoesNotThrow(() -> receipt.verifyForCallSite(
+                firstCall, target, params, items));
+        // Downgrading an AST-bound plan to weak shape-only verification must fail.
+        assertThrows(IllegalArgumentException.class, () ->
+                receipt.verify(target, params, items));
+        assertThrows(IllegalArgumentException.class, () ->
+                receipt.verifyForCallSite(otherCall, target, params, items));
+        var shapeOnly = SelectedCallSnapshotV3.bind(target, params, items);
+        assertThrows(IllegalArgumentException.class, () ->
+                shapeOnly.verifyForCallSite(firstCall, target, params, items));
+        assertThrows(NullPointerException.class, () ->
+                SelectedCallSnapshotV3.bindForCallSite(target, null, params, items));
+    }
+
+    @Test void malformedUtf16MustNotCollapseToReplacementBytes() {
+        var target = target("a".repeat(64));
+        // Java's default UTF-8 encoder would replace an unpaired surrogate
+        // with '?' and produce the same digest as the actual '?' character.
+        List<Formal> invalid = List.of(new Formal("x", false, true,
+                new Constant(ConstantKind.STRING, "\uD800")));
+        List<Formal> valid = List.of(new Formal("x", false, true,
+                new Constant(ConstantKind.STRING, "?")));
+        assertThrows(IllegalArgumentException.class, () ->
+                SelectedCallSnapshotV3.bind(target, invalid, List.of()));
+        assertDoesNotThrow(() ->
+                SelectedCallSnapshotV3.bind(target, valid, List.of()));
+        List<Formal> paired = List.of(new Formal("x", false, true,
+                new Constant(ConstantKind.STRING, "\uD83D\uDE42")));
+        assertDoesNotThrow(() ->
+                SelectedCallSnapshotV3.bind(target, paired, List.of()));
+    }
+
     @Test void invalidSignatureDigestIsNotAccepted() {
         assertThrows(IllegalArgumentException.class, () -> target("abc"));
         assertThrows(IllegalArgumentException.class, () -> target("A".repeat(64)));
