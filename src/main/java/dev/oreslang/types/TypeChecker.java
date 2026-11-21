@@ -1011,6 +1011,11 @@ public final class TypeChecker {
                     && !method.isStatic() && method.name().equals("handle_state")) {
                 throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
             }
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("queue_authorized")) {
+                throw new IllegalArgumentException(
+                        "queue_authorized is a sealed actor runtime intrinsic");
+            }
             if (method.annotations().stream().anyMatch(a -> a.name().equals("$critical$"))) {
                 throw new IllegalArgumentException("source critical method requires scheduler ticket and continuation lowering");
             }
@@ -2330,6 +2335,20 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             member.member()
                                     + " is a reserved actor lifecycle hook and cannot be called directly");
+                }
+                if (actorSelf && member.member().equals("queue_authorized")) {
+                    if (call.typeArgumentsPresent() || call.arguments().size() != 2) {
+                        throw new IllegalArgumentException(
+                                "self.queue_authorized expects exactly two int arguments");
+                    }
+                    for (Ast.Expr argument : call.arguments()) {
+                        Type value = deref(typeOf(argument, env, generics, self));
+                        if (value != Primitive.INT) {
+                            throw new IllegalArgumentException(
+                                    "self.queue_authorized requires int opcode and producer slot");
+                        }
+                    }
+                    return Primitive.BOOL;
                 }
                 if (actorSelf
                         && (member.member().equals("send")
