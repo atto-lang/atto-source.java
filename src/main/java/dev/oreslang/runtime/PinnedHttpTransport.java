@@ -162,7 +162,7 @@ final class PinnedHttpTransport implements AutoCloseable {
         }
     }
 
-    private static final class ConnectionLease {
+    static final class ConnectionLease {
         private final ConnectionBudget budget;
         private final String origin;
         private final OriginLimiter limiter;

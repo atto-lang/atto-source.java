@@ -3,12 +3,15 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -74,7 +77,7 @@ public final class OutboundHttpRequest {
         private final AtomicBoolean requested = new AtomicBoolean();
         private final AtomicBoolean gracefulClose = new AtomicBoolean();
         private final AtomicBoolean abortScheduled = new AtomicBoolean();
-        private final AtomicReference<PinnedHttpTransport> transport =
+        private final AtomicReference<AutoCloseable> transport =
                 new AtomicReference<>();
         private final AtomicReference<BodyPipe> pipe = new AtomicReference<>();
 
@@ -107,7 +110,7 @@ public final class OutboundHttpRequest {
             scheduleTransportAbort();
         }
 
-        void trackTransport(PinnedHttpTransport value) {
+        void trackTransport(AutoCloseable value) {
             Objects.requireNonNull(value, "value");
             if (!transport.compareAndSet(null, value)) {
                 throw new IllegalStateException(
@@ -116,12 +119,12 @@ public final class OutboundHttpRequest {
             if (requested.get()) scheduleTransportAbort();
         }
 
-        void clearTransport(PinnedHttpTransport value) {
+        void clearTransport(AutoCloseable value) {
             transport.compareAndSet(value, null);
         }
 
         private void scheduleTransportAbort() {
-            PinnedHttpTransport current = transport.get();
+            AutoCloseable current = transport.get();
             if (current == null
                     || !abortScheduled.compareAndSet(false, true)) {
                 return;
@@ -151,7 +154,7 @@ public final class OutboundHttpRequest {
      * One-producer / one-logical-reader bounded pipe. The native I/O worker may
      * block when the fixed byte budget is full; actor/root carriers never do.
      */
-    private static final class BodyPipe {
+    static final class BodyPipe {
         private final ArrayDeque<byte[]> queued = new ArrayDeque<>();
         private int firstOffset;
         private int bufferedBytes;
@@ -204,7 +207,12 @@ public final class OutboundHttpRequest {
             }
         }
 
-        void write(byte[] source, int offset, int length) throws IOException {
+        void write(
+                byte[] source,
+                int offset,
+                int length,
+                long deadlineNanos)
+                throws IOException {
             Objects.checkFromIndexSize(offset, length, source.length);
             int cursor = offset;
             int remaining = length;
@@ -224,8 +232,16 @@ public final class OutboundHttpRequest {
                     } else {
                         while (failure == null && !eof
                                 && bufferedBytes + remaining > PIPE_BYTES) {
+                            long waitNanos =
+                                    deadlineNanos - System.nanoTime();
+                            if (waitNanos <= 0) {
+                                throw new SocketTimeoutException(
+                                        "HTTP response body backpressure deadline expired");
+                            }
                             try {
-                                wait();
+                                TimeUnit.NANOSECONDS.timedWait(
+                                        this,
+                                        waitNanos);
                             } catch (InterruptedException interrupted) {
                                 Thread.currentThread().interrupt();
                                 throw new IOException(
@@ -330,19 +346,23 @@ public final class OutboundHttpRequest {
 
     private static final class PipeOutputStream extends OutputStream {
         private final BodyPipe pipe;
+        private final long deadlineNanos;
 
-        private PipeOutputStream(BodyPipe pipe) {
+        private PipeOutputStream(
+                BodyPipe pipe,
+                long deadlineNanos) {
             this.pipe = pipe;
+            this.deadlineNanos = deadlineNanos;
         }
 
         @Override public void write(int value) throws IOException {
             byte[] one = { (byte) value };
-            pipe.write(one, 0, 1);
+            pipe.write(one, 0, 1, deadlineNanos);
         }
 
         @Override public void write(byte[] value, int offset, int length)
                 throws IOException {
-            pipe.write(value, offset, length);
+            pipe.write(value, offset, length, deadlineNanos);
         }
     }
 
@@ -552,16 +572,20 @@ public final class OutboundHttpRequest {
                     "http.request revoked before native acquisition");
         }
 
-        PinnedHttpTransport transport =
-                PinnedHttpTransport.systemDefault(
+        SelectorHttpTransport transport =
+                new SelectorHttpTransport(
                         OutboundEgressPolicy.Purpose.GENERAL_HTTP,
                         context.outboundHttpPolicy(),
-                        64L * 1024 * 1024,
-                        context.outboundHttpBudget());
+                        host -> {
+                            throw new UnknownHostException(
+                                    "guest hostname DNS remains disabled: " + host);
+                        },
+                        context.outboundHttpBudget(),
+                        64L * 1024 * 1024);
         revocation.trackTransport(transport);
         BodyPipe pipe = null;
         try (transport) {
-            PinnedHttpTransport.Response upstream =
+            SelectorHttpTransport.Response upstream =
                     transport.request(target, method, headers);
             try (upstream) {
                 if (revocation.requested()) {
@@ -585,7 +609,9 @@ public final class OutboundHttpRequest {
                 }
 
                 upstream.streamBody(
-                        new PipeOutputStream(pipe),
+                        new PipeOutputStream(
+                                pipe,
+                                upstream.deadlineNanos()),
                         revocation::requested);
                 if (revocation.requested()) {
                     throw new CancellationException(

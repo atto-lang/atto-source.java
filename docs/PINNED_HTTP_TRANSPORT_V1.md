@@ -1,6 +1,11 @@
 # Pinned HTTP/HTTPS transport v1
 
-Status: **host transport substrate only; guest hostname egress remains disabled**.
+Status: **pinned TLS/reference transport retained; guest hostname egress remains disabled**.
+
+The child selector-state-machine work moves the current plaintext loopback guest
+path onto `SelectorHttpTransport`. This document remains the contract for the
+exact-address policy, TLS identity proof, and blocking transport reference
+behavior used to validate the nonblocking successor.
 
 This layer is the first transport that consumes the per-connection authorization
 from `OutboundEgressPolicy` without handing an authorized hostname back to a
@@ -111,15 +116,14 @@ The transport tracks all published responses and live sockets. Closing it:
 - causes blocked body reads to fail;
 - prevents new admission.
 
-The current literal-loopback guest `http.request` path is now integrated with
-this transport on its existing `AsyncNativeIo` worker. Each request has its own
-revocable transport instance but uses the context-owned shared connection
-budget. The `AsyncNativeIo` operation remains the authoritative physical
-worker receipt.
+On the stacked selector-state-machine branch, the current literal-loopback
+guest `http.request` path uses `SelectorHttpTransport` instead. The pinned
+transport remains the HTTPS/SNI/hostname-verification proof and shares the same
+context-owned connection budget.
 
-Guest admission still runs the existing loopback-only target validator before
-native work is admitted, so this integration does **not** enable hostname or
-arbitrary egress.
+The `AsyncNativeIo` operation remains the authoritative physical worker
+receipt. Guest admission still runs the existing loopback-only target validator,
+so neither transport change enables hostname or arbitrary egress.
 
 ## Focused tests
 

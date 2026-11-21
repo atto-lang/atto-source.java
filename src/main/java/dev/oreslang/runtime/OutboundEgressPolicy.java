@@ -273,6 +273,58 @@ final class OutboundEgressPolicy {
                     policy.limits().maxDnsAddresses());
         }
 
+        return authorizeCanonicalResolved(
+                canonical,
+                purpose,
+                policy,
+                addresses);
+    }
+
+    /**
+     * Authorize an address set produced by an external, physically cancellable
+     * resolver. This path never performs DNS itself and therefore cannot
+     * silently fall back to InetAddress.getAllByName().
+     */
+    static ResolvedTarget authorizeResolved(
+            URI raw,
+            Purpose purpose,
+            Policy policy,
+            List<InetAddress> resolved) {
+        Objects.requireNonNull(purpose, "purpose");
+        Objects.requireNonNull(policy, "policy");
+        CanonicalTarget canonical = canonicalize(raw);
+
+        List<InetAddress> addresses;
+        if (canonical.literalAddress() != null) {
+            addresses = List.of(canonical.literalAddress());
+            if (resolved != null
+                    && !resolved.isEmpty()
+                    && !canonicalizeAddresses(
+                            resolved,
+                            policy.limits().maxDnsAddresses())
+                            .equals(addresses)) {
+                throw new IllegalArgumentException(
+                        "literal outbound target cannot be rebound by resolver results");
+            }
+        } else {
+            addresses = canonicalizeAddresses(
+                    Objects.requireNonNull(
+                            resolved,
+                            "resolved addresses"),
+                    policy.limits().maxDnsAddresses());
+        }
+        return authorizeCanonicalResolved(
+                canonical,
+                purpose,
+                policy,
+                addresses);
+    }
+
+    private static ResolvedTarget authorizeCanonicalResolved(
+            CanonicalTarget canonical,
+            Purpose purpose,
+            Policy policy,
+            List<InetAddress> addresses) {
         for (InetAddress address : addresses) {
             AddressClass addressClass = classify(address);
             if (!policy.permits(addressClass)) {

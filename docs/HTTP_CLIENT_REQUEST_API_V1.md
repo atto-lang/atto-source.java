@@ -72,8 +72,9 @@ have at most one pending read. `max_bytes` is 1–65536.
 
 The body producer runs only on the native-I/O worker. It feeds a fixed 32 KiB
 runtime pipe. If the guest stops reading, the native worker—not an actor/root
-carrier—waits for buffer credit. The underlying loopback transport also retains
-its existing total response byte ceiling.
+carrier—waits for buffer credit, but that wait is now capped by the request
+absolute deadline. The selector transport also retains the total response byte
+ceiling.
 
 The response Future may resolve after headers while the physical native
 operation remains live. A separate runtime lifetime Future remains owned by the
@@ -86,9 +87,9 @@ network operation has physically retired, and an actor cannot use response
 publication to bypass its native-I/O retirement gate.
 
 Explicit `await body.close()` / `await response.close()` requests revocation
-and waits for retirement. If a native worker is blocked in a delivered response
-read, the runtime schedules response closure on the bounded native-I/O CONTROL
-lane; the actor carrier never performs blocking host close work.
+and waits for retirement. If a native worker is waiting in selector I/O or delivered-response
+backpressure, the runtime schedules transport closure on the bounded native-I/O
+CONTROL lane; the actor carrier never performs host close work.
 
 ## Ownership and stale-completion rules
 
@@ -108,10 +109,11 @@ this first client value.
 
 ## Header and target policy
 
-The current target remains deliberately restricted to canonical literal IPv4
-loopback HTTP authorities accepted by `ProxyOutboundLoopback`. There is no DNS,
-TLS, redirect following, CONNECT, proxy chaining, userinfo, fragments, or query
-support in this stage.
+The guest target remains deliberately restricted to canonical literal IPv4
+loopback HTTP authorities accepted by `ProxyOutboundLoopback`. The physical
+guest request now uses `SelectorHttpTransport` rather than the JDK HTTP client.
+Hostname DNS, TLS, redirect following, CONNECT, proxy chaining, userinfo,
+fragments, and query support remain disabled at the guest boundary.
 
 Request headers use `List<(String,String)>`. The runtime validates each field
 before native admission and caps both field count and aggregate bytes.
@@ -122,10 +124,12 @@ HTTP/2 settings fields. Header names must be valid HTTP tokens; values reject
 CR/LF/NUL, other controls, DEL and non-ByteString characters.
 
 This contract intentionally does not claim that loopback policy is the final
-egress policy. The next transport phase must add DNS resolution with connect-time
-IP pinning, per-connection re-resolution, redirect reauthorization, SSRF/private
-network policy, TLS hostname validation, deadlines, pool limits and idle
-eviction before arbitrary outbound targets are enabled.
+egress policy. The stacked runtime now has a physically cancellable selector DNS
+resolver, connect-time IP pinning, per-connection re-resolution policy,
+request-write/read deadlines, and context-wide connection limits. Arbitrary
+outbound targets remain disabled until the nonblocking HTTPS/SSLEngine path and
+a reviewed cross-platform production nameserver configuration source are in
+place.
 
 ## Merge gates
 
@@ -133,6 +137,8 @@ Before this surface is merge-ready, execute the exact branch head with nonzero
 JDK25 steps and require at least:
 
 - `OutboundHttpRequestGuestTest`
+- `SelectorHttpTransportTest`
+- `SelectorDnsResolverTest`
 - `ProxyOutboundLoopbackSuiteTest`
 - `ProxyLoopbackBridgeContractTest`
 - `AsyncNativeIoTest`
