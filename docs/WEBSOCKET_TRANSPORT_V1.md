@@ -313,8 +313,8 @@ Scoped NET authorization and the existing bounded asynchronous writer still
 apply.
 
 This is **not yet a safe end-to-end guest API**. There is no source-level
-`WebSocketServer`/`WebSocketConnection` builtin, generation-aware guest
-handle table, async actor receive bridge, strict global outbound quota,
+`WebSocketServer`/`WebSocketConnection` builtin or guest-side resolver,
+async actor receive bridge, strict global outbound quota,
 or proven fairness under many concurrent listener sweeps. The host-only
 retirement sweep must still be exercised under stalled I/O and concurrent
 shutdown: it is not a kernel-level hard-real-time close guarantee. Already
@@ -330,6 +330,54 @@ after revoke). Listener tests require automatic idle actor-stop socket
 retirement, actor-failure idle cleanup, supervisor-close races, and the
 host-bound actor-turn TCP send. These still require an
 approved exact-head CI execution receipt before they are evidence.
+
+## Internal opaque connection handles (draft; NOT_EXECUTED)
+
+`WebSocketConnectionHandles` is a bounded host-only lookup table for a
+future closed-world Oreslang `WebSocketConnection` builtin. Its private
+`Handle` constructor carries table identity, a fixed slot, and a
+non-wrapping generation. A handle has no socket/NET/ActorRef getter,
+is not Serializable, and redacts its string representation. Possession
+does not grant authority: every send checks the exact running actor
+incarnation, scoped NET policy, existing outbound capacity, and the
+atomic send/revocation fence established in the actor-claim slice.
+
+A host supervisor may claim an authorized/accepted connection once, with
+a capacity of 1..16 slots per table. Reuse requires **completed** socket close, listener-permit cleanup,
+and native-I/O loan exit—not merely the early logical `retired` CAS,
+claim revocation, or completion of a Future. The host-only
+`Connection.isFullyRetired()` probe requires the cleanup flag, closed
+socket, and no remaining native-I/O resource ownership. Actor-turn
+lookup uses only an atomic logical retirement flag; it does not lock the
+native-I/O resource ledger. Reused slots advance their generation; old
+handles fail even if the slot number is the same. Table shutdown revokes all claims immediately but
+never closes OS sockets on an actor or CONTROL carrier; the shared
+host-owned listener retirement sweep performs that work. Failed table
+admission does **not** transfer accepted-socket ownership: the caller
+must close rejected host sockets to avoid idle-resource retention.
+
+A canceled **active** write can settle its Future on an actor carrier.
+Its callback now records an atomic abort request and revokes the actor
+claim, leaving physical closure to the shared host retirement worker.
+The serialized writer will not start a new frame while abort is pending.
+An already-started frame may still race with closure; this is not a
+hard-real-time cancellation guarantee.
+
+`WebSocketConnectionHandlesTest` authors real-loopback cases for a
+correct owning actor, cross-table and host impersonation, a saturated
+table, stale-handle rejection after physical retirement and slot reuse,
+actor-turn revocation, and table shutdown. The focused exact-head Maven
+workflow includes this test class. These are **authored tests**, not
+executed Java/Graal or source-level guest evidence.
+
+**Unimplemented:** no guest-level builtin dispatch, source type checker
+integration, compiler lowering, Oreslang-visible opaque handle registry,
+actor `receive_async` bridge, `Result` conversion, global
+per-application handle/memory quotas, or guest echo. Do not pass the Java
+Handle directly through guest interop or claim this is a functional
+Oreslang `WebSocketConnection` API. Source-visible handles must be
+unforgeable values resolved by the owning isolate's closed-world bridge,
+with no Java object/string deserialization authority.
 
 ## Not yet implemented
 
