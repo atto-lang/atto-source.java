@@ -43,19 +43,28 @@ public final class SevSnpVcekEndorsement {
     }
 
     public record Bundle(byte[] ark_der, byte[] ask_der, byte[] vcek_der,
-                         byte[] issuer_crl_der, byte[] expected_ark_sha256) {
+                         byte[] issuer_crl_der, byte[] root_issuer_crl_der,
+                         byte[] expected_ark_sha256) {
         public Bundle {
             ark_der = clone_optional(ark_der);
             ask_der = clone_optional(ask_der);
             vcek_der = clone_optional(vcek_der);
             issuer_crl_der = clone_optional(issuer_crl_der);
+            root_issuer_crl_der = clone_optional(root_issuer_crl_der);
             expected_ark_sha256 = clone_optional(expected_ark_sha256);
         }
         @Override public byte[] ark_der() { return clone_optional(ark_der); }
         @Override public byte[] ask_der() { return clone_optional(ask_der); }
         @Override public byte[] vcek_der() { return clone_optional(vcek_der); }
         @Override public byte[] issuer_crl_der() { return clone_optional(issuer_crl_der); }
+        @Override public byte[] root_issuer_crl_der() { return clone_optional(root_issuer_crl_der); }
         @Override public byte[] expected_ark_sha256() { return clone_optional(expected_ark_sha256); }
+
+        /** Compatibility: missing ASK-revocation CRL deliberately fails closed. */
+        public Bundle(byte[] ark_der, byte[] ask_der, byte[] vcek_der,
+                      byte[] issuer_crl_der, byte[] expected_ark_sha256) {
+            this(ark_der, ask_der, vcek_der, issuer_crl_der, null, expected_ark_sha256);
+        }
     }
 
     public static Outcome verify_vcek_offline(
@@ -76,11 +85,17 @@ public final class SevSnpVcekEndorsement {
             if (root.getBasicConstraints() < 0 || ask.getBasicConstraints() < 0)
                 return Outcome.INVALID_CERTIFICATES;
             if (endorsements.issuer_crl_der == null ||
-                    endorsements.issuer_crl_der.length == 0)
+                    endorsements.issuer_crl_der.length == 0 ||
+                    endorsements.root_issuer_crl_der == null ||
+                    endorsements.root_issuer_crl_der.length == 0)
                 return Outcome.MISSING_REVOCATION_EVIDENCE;
             X509CRL crl = (X509CRL) factory.generateCRL(
                     new ByteArrayInputStream(endorsements.issuer_crl_der));
-            if (crl.getNextUpdate() == null || !crl.getNextUpdate().after(new java.util.Date()))
+            X509CRL rootCrl = (X509CRL) factory.generateCRL(
+                    new ByteArrayInputStream(endorsements.root_issuer_crl_der));
+            var now = new java.util.Date();
+            if (crl.getNextUpdate() == null || !crl.getNextUpdate().after(now) ||
+                    rootCrl.getNextUpdate() == null || !rootCrl.getNextUpdate().after(now))
                 return Outcome.MISSING_REVOCATION_EVIDENCE;
             // X509 path is leaf VCEK -> ASK -> authenticated/pinned ARK root.
             // Enable platform PKIX CRL checking (not certificate-only checks).
@@ -89,7 +104,7 @@ public final class SevSnpVcekEndorsement {
             var params = new PKIXParameters(Set.of(new TrustAnchor(root, null)));
             params.setRevocationEnabled(true);
             params.addCertStore(CertStore.getInstance("Collection",
-                    new CollectionCertStoreParameters(List.of(crl))));
+                    new CollectionCertStoreParameters(List.of(crl, rootCrl))));
             CertPathValidator.getInstance("PKIX").validate(path, params);
             if (SevSnpReportV1.inspect_unverified_report(report, policy) !=
                     SevSnpReportV1.Result.UNVERIFIED_POLICY_MATCH)
