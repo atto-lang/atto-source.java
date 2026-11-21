@@ -41,7 +41,7 @@ public final class OresEvalRootNode extends RootNode {
 
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
-        CapabilityChecker.check(program, context.isolatePolicy());
+        CapabilityChecker.check(program, context.effectivePolicy());
         return new Evaluator(program, context).execute(arguments);
     }
 
@@ -244,6 +244,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("print")) return (Invokable) args -> {
@@ -320,7 +321,7 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (expr instanceof Ast.BinaryExpr binary) {
-                if (binary.operator().equals("&&")) {
+                if (binary.operator().equals(",") || binary.operator().equals("&&")) {
                     Object left = eval(binary.left(), env);
                     return truth(left) && truth(eval(binary.right(), env));
                 }
@@ -331,12 +332,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (binary.operator().equals("^^")) {
                     return truth(eval(binary.left(), env)) ^ truth(eval(binary.right(), env));
                 }
-                Object left = eval(binary.left(), env);
-                Object right = eval(binary.right(), env);
-                if (binary.operator().equals("|") && left instanceof Boolean lb && right instanceof Boolean rb) {
-                    return lb || rb;
-                }
-                return binary(binary.operator(), left, right);
+                return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
@@ -394,7 +390,7 @@ public final class OresEvalRootNode extends RootNode {
                     var future = stage.toCompletableFuture();
                     if (ActorRuntime.inActorExecution() && !future.isDone()) {
                         throw new IllegalStateException(
-                                "await would block this actor/worker and prevent mailbox progress; actor continuation lowering must suspend/resume the worker");
+                                "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
                     }
                     return future.join();
                 }
@@ -451,8 +447,15 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "context_id" -> process.contextId();
                     case "descriptor" -> process.descriptor();
+                    case "gc" -> (Invokable) process::gc;
                     case "share_readonly" -> (Invokable) process::shareReadonly;
                     default -> throw new IllegalArgumentException("unknown process member " + name);
+                };
+            }
+            if (receiver instanceof ActorFacade actor) {
+                return switch (name) {
+                    case "gc" -> (Invokable) actor::gc;
+                    default -> throw new IllegalArgumentException("unknown actor member " + name);
                 };
             }
             if (receiver instanceof MutexFactory factory) {
@@ -1037,7 +1040,11 @@ public final class OresEvalRootNode extends RootNode {
     private record ProcessFacade(OresContext context) {
         private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
         private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
+        private Object gc(List<Object> args){requireZero(args,"process.gc");context.processGc();return null;}
         private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
+    }
+    private record ActorFacade(OresContext context) {
+        private Object gc(List<Object> args){requireZero(args,"actor.gc");context.actorGc();return null;}
     }
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}

@@ -37,7 +37,7 @@ public final class OresContext implements AutoCloseable {
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
         this.actors = new ActorRuntime(
                 isolatePolicy,
-                ActorRuntime.WorkerConfig.defaults(),
+                ActorRuntime.DispatcherConfig.defaults(),
                 this::executeActorTurn);
     }
 
@@ -52,10 +52,23 @@ public final class OresContext implements AutoCloseable {
     public ActorRuntime actors() { return actors; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
+    public IsolatePolicy effectivePolicy() {
+        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+        return actorPolicy == null ? isolatePolicy : actorPolicy;
+    }
     public ExecutionProfile executionProfile() { return executionProfile; }
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
-        isolatePolicy.require(capability, api);
+        effectivePolicy().require(capability, api);
+    }
+
+    public void actorGc() {
+        actors.gcCurrentActor();
+    }
+
+    public void processGc() {
+        requireCapability(IsolatePolicy.Capability.PROCESS_GC, "process.gc");
+        actors.gcProcess();
     }
 
     /**
@@ -88,13 +101,19 @@ public final class OresContext implements AutoCloseable {
 
 
     public Map<String, Object> processDescriptor() {
-        return Map.of(
-                "context_id", contextId.toString(),
-                "runtime", "graalvm-truffle",
-                "language", "oreslang",
-                "execution_mode", executionProfile.mode().name(),
-                "platform", executionProfile.platform().name(),
-                "scheduler_safepoints", schedulerSafepoints.get());
+        return Map.ofEntries(
+                Map.entry("context_id", contextId.toString()),
+                Map.entry("runtime", "graalvm-truffle"),
+                Map.entry("language", "oreslang"),
+                Map.entry("execution_mode", executionProfile.mode().name()),
+                Map.entry("platform", executionProfile.platform().name()),
+                Map.entry("scheduler_safepoints", schedulerSafepoints.get()),
+                Map.entry("actor_gc_requests", actors.gcStats().actorRequests()),
+                Map.entry("process_gc_requests", actors.gcStats().processRequests()),
+                Map.entry("actor_gc_suppressed", actors.gcStats().suppressedActorRequests()),
+                Map.entry("process_gc_suppressed", actors.gcStats().suppressedProcessRequests()),
+                Map.entry("actor_gc_collections", actors.gcStats().actorCollections()),
+                Map.entry("process_gc_collections", actors.gcStats().processCollections()));
     }
 
     @Override
