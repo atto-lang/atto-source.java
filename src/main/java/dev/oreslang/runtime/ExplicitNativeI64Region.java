@@ -111,7 +111,7 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     private final Object identity = new Object();
     private final Runnable requireActor;
     private final Runnable onRetired;
-    private final ActorRuntime.MemoryReservation reservation;
+    private final NativeMemoryReservation reservation;
     private final Object nativeArena;
     private final Object segment;
     private final Object longLayout;
@@ -131,7 +131,7 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     private int occupied;
 
     ExplicitNativeI64Region(
-            int slots, ActorRuntime.MemoryReservation reservation,
+            int slots, NativeMemoryReservation reservation,
             Runnable requireActor, Runnable onRetired) {
         if (slots < 1 || slots > 65536) {
             throw new IllegalArgumentException("native region size must be 1..65536 slots");

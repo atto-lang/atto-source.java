@@ -457,6 +457,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
+    /** Explicit mutable shared-domain arenas; never actor-local SHARED memory. */
+    private final Set<SharedDomainArena> sharedDomainArenas = ConcurrentHashMap.newKeySet();
     /** Read-only parent-observable streams retained until drained/runtime close. */
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
@@ -742,6 +744,88 @@ public final class ActorRuntime implements AutoCloseable {
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
     public long sharedActorLocalMemoryBytes() { return sharedActorLocalMemoryBytes.get(); }
+
+    /**
+     * Trusted host/control-plane constructor for explicit mutable shared data.
+     * Actor-local SHARED memory remains private and uses ActorMemorySlice.
+     */
+    public SharedDomainArena newSharedDomainArena(int slots) {
+        requireSupervisorContext("create shared-domain arena");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        SharedDomainArena arena = SharedDomainArena.open(this, slots);
+        if (!sharedDomainArenas.add(arena)) {
+            arena.retireFromRuntime();
+            throw new IllegalStateException("shared-domain arena registration collision");
+        }
+        return arena;
+    }
+
+    NativeMemoryReservation reserveSharedDomainNativeBytes(long bytes) {
+        if (bytes <= 0) throw new IllegalArgumentException("shared-domain native bytes must be positive");
+        reserveSharedRuntimeBytes(bytes, "shared-domain FFM region");
+        return new SharedNativeReservation(bytes);
+    }
+
+    void unregisterSharedDomainArena(SharedDomainArena arena) {
+        sharedDomainArenas.remove(arena);
+    }
+
+    record SharedDomainActorIdentity(ActorId actorId, long generation) {
+        SharedDomainActorIdentity {
+            Objects.requireNonNull(actorId, "actorId");
+            if (generation <= 0) throw new IllegalArgumentException("generation must be positive");
+        }
+    }
+
+    SharedDomainActorIdentity resolveSharedDomainMember(ActorRef<?> ref) {
+        requireSupervisorContext("grant shared-domain membership");
+        Objects.requireNonNull(ref, "actor");
+        if (!ref.ownedBy(this)) {
+            throw new ActorInvalidReferenceException("shared-domain actor belongs to a different runtime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.stopped.get() || cell.finalized
+                || cell.kind != ActorKind.SHARED
+                || cell.ref.generation() != ref.generation()) {
+            throw new IllegalArgumentException(
+                    "shared-domain membership requires a live SHARED actor incarnation");
+        }
+        return new SharedDomainActorIdentity(ref.id(), ref.generation());
+    }
+
+    SharedDomainActorIdentity requireCurrentSharedDomainActor() {
+        ActorCell<?> cell = currentActor.get();
+        ActorExecutionContext execution = CURRENT_ACTOR_EXECUTION.get();
+        if (cell == null || execution == null || execution.runtime() != this
+                || cell.kind != ActorKind.SHARED || cell.stopped.get() || cell.finalized
+                || !cell.ref.id().equals(execution.actorId())) {
+            throw new SecurityException(
+                    "shared-domain access requires the current live SHARED actor turn");
+        }
+        return new SharedDomainActorIdentity(cell.ref.id(), cell.ref.generation());
+    }
+
+    record SharedDomainTurnIdentity(
+            SharedDomainActorIdentity actor,
+            Object turnToken) {
+        SharedDomainTurnIdentity {
+            Objects.requireNonNull(actor, "actor");
+            Objects.requireNonNull(turnToken, "turnToken");
+        }
+    }
+
+    SharedDomainTurnIdentity requireCurrentSharedDomainTurn() {
+        ActorExecutionContext execution = CURRENT_ACTOR_EXECUTION.get();
+        SharedDomainActorIdentity actor = requireCurrentSharedDomainActor();
+        // ActorExecutionContext is freshly installed for each admitted actor
+        // turn and removed on exit. Its object identity is therefore an
+        // unforgeable host-only lexical turn token, independent of carrier.
+        return new SharedDomainTurnIdentity(actor, execution);
+    }
+
+    void requireSharedDomainControlAuthority(String operation) {
+        requireSupervisorContext(operation);
+    }
     public long actorMemoryBytes() {
         // The three accounting domains are charged/refunded under this monitor.
         // Read one coherent snapshot rather than mixing different instants,
@@ -1256,7 +1340,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    public final class MemoryReservation implements AutoCloseable {
+    public final class MemoryReservation implements NativeMemoryReservation {
         private final ActorMemorySlice slice;
         private final long bytes;
         private final boolean physicalNative;
@@ -1283,6 +1367,23 @@ public final class ActorRuntime implements AutoCloseable {
                 slice.release(bytes);
             }
             // Do not lose retry authority after an aggregate release failure.
+            released.set(true);
+        }
+    }
+
+    private final class SharedNativeReservation implements NativeMemoryReservation {
+        private final long bytes;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private SharedNativeReservation(long bytes) {
+            this.bytes = bytes;
+        }
+
+        @Override
+        public synchronized void close() {
+            if (released.get()) return;
+            releaseSharedRuntimeBytes(bytes);
+            // Preserve retry authority if aggregate accounting release fails.
             released.set(true);
         }
     }
@@ -6983,6 +7084,12 @@ public final class ActorRuntime implements AutoCloseable {
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
+        for (SharedDomainArena arena : List.copyOf(sharedDomainArenas)) {
+            arena.retireFromRuntime();
+        }
+        // Domains with outstanding lifetime pins unregister only after their
+        // physical FFM region finally closes. Runtime accounting is no longer
+        // externally observable after close, but native lifetime remains safe.
         sharedMemoryBytes.set(0L);
         sharedActorLocalMemoryBytes.set(0L);
 
