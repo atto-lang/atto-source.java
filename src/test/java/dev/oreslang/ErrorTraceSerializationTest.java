@@ -277,6 +277,31 @@ final class ErrorTraceSerializationTest {
     }
 
     @Test
+    void oversizedFrameCollectionsAreRejectedBeforeBulkCopy() {
+        java.util.ArrayList<String> huge = new java.util.ArrayList<>();
+        for (int i = 0; i < 4096; i++) huge.add("frame");
+        assertThrows(IllegalArgumentException.class,
+                () -> new GuestErrorWireCodec.ErrorSnapshot(
+                        "Error", 0, "diagnostic", huge, true));
+        java.util.Map<String, Object> fields = new java.util.LinkedHashMap<>();
+        fields.put("message", "diagnostic");
+        fields.put("stack", huge);
+        assertThrows(IllegalArgumentException.class,
+                () -> GuestErrorWireCodec.trustedLocalSnapshot("Error", 0, fields));
+
+        // The exact permitted boundary is retained, with no reference to the
+        // caller's mutable list after the snapshot.
+        java.util.ArrayList<String> bounded = new java.util.ArrayList<>();
+        for (int i = 0; i < 64; i++) bounded.add("frame-" + i);
+        var snapshot = new GuestErrorWireCodec.ErrorSnapshot("Error", 0, "", bounded, true);
+        bounded.set(0, "mutated");
+        assertEquals("frame-0", snapshot.frames().getFirst());
+        bounded.add("overflow");
+        assertThrows(IllegalArgumentException.class,
+                () -> new GuestErrorWireCodec.ErrorSnapshot("Error", 0, "", bounded, true));
+    }
+
+    @Test
     void guestErrorCodecCannotExecuteOverriddenCodeMethod() throws Exception {
         Path entry = temp.resolve("untrusted-error-code.ores");
         Files.writeString(entry, """

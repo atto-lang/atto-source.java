@@ -254,3 +254,37 @@ Every source `throw e`, `raise e`, and `panic e` must carry an owned nominal sub
 ## Actor failure payloads must be data only
 
 An actor may hold functions or methods on a custom Error subclass. These must never be serialized or executed while notifying a supervisor. The new GuestErrorWireCodec.ErrorSnapshot and supervisorCompactSnapshot strictly marshal allowlisted primitive data without examining source object fields. It is a non-authoritative diagnostic; actor CONTROL must be emitted separately by the host runtime with authenticated actor ID and generation. Full details are restricted to trusted local diagnostics via explicit allowlisted message/String-frame copying, not general recursive serialization. See docs/ERROR_SERIALIZATION_AND_TRACING.md and supervision issue #641.
+
+## Trusted native core-error ancestry metadata (draft)
+
+The Java `CoreErrorDescriptors.Descriptor.parent()` and `isSubtypeOf(...)`
+use the compiler/runtime-owned v1 catalog rather than guest-provided names,
+methods, or shape compatibility. Matching includes identity (a type is a
+subtype of itself) and traverses the *single class parent chain*; traits are
+separate nominal relationships. The native LLVM catalog mirrors the same
+entries and codes. These APIs only describe trusted metadata: they do not
+make source-level `throw`/`catch` or supervisor errors executable, and a
+code supplied by an untrusted guest is never sufficient identity proof.
+
+## October 14 audit hardening: inherited interfaces and bounded snapshots
+
+The descriptor's direct parent is now an immutable reference resolved during
+catalog construction. The versioned `CoreInterface` lookup traverses trusted
+nominal parents; notably the abstract `ActorError` declares
+`ActorApiError`, inherited by all 14 concrete actor-error subclasses.
+`ProcessNotFoundError` and `MailboxFullError` also declare that interface
+directly. Exactly five core error types declare `RetryAdvisory`; this never
+authorizes automatic retries.
+
+Both `ErrorSnapshot` and `trustedLocalSnapshot` now use a bounded
+`snapshotBoundedFrames` helper. The 64-frame cap is checked *before*
+allocating a new frame array, and no more than 64 values are read. The
+result retains only validated `String` values and does not invoke arbitrary
+guest getters, method closures or `toString`. Mutable caller-owned
+`ArrayList` inputs must still be actor-confined: a concurrently mutating
+Java array list does not offer an atomic snapshot.
+
+Tests now compare all 99 runtime descriptor parents and inherited interface
+memberships against the source manifest and cover excessive error-frame input.
+This does not by itself establish guest typed-catch behavior or LLVM guest
+execution parity.

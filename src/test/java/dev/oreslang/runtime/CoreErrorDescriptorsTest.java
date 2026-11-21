@@ -57,4 +57,49 @@ final class CoreErrorDescriptorsTest {
                 () -> GuestErrorWireCodec.supervisorCompactCoreSnapshot(
                         CoreErrorDescriptors.requireKnown("ActorError"), hostile));
     }
+
+    @Test void trustedCoreAncestryIsNominalAndTransitive() {
+        var root = CoreErrorDescriptors.requireKnown("Error");
+        var io = CoreErrorDescriptors.requireKnown("IOError");
+        var fs = CoreErrorDescriptors.requireKnown("FileSystemError");
+        var missing = CoreErrorDescriptors.requireKnown("FileNotFoundError");
+        var network = CoreErrorDescriptors.requireKnown("NetworkError");
+        var refused = CoreErrorDescriptors.requireKnown("ConnectionRefusedError");
+        var actor = CoreErrorDescriptors.requireKnown("ActorError");
+        var ask = CoreErrorDescriptors.requireKnown("ActorAskTimeoutError");
+
+        assertNull(root.parent());
+        assertTrue(root.isSubtypeOf(root));
+        assertSame(fs, missing.parent());
+        assertSame(io, fs.parent());
+        assertTrue(missing.isSubtypeOf(io));
+        assertTrue(missing.isSubtypeOf(root));
+        assertTrue(refused.isSubtypeOf(network));
+        assertTrue(refused.isSubtypeOf(io));
+        assertTrue(ask.isSubtypeOf(actor));
+        assertFalse(ask.isSubtypeOf(network));
+        assertFalse(io.isSubtypeOf(missing));
+        assertFalse(network.isSubtypeOf(fs));
+        assertThrows(NullPointerException.class, () -> missing.isSubtypeOf(null));
+    }
+
+    @Test void nominalCoreInterfacesAreInheritedButNotInferredFromNames() {
+        var actor = CoreErrorDescriptors.requireKnown("ActorError");
+        var ask = CoreErrorDescriptors.requireKnown("ActorAskTimeoutError");
+        var missingProcess = CoreErrorDescriptors.requireKnown("ProcessNotFoundError");
+        var mailboxFull = CoreErrorDescriptors.requireKnown("MailboxFullError");
+        var timeout = CoreErrorDescriptors.requireKnown("TimeoutError");
+        var root = CoreErrorDescriptors.requireKnown("Error");
+        assertTrue(actor.abstractType());
+        assertTrue(actor.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(ask.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(missingProcess.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(mailboxFull.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertFalse(timeout.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(timeout.implementsInterface(CoreErrorDescriptors.CoreInterface.RETRY_ADVISORY));
+        assertFalse(root.implementsInterface(CoreErrorDescriptors.CoreInterface.RETRY_ADVISORY));
+        assertTrue(root.implementsInterface(CoreErrorDescriptors.CoreInterface.CODED_ERROR));
+        assertTrue(ask.implementsInterface(CoreErrorDescriptors.CoreInterface.SERIALIZABLE));
+        assertThrows(NullPointerException.class, () -> root.implementsInterface(null));
+    }
 }

@@ -124,6 +124,31 @@ final class StdErrorCatalogTest {
             assertEquals(row.getValue().abstractClass(), descriptor.abstractType(), row.getKey());
             assertSame(descriptor,
                     dev.oreslang.runtime.CoreErrorDescriptors.requireKnownCode(descriptor.code()));
+            assertEquals(row.getValue().parent() == null ? null :
+                    dev.oreslang.runtime.CoreErrorDescriptors.requireKnown(row.getValue().parent()),
+                    descriptor.parent(), "descriptor nominal parent: " + row.getKey());
+            for (var iface : dev.oreslang.runtime.CoreErrorDescriptors.CoreInterface.values()) {
+                String requested = switch (iface) {
+                    case CODED_ERROR -> "CodedError";
+                    case SERIALIZABLE -> "Serializable";
+                    case RETRY_ADVISORY -> "RetryAdvisory";
+                    case ACTOR_API_ERROR -> "ActorApiError";
+                };
+                String cursor = row.getKey();
+                boolean inherited = false;
+                while (cursor != null) {
+                    Entry contract = expected.get(cursor);
+                    assertNotNull(contract, "missing catalog ancestor: " + cursor);
+                    if (contract.iface() != null
+                            && java.util.Arrays.asList(contract.iface().split(",")).contains(requested)) {
+                        inherited = true;
+                        break;
+                    }
+                    cursor = contract.parent();
+                }
+                assertEquals(inherited, descriptor.implementsInterface(iface),
+                        row.getKey() + " implements " + requested);
+            }
         }
         // Preserve legacy actor-adjacent core codes and subtype ancestry.
         assertEquals(new Entry("StateError", 2012, false, "ActorApiError"), parsed.get("ProcessNotFoundError"));

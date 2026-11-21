@@ -28,14 +28,9 @@ public final class GuestErrorWireCodec {
         public ErrorSnapshot {
             // Reject arbitrary List implementations before calling their methods.
             requireJdkOwnedFrameArray(frames);
-            // Detach FIRST and validate the detached copy. The caller may
-            // still mutate its exact-class ArrayList concurrently; validating
-            // the original and then copying it is a TOCTOU disclosure bug.
-            try {
-                frames = List.copyOf(frames);
-            } catch (NullPointerException | java.util.ConcurrentModificationException invalid) {
-                throw new IllegalArgumentException("invalid guest error frame snapshot", invalid);
-            }
+            // Bounded snapshot first: never clone arbitrary-length input.
+            // The caller must provide an actor-confined or immutable list.
+            frames = snapshotBoundedFrames(frames);
             validate(name, code, message, frames);
             if (!full && (!message.isEmpty() || !frames.isEmpty())) {
                 throw new IllegalArgumentException(
@@ -118,27 +113,7 @@ public final class GuestErrorWireCodec {
         if (!(message instanceof String safeMessage) || !(trace instanceof List<?> rawFrames)) {
             throw new IllegalArgumentException("trusted error snapshot requires String message and frame array");
         }
-        requireJdkOwnedFrameArray(rawFrames);
-        // Copy before decoding: no reentrant getter, no later actor mutations
-        // can alter the wire snapshot between validation and serialization.
-        List<?> copy;
-        try {
-            copy = List.copyOf(rawFrames);
-        } catch (NullPointerException | java.util.ConcurrentModificationException invalid) {
-            throw new IllegalArgumentException("invalid guest error frame snapshot", invalid);
-        }
-        if (copy.size() > MAX_FRAMES) {
-            throw new IllegalArgumentException("too many guest error frames");
-        }
-        List<String> safeFrames = new ArrayList<>(copy.size());
-        for (Object raw : copy) {
-            if (!(raw instanceof String frame)) {
-                // Do NOT coerce unknown values via Object.toString().
-                throw new IllegalArgumentException(
-                        "guest error stack contains non-string or executable value");
-            }
-            safeFrames.add(frame);
-        }
+        List<String> safeFrames = snapshotBoundedFrames(rawFrames);
         return new ErrorSnapshot(trustedNominalName, trustedCatalogCode,
                 safeMessage, safeFrames, true);
     }
@@ -148,6 +123,39 @@ public final class GuestErrorWireCodec {
      * List.copyOf(). Custom List implementations may execute arbitrary code in
      * size(), iterator() or get(), so reject them before invoking an accessor.
      */
+    /**
+     * Detach at most MAX_FRAMES elements. Enforce the maximum before any
+     * allocation proportional to the untrusted list's original length.
+     * JDK-owned class admission prevents guest-defined get()/size() hooks.
+     *
+     * A mutable ArrayList still requires actor-confined/exclusive ownership:
+     * Java data races cannot be turned into an atomic snapshot by this method.
+     */
+    private static List<String> snapshotBoundedFrames(List<?> frames) {
+        requireJdkOwnedFrameArray(frames);
+        final int count = frames.size();
+        if (count > MAX_FRAMES) {
+            throw new IllegalArgumentException("too many guest error frames");
+        }
+        ArrayList<String> detached = new ArrayList<>(count);
+        try {
+            for (int i = 0; i < count; ++i) {
+                Object value = frames.get(i);
+                if (!(value instanceof String frame)) {
+                    throw new IllegalArgumentException(
+                            "guest error stack contains non-string or executable value");
+                }
+                detached.add(frame);
+            }
+            if (frames.size() != count) {
+                throw new IllegalArgumentException("guest error frames changed during snapshot");
+            }
+        } catch (IndexOutOfBoundsException | java.util.ConcurrentModificationException invalid) {
+            throw new IllegalArgumentException("guest error frames changed during snapshot", invalid);
+        }
+        return List.copyOf(detached);
+    }
+
     private static void requireJdkOwnedFrameArray(List<?> frames) {
         if (frames == null) throw new IllegalArgumentException("missing error frames");
         Class<?> type = frames.getClass();
