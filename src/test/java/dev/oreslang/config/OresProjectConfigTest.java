@@ -107,6 +107,42 @@ final class OresProjectConfigTest {
     }
 
     @Test
+    void parsedManifestSnapshotIsImmutableAndNotReopenedForHashing() throws Exception {
+        Path manifest = temp.resolve(OresProjectConfig.MANIFEST_NAME);
+        String original = "schema_version = \"1\"\n"
+                + "[project]\nname = \"before\"\n";
+        Files.writeString(manifest, original);
+        OresProjectConfig config = OresProjectConfig.load(manifest, Map.of());
+        assertEquals("before", config.projectName().orElseThrow());
+        assertArrayEquals(original.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                config.manifestSourceBytes());
+
+        byte[] exposed = config.manifestSourceBytes();
+        exposed[0] = 0;
+        assertArrayEquals(original.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                config.manifestSourceBytes(), "the snapshot accessor must clone");
+
+        Files.writeString(manifest,
+                "schema_version = \"1\"\n[project]\nname = \"after\"\n");
+        assertEquals("before", config.projectName().orElseThrow());
+        assertArrayEquals(original.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                config.manifestSourceBytes(), "the parsed source snapshot is stable");
+        assertEquals("after", OresProjectConfig.load(manifest, Map.of())
+                .projectName().orElseThrow());
+    }
+
+    @Test
+    void rejectsOversizeAndMalformedUtf8ManifestSnapshots() throws Exception {
+        Path manifest = temp.resolve(OresProjectConfig.MANIFEST_NAME);
+        Files.writeString(manifest, " ".repeat(1024 * 1024 + 1));
+        assertThrows(java.io.IOException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+        Files.write(manifest, new byte[] { (byte) 0xC3, (byte) 0x28 });
+        assertThrows(java.io.IOException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+    }
+
+    @Test
     void rejectsUnsupportedSchemaVersion() throws Exception {
         Path manifest = temp.resolve(OresProjectConfig.MANIFEST_NAME);
         Files.writeString(manifest, "schema_version = \"999\"\n");

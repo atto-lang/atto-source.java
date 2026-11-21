@@ -269,4 +269,48 @@ pub fnc check_int_cases(
   return pass();
 }
 
+
+// Pure-Oreslang reproducible input fuzzer. This generates real property-test
+// inputs, but is not yet coverage-guided or connected to VM schedule fuzzing.
+// The seed must be explicit so failures can be copied into a regression test.
+pub fnc fuzz_int_cases(
+  String property_name,
+  int seed,
+  int attempts,
+  IntProperty property
+): TestOutcome {
+  if seed < 0 | seed > 65520; do
+    return fail("fuzz seed must be in 0..65520");
+  fi
+  if attempts < 1 | attempts > 100000; do
+    return fail("fuzz attempts must be in 1..100000");
+  fi
+
+  let int state = seed;
+  let int remaining = attempts;
+  loop do
+    if remaining == 0; do break; fi
+    // A deterministic bounded LCG; all intermediates remain below 8 million.
+    state = (state * 109 + 1021) % 65521;
+    let int input = state - 32760;
+    let TestOutcome outcome = property(input);
+    if !outcome.passed; do
+      stdio.stdout.write("ORES_TEST|FUZZ_FAILURE|seed=");
+      stdio.stdout.write(seed);
+      stdio.stdout.write("|case=");
+      stdio.stdout.write(attempts - remaining);
+      stdio.stdout.write("|input=");
+      stdio.stdout.println(input);
+      return outcome;
+    fi
+    remaining = remaining - 1;
+  done
+
+  stdio.stdout.write("ORES_TEST|FUZZ|seed=");
+  stdio.stdout.write(seed);
+  stdio.stdout.write("|cases=");
+  stdio.stdout.println(attempts);
+  return pass();
+}
+
 end
