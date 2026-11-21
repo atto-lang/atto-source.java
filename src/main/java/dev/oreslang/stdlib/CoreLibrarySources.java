@@ -22,6 +22,7 @@ import java.util.Set;
  */
 public final class CoreLibrarySources {
     private static final String IMPORT_PREFIX = "std/";
+    private static final String OTP_IMPORT_PREFIX = "otp/";
     private static final String UNIT_PREFIX = "@std/";
     private static final String RESOURCE_PREFIX = "dev/oreslang/std/";
     private static final int MAX_SOURCE_BYTES = 1024 * 1024;
@@ -29,12 +30,19 @@ public final class CoreLibrarySources {
     private static final int MAX_MODULE_SEGMENTS = 32;
     // Closed registry: a classpath resource must never create an unapproved
     // stdlib module. Update deliberately when adding a new native .ores module.
-    private static final Set<String> PACKAGED_SOURCES = Set.of("core.ores", "testing.ores", "assert.ores", "trace.ores", "http_wire.ores", "otp/supervisor.ores", "otp/gen_server.ores");
+    private static final Set<String> PACKAGED_SOURCES = Set.of("core.ores", "testing.ores", "assert.ores", "trace.ores", "http_wire.ores", "otp/supervisor.ores", "otp/gen_server.ores", "otp/gen_statem.ores", "otp/application.ores", "otp/event_manager.ores", "otp/registry.ores");
 
     private CoreLibrarySources() { }
 
     public static boolean isCoreImport(String importPath) {
-        return importPath != null && importPath.startsWith(IMPORT_PREFIX);
+        return importPath != null && (importPath.startsWith(IMPORT_PREFIX)
+                || importPath.startsWith(OTP_IMPORT_PREFIX));
+    }
+
+    /** Both spellings address the same compiler-owned OTP source. */
+    public static boolean isOtpImport(String importPath) {
+        return importPath != null && (importPath.startsWith(OTP_IMPORT_PREFIX)
+                || importPath.startsWith(IMPORT_PREFIX + OTP_IMPORT_PREFIX));
     }
 
     public static Set<String> packagedSourcePaths() {
@@ -103,9 +111,9 @@ public final class CoreLibrarySources {
 
     private static String canonicalRelativePath(String importPath) {
         Objects.requireNonNull(importPath, "importPath");
-        if (!importPath.startsWith(IMPORT_PREFIX)) {
+        if (!isCoreImport(importPath)) {
             throw new IllegalArgumentException(
-                    "core-library imports must start with 'std/': " + importPath);
+                    "packaged imports must start with 'std/' or 'otp/': " + importPath);
         }
         if (importPath.length() > MAX_IMPORT_PATH_CHARS) {
             throw new IllegalArgumentException("Oreslang core-library import path is too long");
@@ -113,12 +121,17 @@ public final class CoreLibrarySources {
         if (importPath.indexOf('\\') >= 0
                 || importPath.indexOf('\0') >= 0
                 || importPath.startsWith("/")
-                || importPath.contains("//")) {
+                || importPath.contains("//")
+                || importPath.endsWith("/")) {
             throw new IllegalArgumentException(
                     "invalid Oreslang core-library import path: " + importPath);
         }
 
-        String raw = importPath.substring(IMPORT_PREFIX.length());
+        // Alias the portable otp/* import to the SAME resource and linked unit ID
+        // as the legacy std/otp/* import. Do not create two loaded modules.
+        String raw = importPath.startsWith(OTP_IMPORT_PREFIX)
+                ? OTP_IMPORT_PREFIX + importPath.substring(OTP_IMPORT_PREFIX.length())
+                : importPath.substring(IMPORT_PREFIX.length());
         if (raw.endsWith(".ores")) raw = raw.substring(0, raw.length() - ".ores".length());
         if (raw.isBlank()) {
             throw new IllegalArgumentException("core-library import must name a module");
@@ -140,6 +153,12 @@ public final class CoreLibrarySources {
             }
             normalized.add(segment);
         }
-        return String.join("/", normalized) + ".ores";
+        String relative = String.join("/", normalized) + ".ores";
+        // The reserved OTP namespace is intentionally a *closed* registry,
+        // including for unitId(), before any filesystem/package resolution.
+        if (relative.startsWith("otp/") && !PACKAGED_SOURCES.contains(relative)) {
+            throw new IllegalArgumentException("unknown Oreslang OTP module: " + importPath);
+        }
+        return relative;
     }
 }

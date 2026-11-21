@@ -1,0 +1,84 @@
+// Oreslang-native typed transition protocol for OTP-style state machines.
+//
+// FIRST EXECUTABLE SOURCE SLICE ONLY. The library owns transition semantics;
+// the provided actor runtime must own scheduling, timers, mailbox delivery,
+// cancellation, CONTROL and lifecycle authority.
+define module OtpGenStatem as
+
+  pub define class Transition<State, Data> as
+    pub val State state;
+    pub val Data data;
+    pub val bool defer_event;
+    pub val bool stop;
+  end
+
+  pub fnc next<State, Data>(
+    State next_state,
+    Data next_data
+  ): Transition<State, Data> {
+    return new Transition<State, Data>(
+      next_state,
+      next_data,
+      false,
+      false
+    );
+  }
+
+  pub fnc next_and_defer<State, Data>(
+    State next_state,
+    Data next_data
+  ): Transition<State, Data> {
+    return new Transition<State, Data>(
+      next_state,
+      next_data,
+      true,
+      false
+    );
+  }
+
+  pub fnc stop<State, Data>(
+    State final_state,
+    Data final_data
+  ): Transition<State, Data> {
+    return new Transition<State, Data>(
+      final_state,
+      final_data,
+      false,
+      true
+    );
+  }
+
+  // Pure validation only. Timer creation/clock reads remain runtime-provided.
+  pub fnc timer_slot_valid(
+    int timer_index,
+    int timer_capacity
+  ): Result<bool, String> {
+    if timer_capacity < 0 || timer_capacity > 4096; do
+      return Err("timer capacity must be 0..4096");
+    fi
+    if timer_index < 0; do
+      return Err("timer index cannot be negative");
+    fi
+    return Ok(timer_index < timer_capacity);
+  }
+
+  // Deterministic timer-deadline policy only; this NEVER reads a clock or
+  // schedules a timer. The caller must supply one monotonic tick domain.
+  // Equal-to-deadline expires; rollback or negative tick values fail closed.
+  // Epoch rollover/wrapping clocks must be handled by the clock provider.
+  pub fnc timer_due(
+    int previous_tick,
+    int current_tick,
+    int deadline_tick
+  ): Result<bool, String> {
+    if previous_tick < 0 || current_tick < 0 || deadline_tick < 0; do
+      return Err("timer ticks must be nonnegative");
+    fi
+    if current_tick < previous_tick; do
+      return Err("monotonic clock moved backwards");
+    fi
+    return Ok(current_tick >= deadline_tick);
+  }
+
+
+end

@@ -1,0 +1,62 @@
+// Oreslang-native handler protocol for OTP-style event managers.
+//
+// FIRST EXECUTABLE SOURCE SLICE ONLY. Subscription storage, actor scheduling,
+// backpressure queues and failure supervision remain runtime/library integration
+// work; this module defines typed handler outcomes and bounded policy helpers.
+define module OtpEventManager as
+
+  pub define class HandlerResult<State> as
+    pub val State state;
+    pub val bool remove_handler;
+  end
+
+  pub fnc keep<State>(State next_state): HandlerResult<State> {
+    return new HandlerResult<State>(next_state, false);
+  }
+
+  pub fnc remove<State>(State final_state): HandlerResult<State> {
+    return new HandlerResult<State>(final_state, true);
+  }
+
+  pub fnc subscription_capacity_allows(
+    int subscriptions,
+    int capacity
+  ): Result<bool, String> {
+    if subscriptions < 0; do
+      return Err("subscription count cannot be negative");
+    fi
+    if capacity < 1 || capacity > 4096; do
+      return Err("subscription capacity must be 1..4096");
+    fi
+    if subscriptions > capacity; do
+      return Err("subscriptions exceed configured capacity");
+    fi
+    return Ok(subscriptions < capacity);
+  }
+
+  // Delivery capacity is independent of the *number of subscriptions*.
+  // The caller supplies queued, executing and already reserved deliveries.
+  // Real admission MUST reserve atomically in the actor/mailbox provider.
+  pub fnc delivery_capacity_allows(
+    int queued,
+    int in_flight,
+    int reserved,
+    int capacity
+  ): Result<bool, String> {
+    if queued < 0 || in_flight < 0 || reserved < 0; do
+      return Err("negative event delivery accounting");
+    fi
+    if capacity < 1 || capacity > 4096; do
+      return Err("delivery capacity must be 1..4096");
+    fi
+    if queued > capacity || in_flight > capacity - queued; do
+      return Err("event deliveries exceed configured capacity");
+    fi
+    if reserved > capacity - queued - in_flight; do
+      return Err("event reservations exceed configured capacity");
+    fi
+    return Ok(reserved < capacity - queued - in_flight);
+  }
+
+
+end

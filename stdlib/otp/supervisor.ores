@@ -48,13 +48,32 @@ define module OtpSupervisor as
     fi
   }
 
-  // Pure one-step predicate only. Runtime supervisor must own the bounded
-  // restart timestamps and monotonic time provider used to count the window.
-  // This deliberately does NOT invent a clock or implement restart delivery.
+  // Compatibility helper: one replacement. Never use this two-argument
+  // form for one_for_all/rest_for_one episodes with more than one replacement.
   pub fnc restart_budget_allows(int restarts_in_window, int max_restarts): Result<bool, String> {
-    if restarts_in_window < 0 || max_restarts < 0 || max_restarts > 4096; do
+    return restart_budget_allows(restarts_in_window, 1, max_restarts);
+  }
+
+  // Charge the ENTIRE replacement span as one policy decision. Comparisons
+  // use subtraction instead of addition to avoid integer overflow. Invalid
+  // snapshots fail closed instead of quietly denying an impossible state.
+  // Zero requested replacements is a no-op (NOT a failure-restart episode).
+  // This does not atomically reserve credits: trusted supervisor CONTROL must
+  // serialize state updates and own monotonic window timestamps/escalation.
+  pub fnc restart_budget_allows(
+    int restarts_in_window,
+    int requested_restarts,
+    int max_restarts
+  ): Result<bool, String> {
+    if restarts_in_window < 0
+        || requested_restarts < 0
+        || max_restarts < 0
+        || max_restarts > 4096; do
       return Err("invalid restart-intensity accounting");
     fi
-    return Ok(restarts_in_window < max_restarts);
+    if restarts_in_window > max_restarts; do
+      return Err("restart count exceeds configured maximum");
+    fi
+    return Ok(requested_restarts <= max_restarts - restarts_in_window);
   }
 end

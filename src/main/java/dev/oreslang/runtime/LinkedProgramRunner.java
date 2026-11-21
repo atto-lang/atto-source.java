@@ -423,8 +423,8 @@ public final class LinkedProgramRunner {
 
 
     /**
-     * Collects only compiler-owned Oreslang sources under the reserved std/
-     * namespace. Neither the project manifest nor ORESLANG_PATH can override it.
+     * Collects compiler-owned Oreslang sources under reserved std/ and otp/
+     * namespaces. Both OTP spellings resolve to one unit. Project paths cannot override them.
      */
     private static void collectCoreImportClosure(
             String importPath,
@@ -444,7 +444,7 @@ public final class LinkedProgramRunner {
                 coreSource);
         if (mixed.hasJavaSource()) {
             throw new SecurityException(
-                    "packaged std/* modules must be native Oreslang, not Java source islands: "
+                    "packaged modules must be native Oreslang, not Java source islands: "
                             + importPath);
         }
 
@@ -453,11 +453,23 @@ public final class LinkedProgramRunner {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) {
-                throw new SecurityException("std/* cannot import Java host classes: "
+                throw new SecurityException("packaged modules cannot import Java host classes: "
                         + importPath + " -> " + imported.path());
             }
             if (!CoreLibrarySources.isCoreImport(imported.path())) {
-                throw new IllegalArgumentException("std/* cannot import project or ambient modules: "
+                throw new IllegalArgumentException("packaged modules cannot import project or ambient modules: "
+                        + importPath + " -> " + imported.path());
+            }
+            boolean ownerOtp = CoreLibrarySources.isOtpImport(importPath);
+            boolean dependencyOtp = CoreLibrarySources.isOtpImport(imported.path());
+            if (!ownerOtp && dependencyOtp) {
+                throw new SecurityException("std/* cannot import optional otp/*: "
+                        + importPath + " -> " + imported.path());
+            }
+            if (ownerOtp && !dependencyOtp
+                    && !imported.path().equals("std/core")
+                    && !imported.path().equals("std/core.ores")) {
+                throw new SecurityException("portable otp/* may depend only on std/core or otp/*: "
                         + importPath + " -> " + imported.path());
             }
             CoreLibrarySources.unitId(imported.path());

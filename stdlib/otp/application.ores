@@ -1,0 +1,39 @@
+// Oreslang-native lifecycle policy helpers for OTP-style applications.
+//
+// FIRST EXECUTABLE SOURCE SLICE ONLY. This file does not start actors, grant
+// supervisor authority, read the OS, or discover dependencies dynamically.
+define module OtpApplication as
+
+  pub define class RollbackSpan as
+    pub val int first;
+    pub val int end_exclusive;
+  end
+
+  // True only after every declared dependency has started successfully.
+  pub fnc dependencies_ready(
+    int started_dependencies,
+    int required_dependencies
+  ): Result<bool, String> {
+    if started_dependencies < 0 || required_dependencies < 0; do
+      return Err("dependency counts cannot be negative");
+    fi
+    if required_dependencies > 4096; do
+      return Err("dependency count exceeds 4096");
+    fi
+    if started_dependencies > required_dependencies; do
+      return Err("started dependency count exceeds declared requirements");
+    fi
+    return Ok(started_dependencies == required_dependencies);
+  }
+
+  // Returns the half-open range of already-started components to stop in
+  // reverse order after a later startup failure.
+  pub fnc rollback_span(
+    int started_components
+  ): Result<RollbackSpan, String> {
+    if started_components < 0 || started_components > 4096; do
+      return Err("started component count must be 0..4096");
+    fi
+    return Ok(new RollbackSpan(0, started_components));
+  }
+end

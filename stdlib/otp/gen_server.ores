@@ -85,6 +85,37 @@ define module OtpGenServer as
     if capacity < 1 || capacity > 1000000; do
       return Err("call capacity must be 1..1000000");
     fi
+    if pending > capacity; do
+      return Err("pending calls exceed configured capacity");
+    fi
     return Ok(pending < capacity);
   }
+
+  // Pure admission preflight for queued, executing, and reserved call credits.
+  // Account for all three pools together: checking only queued calls permits
+  // over-admission under asynchronous reservations. Every counter is a
+  // nonnegative runtime snapshot; the runtime must enforce this atomically.
+  // Subtraction avoids overflow in the combined-count check.
+  pub fnc pending_capacity_allows(
+    int queued,
+    int in_flight,
+    int reserved,
+    int capacity
+  ): Result<bool, String> {
+    if queued < 0 || in_flight < 0 || reserved < 0; do
+      return Err("negative GenServer admission accounting");
+    fi
+    if capacity < 1 || capacity > 1000000; do
+      return Err("call capacity must be 1..1000000");
+    fi
+    if queued > capacity || in_flight > capacity - queued; do
+      return Err("GenServer live calls exceed configured capacity");
+    fi
+    if reserved > capacity - queued - in_flight; do
+      return Err("GenServer reservations exceed configured capacity");
+    fi
+    return Ok(reserved < capacity - queued - in_flight);
+  }
+
+
 end

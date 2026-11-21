@@ -1,0 +1,54 @@
+name: Oreslang OTP six-module source foundation
+
+on:
+  pull_request:
+    paths:
+      - 'stdlib/otp/**'
+      - 'src/main/java/dev/oreslang/stdlib/CoreLibrarySources.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeOtpBehaviorSlicesTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeOtpGenServerProtocolTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeOtpSupervisorPolicyTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeOtpAdmissionBoundariesTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeOtpPolicyHardeningTest.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeOtpCanonicalImportTest.java'
+      - 'src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java'
+      - 'src/main/java/dev/oreslang/runtime/GenServerCallPort.java'
+      - 'src/test/java/dev/oreslang/runtime/GenServerReplyLedgerSmoke.java'
+      - 'src/test/java/dev/oreslang/runtime/GenServerReplyLedgerGenerationalSmoke.java'
+      - 'src/test/java/dev/oreslang/runtime/GenServerCallPortTest.java'
+      - 'docs/OTP_GENSERVER_RUNTIME_BRIDGE.md'
+      - 'docs/OTP_SIX_MODULE_SOURCE_FOUNDATION.md'
+      - '.github/workflows/otp-six-module-source.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guest-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Prove host reply ledger slot and race invariants
+        run: |
+          mkdir -p /tmp/ores-genserver-test
+          javac -d /tmp/ores-genserver-test \
+            src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java \
+            src/test/java/dev/oreslang/runtime/GenServerReplyLedgerSmoke.java \
+            src/test/java/dev/oreslang/runtime/GenServerReplyLedgerGenerationalSmoke.java
+          java -cp /tmp/ores-genserver-test dev.oreslang.runtime.GenServerReplyLedgerSmoke
+          java -cp /tmp/ores-genserver-test dev.oreslang.runtime.GenServerReplyLedgerGenerationalSmoke
+      - name: Execute six OTP source slices
+        run: >
+          mvn -B -ntp
+          -Dtest=NativeOtpBehaviorSlicesTest,NativeOtpGenServerProtocolTest,NativeOtpSupervisorPolicyTest,NativeOtpAdmissionBoundariesTest,NativeOtpPolicyHardeningTest,NativeOtpCanonicalImportTest,GenServerCallPortTest
+          test
