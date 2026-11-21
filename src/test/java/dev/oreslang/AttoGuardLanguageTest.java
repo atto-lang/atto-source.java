@@ -81,6 +81,26 @@ final class AttoGuardLanguageTest {
     }
 
     @Test
+    void guardDoesNotTrustUnreachableReturnAfterLoopExit() {
+        for (String failure : new String[]{"break;", "continue;"}) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("""
+                        pub routine main(): void {
+                          loop {
+                            guard false else
+                              %s
+                              return;
+                            end
+                            return;
+                          }
+                        }
+                        """.formatted(failure)));
+            assertTrue(error.getMessage().contains(
+                    "guard failure block must explicitly return"), error::getMessage);
+        }
+    }
+
+    @Test
     void guardRejectsThrowOnlyFailureEvenIfItWouldTerminate() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
