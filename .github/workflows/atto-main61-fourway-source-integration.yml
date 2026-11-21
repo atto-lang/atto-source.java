@@ -63,6 +63,50 @@ jobs:
           set -euo pipefail
           mvn -B -ntp -Dmaven.test.failure.ignore=false verify
           echo ATTO_JAVA_MIGRATED_MAIN_MAVEN_VERIFY=PASS
+      - name: Require actual source, parser and channel JUnit cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          report_dir = Path('target/surefire-reports')
+          if report_dir.is_symlink() or not report_dir.is_dir() or Path('target').is_symlink():
+              raise SystemExit('untrusted Surefire report directory')
+          required = (
+              'dev.oreslang.AttoSourceAdmissionTest',
+              'dev.oreslang.AttoGuardLanguageTest',
+              'dev.oreslang.ChannelFlowOperatorTest',
+          )
+          total_tests = 0
+          all_suites = list(report_dir.glob('TEST-*.xml'))
+          if not all_suites:
+              raise SystemExit('no Surefire XML produced by Maven reactor')
+          for report in all_suites:
+              if report.is_symlink() or not report.is_file() or report.stat().st_size == 0:
+                  raise SystemExit(f'invalid Surefire report: {report}')
+              data = report.read_bytes()
+              if b'<!DOCTYPE' in data.upper() or b'<!ENTITY' in data.upper():
+                  raise SystemExit(f'unsafe XML entity: {report}')
+              root = ET.fromstring(data)
+              cases = root.findall('.//testcase')
+              counts = {key: int(root.attrib.get(key, '0')) for key in ('tests', 'errors', 'failures', 'skipped')}
+              if counts['tests'] != len(cases) or any(counts[key] for key in ('errors','failures','skipped')):
+                  raise SystemExit(f'JUnit count/skip/failure mismatch: {report}: {counts}')
+              if any(root.find('.//' + tag) is not None for tag in ('error','failure','skipped')):
+                  raise SystemExit(f'JUnit unexpected error/failure/skip element: {report}')
+              total_tests += len(cases)
+          for suite in required:
+              report = report_dir / ('TEST-' + suite + '.xml')
+              if not report.is_file() or report.is_symlink():
+                  raise SystemExit(f'missing mandatory Atto Java guest suite: {suite}')
+              if not ET.fromstring(report.read_bytes()).findall('.//testcase'):
+                  raise SystemExit(f'empty required guest suite: {suite}')
+          if total_tests < 3:
+              raise SystemExit(f'no material Java test execution: {total_tests}')
+          print(f'ATTO_JAVA_FULL_MAVEN_JUNIT_EXECUTED={total_tests} suites={len(all_suites)}')
+          print('ATTO_SOURCE_PARSER_CHANNEL_REQUIRED_JUNIT=PASS')
+          PY
   four-ready-compiler-checks:
     needs: source-closure-integrity
     runs-on: ubuntu-24.04
