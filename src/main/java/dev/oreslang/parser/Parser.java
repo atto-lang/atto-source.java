@@ -3438,6 +3438,9 @@ public final class Parser {
 
         List<Ast.MatchArm> handlers = new ArrayList<>();
         while (!check(END) && !check(EOF)) {
+            // Old match-arm examples prefix variants with contextual 'on'.
+            // V1 maybe also accepts this spelling without changing catch semantics.
+            matchContextualIdentifier("on");
             Ast.Pattern pattern = parsePattern();
             if (!maybeFailureVariant(pattern, "Err")
                     && !maybeFailureVariant(pattern, "None")
