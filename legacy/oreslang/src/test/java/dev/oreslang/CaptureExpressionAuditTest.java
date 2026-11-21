@@ -112,7 +112,7 @@ final class CaptureExpressionAuditTest {
     void consumingTheCapturedOwnerCannotLeaveAReusableAlias() {
         rejectOwnership("""
                 define class Box as end
-                fnc ready(Box value):bool{return true;}
+                fnc ready(take! Box value):bool{return true;}
                 pub fnc main():void {
                   if ready(new Box() as let value) { ready(value); fi
                   return;

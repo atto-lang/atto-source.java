@@ -667,7 +667,7 @@ final class PatternMatchingHardeningTest {
                       return;
                     }
 
-                    fnc bad(Animal animal): void {
+                    fnc bad(take! Animal animal): void {
                       if animal is type Dog dog then
                         consume(dog);
                         consume(dog);

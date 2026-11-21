@@ -2554,9 +2554,14 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "lexical telemetry span cannot be rebound or captured as a value");
             }
-            // `val`/`let` request a writable referent by default (val = const mut),
-            // but a readonly record stays readonly: its type, not the binding,
-            // rejects every field write.
+            // A fresh record literal has no other alias, so `val` may bind it (its
+            // readonly type still rejects every write); an existing readonly record
+            // must not gain a writable-referent binding.
+            if (actual instanceof Record record && record.readOnly() && binding.mutableReferent()
+                    && !(binding.initializer() instanceof Ast.ObjectExpr)) {
+                throw new IllegalArgumentException(
+                        "readonly record values cannot be bound with mutable referent access");
+            }
 
             if (namedInference) {
                 String name = inferredName;
@@ -13069,7 +13074,12 @@ public final class TypeChecker {
             return structuralRecordAssignable(sourceShape, targetShape);
         }
 
-        if (actual instanceof Named actualNamed
+        // Invariant generic arguments that are mutually assignable through
+        // nominal enum variants (ported from #1598). Two-way recursion is
+        // exponential in nesting depth, so only programs with enums enter it
+        // and equal arguments short-circuit.
+        if (nominalEnums != null && !nominalEnums.enums().isEmpty()
+                && actual instanceof Named actualNamed
                 && expected instanceof Named expectedNamed
                 && actualNamed.name().equals(expectedNamed.name())
                 && actualNamed.arguments().size() == expectedNamed.arguments().size()) {
@@ -13077,7 +13087,7 @@ public final class TypeChecker {
             for (int i = 0; i < actualNamed.arguments().size(); i++) {
                 Type a = actualNamed.arguments().get(i);
                 Type b = expectedNamed.arguments().get(i);
-                if (!assignable(a, b) || !assignable(b, a)) {
+                if (!a.equals(b) && (!assignable(a, b) || !assignable(b, a))) {
                     invariant = false;
                     break;
                 }

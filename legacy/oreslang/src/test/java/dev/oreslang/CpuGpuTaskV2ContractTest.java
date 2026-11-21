@@ -51,12 +51,23 @@ final class CpuGpuTaskV2ContractTest {
                 """));
     }
 
-    @Test void valueProducingTaskRequiresContextualFutureType() {
+    @Test void valueProducingTaskInfersSingleReturnOrRequiresContextualFutureType() {
+        // `task { return expr; }` infers Future<typeof expr>; any other
+        // value-producing body still needs a contextual Future<T>.
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                        pub async fnc main(): void {
+                          val t = cpu task {
+                            return 42;
+                          };
+                          return;
+                        }
+                        """));
         var error = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
                         pub async fnc main(): void {
                           val t = cpu task {
-                            return 42;
+                            val x = 41;
+                            return x + 1;
                           };
                           return;
                         }

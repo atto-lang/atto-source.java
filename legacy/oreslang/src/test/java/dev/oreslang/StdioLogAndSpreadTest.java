@@ -233,7 +233,7 @@ final class StdioLogAndSpreadTest {
                         end
 
                         define class Sink as
-                          pub log(Payload value): void {
+                          pub log(take! Payload value): void {
                             return;
                           }
                         end
@@ -242,7 +242,7 @@ final class StdioLogAndSpreadTest {
                           pub val Sink stdout;
                         end
 
-                        fnc use(LocalStdio stdio, Payload payload): void {
+                        fnc use(LocalStdio stdio, take! Payload payload): void {
                           stdio.stdout.log(payload);
                           stdio.stdout.log(payload);
                           return;

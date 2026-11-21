@@ -650,10 +650,26 @@ public final class OwnershipChecker {
     /** True when {@code node} explicitly transfers ownership of local {@code name}. */
     private static boolean consumesName(Object node, String name) {
         if (node instanceof Ast.RuntimeCallExpr runtime
-                && (runtime.operation().equals("take") || runtime.operation().equals("share"))
+                && (runtime.operation().equals("take") || runtime.operation().equals("share")
+                        || runtime.operation().equals("copy"))
                 && runtime.arguments().size() == 1 && isName(runtime.arguments().getFirst(), name)) return true;
         if (node instanceof Ast.ReturnStmt returned && isName(returned.value(), name)) return true;
+        // Returning a loan of the parameter needs a lifetime proof: keep it owned so
+        // the existing "borrow cannot outlive its owner" rule applies.
+        if (node instanceof Ast.ReturnStmt returned
+                && ((returned.value() instanceof Ast.RuntimeCallExpr loan && loan.operation().equals("borrow")
+                        && loan.arguments().size() == 1 && isName(loan.arguments().getFirst(), name))
+                    || (returned.value() instanceof Ast.UnaryExpr unary && unary.operator().startsWith("&")
+                        && isName(unary.operand(), name)))) return true;
         if (node instanceof Ast.YieldStmt yielded && isName(yielded.value(), name)) return true;
+        // Pattern binders over the parameter create aliases whose lifetime cannot be
+        // related to an incoming loan yet: keep such parameters owned.
+        if (node instanceof Ast.TypeTestExpr test && test.binding() != null && isName(test.value(), name)) return true;
+        if (node instanceof Ast.PatternTestExpr test && isName(test.value(), name)) return true;
+        if (node instanceof Ast.MatchStmt matched && isName(matched.subject(), name)
+                && matched.arms().stream().anyMatch(arm -> bindsName(arm.pattern()))) return true;
+        if (node instanceof Ast.MatchExpr matched && isName(matched.subject(), name)
+                && matched.arms().stream().anyMatch(arm -> bindsName(arm.pattern()))) return true;
         if (node instanceof Ast.BindingStmt binding && isName(binding.initializer(), name)) return true;
         if (node instanceof Ast.AssignExpr assign && isName(assign.value(), name)) return true;
         if (node instanceof Ast.DestructureStmt) {
@@ -686,6 +702,15 @@ public final class OwnershipChecker {
             }
         }
         return false;
+    }
+
+    private static boolean bindsName(Ast.Pattern pattern) {
+        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.LiteralPattern) return false;
+        if (pattern instanceof Ast.TypePattern typed) return typed.binding() != null;
+        if (pattern instanceof Ast.ConstructorPattern constructor) {
+            return constructor.arguments().stream().anyMatch(OwnershipChecker::bindsName);
+        }
+        return true; // binding, structural, tuple, record and sequence patterns bind
     }
 
     private static boolean isName(Object expression, String name) {
@@ -1359,9 +1384,12 @@ public final class OwnershipChecker {
         }
 
         boolean readonlyRecord = value.type.isReadonlyRecordType();
-        // The default writable-referent request of val/let never makes a
-        // readonly record writable: field writes are rejected by its type and
-        // validateBorrow refuses any mutable loan of it.
+        // Only a fresh record literal (no other alias) may be bound by a
+        // writable-referent binding; its readonly type still rejects writes.
+        if (readonlyRecord && binding.mutableReferent()
+                && !(binding.initializer() instanceof Ast.ObjectExpr)) {
+            throw error("readonly structural records cannot gain mutable bindings or aliases");
+        }
 
         // A whole move-only owner may transfer from a read-only binding into a
         // new mutable owner. A field/index projection is different: ordinary

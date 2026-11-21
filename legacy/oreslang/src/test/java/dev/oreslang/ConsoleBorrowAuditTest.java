@@ -137,8 +137,8 @@ final class ConsoleBorrowAuditTest {
     void shadowedConsoleStillUsesOrdinaryConsumingCallSemantics() {
         var failure = assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(Parser.parse("""
                 define class Payload as end
-                define class Sink as pub println(Payload value):void { return; } end
-                fnc use(Sink stdio, Payload value):void {
+                define class Sink as pub println(take! Payload value):void { return; } end
+                fnc use(Sink stdio, take! Payload value):void {
                   stdio.println(value); stdio.println(value); return;
                 }
                 """)));

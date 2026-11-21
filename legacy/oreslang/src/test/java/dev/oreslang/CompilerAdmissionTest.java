@@ -18,7 +18,12 @@ final class CompilerAdmissionTest {
               box.value = 1;
               return;
             }
-            pub routine main(): void { return; }
+            pub routine main(): void {
+              // A readonly `let` owner cannot lend the exclusive loan change() needs.
+              let Box box = new Box();
+              change(box);
+              return;
+            }
             """;
 
     @Test

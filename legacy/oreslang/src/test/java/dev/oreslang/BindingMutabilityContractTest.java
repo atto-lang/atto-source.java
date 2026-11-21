@@ -132,15 +132,24 @@ final class BindingMutabilityContractTest {
                 """)));
     }
 
-    @Test void ordinaryMethodBodyCannotSecretlyMutateReadOnlySelf() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+    @Test void fieldMutatingMethodInfersExclusiveSelfAndNeedsWritableReceiver() {
+        // A method that writes self.field holds an inferred exclusive self
+        // loan; the mutation is never secret because the call site must own a
+        // writable receiver.
+        String counter = """
                 define class Counter as
                   pub let int count = 0;
-                  pub sneaky(): void {
+                  pub bump(): void {
                     self.count = self.count + 1;
                     return;
                   }
                 end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(counter + """
+                pub fnc main(): int { val Counter c = new Counter(); c.bump(); return 0; }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(counter + """
+                pub fnc main(): int { let Counter c = new Counter(); c.bump(); return 0; }
                 """)));
     }
 
@@ -166,14 +175,17 @@ final class BindingMutabilityContractTest {
     }
 
 
-    @Test void duplicateValMutQualifierIsRejected() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+    @Test void duplicateValMutQualifierIsRedundantWithWarning() {
+        // Owner ruling 2026-11-20: `val` means `const mut`, so `val mut`
+        // compiles as a redundant spelling and reports a warning.
+        var parsed = Parser.parseWithWarnings("""
                 fnc bad(): void {
                   val mut Box x = new Box();
                   return;
                 }
-                """));
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                """);
+        assertTrue(parsed.warnings().stream().anyMatch(w -> w.message().contains("redundant 'mut' after 'val'")));
+        assertDoesNotThrow(() -> Parser.parse("""
                 fnc bad(): void {
                   val Channel<Box> inbox = Channel.new<Box>(1);
                   select {

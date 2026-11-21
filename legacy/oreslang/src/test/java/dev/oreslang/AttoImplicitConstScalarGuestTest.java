@@ -64,7 +64,8 @@ final class AttoImplicitConstScalarGuestTest {
         assertTrue(binding.mutableReferent(), "val keeps its referent permission");
         valid("val int runtime = runtime_value(); return runtime;");
         valid("val runtime = runtime_value(); return runtime;");
-        assertThrows(RuntimeException.class, () -> Parser.parse(
+        // Owner ruling 2026-11-20: `val mut` is redundant (warning), not an error.
+        assertDoesNotThrow(() -> Parser.parse(
                 "pub fnc main(): int { val mut int x = 1; return x; }"));
     }
 

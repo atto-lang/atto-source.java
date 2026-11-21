@@ -131,10 +131,12 @@ final class AttoDiamondDispatchParityTest {
     }
 
     @Test
-    void javaInterfaceSignaturesRequireFncKeyword() {
+    void interfaceSignaturesAcceptFncAndCanonicalFnclessSpelling() {
+        // Canonical interface/trait members omit `fnc` (play/traits-interfaces);
+        // the historical `fnc name(): T;` spelling stays accepted.
         assertDoesNotThrow(() -> Parser.parse(
                 "define interface Named as fnc name(): string; end"));
-        assertThrows(IllegalArgumentException.class, () ->
-                Parser.parse("define interface Named as name(): string; end"));
+        assertDoesNotThrow(() -> Parser.parse(
+                "define interface Named as name(): string; end"));
     }
 }

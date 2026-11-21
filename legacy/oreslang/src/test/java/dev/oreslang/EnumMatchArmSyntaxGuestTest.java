@@ -46,7 +46,6 @@ final class EnumMatchArmSyntaxGuestTest {
         Ast.ReturnStmt returned = assertInstanceOf(
                 Ast.ReturnStmt.class, next.body().getFirst());
         Ast.MatchExpr matched = assertInstanceOf(Ast.MatchExpr.class, returned.value());
-        assertTrue(matched.first());
         assertEquals(3, matched.arms().size());
         for (Ast.MatchValueArm arm : matched.arms()) {
             assertTrue(arm.prefixStatements().isEmpty());

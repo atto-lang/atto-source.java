@@ -44,7 +44,7 @@ final class FunctionArityOwnershipTest {
                 end
 
                 routine consume(int marker): void { return; }
-                routine consume(Resource value, int marker): void { return; }
+                routine consume(take! Resource value, int marker): void { return; }
 
                 routine bad(): void {
                   let Resource resource = new Resource();
