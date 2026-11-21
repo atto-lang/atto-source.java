@@ -409,6 +409,19 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+            // Constructor overload identity is caller-visible arity only,
+            // but each declaration's parameter environment is also a unique
+            // lexical map. Reject malformed direct-AST instances before
+            // TypeChecker/OwnershipChecker or VM construction can see them.
+            HashSet<String> names = new HashSet<>();
+            for (Param parameter : parameters) {
+                String name = parameter.name();
+                if (name.isBlank() || name.equals("self") || name.equals("arguments")
+                        || !names.add(name)) {
+                    throw new IllegalArgumentException(
+                            "duplicate or reserved constructor parameter '" + name + "'");
+                }
+            }
         }
 
         public int arity() { return parameters.size(); }

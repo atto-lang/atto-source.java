@@ -64,4 +64,36 @@ final class ConstructorReceiverSyntaxHardeningTest {
                         """));
         assertTrue(failure.getMessage().contains("actors do not declare constructors"));
     }
+    @Test
+    void directAstCannotForgeDuplicateOrReservedConstructorBindings() {
+        var intType = Ast.TypeRef.simple("int");
+        var p = new Ast.Param(intType, "value");
+        assertThrows(IllegalArgumentException.class, () ->
+                new Ast.ConstructorDecl(Ast.Visibility.PRIVATE,
+                        List.of(p, p), List.of(), List.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Ast.ConstructorDecl(Ast.Visibility.PRIVATE,
+                        List.of(new Ast.Param(intType, "self")), List.of(), List.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Ast.ConstructorDecl(Ast.Visibility.PRIVATE,
+                        List.of(new Ast.Param(intType, "arguments")), List.of(), List.of()));
+        assertEquals(2, new Ast.ConstructorDecl(Ast.Visibility.PRIVATE,
+                List.of(p, new Ast.Param(intType, "other")),
+                List.of(), List.of()).arity());
+    }
+
+    @Test
+    void parsedConstructorCannotDeclareDuplicateParameterName() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Sample as
+                  constructor(int id, string id) { return; }
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Sample as
+                  constructor(int arguments) { return; }
+                end
+                """));
+    }
+
 }
