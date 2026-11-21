@@ -105,4 +105,48 @@ final class TrapFailurePolicyTest {
         }
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
+
+    @Test void structuredScopePoisonCannotBeTrappedOrCaught() {
+        StructuredTaskScopePoisonException poison =
+                new StructuredTaskScopePoisonException(
+                        "structured Task scope authority accounting poisoned",
+                        new IllegalStateException("region accounting corrupt"));
+
+        assertFalse(TrapFailurePolicy.isTrappable(poison, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(poison, GuestPanic.class));
+
+        CompletionException wrapped = new CompletionException(
+                new IllegalStateException("future failed", poison));
+        assertFalse(TrapFailurePolicy.isTrappable(wrapped, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(wrapped, GuestPanic.class));
+
+        IllegalStateException cleanup = new IllegalStateException("ordinary cleanup");
+        cleanup.addSuppressed(poison);
+        assertFalse(TrapFailurePolicy.isTrappable(cleanup, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(cleanup, GuestPanic.class));
+    }
+
+
+    @Test void checkedWrappersCannotMaskStructuredScopePoisonDuringCleanup() {
+        StructuredTaskScopePoisonException poison =
+                new StructuredTaskScopePoisonException(
+                        "structured Task scope authority accounting poisoned",
+                        new IllegalStateException("region accounting corrupt"));
+
+        Exception checkedCauseWrapper =
+                new Exception("checked host wrapper", poison);
+        assertFalse(TrapFailurePolicy.isTrappable(
+                checkedCauseWrapper, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                checkedCauseWrapper, GuestPanic.class));
+
+        Exception checkedSuppressedWrapper =
+                new Exception("checked cleanup wrapper");
+        checkedSuppressedWrapper.addSuppressed(poison);
+        assertFalse(TrapFailurePolicy.isTrappable(
+                checkedSuppressedWrapper, GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                checkedSuppressedWrapper, GuestPanic.class));
+    }
+
 }

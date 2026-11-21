@@ -25,7 +25,7 @@ public final class TrapFailurePolicy {
     private TrapFailurePolicy() { }
 
     public static boolean isTrappable(
-            RuntimeException failure, Class<? extends Throwable> panicType) {
+            Throwable failure, Class<? extends Throwable> panicType) {
         return permits(failure, panicType, false);
     }
 
@@ -49,6 +49,7 @@ public final class TrapFailurePolicy {
             if (visited.put(current, Boolean.TRUE) != null) return false;
             if (panicType.isInstance(current)
                     || current instanceof Error
+                    || current instanceof StructuredTaskScopePoisonException
                     || current instanceof CancellationException
                     || current instanceof InterruptedException
                     || current instanceof RejectedExecutionException) {

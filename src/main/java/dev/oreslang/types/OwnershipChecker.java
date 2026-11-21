@@ -3,7 +3,9 @@ package dev.oreslang.types;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -31,6 +33,8 @@ import java.util.Set;
  * - moving an outer value from a repeating loop is rejected conservatively.
  */
 public final class OwnershipChecker {
+    private long nextRegionId;
+
     private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
@@ -45,8 +49,19 @@ public final class OwnershipChecker {
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
+    /**
+     * Bodies that may execute after their lexical checker position. An active
+     * nb scope must never lend its read-borrow authority to one of these bodies.
+     */
+    private int deferredExecutionDepth;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
+    /**
+     * Lexical structured-scope proof stack. Only the innermost active
+     * nb scope may authorize a shared-borrow Task capture.
+     */
+    private final Deque<StructuredBorrowContext> structuredBorrowScopes =
+            new ArrayDeque<>();
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -388,14 +403,22 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.TaskScopeStmt taskScope) {
-            // Phase 2 still admits only today's owned/Send Task captures.
-            // Borrowed captures remain rejected until ExecutionPermit proof
-            // metadata is wired into TaskExpr capture checking.
-            checkBlock(taskScope.body(), scope, returnType);
+            StructuredBorrowContext context = new StructuredBorrowContext();
+            structuredBorrowScopes.push(context);
+            try {
+                checkBlock(taskScope.body(), scope, returnType);
+            } finally {
+                StructuredBorrowContext popped = structuredBorrowScopes.pop();
+                if (popped != context) {
+                    throw new IllegalStateException(
+                            "structured borrow scope stack corrupted");
+                }
+            }
             // Scope exit is an implicit asynchronous physical-quiescence wait.
-            // Any loan owned by an enclosing scope would otherwise cross a
-            // hidden suspension point without appearing as an AwaitExpr.
-            checkSuspensionBorrows(scope, "nb scope exit");
+            // Ordinary borrows still cannot cross it. The only exception is a
+            // shared region whose compiler-issued read permit was captured by a
+            // child Task in this exact lexical scope.
+            checkTaskScopeExitBorrows(scope, context);
             return;
         }
         if (stmt instanceof Ast.BreakStmt) {
@@ -665,12 +688,14 @@ public final class OwnershipChecker {
                     boolean previousDiscard = discardingSelectReturn;
                     loopDepth = 0;
                     discardingSelectReturn = selected.explicitDo();
+                    deferredExecutionDepth++;
                     try {
                         checkBlock(arm.body(), armScope,
                                 selected.explicitDo()
                                         ? Ast.TypeRef.inferred()
                                         : Ast.TypeRef.simple("void"));
                     } finally {
+                        deferredExecutionDepth--;
                         loopDepth = previousLoopDepth;
                         discardingSelectReturn = previousDiscard;
                     }
@@ -766,13 +791,80 @@ public final class OwnershipChecker {
             throw error("cannot " + operation + " while holding a MutexGuard; release the guard before suspension");
         }
         // Actor self is retained by the mailbox continuation under the same
-        // execution lease. Ordinary user borrows (including aliases of self)
-        // still cannot cross suspension.
+        // execution lease. Compiler-issued scoped read captures are separately
+        // tied to a physical-quiescence barrier and may survive child Task
+        // suspension/carrier migration. Every other borrow remains forbidden.
         if (scope.visibleStates().stream().anyMatch(state -> !state.moved
                 && !("self".equals(state.debugName) && isActorConfinedBorrow(state) && state.immutableBorrows == 0 && !state.mutableBorrowed)
+                && !isScopedReadPermitState(state)
                 && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
                     || state.immutableBorrows > 0 || state.mutableBorrowed))) {
             throw error("cannot " + operation + " while an ordinary borrow is live; end the lexical borrow before suspension");
+        }
+    }
+
+    private boolean isScopedReadPermitState(VarState state) {
+        return state.scopedTaskReadPermit
+                && state.kind == ValueKind.IMM_BORROW
+                && !state.mutableBorrowed
+                && state.immutableBorrows == 0;
+    }
+
+    private void checkTaskScopeExitBorrows(
+            Scope scope, StructuredBorrowContext context) {
+        if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
+            throw error("cannot nb scope exit while holding a MutexGuard; "
+                    + "release the guard before suspension");
+        }
+        for (VarState state : scope.visibleStates()) {
+            if (state.moved) continue;
+            boolean borrowed = state.kind == ValueKind.IMM_BORROW
+                    || state.kind == ValueKind.MUT_BORROW
+                    || state.immutableBorrows > 0
+                    || state.mutableBorrowed;
+            if (!borrowed) continue;
+
+            if (state.kind == ValueKind.MUT_BORROW || state.mutableBorrowed) {
+                throw error("cannot nb scope exit while a mutable borrow is live");
+            }
+
+            VarState region = state.borrowSource != null
+                    ? ownershipRoot(state.borrowSource)
+                    : ownershipRoot(state);
+
+            if (isScopedReadPermitState(state)) {
+                // An inherited child permit is already protected by the
+                // physically-live outer structured child. It may cross an
+                // unrelated nested scope drain without being re-lent to one of
+                // the nested scope's children.
+                if (state.borrowSource == null
+                        || state.scopedPermitRegionId <= 0L
+                        || state.scopedPermitRegionId != region.regionId
+                        || state.scopedPermitGeneration != region.regionGeneration) {
+                    throw new IllegalStateException(
+                            "stale inherited scoped Task read permit for '"
+                                    + state.debugName + "'");
+                }
+                continue;
+            }
+
+            if (state.kind == ValueKind.IMM_BORROW || state.type.isBorrow()) {
+                if (!context.readBorrowStates.contains(state)) {
+                    throw error("cannot nb scope exit while an uncaptured immutable "
+                            + "borrow is live; only the exact compiler-permitted "
+                            + "scoped read capture may cross the drain");
+                }
+                continue;
+            }
+
+            // The storage root itself records the persistent shared-loan count.
+            // It may remain live because the exact captured borrow above is
+            // protected by this scope's physical-quiescence barrier.
+            if (state.immutableBorrows > 0
+                    && !context.readRegions.contains(region)) {
+                throw error("cannot nb scope exit while an ordinary borrow is live; "
+                        + "only compiler-permitted scoped read captures may cross the drain");
+            }
         }
     }
 
@@ -790,6 +882,9 @@ public final class OwnershipChecker {
         }
 
         ValueInfo value;
+        boolean directBorrowBinding = false;
+        boolean borrowProjected = false;
+        String borrowAccessPath = "";
         if (binding.initializer() instanceof Ast.RuntimeCallExpr runtime
                 && runtime.operation().equals("borrow")) {
             if (runtime.arguments().size() != 1) {
@@ -797,6 +892,9 @@ public final class OwnershipChecker {
             }
             BorrowPlace place = borrowPlace(runtime.arguments().getFirst(), scope);
             beginPersistentBorrow(place.owner(), false);
+            directBorrowBinding = true;
+            borrowProjected = place.projected();
+            borrowAccessPath = place.accessPath();
             value = new ValueInfo(
                     Ast.TypeRef.borrowed(place.type(), false),
                     ValueKind.IMM_BORROW,
@@ -806,6 +904,9 @@ public final class OwnershipChecker {
             // Legacy compatibility only. Canonical source uses rt borrow.
             boolean mutableBorrow = unary.operator().equals("&mut");
             BorrowPlace place = borrowPlace(unary.operand(), scope);
+            directBorrowBinding = true;
+            borrowProjected = place.projected();
+            borrowAccessPath = place.accessPath();
             if (mutableBorrow && !(unary.operand() instanceof Ast.NameExpr)) {
                 throw error("mutable projected borrows need path-exclusive loan tracking");
             }
@@ -864,6 +965,10 @@ public final class OwnershipChecker {
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
         state.borrowLease = value.borrowLease;
+        if (directBorrowBinding) {
+            state.borrowProjected = borrowProjected;
+            state.borrowAccessPath = borrowAccessPath;
+        }
         scope.define(binding.name(), state);
     }
 
@@ -1252,9 +1357,11 @@ public final class OwnershipChecker {
                     boolean savedDiscard = discardingSelectReturn;
                     loopDepth = 0;
                     discardingSelectReturn = false;
+                    deferredExecutionDepth++;
                     try {
                         checkBlock(channelOp.callbackBody(), callbackScope, Ast.TypeRef.simple("void"));
                     } finally {
+                        deferredExecutionDepth--;
                         loopDepth = savedLoopDepth;
                         discardingSelectReturn = savedDiscard;
                         callbackScope.close();
@@ -1348,24 +1455,14 @@ public final class OwnershipChecker {
             if (scope.descendantsNonLexical()) {
                 throw error("nb Task cannot capture a non-lexical/unknown execution scope");
             }
-            // Task executes after this statement returns, possibly on a
-            // different worker. Reuse the closure move checker, but impose
-            // the stricter cross-Task Send contract on every capture.
             Ast.LambdaExpr body = new Ast.LambdaExpr(List.of(), null, task.body());
             CaptureSet captures = collectCaptures(body, scope, null);
-            for (Capture capture : captures.values.values()) {
-                Ast.TypeRef type = capture.source.type;
-                if (!taskCaptureSend(type, new HashSet<>(), 0)) {
-                    throw error("nb Task capture '" + capture.name
-                            + "' is not a concrete owned Send value; "
-                            + "borrows, thread-affine capabilities, unresolved "
-                            + "generic types and actor state cannot cross Tasks");
-                }
-            }
-            checkLambda(body, scope, null);
-            // Export only proven lexical captures into the isolated Task.
-            // No whole-frame Env snapshot or implicit actor-private aliases.
-            task.bindCaptures(new ArrayList<>(captures.values.keySet()));
+            List<Ast.TaskCaptureProof> proofs = proveTaskCaptures(captures);
+            checkTaskBody(body, scope, captures, proofs);
+
+            // Export only compiler-proven lexical captures into the isolated
+            // Task. Borrow proofs are opaque metadata and never guest values.
+            task.bindCaptureProofs(proofs);
             return new ValueInfo(
                     new Ast.TypeRef("Task", List.of(task.checkedResultType()), false),
                     ValueKind.MOVE_ONLY, null);
@@ -2280,12 +2377,20 @@ public final class OwnershipChecker {
      * invocations, side-effecting indexes, or unresolved/dynamic field types.
      * Mutable projections stay fail-closed until path-exclusive loans land.
      */
-    private record BorrowPlace(VarState owner, Ast.TypeRef type) { }
+    private record BorrowPlace(
+            VarState owner,
+            Ast.TypeRef type,
+            String accessPath,
+            boolean projected) { }
 
     private BorrowPlace borrowPlace(Ast.Expr operand, Scope scope) {
         if (operand instanceof Ast.NameExpr name) {
             VarState owner = borrowOwner(operand, scope);
-            return new BorrowPlace(owner, owner.type);
+            if (owner.scopedTaskReadPermit) {
+                throw error("cannot reborrow scoped Task read permit '" + name.name()
+                        + "'; use the original captured read binding directly");
+            }
+            return new BorrowPlace(owner, owner.type, "$", false);
         }
         if (operand instanceof Ast.MemberExpr member) {
             BorrowPlace receiver = borrowPlace(member.receiver(), scope);
@@ -2310,7 +2415,11 @@ public final class OwnershipChecker {
                 throw error("projected borrow requires a known owned field type for '"
                         + member.member() + "'");
             }
-            return new BorrowPlace(receiver.owner(), fieldType);
+            return new BorrowPlace(
+                    receiver.owner(),
+                    fieldType,
+                    receiver.accessPath() + "." + member.member(),
+                    true);
         }
         if (operand instanceof Ast.IndexExpr indexed) {
             BorrowPlace receiver = borrowPlace(indexed.receiver(), scope);
@@ -2331,7 +2440,11 @@ public final class OwnershipChecker {
             if (element.name().equals("$infer$") || element.isBorrow()) {
                 throw error("projected borrow index requires a known owned element type");
             }
-            return new BorrowPlace(receiver.owner(), element);
+            return new BorrowPlace(
+                    receiver.owner(),
+                    element,
+                    receiver.accessPath() + "[*]",
+                    true);
         }
         throw error("borrow requires a named owner or stable field/index projection of one");
     }
@@ -2424,6 +2537,192 @@ public final class OwnershipChecker {
                 + "'; returned borrows must originate from an incoming borrowed parameter/receiver so they cannot outlive their owner");
     }
 
+    private List<Ast.TaskCaptureProof> proveTaskCaptures(CaptureSet captures) {
+        ArrayList<Ast.TaskCaptureProof> proofs =
+                new ArrayList<>(captures.values.size());
+        StructuredBorrowContext structured = structuredBorrowScopes.peek();
+
+        for (Capture capture : captures.values.values()) {
+            VarState source = capture.source;
+            source.debugName = capture.name;
+            requireUsable(source, capture.name, capture.write);
+
+            boolean borrowed = source.kind == ValueKind.IMM_BORROW
+                    || source.kind == ValueKind.MUT_BORROW
+                    || source.type.isBorrow();
+            if (!borrowed) {
+                if (!taskCaptureSend(source.type, new HashSet<>(), 0)) {
+                    throw error("nb Task capture '" + capture.name
+                            + "' is not a concrete owned Send value; "
+                            + "thread-affine capabilities, unresolved generic "
+                            + "types and actor state cannot cross Tasks");
+                }
+                proofs.add(Ast.TaskCaptureProof.owned(capture.name));
+                continue;
+            }
+
+            if (structured == null) {
+                throw error("nb Task borrowed capture '" + capture.name
+                        + "' requires an enclosing nb scope");
+            }
+            if (deferredExecutionDepth > 0) {
+                throw error("nb Task borrowed capture '" + capture.name
+                        + "' is inside deferred/escaping execution; scoped read "
+                        + "authority cannot outlive the lexical nb scope");
+            }
+            if (source.kind != ValueKind.IMM_BORROW
+                    || source.type.mutableBorrow()
+                    || capture.write) {
+                throw error("nb scope currently admits only read-only immutable "
+                        + "borrow captures; mutable/write capture '" + capture.name
+                        + "' remains disabled");
+            }
+            if (source.borrowSource == null || source.borrowAccessPath.isBlank()) {
+                throw error("nb Task borrowed capture '" + capture.name
+                        + "' has unknown region provenance; create a direct lexical "
+                        + "rt borrow binding first");
+            }
+            if (source.borrowProjected) {
+                throw error("nb Task projected borrowed capture '" + capture.name
+                        + "' is not enabled until path-disjoint permit proofs land");
+            }
+            if (isActorConfinedBorrow(source)) {
+                throw error("actor-confined borrow '" + capture.name
+                        + "' cannot become scoped Task region authority");
+            }
+            if (!taskCaptureSync(source.type, new HashSet<>(), 0)) {
+                throw error("nb Task borrowed capture '" + capture.name
+                        + "' is not Sync; shared cross-Task borrows require "
+                        + "compiler-proven Sync referents and cannot expose "
+                        + "thread-affine, future, raw/native, actor, or interior-mutable capabilities");
+            }
+
+            VarState region = ownershipRoot(source.borrowSource);
+            requireUsable(region, region.debugName, false);
+            if (region.regionId == 0L) {
+                try {
+                    nextRegionId = Math.incrementExact(nextRegionId);
+                } catch (ArithmeticException exhausted) {
+                    throw error("scoped Task compiler region identity space exhausted");
+                }
+                region.regionId = nextRegionId;
+            }
+            structured.readRegions.add(region);
+            structured.readBorrowStates.add(source);
+            proofs.add(Ast.TaskCaptureProof.scopedRead(
+                    capture.name,
+                    region.regionId,
+                    region.regionGeneration,
+                    source.borrowAccessPath));
+        }
+        return List.copyOf(proofs);
+    }
+
+    private void checkTaskBody(
+            Ast.LambdaExpr body,
+            Scope outer,
+            CaptureSet captures,
+            List<Ast.TaskCaptureProof> proofs) {
+        if (captures.values.size() != proofs.size()) {
+            throw new IllegalStateException(
+                    "Task capture proof cardinality mismatch");
+        }
+
+        Scope taskScope = new Scope(null, false);
+        int index = 0;
+        for (Capture capture : captures.values.values()) {
+            Ast.TaskCaptureProof proof = proofs.get(index++);
+            if (!proof.name().equals(capture.name)) {
+                throw new IllegalStateException(
+                        "Task capture proof order mismatch");
+            }
+
+            VarState source = capture.source;
+            source.debugName = capture.name;
+            requireUsable(source, capture.name, capture.write);
+
+            if (proof.mode() == Ast.TaskCaptureMode.SCOPED_READ_BORROW) {
+                VarState region = ownershipRoot(source.borrowSource);
+                if (proof.regionId() != region.regionId
+                        || proof.regionGeneration() != region.regionGeneration) {
+                    throw new IllegalStateException(
+                            "stale scoped Task borrow proof for '" + capture.name + "'");
+                }
+                VarState child = new VarState(
+                        source.type,
+                        false,
+                        false,
+                        ValueKind.IMM_BORROW,
+                        Origin.CAPTURE);
+                child.borrowSource = region;
+                child.borrowAccessPath = source.borrowAccessPath;
+                child.scopedTaskReadPermit = true;
+                child.scopedPermitRegionId = proof.regionId();
+                child.scopedPermitGeneration = proof.regionGeneration();
+                taskScope.define(capture.name, child);
+                continue;
+            }
+
+            if (containsMutexGuardType(source.type)) {
+                throw error("nb Task cannot capture guard-bearing value '"
+                        + capture.name + "'; MutexGuard values are lexical");
+            }
+            if (capture.write) {
+                if (!source.mutable && !source.rebindable) {
+                    throw error("nb Task cannot write read-only capture '"
+                            + capture.name + "'");
+                }
+                if (source.immutableBorrows > 0 || source.mutableBorrowed) {
+                    throw error("nb Task cannot capture '" + capture.name
+                            + "' mutably while borrowed");
+                }
+                move(source, capture.name);
+                taskScope.define(
+                        capture.name,
+                        new VarState(
+                                source.type,
+                                source.mutable,
+                                source.rebindable,
+                                source.kind,
+                                Origin.CAPTURE));
+            } else if (source.kind == ValueKind.MOVE_ONLY) {
+                move(source, capture.name);
+                taskScope.define(
+                        capture.name,
+                        new VarState(
+                                source.type,
+                                false,
+                                ValueKind.MOVE_ONLY,
+                                Origin.CAPTURE));
+            } else {
+                taskScope.define(
+                        capture.name,
+                        new VarState(
+                                source.type,
+                                false,
+                                ValueKind.COPY,
+                                Origin.CAPTURE));
+            }
+        }
+
+        int previousLoopDepth = loopDepth;
+        boolean previousDiscard = discardingSelectReturn;
+        Ast.ClassDecl previousInitializingClass = initializingClass;
+        loopDepth = 0;
+        discardingSelectReturn = false;
+        initializingClass = null;
+        try {
+            for (Ast.Stmt stmt : body.blockBody()) {
+                checkStatement(stmt, taskScope, Ast.TypeRef.inferred());
+            }
+        } finally {
+            loopDepth = previousLoopDepth;
+            discardingSelectReturn = previousDiscard;
+            initializingClass = previousInitializingClass;
+            taskScope.close();
+        }
+    }
+
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
         return checkLambda(lambda, outer, recursiveBinding, false);
     }
@@ -2493,6 +2792,7 @@ public final class OwnershipChecker {
         // Closures may execute after the class constructor returns; their
         // bodies cannot write fixed slots through the ctor-only exception.
         initializingClass = null;
+        deferredExecutionDepth++;
         try {
             if (lambda.expressionBody() != null) {
                 // An expression body has return-value ownership semantics even
@@ -2507,6 +2807,7 @@ public final class OwnershipChecker {
                 }
             }
         } finally {
+            deferredExecutionDepth--;
             loopDepth = previousLoopDepth;
             discardingSelectReturn = previousDiscard;
             initializingClass = previousInitializingClass;
@@ -2523,6 +2824,128 @@ public final class OwnershipChecker {
      * Later versions will reuse canonical compiler Send derivation under
      * resolved imported/monomorphized signatures.
      */
+    /**
+     * Canonical Send/Sync proof for shared scoped Task borrows.
+     *
+     * <p>The ownership pass intentionally accepts a narrower nominal subset
+     * than the full type checker when generic substitution or inherited layouts
+     * are unavailable here. Unknown shapes fail closed rather than inventing a
+     * second auto-trait system.</p>
+     */
+    private boolean taskCaptureSync(
+            Ast.TypeRef type, Set<String> active, int depth) {
+        if (type == null || depth > 64) return false;
+        Types.Type traitType = taskTraitType(type, depth);
+        if (traitType == null) return false;
+        return SendSyncTraits.isSync(
+                traitType,
+                (nominal, trait) ->
+                        trait == SendSyncTraits.Trait.SYNC
+                                && taskNominalSync(nominal, active, depth + 1));
+    }
+
+    private boolean taskNominalSync(
+            Types.Named nominal, Set<String> active, int depth) {
+        if (depth > 64 || !nominal.arguments().isEmpty()) return false;
+        Ast.ClassDecl klass = classes.get(nominal.name());
+        if (klass == null
+                || !klass.genericParameters().isEmpty()
+                || klass.actorKind() != Ast.ActorKind.NONE
+                || !klass.parents().isEmpty()
+                || !active.add(nominal.name())) {
+            return false;
+        }
+        try {
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (!taskCaptureSync(field.type(), active, depth + 1)) {
+                    return false;
+                }
+            }
+            return true;
+        } finally {
+            active.remove(nominal.name());
+        }
+    }
+
+    private Types.Type taskTraitType(Ast.TypeRef type, int depth) {
+        if (type == null || depth > 64 || type.inferArguments()
+                || type.isComplement() || type.isNamedParameter()
+                || type.isSequenceShape() || type.isRepeatExact()
+                || type.isRepeatMany()) {
+            return null;
+        }
+        if (type.isBorrow()) {
+            if (type.arguments().size() != 1) return null;
+            Types.Type target = taskTraitType(type.borrowedTarget(), depth + 1);
+            return target == null
+                    ? null
+                    : new Types.Borrow(target, type.mutableBorrow());
+        }
+        if (type.isRecordType()) {
+            Map<String, Types.Type> members = new LinkedHashMap<>();
+            for (Map.Entry<String, Ast.TypeRef> entry :
+                    type.recordMembers().entrySet()) {
+                Types.Type member = taskTraitType(entry.getValue(), depth + 1);
+                if (member == null) return null;
+                members.put(entry.getKey(), member);
+            }
+            return new Types.Record(members, type.isReadonlyRecordType());
+        }
+        if (type.isTupleType()) {
+            ArrayList<Types.Type> parts = new ArrayList<>(type.arguments().size());
+            for (Ast.TypeRef part : type.arguments()) {
+                Types.Type converted = taskTraitType(part, depth + 1);
+                if (converted == null) return null;
+                parts.add(converted);
+            }
+            return new Types.Tuple(parts);
+        }
+        if (type.isUnion()) {
+            ArrayList<Types.Type> options = new ArrayList<>(type.arguments().size());
+            for (Ast.TypeRef option : type.arguments()) {
+                Types.Type converted = taskTraitType(option, depth + 1);
+                if (converted == null) return null;
+                options.add(converted);
+            }
+            return options.size() < 2 ? null : new Types.Union(options);
+        }
+        if (type.isStringLiteral()) {
+            return new Types.StringLiteral(type.stringLiteralValue());
+        }
+        if (type.isBoolLiteral()) {
+            return new Types.BoolLiteral(type.boolLiteralValue());
+        }
+        if (type.isIntLiteral()) {
+            return Types.Primitive.INT;
+        }
+
+        String name = type.name();
+        Types.Primitive primitive = switch (name) {
+            case "int", "uint", "i8", "i16", "i32", "i64",
+                    "u8", "u16", "u32", "u64" -> Types.Primitive.INT;
+            case "float", "f32", "f64" -> Types.Primitive.FLOAT;
+            case "decimal" -> Types.Primitive.DECIMAL;
+            case "complex" -> Types.Primitive.COMPLEX;
+            case "bool" -> Types.Primitive.BOOL;
+            case "String", "string", "Symbol" -> Types.Primitive.STRING;
+            case "void" -> Types.Primitive.VOID;
+            case "null" -> Types.Primitive.NULL;
+            default -> null;
+        };
+        if (primitive != null) {
+            return type.arguments().isEmpty() ? primitive : null;
+        }
+        if (name.equals("$infer$") || name.equals("Fnc")) return null;
+
+        ArrayList<Types.Type> arguments = new ArrayList<>(type.arguments().size());
+        for (Ast.TypeRef argument : type.arguments()) {
+            Types.Type converted = taskTraitType(argument, depth + 1);
+            if (converted == null) return null;
+            arguments.add(converted);
+        }
+        return new Types.Named(name, arguments);
+    }
+
     private boolean taskCaptureSend(Ast.TypeRef type, Set<String> active, int depth) {
         if (type == null || depth > 64 || type.isBorrow()
                 || type.isComplement() || type.inferArguments()) return false;
@@ -3867,6 +4290,17 @@ public final class OwnershipChecker {
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
         private List<VarState> aggregateSources = List.of();
         private String debugName = "<value>";
+        /** Opaque compiler region identity; allocated on first scoped capture. */
+        private long regionId;
+        /** Storage lifetime generation; advanced on future reuse/reinitialization. */
+        private long regionGeneration;
+        /** Direct borrow provenance used by scoped Task capture proofs. */
+        private boolean borrowProjected;
+        private String borrowAccessPath = "";
+        /** True only on a child Task capture backed by compiler-issued read authority. */
+        private boolean scopedTaskReadPermit;
+        private long scopedPermitRegionId;
+        private long scopedPermitGeneration;
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
             this(type, mutable, mutable, kind, origin);
@@ -3954,6 +4388,13 @@ public final class OwnershipChecker {
                 }
             }
         }
+    }
+
+    private static final class StructuredBorrowContext {
+        private final Set<VarState> readRegions =
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        private final Set<VarState> readBorrowStates =
+                java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     }
 
     private record StateSnapshot(boolean moved, int immutableBorrows, boolean mutableBorrowed) { }
