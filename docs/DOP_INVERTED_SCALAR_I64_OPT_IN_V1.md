@@ -96,6 +96,57 @@ remains for differential checks. The dedicated JUnit class
 320 repeated root calls) and is
 included in the exact-head CI gate; no hosted execution pass is yet proven.
 
+## Host-authorized one-shot `OresLanguage` Polyglot integration
+
+An **explicit trusted Java host** may now enter
+`OresLanguage.openVerifiedDopSource(codeUnitId, exactSourceText)`, then
+synchronously evaluate or parse the corresponding source through the ordinary
+registered `ores` language ID. The scope validates and freezes the restricted
+two-i64 compiler plan **before** publishing a private thread-local token;
+`OresLanguage.parse` consumes that token once, checks the normalized code
+unit identity and raw source bytes, and constructs the typed Truffle root
+through `DopInvertedScalarTruffleRootV1.lowerForVerifiedSource`.
+Without the scope, ordinary `Context.eval` still rejects these inverted
+programs through the existing parser and TypeChecker.
+
+The Truffle execution root **revalidates the live private token on every
+invocation**, including calls through a cached source or a retained
+`Context.parse` result. Reusing the same compiled root after the scope
+closes, borrowing its root under a new lease, invoking it on a different host
+thread, or crossing to another polyglot context are all denied. Mismatched
+source or source name consumes the token permanently. Nested/interleaved
+`PrecheckedProgramScope` and DOP leases are denied in both directions.
+Adversarial/untrusted tenant execution remains denied, even with a trusted
+host token. Actor turns, continuations, cancellation, generation-crossing
+state and scheduler handoff do not gain authority from this pathway.
+
+Example trusted-host pattern, using a newly built source to avoid a stale
+Truffle parsed-source cache hit:
+
+```java
+try (var permit = OresLanguage.openVerifiedDopSource(
+        "verified.atto", trustedSourceText)) {
+    var source = org.graalvm.polyglot.Source
+            .newBuilder(OresLanguage.ID, trustedSourceText, "verified.atto")
+            .mimeType(OresLanguage.MIME_TYPE)
+            .cached(false)
+            .build();
+    long result = polyglotContext.eval(source).asLong();
+}
+```
+
+**Evidence limitations:** this is an opt-in, trusted-host, same-thread,
+single-parse source lease for an existing restricted `int/i64` language
+subset; it does **not** enable arbitrary user-provided inverted source,
+general `OresLanguage` AST/ownership analysis, an actor runtime, native AOT,
+an untrusted tenant, or Java/LLVM guest parity. No compiler-backed
+GraalVM/polyglot JUnit run is claimed until actual source-org CI executes.
+The dedicated `OresLanguageVerifiedDopLeaseTest` contains eleven regression
+methods covering normal Context eval, 32 fresh swap-delete source leases,
+cached-source/replayed parsed values,
+source/name mismatch, thread ownership, lease coexistence and fail-closed
+admission; they are authored but not executed.
+
 ## Promotion gates
 
 1. Run the exact-head Java JUnit suite and LLVM production compiler/CTest

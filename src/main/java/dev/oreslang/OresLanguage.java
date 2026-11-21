@@ -1,10 +1,13 @@
 package dev.oreslang;
 
 import com.oracle.truffle.api.CallTarget;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.DopInvertedScalarCompilerV1;
+import dev.oreslang.compiler.DopInvertedScalarTruffleRootV1;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.ActorRuntime;
@@ -96,9 +99,9 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         if (codeUnitId.isBlank()) {
             throw new IllegalArgumentException("prechecked code unit id cannot be blank");
         }
-        if (PRECHECKED_PROGRAM.get() != null) {
+        if (PRECHECKED_PROGRAM.get() != null || VERIFIED_DOP.get() != null) {
             throw new IllegalStateException(
-                    "nested prechecked Oreslang program leases are not supported");
+                    "nested or overlapping Oreslang checked-source leases are not supported");
         }
         PrecheckedProgramLease lease = new PrecheckedProgramLease(
                 codeUnitId, sourceText, program);
@@ -126,6 +129,114 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                     "prechecked Oreslang program lease does not match parsed source identity/content");
         }
         return lease.program;
+    }
+
+    /**
+     * Internal, explicitly host-authorized, exact-source opt-in DOP path.
+     * An ordinary Polyglot Context.eval(source) cannot establish this token.
+     * The token is also checked by the compiled root on every invocation,
+     * including calls to a Truffle source-cache hit after the scope closed.
+     */
+    private static final ThreadLocal<VerifiedDopLease> VERIFIED_DOP = new ThreadLocal<>();
+
+    private static final class VerifiedDopLease {
+        private final Thread owner = Thread.currentThread();
+        private final String codeUnitId;
+        private final String sourceText;
+        private final DopInvertedScalarCompilerV1.Plan plan;
+        private boolean consumed;
+        private boolean closed;
+
+        private VerifiedDopLease(String codeUnitId, String sourceText,
+                                 DopInvertedScalarCompilerV1.Plan plan) {
+            this.codeUnitId = codeUnitId;
+            this.sourceText = sourceText;
+            this.plan = plan;
+        }
+    }
+
+    public static final class VerifiedDopScope implements AutoCloseable {
+        private final VerifiedDopLease lease;
+        private VerifiedDopScope(VerifiedDopLease lease) {
+            this.lease = lease;
+        }
+
+        @Override
+        public void close() {
+            if (lease.closed) return;
+            if (Thread.currentThread() != lease.owner) {
+                throw new IllegalStateException(
+                        "verified DOP lease must close on its owning thread");
+            }
+            if (VERIFIED_DOP.get() != lease) {
+                throw new IllegalStateException(
+                        "verified DOP lease ownership changed before close");
+            }
+            lease.closed = true;
+            VERIFIED_DOP.remove();
+        }
+    }
+
+    /**
+     * Privileged *synchronous* host evaluation scope. Compile the restricted
+     * source first; do not put a token in thread-local state on validation
+     * failure. No raw AST, Plan, owner, actor or host closure can be supplied
+     * by the caller. Not a general guest feature flag.
+     */
+    public static VerifiedDopScope openVerifiedDopSource(
+            String codeUnitId, String sourceText) {
+        java.util.Objects.requireNonNull(codeUnitId, "DOP source identity");
+        java.util.Objects.requireNonNull(sourceText, "DOP source text");
+        if (codeUnitId.isBlank() || VERIFIED_DOP.get() != null
+                || PRECHECKED_PROGRAM.get() != null) {
+            throw new IllegalStateException(
+                    "verified DOP requires nonempty identity and exclusive nonnested scope");
+        }
+        DopInvertedScalarCompilerV1.Plan checked =
+                OresCompiler.compileDopInvertedScalarI64(sourceText);
+        VerifiedDopLease lease = new VerifiedDopLease(codeUnitId, sourceText, checked);
+        VERIFIED_DOP.set(lease);
+        return new VerifiedDopScope(lease);
+    }
+
+    static Object consumeVerifiedDopSource(String codeUnitId, String sourceText) {
+        VerifiedDopLease lease = VERIFIED_DOP.get();
+        if (lease == null) return null;
+        if (lease.consumed || lease.closed || Thread.currentThread() != lease.owner) {
+            throw new IllegalStateException("verified DOP lease cannot be reused");
+        }
+        // Mismatches permanently consume this lease. A second parse request
+        // cannot use the originally checked bytes after a failed source swap.
+        lease.consumed = true;
+        if (!lease.codeUnitId.equals(codeUnitId)
+                || !lease.sourceText.equals(sourceText)) {
+            throw new IllegalStateException(
+                    "verified DOP lease does not match exact code unit and source text");
+        }
+        return lease;
+    }
+
+    /**
+     * Runtime, not merely parse-time, authority check. A cached call target
+     * or a retained Value cannot run after its exact synchronous lease closes.
+     * Never invoke a guest-supplied lambda through this admission boundary.
+     */
+    @TruffleBoundary
+    public static void requireLiveVerifiedDopLease(Object authority) {
+        VerifiedDopLease current = VERIFIED_DOP.get();
+        if (current == null || current != authority || !current.consumed
+                || current.closed || Thread.currentThread() != current.owner) {
+            throw new SecurityException(
+                    "DOP_VERIFIED_SCOPE_REQUIRED: expired, unconsumed or foreign source lease");
+        }
+    }
+
+    static DopInvertedScalarCompilerV1.Plan checkedDopPlan(Object authority) {
+        if (!(authority instanceof VerifiedDopLease lease)) {
+            throw new SecurityException("DOP_VERIFIED_SCOPE_REQUIRED: invalid source lease");
+        }
+        requireLiveVerifiedDopLease(lease);
+        return lease.plan;
     }
 
     @Override
@@ -175,6 +286,13 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             }
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
+
+        Object verifiedDop = consumeVerifiedDopSource(codeUnitId, text);
+        if (verifiedDop != null) {
+            RootCallTarget restricted = DopInvertedScalarTruffleRootV1.lowerForVerifiedSource(
+                    this, checkedDopPlan(verifiedDop), verifiedDop);
+            return new OresInteropRootNode(this, restricted).getCallTarget();
+        }
 
         Ast.Program program = consumePrecheckedProgram(codeUnitId, text);
         if (program == null) {

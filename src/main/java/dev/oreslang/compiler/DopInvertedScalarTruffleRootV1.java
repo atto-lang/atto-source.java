@@ -1,6 +1,8 @@
 package dev.oreslang.compiler;
 
 import com.oracle.truffle.api.RootCallTarget;
+import dev.oreslang.OresLanguage;
+import dev.oreslang.runtime.OresContext;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
@@ -22,12 +24,22 @@ import java.util.Objects;
  */
 public final class DopInvertedScalarTruffleRootV1 extends RootNode {
     private final DopInvertedScalarCompilerV1.Plan plan;
+    // Null only for the isolated host-owned calltarget test API; language
+    // executions *must* hold the exact live single-use source scope.
+    private final Object sourceLease;
+    // Defense-in-depth against a parsed root being reused under another
+    // polyglot context while the same host thread still holds its lease.
+    private final java.util.concurrent.atomic.AtomicReference<java.util.UUID> boundContextId =
+            new java.util.concurrent.atomic.AtomicReference<>();
 
     @Children private final OperationNode[] instructions;
 
-    private DopInvertedScalarTruffleRootV1(DopInvertedScalarCompilerV1.Plan plan) {
-        super(null);
+    private DopInvertedScalarTruffleRootV1(
+            OresLanguage language, DopInvertedScalarCompilerV1.Plan plan,
+            Object sourceLease) {
+        super(language);
         this.plan = Objects.requireNonNull(plan, "verified bounded compiler plan");
+        this.sourceLease = sourceLease;
         List<DopInvertedScalarCompilerV1.Instruction> ops = plan.instructions();
         if (ops.isEmpty() || ops.getLast().op()
                 != DopInvertedScalarCompilerV1.Op.RETURN_READ) {
@@ -55,7 +67,23 @@ public final class DopInvertedScalarTruffleRootV1 extends RootNode {
      * or create a foreign AST escape route.
      */
     public static RootCallTarget lowerVerified(DopInvertedScalarCompilerV1.Plan plan) {
-        return new DopInvertedScalarTruffleRootV1(plan).getCallTarget();
+        return new DopInvertedScalarTruffleRootV1(null, plan, null).getCallTarget();
+    }
+
+    /**
+     * Trusted OresLanguage parse-bound source scope. The invocation authority
+     * remains checked on every execution, including cached calltarget reuse.
+     * Arbitrary objects cannot grant this permission: OresLanguage verifies
+     * reference identity against a private per-thread source lease.
+     */
+    public static RootCallTarget lowerForVerifiedSource(
+            OresLanguage language, DopInvertedScalarCompilerV1.Plan plan,
+            Object sourceLease) {
+        Objects.requireNonNull(language, "registered OresLanguage");
+        Objects.requireNonNull(sourceLease, "active verified DOP source lease");
+        OresLanguage.requireLiveVerifiedDopLease(sourceLease);
+        return new DopInvertedScalarTruffleRootV1(
+                language, plan, sourceLease).getCallTarget();
     }
 
     @Override public String getName() { return "atto-dop-inverted-i64-v1"; }
@@ -66,6 +94,22 @@ public final class DopInvertedScalarTruffleRootV1 extends RootNode {
         // The verified function is main(): int with zero parameters.
         if (frame.getArguments().length != 0) {
             throw new IllegalArgumentException("DOP verified root takes zero arguments");
+        }
+        if (sourceLease != null) {
+            // A trusted host opened the restricted source; it does not grant
+            // general actor/tenant or adversarial-isolate execution.
+            OresLanguage.requireLiveVerifiedDopLease(sourceLease);
+            OresContext context = OresContext.get(this);
+            java.util.UUID currentContextId = context.contextId();
+            boundContextId.compareAndSet(null, currentContextId);
+            if (!currentContextId.equals(boundContextId.get())) {
+                throw new SecurityException(
+                        "DOP_VERIFIED_CONTEXT_MISMATCH: root cannot cross isolate context");
+            }
+            if (context.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "DOP_VERIFIED_TENANT_UNSUPPORTED: adversarial isolate admission remains closed");
+            }
         }
         try (InvertedSchemaStorageBridge columns = plan.openCheckedOwner()) {
             for (OperationNode op : instructions) {

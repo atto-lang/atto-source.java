@@ -7,6 +7,8 @@ on:
       - 'src/main/java/dev/oreslang/compiler/DopInvertedScalarCompilerV1.java'
       - 'src/main/java/dev/oreslang/compiler/InvertedSchemaStorageBridge.java'
       - 'src/main/java/dev/oreslang/compiler/DopInvertedScalarTruffleRootV1.java'
+      - 'src/main/java/dev/oreslang/OresLanguage.java'
+      - 'src/test/java/dev/oreslang/OresLanguageVerifiedDopLeaseTest.java'
       - 'src/test/java/dev/oreslang/**/*DopInverted*.java'
       - 'src/test/java/dev/oreslang/compiler/InvertedSchemaStorageBridgeTest.java'
       - '.github/workflows/dop-inverted-i64-source-reference.yml'
@@ -66,9 +68,9 @@ jobs:
           java --version
           mvn -B -ntp \
             -DfailIfNoTests=true \
-            -Dtest=DopInvertedGuestAdmissionTest,InvertedSchemaStorageBridgeTest,DopInvertedScalarCompilerV1Test,DopInvertedScalarAdmissionHardeningTest,DopInvertedScalarStateMachineTest,DopInvertedSharedEnvelopeTest,DopInvertedScalarTruffleRootV1Test \
+            -Dtest=DopInvertedGuestAdmissionTest,InvertedSchemaStorageBridgeTest,DopInvertedScalarCompilerV1Test,DopInvertedScalarAdmissionHardeningTest,DopInvertedScalarStateMachineTest,DopInvertedSharedEnvelopeTest,DopInvertedScalarTruffleRootV1Test,OresLanguageVerifiedDopLeaseTest,OresLanguagePrecheckedProgramLeaseTest \
             test
-      - name: Verify complete seven-class executed JUnit XML inventory
+      - name: Verify complete nine-class executed JUnit XML inventory
         shell: bash
         run: |
           set -euo pipefail
@@ -84,6 +86,8 @@ jobs:
               "DopInvertedScalarStateMachineTest",
               "DopInvertedSharedEnvelopeTest",
               "DopInvertedScalarTruffleRootV1Test",
+              "OresLanguageVerifiedDopLeaseTest",
+              "OresLanguagePrecheckedProgramLeaseTest",
           }
           reports = sorted(Path("target/surefire-reports").glob("TEST-*.xml"))
           if not reports:
@@ -130,6 +134,7 @@ jobs:
       - name: Record evidence class after the JUnit process actually ran
         run: |
           echo DOP_JAVA_COMPILER_TYPED_HOST_REFERENCE_TESTED=true
+          echo DOP_ONE_SHOT_POLYGLOT_LEASE_TESTED=true
           echo DOP_TRUFFLE_GUEST_NATIVE_IMAGE_EXECUTION=NOT_TESTED
           echo DOP_TWO_BACKEND_GUEST_PARITY=NOT_TESTED
           echo DOP_MERGE_OR_RELEASE_AUTHORIZATION=NOT_GRANTED
