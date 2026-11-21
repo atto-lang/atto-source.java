@@ -60,18 +60,36 @@ final class AttoGuardLanguageTest {
     }
 
     @Test
-    void continueGuardTargetsEnclosingLoop() throws Exception {
-        assertEquals("3", run("""
-                pub routine main(): void {
-                  let i = 0;
-                  loop {
-                    i = i + 1;
-                    guard i >= 3 { continue; }
-                    stdio.stdout.write(i);
-                    break;
-                  }
-                }
-                """));
+    void guardRequiresExplicitReturnNotLoopExit() {
+        // A break or continue may exit a loop/iteration, but never returns
+        // from the enclosing function, so neither proves a valid guard.
+        for (String failure : new String[]{"break;", "continue;"}) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("""
+                        pub routine main(): void {
+                          let i = 0;
+                          loop {
+                            i = i + 1;
+                            guard i >= 3 { %s }
+                            if i > 5 then break; fi
+                          }
+                        }
+                        """.formatted(failure)));
+            assertTrue(error.getMessage().contains(
+                    "guard failure block must explicitly return"), error::getMessage);
+        }
+    }
+
+    @Test
+    void guardRejectsThrowOnlyFailureEvenIfItWouldTerminate() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                    pub routine main(): void {
+                      guard false { throw new Error("bad"); }
+                    }
+                    """));
+        assertTrue(error.getMessage().contains(
+                "guard failure block must explicitly return"), error::getMessage);
     }
 
     @Test
