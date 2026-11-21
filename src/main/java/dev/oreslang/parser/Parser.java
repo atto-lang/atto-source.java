@@ -4852,30 +4852,44 @@ public final class Parser {
 
     /**
      * AttoLang guard inverts a boolean precondition and runs its mandatory
-     * terminal failure block. The positive path stays in the current scope.
-     * The canonical form has no 'else' or trailing 'fi'.
+     * terminal failure block. Both `guard cond { ... }` and
+     * `guard cond else ... end` lower through the same checked IfStmt.
+     * The positive path stays in the current scope; ownership/effects,
+     * condition-once evaluation and cleanup must not depend on style.
      *
      * Keep Option payload refinement closed until the type checker has
-     * ownership-aware, stable payload projections; scalar boolean guards
-     * lower through the existing checked IfStmt representation.
+     * ownership-aware, stable payload projections.
      */
     private Ast.Stmt parseGuard() {
-        if (check(LBRACE)) throw error(peek(), "guard requires a boolean condition");
+        if (check(LBRACE) || check(ELSE)) {
+            throw error(peek(), "guard requires a boolean condition");
+        }
         // Presence narrowing is a separate ownership-checked language slice.
-        // Reject it before a nominal `is` expression could be misinterpreted.
-        for (int at = current; at + 1 < tokens.size() && tokens.get(at).type() != LBRACE; at++) {
+        // Stop at either failure delimiter so the body cannot be mistaken
+        // for a condition's `is Some` refinement.
+        for (int at = current; at + 1 < tokens.size()
+                && tokens.get(at).type() != LBRACE
+                && tokens.get(at).type() != ELSE; at++) {
             if (tokens.get(at).type() == IS
                     && tokens.get(at + 1).lexeme().equals("Some")) {
                 throw error(tokens.get(at), "guard is Some requires ownership-checked Option narrowing");
             }
         }
         Ast.Expr condition = parseCondition();
-        List<Ast.Stmt> failureBody = parseBlock();
-        // A following ELSE can belong to an enclosing keyword-delimited
-        // if. Only an immediately braced guard-else is unambiguously illegal.
-        // Unattached ELSE/FI tokens remain rejected by the containing parser.
-        if (check(ELSE) && checkNext(LBRACE)) {
-            throw error(peek(), "guard has no 'else'; use guard condition { return; }");
+        List<Ast.Stmt> failureBody;
+        if (check(LBRACE)) {
+            failureBody = parseBlock();
+            // A following ELSE can belong to an enclosing keyword-delimited
+            // if. Only an immediately braced guard-else is unambiguously
+            // illegal; the surrounding parser owns an outer else/fi.
+            if (check(ELSE) && checkNext(LBRACE)) {
+                throw error(peek(), "guard cannot mix braced and keyword failure blocks");
+            }
+        } else if (match(ELSE)) {
+            failureBody = parseUntil(END);
+            consume(END, "expected 'end' to close keyword guard");
+        } else {
+            throw error(peek(), "guard requires '{ ... }' or 'else ... end' failure block");
         }
         if (!guardFailureTerminates(failureBody)) {
             throw error(previous(), "guard failure block must exit with return, break or continue");
