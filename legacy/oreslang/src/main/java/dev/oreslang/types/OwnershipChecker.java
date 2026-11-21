@@ -776,8 +776,56 @@ public final class OwnershipChecker {
 
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
         Scope scope = new Scope(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, scope, returnType);
+        for (int i = 0; i < body.size(); i++) {
+            checkStatement(body.get(i), scope, returnType);
+            releaseDeadLoans(scope, body.subList(i + 1, body.size()));
+        }
         scope.close();
+    }
+
+    /**
+     * Non-lexical loan lifetime: a loan held by a binding of this block ends
+     * after the binding's last use. A binding that no later statement of the
+     * block mentions (directly, in a closure, a defer or a capture) is dead,
+     * so its loan is released instead of lasting to the end of the scope.
+     */
+    private static void releaseDeadLoans(Scope scope, List<Ast.Stmt> rest) {
+        for (Map.Entry<String, VarState> local : scope.locals.entrySet()) {
+            VarState state = local.getValue();
+            if (state.borrowSource == null || !state.borrowLease) continue;
+            if (mentionsName(rest, local.getKey())) continue;
+            if (state.kind == ValueKind.MUT_BORROW) state.borrowSource.mutableBorrowed = false;
+            else if (state.kind == ValueKind.IMM_BORROW) {
+                state.borrowSource.immutableBorrows--;
+                if (state.borrowSource.immutableBorrows < 0) {
+                    throw new IllegalStateException("Oreslang ownership invariant violated: negative immutable borrow count");
+                }
+            } else {
+                continue;
+            }
+            state.borrowLease = false;
+        }
+    }
+
+    private static boolean mentionsName(Object node, String name) {
+        if (node instanceof Ast.NameExpr reference) return reference.name().equals(name);
+        if (node instanceof Ast.CaptureExpr capture && capture.name().equals(name)) return true;
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (mentionsName(item, name)) return true;
+            return false;
+        }
+        if (node instanceof Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (mentionsName(component.getAccessor().invoke(record), name)) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true; // unknown shape: keep the loan
+                }
+            }
+        }
+        return false;
     }
 
     private void checkLoopBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
