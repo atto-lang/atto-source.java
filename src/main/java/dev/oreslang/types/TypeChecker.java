@@ -45,6 +45,10 @@ public final class TypeChecker {
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+    // Nominal registry validates wire tags, case/pattern identity and recursive
+    // payload schemas before any actor, effect, or ownership admission.
+    // Runtime/type lowering is not integrated yet; see fail-closed gate below.
+    private TaggedMessageContracts.Registry taggedMessages;
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
@@ -91,11 +95,30 @@ public final class TypeChecker {
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         program = AnnotationExpander.expand(program);
+        // ADT declarations cannot be silently ignored by the actor-state
+        // compiler. Validate their nominal identities and payload schemas
+        // before actor storage/effects can be approved.
+        TaggedMessageContracts.Registry tagged = TaggedMessageContracts.forTypes(program);
         TypeChecker checker = new TypeChecker();
+        checker.taggedMessages = tagged;
         checker.validateImports(program);
         checker.collect(program);
+        // Validate directly-constructed nominal Err values before rejecting
+        // unfinished executable nominal semantics. This narrow preflight
+        // cannot establish general Result typing, exhaustive matches or
+        // runtime safety; the rejection below must remain in place.
+        NominalResultErrorAudit.verify(program, tagged);
         ActorStateContract.verify(program);
         DeclaredEffectVerifier.verify(program);
+        // IMPORTANT: Parser/AST support does not imply nominal Result/enum
+        // typechecking or interpreter semantics. Reject any enum/pattern
+        // source until both layers are reconciled and guest-tested.
+        if (!tagged.enums().isEmpty() || !tagged.patterns().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "nominal enum/pattern declarations are not yet executable in "
+                    + "the integrated actor-state compiler; complete nominal "
+                    + "typecheck, exhaustive match and runtime lowering first");
+        }
         checker.validate(program);
         return new TypeCheckResult(program, checker.warnings);
     }
@@ -120,6 +143,8 @@ public final class TypeChecker {
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+                else if (declaration instanceof Ast.EnumDecl enumeration) localNames.add(enumeration.name());
+                else if (declaration instanceof Ast.PatternDecl pattern) localNames.add(pattern.name());
             }
         }
 

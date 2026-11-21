@@ -1,0 +1,4 @@
+define enum Terminal as
+    Last = 2147483647;
+    TooLate
+end

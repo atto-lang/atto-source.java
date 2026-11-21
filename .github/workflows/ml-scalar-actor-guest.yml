@@ -5,31 +5,73 @@ on:
       - "src/main/**"
       - "src/test/java/dev/oreslang/MlActorStateScalarGuestTest.java"
       - "tests/java-ml-guest-junit-guard.test.mjs"
+      - "src/test/java/dev/oreslang/NominalActorBridgeFailClosedTest.java"
+      - "tests/adt_ml_staging_source_contract.test.mjs"
+      - "tests/adt_ml_parser_bridge_contract.test.mjs"
+      - "tests/adt_ml_typechecker_admission_contract.test.mjs"
+      - "tests/adt_ml_nominal_result_error_audit.test.mjs"
+      - "src/test/java/dev/oreslang/NominalResultErrorAuditTest.java"
+      - "src/test/java/dev/oreslang/NominalResultTraversalTest.java"
+      - "tests/adt_ml_gate_false_positive.test.mjs"
+      - "tests/adt_ml_workflow_gate_contract.test.mjs"
+      - "tests/adt_ml_ci_private_admission_contract.test.mjs"
+      - "tests/adt_ml_integration_source_local_ci_contract.test.mjs"
+      - ".github/workflows/adt-ml-integration-private-ephemeral.yml"
+      - "tests/adt_ml_runtime_entry_admission_contract.test.mjs"
+      - "scripts/adt-ml-compiler-admission.mjs"
+      - "scripts/verify-adt-ml-integration.mjs"
       - "tests/fixtures/ml-actor-state-scalar.ores"
       - "tests/golden/ml-actor-state-scalar.stdout"
       - "stdlib/**"
       - "pom.xml"
       - ".github/workflows/ml-scalar-actor-guest.yml"
       - ".github/workflows/ml-scalar-actor-private-ephemeral.yml"
-  workflow_dispatch:
 permissions:
   contents: read
 jobs:
+  deny-unapproved-private-source:
+    if: ${{ !(github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event_name == 'pull_request' && github.event.repository.private == true && github.event.repository.fork == false && github.event.pull_request.head.repo.id == github.repository_id && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.private == true && github.event.pull_request.head.repo.fork == false && vars.ORESLANG_ML_APPROVED_SHA != '' && vars.ORESLANG_ML_APPROVED_SHA == github.event.pull_request.head.sha && vars.ORESLANG_ML_APPROVED_TREE != '') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Deny unauthorized private-source execution
+        run: |
+          echo "ML_PRIVATE_SOURCE_ADMISSION=DENIED: require same-repo private head and independently approved Git SHA/tree" >&2
+          exit 1
   pinned-java-graal-guest:
-    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event_name == 'pull_request' && github.event.repository.private == true && github.event.repository.fork == false && github.event.pull_request.head.repo.id == github.repository_id && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.private == true && github.event.pull_request.head.repo.fork == false && vars.ORESLANG_ML_APPROVED_SHA != '' && vars.ORESLANG_ML_APPROVED_SHA == github.event.pull_request.head.sha && vars.ORESLANG_ML_APPROVED_TREE != '' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Verify original private repository and independently approved head before checkout
+        shell: bash
+        env:
+          APPROVED_SHA: ${{ vars.ORESLANG_ML_APPROVED_SHA }}
+          APPROVED_TREE: ${{ vars.ORESLANG_ML_APPROVED_TREE }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = "pull_request"
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_REPOSITORY_ID" = "1400792274"
+          test -n "$APPROVED_SHA"
+          test "$PR_HEAD_SHA" = "$APPROVED_SHA"
+          [[ "$APPROVED_TREE" =~ ^[0-9a-f]{40}$ ]]
       - name: Checkout exact source PR head, never a cross-org carrier
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+          clean: true
       - name: Verify exact source revision and clean checkout
+        shell: bash
         env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_SHA: ${{ vars.ORESLANG_ML_APPROVED_SHA }}
+          EXPECTED_TREE: ${{ vars.ORESLANG_ML_APPROVED_TREE }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE"
           test -z "$(git status --porcelain --untracked-files=all)"
           echo "JAVA_GUEST_SOURCE_SHA=$EXPECTED_SHA"
           echo "CROSS_ORG_PRIVATE_SOURCE_EXPORT=NONE"
@@ -41,6 +83,9 @@ jobs:
           echo "ML_SCALAR_FIXTURE_AND_GOLDEN=EXACT_REVIEWED_BLOBS"
       - name: Host-only JUnit structural regression (not guest evidence)
         run: node --test tests/java-ml-guest-junit-guard.test.mjs
+      - name: Host-only ADT + actor source-admission regressions
+        run: |
+          node --test tests/adt_ml_staging_source_contract.test.mjs tests/adt_ml_parser_bridge_contract.test.mjs tests/adt_ml_typechecker_admission_contract.test.mjs tests/adt_ml_nominal_result_error_audit.test.mjs tests/adt_ml_gate_false_positive.test.mjs tests/adt_ml_runtime_entry_admission_contract.test.mjs tests/adt_ml_workflow_gate_contract.test.mjs tests/adt_ml_ci_private_admission_contract.test.mjs tests/adt_ml_integration_source_local_ci_contract.test.mjs
       - name: Install pinned GraalVM/JDK 25
         uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned from source-local security CI
         with:
@@ -51,6 +96,14 @@ jobs:
         run: |
           java -version
           mvn -version
+      - name: Compile all production and test Java sources before integration admission
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests test-compile
+      - name: Execute parser-positive / runtime-negative admission JUnit
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest,NominalResultTraversalTest test
+      - name: Fail closed on incomplete nominal runtime and TypeChecker integration
+        run: node scripts/verify-adt-ml-integration.mjs
+      - name: Execute positive nominal ADT GraalVM JUnit only after admitted integration
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=TrainingErrorNominalResultGuestTest test
       - name: Execute real parser, effect, ownership and scalar actor guest
         run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=MlActorStateScalarGuestTest test
       - name: Full JVM verification (only after guest passes)

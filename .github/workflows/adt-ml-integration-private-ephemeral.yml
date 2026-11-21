@@ -1,0 +1,86 @@
+name: ADT ML integrated guest - authorized source-local exact tree
+# Separate private-repository runner from source-free oracles. Never cross-org mirror.
+on:
+  push:
+    branches:
+      - integrate/adt-ml-staging-20261018
+permissions:
+  contents: read
+concurrency:
+  group: adt-ml-source-local-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  deny-unapproved:
+    if: ${{ !(github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event_name == 'push' && github.event.repository.private == true && github.event.repository.fork == false && github.ref == 'refs/heads/integrate/adt-ml-staging-20261018' && github.ref_protected == true && vars.ORESLANG_ADT_ML_PRIVATE_RUNNER == 'true' && vars.ORESLANG_ADT_ML_APPROVED_SHA != '' && vars.ORESLANG_ADT_ML_APPROVED_SHA == github.sha && vars.ORESLANG_ADT_ML_APPROVED_TREE != '') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Refuse private source execution without independent authorization
+        run: |
+          echo "ADT_ML_SOURCE_LOCAL_ADMISSION=DENIED" >&2
+          exit 1
+  authorized-compiler:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event_name == 'push' && github.event.repository.private == true && github.event.repository.fork == false && github.ref == 'refs/heads/integrate/adt-ml-staging-20261018' && github.ref_protected == true && vars.ORESLANG_ADT_ML_PRIVATE_RUNNER == 'true' && vars.ORESLANG_ADT_ML_APPROVED_SHA != '' && vars.ORESLANG_ADT_ML_APPROVED_SHA == github.sha && vars.ORESLANG_ADT_ML_APPROVED_TREE != '' }}
+    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 120
+    env:
+      APPROVED_SHA: ${{ vars.ORESLANG_ADT_ML_APPROVED_SHA }}
+      APPROVED_TREE: ${{ vars.ORESLANG_ADT_ML_APPROVED_TREE }}
+    steps:
+      - name: Check protected exact-head source authorization before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = "push"
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_REPOSITORY_ID" = "1400792274"
+          test "$GITHUB_REF_PROTECTED" = "true"
+          test "$GITHUB_REF" = "refs/heads/integrate/adt-ml-staging-20261018"
+          test "$GITHUB_SHA" = "$APPROVED_SHA"
+          [[ "$APPROVED_TREE" =~ ^[0-9a-f]{40}$ ]]
+      - name: Checkout reviewed original private source (never cross-org)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: true
+      - name: Prove exact reviewed tree and pinned actor fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "d9addeb0279b3c4023665b551c487adf7405903b"
+          test "$(git hash-object -- tests/golden/ml-actor-state-scalar.stdout)" = "b602f9821817696f16499af1a74cb22d49a0ecab"
+          echo "ADT_ML_SOURCE_IDENTITY=REVIEWED; CROSS_ORG_EXPORT=NONE"
+      - name: Run source-only audit (never a guest result)
+        run: |
+          node --test tests/adt_ml_staging_source_contract.test.mjs tests/adt_ml_parser_bridge_contract.test.mjs tests/adt_ml_typechecker_admission_contract.test.mjs tests/adt_ml_gate_false_positive.test.mjs tests/adt_ml_runtime_entry_admission_contract.test.mjs tests/adt_ml_workflow_gate_contract.test.mjs tests/adt_ml_ci_private_admission_contract.test.mjs tests/adt_ml_integration_source_local_ci_contract.test.mjs
+      - name: Verify narrow nominal error preflight (host only)
+        run: node --test tests/adt_ml_nominal_result_error_audit.test.mjs
+      - name: Install pinned GraalVM JDK25 without shared cache
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+      - name: Compile production and test classes
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests test-compile
+      - name: Prove negative admission and ordinary-program controls in actual JUnit
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=NominalActorBridgeFailClosedTest,NominalResultErrorAuditTest,NominalResultTraversalTest test
+      - name: Require complete ADT and actor compiler integration before positive guest
+        run: node scripts/verify-adt-ml-integration.mjs
+      - name: Run positive nominal Result and actor ML guest tests
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=TrainingErrorNominalResultGuestTest,MlActorStateScalarGuestTest test
+      - name: Run complete Java and Graal verification
+        run: mvn -B -ntp -Dores.runtime.carriers=native clean verify
+      - name: Report exact source-local certification only after real success
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
+          echo "JAVA_GRAALVM_GUEST=ACTUALLY_EXECUTED"
+          echo "LLVM_PARITY=NOT_EXECUTED"
+          echo "PRIVATE_SOURCE_CROSS_ORG_MIRROR=NONE"

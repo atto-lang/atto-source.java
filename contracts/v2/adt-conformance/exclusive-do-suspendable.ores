@@ -1,0 +1,16 @@
+pub async routine main(): void {
+    do match true
+        true -> { stdio.println("true"); }
+        false -> { stdio.println("wrong"); }
+    end
+    do match 5
+        x when x < 0 -> { stdio.println("negative"); }
+        x when x >= 0 -> { stdio.println("positive"); }
+        else -> { stdio.println("fallback"); }
+    end
+    do match false
+        true -> { stdio.println("wrong"); }
+        else -> { stdio.println("fallback"); }
+    end
+    return;
+}
