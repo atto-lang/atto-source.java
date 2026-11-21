@@ -22,6 +22,10 @@ python3 scripts/verify-raw-worktree.py .
 
 command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 
+# Pin both newly added share! source fixtures before Maven/guest execution.
+test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-share-bang-v1.atto)" = "00f311e2f569cf66009ba533282b63d35571853f"
+test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-reject-unlowered-share-bang-try-publish.atto)" = "d26c291c7af7fbdc8361de0cf26e9572fe6ce3b7"
+
 # Must execute the Channel<T> recursive Sendable/callable negatives,
 # Must execute the guest-positive fixtures and all guest compile negatives,
 # including direct/nested callable topic payloads, not only host facade tests. Surefire's -Dtest does not permit matching
@@ -82,6 +86,10 @@ expected = {
         "pubSubHandlesCannotCrossIndependentSuspendsTaskBoundary",
         "legacyAsyncGuestFanoutRunsOnTwoIndependentSharedActors",
         "portableTryPublishRejectedUntilNativeLowering",
+        "canonicalShareBangUsesSameOwnershipAstInsidePortableTryPublish",
+        "canonicalShareBangTypeChecksWithExistingAsyncTopicPublish",
+        "shareBangAttoGuestPublishesCheckedScalarOnExistingAsyncTopic",
+        "shareBangPortableTryPublishIsRejectedBeforeGuestExecution",
         "attoMultiGroupGuestPreservesOtherGroupAfterLeave",
         "attoPubSubTypeAndAuthorityNegativesStayFailClosed",
     },
