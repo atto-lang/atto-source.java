@@ -764,12 +764,15 @@ public final class Parser {
 
     /** Contextual mtd accepts both receiver-first and name-first declarations. */
     private boolean isExternalActorMethodHead() {
-        return isContextualIdentifier("mtd")
-                && current + 1 < tokens.size()
-                && (tokens.get(current + 1).type() == LPAREN
-                    || (current + 2 < tokens.size()
-                        && tokens.get(current + 1).type() == IDENT
-                        && tokens.get(current + 2).type() == LPAREN));
+        int at = current;
+        if (isContextualIdentifier("external")) ++at;
+        return at < tokens.size() && tokens.get(at).type() == IDENT
+                && tokens.get(at).lexeme().equals("mtd")
+                && at + 1 < tokens.size()
+                && (tokens.get(at + 1).type() == LPAREN
+                    || (at + 2 < tokens.size()
+                        && tokens.get(at + 1).type() == IDENT
+                        && tokens.get(at + 2).type() == LPAREN));
     }
 
     private Ast.ExternalActorMethodDecl parseExternalActorMethod(
@@ -777,6 +780,9 @@ public final class Parser {
         validateOnlyVisibilityModifiers(modifiers, "external actor receiver methods");
         rejectCallableStructuralAnnotation(annotations, "external actor receiver methods");
         rejectDiscardedDeclarationAnnotations(annotations, "external actor receiver methods");
+        // 'external mtd' is the canonical private actor ingress ABI.
+        // Bare 'mtd' remains accepted for legacy package sources.
+        if (isContextualIdentifier("external")) advance();
         consumeContextualIdentifier("mtd", "expected external receiver method declaration");
         // The canonical form is 'define mtd (Worker w) update(...): void'.
         // Keep the earlier 'define mtd update(Worker w)(...): void' as
@@ -2846,6 +2852,16 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         rejectUnsupportedAcceleratorSyntax();
+        // Preserve a state-loan as its own AST node, never as a normal method
+        // invocation or user-provided closure. The executable MIR gate stays
+        // closed until the state schema and actor continuation are verified.
+        if (check(SELF) && current + 3 < tokens.size()
+                && tokens.get(current + 1).type() == DOT
+                && tokens.get(current + 2).type() == IDENT
+                && tokens.get(current + 2).lexeme().equals("handle_state")
+                && tokens.get(current + 3).type() == LPAREN) {
+            return parseActorStateAccessStatement();
+        }
         // A contextual statement keyword: calls to a function named using(...)
         // retain their existing expression behavior. Scoped borrow syntax is
         // parsed distinctly so compiler admission cannot silently desugar it.
@@ -5263,6 +5279,13 @@ public final class Parser {
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
+        if (check(SELF) && current + 3 < tokens.size()
+                && tokens.get(current + 1).type() == DOT
+                && tokens.get(current + 2).type() == IDENT
+                && tokens.get(current + 2).lexeme().equals("handle_state")
+                && tokens.get(current + 3).type() == LPAREN) {
+            return parseActorStateReadExpression();
+        }
         if (match(SELF)) return new Ast.NameExpr("self");
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
@@ -5861,6 +5884,89 @@ public final class Parser {
                 && nextType != TRUE && nextType != FALSE) return false;
         advance();
         return true;
+    }
+
+
+    /**
+     * Distinct statement-only actor intrinsic:
+     *   self.handle_state(critical-write |s| -> { s.total = ...; });
+     *   self.handle_state(critical-read |s| -> { ... });
+     *
+     * Never accept the spelling as a runtime-lookup call or an expression
+     * whose borrowed state view can be returned/stored.
+     */
+    private Ast.ActorStateAccessStmt parseActorStateAccessStatement() {
+        consume(SELF, "critical state access requires actor-local self");
+        consume(DOT, "critical state access requires self.handle_state");
+        consumeContextualIdentifier("handle_state",
+                "critical state access requires compiler-owned handle_state");
+        consume(LPAREN, "critical state access requires '('");
+        Ast.CriticalStateMode mode;
+        if (isAdjacentCompoundKeyword("critical", "read")) {
+            advance();
+            consume(MINUS, "critical-read must use adjacent '-'");
+            consumeContextualIdentifier("read", "expected critical-read mode");
+            mode = Ast.CriticalStateMode.READ;
+        } else if (isAdjacentCompoundKeyword("critical", "write")) {
+            advance();
+            consume(MINUS, "critical-write must use adjacent '-'");
+            consumeContextualIdentifier("write", "expected critical-write mode");
+            mode = Ast.CriticalStateMode.WRITE;
+        } else {
+            throw error(peek(),
+                    "handle_state requires adjacent critical-read or critical-write mode");
+        }
+        consume(PIPE, "critical state requires '|view|' closure");
+        String view = consume(IDENT, "critical state requires a named view").lexeme();
+        consume(PIPE, "critical state requires closing '|' after view");
+        consume(ARROW, "critical state access requires '->' before body");
+        List<Ast.Stmt> body = parseBlock();
+        consume(RPAREN, "critical state access requires closing ')'");
+        match(SEMICOLON);
+        try {
+            return new Ast.ActorStateAccessStmt(mode, view, body);
+        } catch (IllegalArgumentException invalid) {
+            throw error(previous(), invalid.getMessage());
+        }
+    }
+
+    /**
+     * Expression-form detached Copy scalar:
+     * self.handle_state(critical-read |s| -> s.total)
+     *
+     * The scoped view does not become an ordinary lambda or guest callable.
+     * Manifest-owned actor state preflight must validate the field and the
+     * subsequent send after loan release; backend execution stays gated.
+     */
+    private Ast.ActorStateReadExpr parseActorStateReadExpression() {
+        consume(SELF, "detached critical-read requires actor-local self");
+        consume(DOT, "detached critical-read requires self.handle_state");
+        consumeContextualIdentifier("handle_state",
+                "detached critical-read requires compiler-owned handle_state");
+        consume(LPAREN, "detached critical-read requires '('");
+        if (!isAdjacentCompoundKeyword("critical", "read")) {
+            throw error(peek(), "detached Copy scalar requires adjacent critical-read");
+        }
+        advance();
+        consume(MINUS, "critical-read must use adjacent '-'");
+        consumeContextualIdentifier("read", "expected read");
+        consume(PIPE, "critical-read requires '|view|'");
+        String view = consume(IDENT, "critical-read requires named view").lexeme();
+        consume(PIPE, "critical-read requires closing '|'");
+        consume(ARROW, "critical-read requires '->'");
+        String owner = consume(IDENT,
+                "critical-read requires direct view.field Copy result").lexeme();
+        if (!owner.equals(view)) {
+            throw error(previous(), "critical-read result must copy from its scoped view");
+        }
+        consume(DOT, "critical-read Copy requires direct state field");
+        String field = consume(IDENT, "critical-read Copy requires named scalar field").lexeme();
+        consume(RPAREN, "critical-read Copy must end immediately after view.field");
+        try {
+            return new Ast.ActorStateReadExpr(view, field);
+        } catch (IllegalArgumentException invalid) {
+            throw error(previous(), invalid.getMessage());
+        }
     }
 
     private boolean isAdjacentCompoundKeyword(String first, String second) {

@@ -132,12 +132,14 @@ public final class PackageNamespaceBuild {
             dev.oreslang.types.ActorContractWitness.Result contractWitness,
             ActorMethodIndex actorMethods,
             Map<String, String> sourceSha256,
-            String manifestSha256) {
+            String manifestSha256,
+            List<ActorCriticalStatePreflight.CriticalOperation> criticalOperations) {
         public ActorAudit {
             java.util.Objects.requireNonNull(contractWitness);
             java.util.Objects.requireNonNull(actorMethods);
             sourceSha256 = java.util.Collections.unmodifiableMap(
                     new LinkedHashMap<>(sourceSha256));
+            criticalOperations = List.copyOf(criticalOperations);
         }
     }
 
@@ -157,6 +159,11 @@ public final class PackageNamespaceBuild {
                 packageIdentity, snapshot.parsed());
         var index = ActorMethodIndex.collect(
                 packageIdentity, snapshot.parsed(), witness.boundMethods());
+        // Validate lexical critical scopes against the exact state schema in
+        // this manifest snapshot. These immutable operation descriptors are
+        // NOT executable MIR and do not grant any runtime loan authority.
+        var criticalOperations =
+                ActorCriticalStatePreflight.verify(snapshot.parsed(), witness);
         for (var proof : witness.actors().entrySet()) {
             var actorKey = new ActorMethodIndex.ActorKey(
                     proof.getKey().packageIdentity(),
@@ -184,7 +191,8 @@ public final class PackageNamespaceBuild {
                     digest(source.getValue().getBytes(StandardCharsets.UTF_8))));
         }
         return new ActorAudit(witness, index, hashes,
-                java.util.HexFormat.of().formatHex(manifestFingerprint));
+                java.util.HexFormat.of().formatHex(manifestFingerprint),
+                criticalOperations);
     }
 
     /**
@@ -193,6 +201,19 @@ public final class PackageNamespaceBuild {
      */
     public synchronized ActorAudit auditDeclaredActors() throws IOException {
         return auditSnapshot(snapshot());
+    }
+
+    /**
+     * Build authenticated, symbolic critical-state MIR from ONE complete
+     * manifest snapshot. The returned plan is compile-time data only:
+     * production execution remains blocked until actor-turn identity,
+     * protected region admission, unwind and codegen are implemented.
+     */
+    public synchronized ActorCriticalStateMirV3.Plan auditCriticalStateMirV3()
+            throws IOException {
+        SourceSnapshot source = snapshot();
+        ActorAudit audit = auditSnapshot(source);
+        return ActorCriticalStateMirV3.lower(audit, packageIdentity, source.parsed());
     }
 
     /**

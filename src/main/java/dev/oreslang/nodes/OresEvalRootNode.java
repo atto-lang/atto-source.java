@@ -2508,6 +2508,10 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
             try {
+                if (stmt instanceof Ast.ActorStateAccessStmt) {
+                    throw new SecurityException(
+                            "unlowered actor critical state loan cannot execute in source task");
+                }
                 if (stmt instanceof Ast.UsingBorrowStmt) {
                     throw new IllegalStateException(
                             "using request.borrow() as view is not executable without checked loan cleanup");
@@ -6328,6 +6332,10 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.UsingBorrowStmt) {
                 throw new IllegalStateException(
                         "using request.borrow() as view is not executable without checked loan cleanup");
+            }
+            if (stmt instanceof Ast.ActorStateAccessStmt) {
+                throw new SecurityException(
+                        "unlowered actor critical state loan cannot execute without checked MIR");
             }
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();

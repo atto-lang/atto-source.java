@@ -913,7 +913,7 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits ActorStateAccessStmt, BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, TaskScopeStmt, UsingBorrowStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, DoWhileStmt, LoopStmt, SelectStmt, LocalTypeDeclStmt { }
 
@@ -1013,6 +1013,32 @@ public final class Ast {
             if (value == null) throw new IllegalArgumentException("yield requires a value");
         }
     }
+    /**
+     * First-class syntax for an actor-owned critical state loan. A compiler
+     * must resolve this against a manifest-verified ActorStateAttachmentDecl
+     * and lower authenticated read/write MIR before execution. Neither the
+     * view identifier nor the body is an ordinary method call/lambda or a
+     * callable with guest-mintable authority.
+     */
+    public enum CriticalStateMode { READ, WRITE }
+    public record ActorStateAccessStmt(
+            CriticalStateMode mode, String viewName, List<Stmt> body)
+            implements Stmt {
+        public ActorStateAccessStmt {
+            java.util.Objects.requireNonNull(mode, "critical state mode");
+            if (viewName == null || viewName.isBlank()
+                    || viewName.equals("_") || viewName.equals("self")) {
+                throw new IllegalArgumentException(
+                        "critical state loan requires one distinct named view");
+            }
+            body = List.copyOf(body);
+            if (body.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "critical state loan must contain a body");
+            }
+        }
+    }
+
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }
 
@@ -1306,7 +1332,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
+    public sealed interface Expr permits ActorStateReadExpr, LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr, LocalAggregateConstructExpr { }
@@ -1331,6 +1357,23 @@ public final class Ast {
                 if (!names.add(field.name())) {
                     throw new IllegalArgumentException("duplicate aggregate constructor field '" + field.name() + "'");
                 }
+            }
+        }
+    }
+
+    /**
+     * Compiler-only detached Copy scalar from a critical-read state loan.
+     * Not a guest-callable method or closure: the authenticated state view
+     * never escapes this expression. Executable MIR lowering remains gated.
+     */
+    public record ActorStateReadExpr(String viewName, String fieldName) implements Expr {
+        public ActorStateReadExpr {
+            if (viewName == null || viewName.isBlank() || viewName.equals("_")
+                    || viewName.equals("self") || viewName.equals("handle_state")
+                    || fieldName == null || fieldName.isBlank()
+                    || fieldName.equals("_")) {
+                throw new IllegalArgumentException(
+                        "critical-read Copy result requires a named private view and field");
             }
         }
     }
