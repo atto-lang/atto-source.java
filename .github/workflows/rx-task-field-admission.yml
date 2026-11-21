@@ -1,0 +1,55 @@
+name: RX Task affine class-field exact-head JUnit gate
+
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
+      - "src/test/java/dev/oreslang/RxTaskFieldTransferAdmissionTest.java"
+      - "src/main/java/dev/oreslang/nodes/OresFieldSnapshots.java"
+      - "src/test/java/dev/oreslang/nodes/OresFieldSnapshotsTest.java"
+      - ".github/workflows/rx-task-field-admission.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rx-task-field-admission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR head, not GitHub's synthetic merge SHA
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Record checked source identity and reject mismatch
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          test "$actual" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          printf 'EXACT_RX_JAVA_HEAD=%s\nEXACT_RX_JAVA_TREE=%s\n' "$actual" "$tree"
+      - name: Set up source-compatible GraalVM
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Execute 8 guest tests and 7 atomic field/snapshot integrity tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -P '!native-thread-unix' -Dtest=RxTaskFieldTransferAdmissionTest,OresFieldSnapshotsTest test
+          guest_report="target/surefire-reports/dev.oreslang.RxTaskFieldTransferAdmissionTest.txt"
+          host_report="target/surefire-reports/dev.oreslang.nodes.OresFieldSnapshotsTest.txt"
+          test -s "$guest_report"
+          test -s "$host_report"
+          grep -Eq '^Tests run: 8, Failures: 0, Errors: 0, Skipped: 0' "$guest_report"
+          grep -Eq '^Tests run: 7, Failures: 0, Errors: 0, Skipped: 0' "$host_report"
+          echo 'RX_TASK_JAVA_GUEST_8_8_AND_HOST_FIELD_ATOMICITY_7_7_PASS'

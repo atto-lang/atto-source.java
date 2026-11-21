@@ -226,6 +226,9 @@ public final class OresEvalRootNode extends RootNode {
         private final ThreadLocal<Boolean> activeGeneratorAsync = new ThreadLocal<>();
         private static final int TAIL_SAFEPOINT_INTERVAL = 64;
         private static final Object UNINITIALIZED_FIELD = new Object();
+        // Once an affine class-field owner is taken, any alias of that class
+        // instance must observe an unusable slot until an explicit reassignment.
+        private static final Object MOVED_FIELD = new Object();
 
         private enum InvocationKind {
             FUNCTION,
@@ -4417,6 +4420,24 @@ public final class OresEvalRootNode extends RootNode {
                                 "rt " + runtime.operation() + " expects exactly one argument"));
                 return;
             }
+            // A class-field take must consume its storage. Evaluating the
+            // member first and then applying identity-level rt take would
+            // leave the same affine Task handle in the object.
+            if (runtime.operation().equals("take")
+                    && runtime.arguments().getFirst() instanceof Ast.MemberExpr member) {
+                evalSuspendableExpr(task, member.receiver(), env, (t, receiver, failure) -> {
+                    if (failure != null) {
+                        continuation.accept(t, null, failure);
+                        return;
+                    }
+                    try {
+                        continuation.accept(t, takeClassField(receiver, member.member(), env), null);
+                    } catch (RuntimeException | Error moveFailure) {
+                        continuation.accept(t, null, moveFailure);
+                    }
+                });
+                return;
+            }
             evalSuspendableExpr(
                     task,
                     runtime.arguments().getFirst(),
@@ -4700,15 +4721,21 @@ public final class OresEvalRootNode extends RootNode {
                             ownedField.field().visibility(), ownedField.owner(),
                             env.accessClass(), "field", ownedField.field().name());
                 }
-                Object fieldValue = object.fields.get(member.member());
-                if (fieldValue == UNINITIALIZED_FIELD) {
-                    throw new IllegalArgumentException("field '" + object.klass.name() + "."
-                            + member.member() + "' is read before constructor initialization");
+                Object fieldValue;
+                synchronized (object.fields) {
+                    fieldValue = object.fields.get(member.member());
+                    if (fieldValue == UNINITIALIZED_FIELD) {
+                        throw new IllegalArgumentException("field '" + object.klass.name() + "."
+                                + member.member() + "' is read before constructor initialization");
+                    }
+                    if (fieldValue == MOVED_FIELD) {
+                        throw new IllegalStateException("field '" + object.klass.name() + "."
+                                + member.member() + "' was already moved");
+                    }
                 }
+                // Never invoke guest code while holding the field-map lock.
                 if (fieldValue instanceof Invokable invokable) {
-                    return object.owner.invokableInvocation(
-                            invokable,
-                            args);
+                    return object.owner.invokableInvocation(invokable, args);
                 }
             }
 
@@ -4824,7 +4851,9 @@ public final class OresEvalRootNode extends RootNode {
                                         + "." + member.member()
                                         + "' is immutable");
                     }
-                    object.fields.put(member.member(), value);
+                    synchronized (object.fields) {
+                        object.fields.put(member.member(), value);
+                    }
                     return value;
                 }
                 if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
@@ -5080,7 +5109,9 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 if (value instanceof OresObject object) {
                     LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-                    for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                    // Read a stable field-map snapshot: the owner may move or
+                    // reinitialize a mutable field on another task carrier.
+                    for (Map.Entry<String, Object> entry : object.fieldSnapshot().entrySet()) {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
                     return new OresObject(object.owner, object.klass, fields);
@@ -6163,12 +6194,21 @@ public final class OresEvalRootNode extends RootNode {
                                 "field",
                                 ownedField.field().name());
                     }
-                    Object fieldValue = object.fields.get(methodCall.member());
-                    if (fieldValue == UNINITIALIZED_FIELD) {
-                        throw new IllegalArgumentException(
-                                "field '" + object.klass.name() + "." + methodCall.member()
-                                        + "' is read before constructor initialization");
+                    Object fieldValue;
+                    synchronized (object.fields) {
+                        fieldValue = object.fields.get(methodCall.member());
+                        if (fieldValue == UNINITIALIZED_FIELD) {
+                            throw new IllegalArgumentException(
+                                    "field '" + object.klass.name() + "." + methodCall.member()
+                                            + "' is read before constructor initialization");
+                        }
+                        if (fieldValue == MOVED_FIELD) {
+                            throw new IllegalStateException(
+                                    "field '" + object.klass.name() + "." + methodCall.member()
+                                            + "' was already moved");
+                        }
                     }
+                    // Invoke the callable outside the storage lock.
                     if (fieldValue instanceof Invokable invokable) {
                         return object.owner.invokableInvocation(invokable, args);
                     }
@@ -6368,6 +6408,38 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException(name + " operands must be bool");
         }
 
+        // Return the field's old value exactly once. The same object may be
+        // aliased, so the storage guard (not a caller-local demand flag) is
+        // responsible for rejecting a second move.
+        private Object takeClassField(Object receiver, String name, Env env) {
+            if (!(receiver instanceof OresObject object)) {
+                // Non-class member projections retain their pre-existing
+                // semantics. This gate is specifically for class ownership.
+                return member(receiver, name, env);
+            }
+            OwnedField ownerField = object.owner.findField(
+                    object.klass, name, new LinkedHashSet<>());
+            if (ownerField == null) {
+                throw new IllegalArgumentException("unknown class field '" + name + "'");
+            }
+            object.owner.requireClassMemberVisible(
+                    ownerField.field().visibility(),
+                    ownerField.owner(),
+                    env == null ? null : env.accessClass(),
+                    "field", ownerField.field().name());
+            if (ownerField.field().bindingKind() != Ast.BindingKind.LET) {
+                throw new IllegalArgumentException(
+                        "cannot rt take immutable/final class field '"
+                                + object.klass.name() + "." + name + "'");
+            }
+            return OresFieldSnapshots.take(
+                    object.fields,
+                    object.klass.name(),
+                    name,
+                    UNINITIALIZED_FIELD,
+                    MOVED_FIELD);
+        }
+
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
                 case "fail" -> {
@@ -6518,16 +6590,18 @@ public final class OresEvalRootNode extends RootNode {
                                 env.accessClass(),
                                 "field",
                                 field.name());
-                        Object currentValue = object.fields.get(target.member());
-                        boolean constructorInitialization =
-                                env.canInitialize(object)
-                                        && currentValue == UNINITIALIZED_FIELD;
-                        if (field.bindingKind() != Ast.BindingKind.LET
-                                && !constructorInitialization) {
-                            throw new IllegalArgumentException("field '" + object.klass.name() + "."
-                                    + target.member() + "' is immutable");
+                        synchronized (object.fields) {
+                            Object currentValue = object.fields.get(target.member());
+                            boolean constructorInitialization =
+                                    env.canInitialize(object)
+                                            && currentValue == UNINITIALIZED_FIELD;
+                            if (field.bindingKind() != Ast.BindingKind.LET
+                                    && !constructorInitialization) {
+                                throw new IllegalArgumentException("field '" + object.klass.name() + "."
+                                        + target.member() + "' is immutable");
+                            }
+                            object.fields.put(target.member(), value);
                         }
-                        object.fields.put(target.member(), value);
                         return value;
                     }
                     // Explicit anonymous structs use this mutable map path.
@@ -6679,6 +6753,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (runtime.arguments().size() != 1) {
                     throw new IllegalArgumentException(
                             "rt " + runtime.operation() + " expects exactly one argument");
+                }
+                if (runtime.operation().equals("take")
+                        && runtime.arguments().getFirst() instanceof Ast.MemberExpr member) {
+                    return takeClassField(eval(member.receiver(), env), member.member(), env);
                 }
                 Object value = eval(runtime.arguments().getFirst(), env);
                 return applyRuntimeOwnership(runtime.operation(), value);
@@ -7434,13 +7512,20 @@ public final class OresEvalRootNode extends RootNode {
                                 "field",
                                 ownedField.field().name());
                     }
-                    Object value = object.fields.get(name);
-                    if (value == UNINITIALIZED_FIELD) {
-                        throw new IllegalArgumentException(
-                                "field '" + object.klass.name() + "." + name
-                                        + "' is read before constructor initialization");
+                    synchronized (object.fields) {
+                        Object value = object.fields.get(name);
+                        if (value == UNINITIALIZED_FIELD) {
+                            throw new IllegalArgumentException(
+                                    "field '" + object.klass.name() + "." + name
+                                            + "' is read before constructor initialization");
+                        }
+                        if (value == MOVED_FIELD) {
+                            throw new IllegalStateException(
+                                    "field '" + object.klass.name() + "." + name
+                                            + "' was already moved");
+                        }
+                        return value;
                     }
-                    return value;
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());
@@ -8566,10 +8651,17 @@ public final class OresEvalRootNode extends RootNode {
                         || owned.field().visibility() != Ast.Visibility.PUBLIC) {
                     return Env.MISSING;
                 }
-                Object member = object.fields.get(name);
-                return member == null || member == UNINITIALIZED_FIELD
-                        ? Env.MISSING
-                        : member;
+                synchronized (object.fields) {
+                    Object member = object.fields.get(name);
+                    if (member == MOVED_FIELD) {
+                        throw new IllegalStateException(
+                                "field '" + object.klass.name() + "." + name
+                                        + "' was already moved");
+                    }
+                    return member == null || member == UNINITIALIZED_FIELD
+                            ? Env.MISSING
+                            : member;
+                }
             }
             return Env.MISSING;
         }
@@ -9250,14 +9342,23 @@ public final class OresEvalRootNode extends RootNode {
                 return member;
             }
             if (value instanceof OresObject object) {
-                if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
-                Object field = object.fields.get(name);
-                if (field == UNINITIALIZED_FIELD) {
-                    throw new IllegalArgumentException(
-                            "field '" + object.klass.name() + "." + name
-                                    + "' is read before constructor initialization");
+                synchronized (object.fields) {
+                    if (!object.fields.containsKey(name)) {
+                        throw new IllegalArgumentException("object destructure missing field " + name);
+                    }
+                    Object field = object.fields.get(name);
+                    if (field == UNINITIALIZED_FIELD) {
+                        throw new IllegalArgumentException(
+                                "field '" + object.klass.name() + "." + name
+                                        + "' is read before constructor initialization");
+                    }
+                    if (field == MOVED_FIELD) {
+                        throw new IllegalStateException(
+                                "field '" + object.klass.name() + "." + name
+                                        + "' was already moved");
+                    }
+                    return field;
                 }
-                return field;
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }
@@ -9473,7 +9574,7 @@ public final class OresEvalRootNode extends RootNode {
                         && containsLiveMutexGuard(future.getNow(null), seen);
             }
             if (value instanceof OresObject object) {
-                for (Object field : object.fields.values()) {
+                for (Object field : object.fieldSnapshot().values()) {
                     if (containsLiveMutexGuard(field, seen)) return true;
                 }
                 return false;
@@ -9538,7 +9639,7 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (value instanceof OresObject object) {
-                for (Object field : object.fields.values()) {
+                for (Object field : object.fieldSnapshot().values()) {
                     releaseMutexGuardsInValue(field, failed, seen);
                 }
                 return;
@@ -9646,7 +9747,13 @@ public final class OresEvalRootNode extends RootNode {
             this.klass = klass;
             this.fields = fields;
         }
-        @Override public Iterable<?> sharedStateChildren(){return fields.values();}
+        // All mutable field operations use this monitor. Copy keys/values
+        // under the lock, but traverse the snapshot outside it so a nested
+        // guest object or host callback cannot execute while locked.
+        private Map<String,Object> fieldSnapshot() {
+            return OresFieldSnapshots.copy(fields);
+        }
+        @Override public Iterable<?> sharedStateChildren(){return fieldSnapshot().values();}
         @Override public String toString() { return CycleSafeDisplay.render(this); }
     }
 
@@ -9707,13 +9814,19 @@ public final class OresEvalRootNode extends RootNode {
                         write(object.klass.name());
                         write("{");
                         boolean first = true;
-                        for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                        for (Map.Entry<String, Object> entry : object.fieldSnapshot().entrySet()) {
                             if (!first) write(", ");
                             first = false;
                             write(entry.getKey());
                             write("=");
-                            append(entry.getValue() == Evaluator.UNINITIALIZED_FIELD
-                                    ? "<uninitialized>" : entry.getValue(), depth + 1);
+                            Object fieldValue = entry.getValue();
+                            if (fieldValue == Evaluator.UNINITIALIZED_FIELD) {
+                                write("<uninitialized>");
+                            } else if (fieldValue == Evaluator.MOVED_FIELD) {
+                                write("<moved>");
+                            } else {
+                                append(fieldValue, depth + 1);
+                            }
                             if (output.length() >= MAX_CHARS) break;
                         }
                         write("}");
@@ -9904,7 +10017,7 @@ public final class OresEvalRootNode extends RootNode {
                 return runtimeSharedSafe(readonly.value(), seen);
             }
             if (value instanceof OresObject object) {
-                for (Object field : object.fields.values()) {
+                for (Object field : object.fieldSnapshot().values()) {
                     if (!runtimeSharedSafe(field, seen)) return false;
                 }
                 return true;
