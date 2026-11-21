@@ -4886,8 +4886,16 @@ public final class Parser {
                 throw error(peek(), "guard cannot mix braced and keyword failure blocks");
             }
         } else if (match(ELSE)) {
-            failureBody = parseUntil(END);
-            consume(END, "expected 'end' to close keyword guard");
+            // The keyword spelling owns the same lexical type scope as the
+            // braced spelling. Do not leak declarations from its terminal
+            // failure arm into the successful continuation.
+            localTypeScopes.push(new java.util.HashSet<>());
+            try {
+                failureBody = parseUntil(END);
+                consume(END, "expected 'end' to close keyword guard");
+            } finally {
+                localTypeScopes.pop();
+            }
         } else {
             throw error(peek(), "guard requires '{ ... }' or 'else ... end' failure block");
         }
