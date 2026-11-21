@@ -43,6 +43,71 @@ final class ActorPubSubAdversarialAdmissionTest {
     }
 
     @Test
+    void publishingActorCannotCommitWhileMembershipRevocationFenceIsHeld()
+            throws Exception {
+        // A controlled two-thread regression for the precise lock ordering:
+        // groupMembershipLock -> topic.deliveryLock. Prior to the fence,
+        // tryPublishReliable could validate membership then commit while
+        // another thread held the membership authority lock.
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            ActorEventBus.Topic<String> topic = group.events().topic(
+                    "membership-fence", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+            CountDownLatch joined = new CountDownLatch(1);
+            CountDownLatch attempted = new CountDownLatch(1);
+            CountDownLatch finished = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> publisher =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        try {
+                            if ("join".equals(message)) {
+                                join.join();
+                                joined.countDown();
+                            } else if ("publish".equals(message)) {
+                                attempted.countDown();
+                                assertEquals(1L,
+                                        topic.tryPublishReliable("checked")
+                                                .orElseThrow().sequence());
+                                finished.countDown();
+                            }
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                            joined.countDown();
+                            attempted.countDown();
+                            finished.countDown();
+                        }
+                    });
+
+            publisher.send("join");
+            assertTrue(joined.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), "publisher must join before admission");
+            var membershipField = ActorRuntime.class.getDeclaredField(
+                    "groupMembershipLock");
+            membershipField.setAccessible(true);
+            Object membershipLock = membershipField.get(runtime);
+            synchronized (membershipLock) {
+                publisher.send("publish");
+                assertTrue(attempted.await(5, TimeUnit.SECONDS),
+                        "source actor must begin the publication turn");
+                assertFalse(finished.await(200, TimeUnit.MILLISECONDS),
+                        "publication must not commit while revocation fence is held");
+                assertNull(failure.get());
+                assertEquals(0L, group.events().topics().getFirst().published(),
+                        "member authority lock must fence sequence and delivery");
+            }
+            assertTrue(finished.await(5, TimeUnit.SECONDS),
+                    "release of the membership fence must permit admission");
+            assertNull(failure.get());
+            assertEquals(1L, group.events().topics().getFirst().published());
+            publisher.stop();
+            assertTrue(publisher.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
+    @Test
     void zeroRecipientPublicationsAllocateSequenceButDoNotReplay() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
