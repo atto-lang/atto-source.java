@@ -81,6 +81,88 @@ public final class VerifyEffectClosure {
         require(escaped.infer().get("caller").equals(Set.of(
             EffectContracts.Effect.PANIC, EffectContracts.Effect.UNKNOWN_CALL)),
             "trapping must not hide panic or missing FFI targets");
+        // A dynamic callback has no certified target even when its
+        // descriptive label collides with an otherwise pure known definition.
+        var indirect = new EffectContracts.Graph();
+        indirect.add(EffectContracts.Callable.pure("entry", Set.of(),
+            List.of(EffectContracts.Call.unresolved("lookalike"))));
+        indirect.add(EffectContracts.Callable.inferred("lookalike", Set.of(),
+            List.of()));
+        require(indirect.infer().get("entry").equals(
+            Set.of(EffectContracts.Effect.UNKNOWN_CALL)),
+            "unresolved callback was incorrectly resolved by its label");
+        try {
+            indirect.validate();
+            throw new AssertionError("pure caller must reject unresolved callback");
+        } catch (IllegalArgumentException expected) {
+            require(expected.getMessage().contains("[unresolved] lookalike"),
+                "missing trusted unresolved witness");
+        }
+        var trapDynamic = new EffectContracts.Graph();
+        trapDynamic.add(EffectContracts.Callable.trapping("trapped", Set.of(
+            EffectContracts.Effect.THROW), List.of(
+            EffectContracts.Call.unresolved("lookalike"))));
+        trapDynamic.add(EffectContracts.Callable.inferred("lookalike", Set.of(),
+            List.of()));
+        trapDynamic.add(EffectContracts.Callable.inferred("caller", Set.of(),
+            List.of(EffectContracts.Call.direct("trapped"))));
+        require(trapDynamic.infer().get("caller").equals(
+            Set.of(EffectContracts.Effect.UNKNOWN_CALL)),
+            "trap must not hide unknown callback effects");
+        // An inferred/unbounded graph is useful for reporting but cannot
+        // certify executable closed-world code if any target remains unknown.
+        var openGraph = new EffectContracts.Graph();
+        openGraph.add(EffectContracts.Callable.inferred("entry", Set.of(),
+                List.of(EffectContracts.Call.unresolved("dynamic"))));
+        require(openGraph.validate().get("entry").equals(
+                Set.of(EffectContracts.Effect.UNKNOWN_CALL)),
+                "analysis must still disclose unknown effect facts");
+        try {
+            openGraph.validateClosedWorld();
+            throw new AssertionError("unbounded unresolved call certified");
+        } catch (IllegalArgumentException expected) {
+            require(expected.getMessage().contains("[unresolved] dynamic"),
+                    "closed-world negative must retain witness");
+        }
+        var fullyResolved = new EffectContracts.Graph();
+        fullyResolved.add(EffectContracts.Callable.inferred("callee", Set.of(
+                EffectContracts.Effect.IO), List.of()));
+        fullyResolved.add(EffectContracts.Callable.inferred("entry", Set.of(),
+                List.of(EffectContracts.Call.direct("callee"))));
+        require(fullyResolved.validate().get("entry").equals(
+                Set.of(EffectContracts.Effect.IO)),
+                "declared direct targets remain analyzable as hypotheses");
+        try {
+            fullyResolved.validateClosedWorld();
+            throw new AssertionError("caller-supplied direct call was accepted as compiler-proven");
+        } catch (IllegalArgumentException expected) {
+            require(expected.getMessage().contains("compiler-resolved provenance"),
+                    "direct call must carry a provenance-denial witness");
+        }
+        var zeroCallGraph = new EffectContracts.Graph();
+        zeroCallGraph.add(EffectContracts.Callable.inferred("known", Set.of(
+                EffectContracts.Effect.ALLOC), List.of()));
+        require(zeroCallGraph.validateClosedWorld().get("known").equals(
+                Set.of(EffectContracts.Effect.ALLOC)),
+                "call-free known-effect graph must remain valid");
+        try {
+            new EffectContracts.Graph().validateClosedWorld();
+            throw new AssertionError("empty graph should not self-certify");
+        } catch (IllegalArgumentException expected) {
+            // No vacuous empty-program closed-world certificate.
+        }
+        // Explicit effect ABI v1 parity with the native 10-bit mask.
+        for (int mask = 0; mask <= dev.oreslang.types.EffectAbiV1.KNOWN_MASK; ++mask) {
+            var row = dev.oreslang.types.EffectAbiV1.decode(mask);
+            require(dev.oreslang.types.EffectAbiV1.encode(row) == mask,
+                "effect ABI roundtrip failed at mask " + mask);
+        }
+        try {
+            dev.oreslang.types.EffectAbiV1.decode(Integer.MIN_VALUE);
+            throw new AssertionError("native unresolved marker must fail closed");
+        } catch (IllegalArgumentException expected) {
+            // not a source-declarable permission
+        }
         System.out.println("PASS " + checked
             + " effect-closure roots + trap/FFI negative control (bounded model only)");
     }

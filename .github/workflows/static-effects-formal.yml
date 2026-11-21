@@ -3,6 +3,13 @@ on:
   pull_request:
     paths:
       - "src/main/java/dev/oreslang/types/EffectContracts.java"
+      - "src/main/java/dev/oreslang/types/EffectAbiV1.java"
+      - "src/main/java/dev/oreslang/types/LatentEffectRows.java"
+      - "src/main/java/dev/oreslang/types/SourceEffectAudit.java"
+      - "src/test/java/dev/oreslang/EffectGraph*Test.java"
+      - "src/test/java/dev/oreslang/EffectAbiV1Test.java"
+      - "src/test/java/dev/oreslang/SourceEffectAudit*Test.java"
+      - "src/test/java/dev/oreslang/types/LatentEffectRowsTest.java"
       - "tools/formal-standalone/**"
       - "formal/README.md"
       - ".github/workflows/static-effects-formal.yml"
@@ -16,7 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

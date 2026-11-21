@@ -22,7 +22,10 @@ public final class EffectContracts {
     public enum Effect {
         AMBIENT_READ, EXTERNAL_WRITE, IO, ENVIRONMENT, CLOCK, RANDOM,
         ACTOR, SCHEDULER, SYNCHRONIZATION, FFI_UNKNOWN, UNKNOWN_CALL,
-        THROW, RAISE, PANIC, CANCELLATION
+        THROW, RAISE, PANIC, CANCELLATION,
+        // Canonical backend effect vocabulary; keep original Java labels
+        // distinct rather than silently assuming they are equivalent.
+        STATE_READ, STATE_WRITE, SUSPEND, BLOCK, ALLOC, FFI
     }
 
     /** Pure is an observational guarantee, not a no-throw/no-panic guarantee. */
@@ -31,20 +34,31 @@ public final class EffectContracts {
                 Effect.PANIC, Effect.CANCELLATION));
     }
 
-    public record Call(String target) {
+    /**
+     * An unresolved invocation must not silently become a trusted direct call
+     * merely because its diagnostic label matches a symbol later added to the graph.
+     * DIRECT edges are only valid after overload/dispatch resolution by the compiler.
+     */
+    public record Call(String target, Resolution resolution) {
+        public enum Resolution { DIRECT, UNRESOLVED }
+        // The compatibility constructor carries NO compiler proof of a
+        // resolved call target. Default conservatively to unresolved.
+        public Call(String target) { this(target, Resolution.UNRESOLVED); }
         public Call {
             Objects.requireNonNull(target, "target");
-            if (target.isBlank() || target.length() > 256) {
+            Objects.requireNonNull(resolution, "resolution");
+            if (invalidSymbol(target)) {
                 throw new IllegalArgumentException("invalid effect call target");
             }
         }
-        public static Call direct(String target) { return new Call(target); }
+        public static Call direct(String target) { return new Call(target, Resolution.DIRECT); }
+        public static Call unresolved(String label) { return new Call(label, Resolution.UNRESOLVED); }
     }
 
     public record Callable(String symbol, Set<Effect> direct, List<Call> calls, Set<Effect> allowed, boolean trapsThrow) {
         public Callable {
             Objects.requireNonNull(symbol, "symbol");
-            if (symbol.isBlank() || symbol.length() > 256) {
+            if (invalidSymbol(symbol)) {
                 throw new IllegalArgumentException("invalid callable symbol");
             }
             direct = Set.copyOf(direct);
@@ -100,6 +114,12 @@ public final class EffectContracts {
                 for (Callable def : definitions.values()) {
                     EnumSet<Effect> acc = enumCopy(def.direct());
                     for (Call call : def.calls()) {
+                        // Dynamic dispatch, callback invocation, reflection and
+                        // unauthenticated imports have no trusted static target.
+                        if (call.resolution() == Call.Resolution.UNRESOLVED) {
+                            acc.add(Effect.UNKNOWN_CALL);
+                            continue;
+                        }
                         Set<Effect> from = results.get(call.target());
                         if (from == null) {
                             acc.add(Effect.UNKNOWN_CALL); // fail closed across unknown/imported/FFI targets
@@ -122,10 +142,61 @@ public final class EffectContracts {
             return Collections.unmodifiableMap(immutable);
         }
 
+        /**
+         * Stronger opt-in gate for code generation or export where every call
+         * must be accounted for. validate() only checks explicit allowances:
+         * an unbounded callable may legitimately have unknown effects for
+         * analysis, but its graph is not closed-world evidence.
+         *
+         * There is no production typed-HIR callsite provenance yet.
+         * Therefore an externally constructed DIRECT edge (or a claimed trap
+         * handler) can never be treated as a certified closed-world call.
+         * The ordinary infer()/validate() operations retain direct edges
+         * for analysis/model checking, not for execution authorization.
+         */
+        public Map<String, Set<Effect>> validateClosedWorld() {
+            if (definitions.isEmpty()) {
+                throw new IllegalArgumentException("empty effect graph is not closed-world evidence");
+            }
+            for (Callable callable : definitions.values()) {
+                if (callable.trapsThrow()) {
+                    throw new IllegalArgumentException("trap handler lacks compiler provenance in "
+                            + callable.symbol());
+                }
+                for (Call call : callable.calls()) {
+                    if (call.resolution() == Call.Resolution.DIRECT) {
+                        throw new IllegalArgumentException(
+                                "direct call lacks compiler-resolved provenance: "
+                                + callable.symbol() + " -> " + call.target());
+                    }
+                }
+            }
+            Map<String, Set<Effect>> effects = validate();
+            for (Callable callable : definitions.values()) {
+                Set<Effect> row = effects.get(callable.symbol());
+                if (row.contains(Effect.UNKNOWN_CALL) || row.contains(Effect.FFI_UNKNOWN)) {
+                    Effect first = row.contains(Effect.UNKNOWN_CALL)
+                            ? Effect.UNKNOWN_CALL : Effect.FFI_UNKNOWN;
+                    throw new IllegalArgumentException(
+                            "unverified closed-world effect in " + callable.symbol()
+                            + ": " + first + explainPath(callable.symbol(), first, effects));
+                }
+            }
+            return effects;
+        }
+
         public Map<String, Set<Effect>> validate() {
             Map<String, Set<Effect>> inferred = infer();
             for (Callable def : definitions.values()) {
                 if (def.allowed() == null) continue;
+                // Unknown is not a user-declarable permission. A forged
+                // allowance containing UNKNOWN_CALL or FFI_UNKNOWN must not
+                // turn unverified dispatch/interop into a certified effect.
+                if (def.allowed().contains(Effect.UNKNOWN_CALL)
+                        || def.allowed().contains(Effect.FFI_UNKNOWN)) {
+                    throw new IllegalArgumentException(
+                            "unverifiable effect allowance in " + def.symbol());
+                }
                 EnumSet<Effect> forbidden = enumCopy(inferred.get(def.symbol()));
                 forbidden.removeAll(def.allowed());
                 if (!forbidden.isEmpty()) {
@@ -151,6 +222,13 @@ public final class EffectContracts {
                 }
                 for (Call call : def.calls()) {
                     String target = call.target();
+                    if (call.resolution() == Call.Resolution.UNRESOLVED) {
+                        if (wanted == Effect.UNKNOWN_CALL) {
+                            return " via " + formatPath(symbol, parent)
+                                    + " -> [unresolved] " + target;
+                        }
+                        continue;
+                    }
                     if (wanted == Effect.THROW && definitions.containsKey(target)
                             && definitions.get(target).trapsThrow()) continue;
                     if (wanted == Effect.UNKNOWN_CALL && !definitions.containsKey(target)) {
@@ -174,6 +252,16 @@ public final class EffectContracts {
             return String.join(" -> ", reversed);
         }
 
+    }
+
+    /**
+     * Reject control and format characters in diagnostic identities. Unicode
+     * format controls can otherwise disguise distinct targets in witness paths.
+     */
+    private static boolean invalidSymbol(String symbol) {
+        if (symbol.isBlank() || symbol.length() > 256) return true;
+        return symbol.codePoints().anyMatch(cp -> Character.isISOControl(cp)
+                || Character.getType(cp) == Character.FORMAT);
     }
 
     private static EnumSet<Effect> enumCopy(Set<Effect> source) {

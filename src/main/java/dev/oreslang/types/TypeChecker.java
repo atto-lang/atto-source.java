@@ -72,6 +72,11 @@ public final class TypeChecker {
     private final Set<String> inferredTypeNames = new HashSet<>();
     /** Short named inference is resolved only for otherwise unbound capitalized row type names. */
     private final IdentityHashMap<Ast.BindingStmt, String> shortInferredTypeNames = new IdentityHashMap<>();
+    // Identity keys prevent a same-text call site from borrowing a checked
+    // target's authority. Only successful in-checker direct call resolution
+    // records a binding; unresolved/member/first-class calls stay unbound.
+    private final IdentityHashMap<Ast.CallExpr, Ast.FunctionDecl> resolvedLocalCalls =
+            new IdentityHashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -113,7 +118,8 @@ public final class TypeChecker {
     public record TypeCheckResult(
             Ast.Program program,
             List<String> warnings,
-            Map<Ast.BindingStmt, String> shortInferredAliases) {
+            Map<Ast.BindingStmt, String> shortInferredAliases,
+            Map<Ast.CallExpr, Ast.FunctionDecl> resolvedLocalCalls) {
         public TypeCheckResult {
             warnings = List.copyOf(warnings);
             // BindingStmt is a value record. Two separately declared bindings
@@ -121,10 +127,19 @@ public final class TypeChecker {
             // Retain AST identity instead of collapsing them in Map.copyOf().
             shortInferredAliases = java.util.Collections.unmodifiableMap(
                     new IdentityHashMap<>(shortInferredAliases));
+            // Do not normalize to Map.copyOf: CallExpr records have structural
+            // equality but effect bindings belong to one exact AST node.
+            resolvedLocalCalls = java.util.Collections.unmodifiableMap(
+                    new IdentityHashMap<>(resolvedLocalCalls));
+        }
+
+        public TypeCheckResult(Ast.Program program, List<String> warnings,
+                               Map<Ast.BindingStmt, String> shortInferredAliases) {
+            this(program, warnings, shortInferredAliases, Map.of());
         }
 
         public TypeCheckResult(Ast.Program program, List<String> warnings) {
-            this(program, warnings, Map.of());
+            this(program, warnings, Map.of(), Map.of());
         }
     }
     /** The one explicit struct literal currently permitted to omit declared fields. */
@@ -148,7 +163,8 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        return new TypeCheckResult(program, checker.warnings,
+                checker.shortInferredTypeNames, checker.resolvedLocalCalls);
     }
 
     /**
@@ -206,7 +222,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
+        return new TypeCheckResult(program, checker.warnings,
+                checker.shortInferredTypeNames, checker.resolvedLocalCalls);
     }
 
     private void validateImports(Ast.Program program) {
@@ -2671,6 +2688,9 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    // No proof is minted until arity, type/generic arguments,
+                    // actor boundary and suspension admission all succeed.
+                    resolvedLocalCalls.put(call, target);
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -2711,6 +2731,9 @@ public final class TypeChecker {
                             GenericCallArguments.bind(
                                     target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    // No proof is minted until arity, type/generic arguments,
+                    // actor boundary and suspension admission all succeed.
+                    resolvedLocalCalls.put(call, target);
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
