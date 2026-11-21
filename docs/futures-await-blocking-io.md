@@ -1,9 +1,11 @@
 # Futures, await, blocking I/O, and scheduler suspension
 
-Status: runtime Future/suspension ABI implemented on top of the OresVM four-domain
-scheduler. Source-frame lowering for arbitrary nested `await` expressions is a
-compiler follow-up and must target this ABI; the recursive evaluator fails closed
-inside actor turns rather than blocking or inline-resuming a carrier.
+Status: runtime Future/suspension ABI and stackless async source lowering are
+implemented on top of the OresVM four-domain scheduler. `await` projects through
+the built-in `Awaitable<T>` contract and always re-enters through a fresh
+scheduler dispatch. The recursive evaluator remains a host/root compatibility
+fallback and fails closed inside actor turns rather than blocking or
+inline-resuming a carrier.
 
 ## Rule: ordinary execution does not implicitly yield
 
@@ -36,6 +38,104 @@ val bytes = await pending;
 
 Calling an async operation is not itself a scheduling boundary.
 
+## Compiler lowering and performance contract
+
+Conceptually, `await` is CPS-like syntax sugar, but Oreslang should not lower
+an async callable into a chain of heap-allocated callback closures. The target
+lowering is one resumable state-machine object/frame per logical async
+invocation:
+
+```text
+state = 0
+resume(value, failure):
+  switch state:
+    0: ... code before await A ...
+       state = 1
+       return await A
+    1: ... code after await A ...
+       state = 2
+       return await B
+    2: ... code after await B ...
+       return done(result)
+```
+
+Only locals live across a suspension point are spilled into the async frame.
+Dead temporaries stay ordinary turn-local values. The state id should be a
+small integer, and generated code should dispatch directly rather than build a
+nested tree of callbacks.
+
+The current Truffle evaluator's `AsyncPlan` trampoline is the semantic bridge
+for source execution. It is intentionally stackless, but its functional plan
+nodes/lambdas are not the desired final AOT/native hot-path representation.
+Compiler/AOT lowering should progressively replace those plan objects with the
+explicit state id + spilled-local frame above.
+
+Oreslang deliberately differs from C# and Kotlin on one important fast path:
+**source `await` always yields**. Even if the Future is already terminal, the
+continuation must not run on the current guest stack. The runtime still applies
+a cheap completed-Future optimization:
+
+1. observe the Future's immutable terminal state with one atomic load;
+2. do not allocate/register a waiter for that already-terminal Future;
+3. publish the value/failure into the task's pending resume slot;
+4. fully unwind the current guest turn;
+5. enqueue/re-enter the state machine through a fresh scheduler dispatch.
+
+So "already complete" is a **no-waiter fast path**, not an **inline continuation
+fast path**.
+
+For a genuinely pending Future, one detachable waiter is registered. The
+scheduler task itself is the reusable completion sink, so repeated awaits do
+not need a new captured callback object. Cancellation or scheduler shutdown
+detaches the waiter without cancelling a shared producer Future.
+
+### Tail-await forwarding
+
+A callable whose complete body is a direct terminal await:
+
+```ores
+async fnc load() => User {
+  return await fetch_user();
+}
+```
+
+does not need the general async block result path after suspension. The compiler
+may lower the final await directly into callable completion/result shaping:
+
+```text
+state 0:
+  future = fetch_user()
+  pc = TAIL_WAIT
+  return await future
+
+TAIL_WAIT:
+  if failure: complete failure
+  else:       complete shaped(resume.value)
+```
+
+This optimization removes the intermediate `AsyncReturn` value and the
+post-await flat-map/fold chain. It does **not** remove Oreslang's scheduler
+boundary: even a terminal Future must unwind the current guest stack and resume
+through a fresh dispatch before the callable completes.
+
+The current conservative implementation only forwards when the whole callable
+body is exactly one `return await ...` statement and the awaited operand has no
+nested await. Bodies containing `defer`, try/finally-style cleanup, additional
+statements, or nested suspension remain on the general lowering path. A future
+CFG/liveness pass may extend forwarding to proven tail positions while keeping
+all required cleanup edges.
+
+Performance goals for generated async code:
+
+- zero continuation-closure allocation per `await`;
+- zero waiter allocation for already-terminal Futures;
+- one async frame per invocation only when suspension/lifetime requires it;
+- spill only locals live across suspension;
+- reuse one scheduler-task/completion sink across all suspension points;
+- never block an Ores carrier on Future completion;
+- never execute guest continuation code on producer/I/O/timer/JNI threads;
+- preserve the mandatory fresh-dispatch boundary even on the hot path.
+
 ## OresFuture is not CompletableFuture
 
 `Future<T>` is represented by the runtime-owned `OresFuture<T>`.
@@ -57,6 +157,255 @@ continuation. It must not execute Oreslang guest code.
 Host `CompletionStage` values are compatibility inputs only. They are
 immediately normalized into an OresFuture before they participate in Oreslang
 suspension.
+
+## Awaitable<T>
+
+`await` is defined in terms of one language-level projection:
+
+```ores
+define interface Awaitable<T> as
+  get_awaited() => Future<T>;
+end
+```
+
+(`=>` is the syntax accepted by the current parser for callable return
+declarations; the language-design notation may spell this callable return with
+`->` once that syntax migration lands.)
+
+The runtime equivalent is `Awaitable<T>.getAwaited() -> OresFuture<T>`.
+`Future<T>` implements `Awaitable<T>` by returning itself.
+
+Actor startup uses the same runtime protocol without exposing the internal
+two-phase ticket as an ordinary source value:
+
+```ores
+val id = spawn Worker();              // string id immediately; does not wait for READY
+val started = await spawn Worker();   // scheduler yield + wait for READY
+```
+
+The runtime internally creates an `ActorSpawn<R>` ticket whose readiness Future
+implements the await projection. Plain `spawn` immediately projects that ticket
+to its copyable `string` id. Only the direct syntactic form `await spawn ...`
+retains the hidden ticket across the scheduling boundary; after READY it exposes
+a compiler-managed `StartedActor<R>` control value with identity/liveness and
+completion/result Futures.
+
+A plain spawn `string` id is deliberately **not** Awaitable:
+
+```ores
+val id = spawn Worker();
+val bad = await id; // compile error: string does not implement Awaitable<T>
+```
+
+This prevents a plain identity token from silently retaining startup Future or
+result authority. If startup synchronization or the one-shot actor result is
+needed, request it at creation with `await spawn`.
+
+User classes may implement the same contract:
+
+```ores
+define class ReadyValue implements Awaitable<int> as
+  pub get_awaited() => Future<int> {
+    return Future.from_callback<int>(|cb| -> {
+      cb.resolve(42);
+      return;
+    });
+  }
+end
+
+val value = await new ReadyValue();
+```
+
+A statically known non-awaitable value is rejected:
+
+```ores
+val nope = await 123; // compile error: await requires Awaitable<T>
+```
+
+Dynamically imported/hot-loaded values whose static type is unresolved are
+checked again at runtime before suspension.
+
+## Actor spawn readiness and completion
+
+For a non-void one-shot actor callable:
+
+```ores
+val started = await spawn compute(41);
+
+val id = started.id;
+val alive = started.is_alive();
+val answer = await started.result;
+```
+
+For a void actor callable, use `started.done` when completion matters:
+
+```ores
+val started = await spawn background_job();
+await started.done;
+```
+
+By contrast, fire-and-forget startup intentionally keeps only identity:
+
+```ores
+val id = spawn background_job();
+```
+
+The source type `StartedActor<R>` is compiler-managed and cannot be written as
+a user declaration/parameter type or transported across actor boundaries. It is
+the narrow post-READY control projection of the runtime ticket, not an
+application mailbox and not general VM authority.
+
+## Callback-only API adaptation
+
+A single-shot callback API can be turned into an Ores Future without granting
+the callback producer authority to run Oreslang continuations:
+
+```ores
+val future = Future.from_callback<int>(|cb| -> {
+  legacy_api(cb);
+  return;
+});
+
+val value = await future;
+```
+
+The callback completion capability supports explicit settlement:
+
+```ores
+cb.resolve(value);
+cb.reject(error);
+cb.cancel();
+```
+
+and can itself be called in value-only or error-first form:
+
+```ores
+cb(value);
+cb(error, value);
+```
+
+A callback may settle only once. A later `resolve`, `reject`, or `cancel`
+is rejected as an already-settled callback Future.
+
+Callback-only work can also be chained after a Future:
+
+```ores
+val next = first.attach_callback(|value, cb| -> {
+  some_callback_only_api(value, cb);
+  return;
+});
+
+val result = await next;
+```
+
+The registrar itself is synchronous: it registers the foreign callback and
+returns. It may not `await`. If the foreign API invokes `cb` synchronously,
+that invocation only settles the dependent Future. It **cannot** recursively
+resume the awaiting Oreslang frame.
+
+Repeated/multi-shot callback sources are not Futures. They belong in a
+Stream/Channel/Observable-style abstraction.
+
+## OresScheduler ownership
+
+Every ordinary Oreslang task has exactly one owning `OresScheduler`.
+
+The Future being awaited does **not** choose the scheduler. The waiting task
+already owns one, and the compiler-generated async state machine is re-enqueued
+there when the Future settles.
+
+```ores
+const io = new OresScheduler(5);
+
+const work = io.start(async || -> {
+    const a = await read_a();
+    const b = await read_b(a);
+    return b;
+});
+```
+
+The task may execute on carrier #2 before an await and carrier #5 afterward.
+Scheduler affinity is guaranteed; physical thread affinity is not.
+
+Each scheduler task also owns a stable logical execution-domain token. Runtime
+objects whose safety depends on local ownership, such as `Mutex<T>`, bind to
+that task token rather than the transient carrier Thread. This lets a mutex
+created before `await` remain owned by the same logical task after resumption,
+while a different task on the same scheduler still has a distinct domain. Actor
+code continues to use the actor's stable execution-domain token instead.
+
+A single Future may therefore have waiters owned by different schedulers:
+
+```text
+shared Future
+  +--> waiter A --> scheduler A
+  +--> waiter B --> scheduler B
+```
+
+Its producer/completion thread only settles the Future. It never runs either
+guest continuation.
+
+The process entrypoint receives an implicit root `OresScheduler` backed by the
+OresVM CONTROL domain. Root async turns use bounded admission and the same
+reserved root lanes as legacy root work so they cannot consume every CONTROL
+carrier and starve supervisor/ActorMailman work.
+
+User-created `OresScheduler(n)` values own `n` carrier threads and a bounded
+ready queue. They are constructed with ordinary Oreslang `new` syntax and are
+owned by the current Ores context:
+
+```ores
+val io = new OresScheduler(5);
+
+val work = io.start(async || -> {
+    val response = await fetch_data();
+    return response;
+});
+
+val response = await work;
+io.close();
+```
+
+`scheduler.start(...)` accepts an inline zero-argument lambda. A synchronous
+`|| -> { ... }` body is ordinary CPU/non-suspending work and is submitted as a
+scheduler task; an `async || -> { ... }` body may use `await` and its captured
+continuation remains scheduler-affine until completion. Both forms return an
+`OresFuture<T>` for the lambda's logical result `T`. The context also closes any remaining user
+schedulers during teardown, so forgotten scheduler handles cannot leak carrier
+threads. A scheduler cannot close itself from one of its own task turns; close
+is initiated from an outside/root task so teardown cannot self-cancel the turn
+that is performing teardown.
+
+Custom scheduler construction is forbidden from actor code: actors stay on
+their owning SHARED/ISOACTOR/UNTRUSTED_ACTOR scheduler domain. Adversarial
+contexts also cannot create custom scheduler pools.
+
+User schedulers are managed context resources rather than raw thread authority.
+The current runtime caps one pool at 64 carriers, caps a context at 32 user
+schedulers and 256 user-scheduler carriers in total, rolls accounting back if
+pool creation fails, and closes remaining pools during context teardown. Each
+custom carrier is admitted by the language thread-access gate and explicitly
+enters/leaves the owning Truffle context around every guest scheduler turn.
+
+Actors are the deliberate special case. They do not migrate to a user-created
+OresScheduler. Their await lowering continues to target the actor cell:
+
+- SHARED actors -> SHARED_ACTOR domain;
+- private/isoactors -> ISOACTOR domain;
+- untrusted actors -> UNTRUSTED_ACTOR domain.
+
+Each actor retains its atomic single-executor lease, so at most one carrier can
+execute that actor's code at a time, including resumed await continuations.
+
+## Async source rule
+
+Ordinary `await` is permitted only inside an explicitly `async` ordinary
+callable or lambda. An ordinary async callable has logical result type `T`,
+while calling it produces `Future<T>`.
+
+Actor callables/methods are inherently MAY_SUSPEND and therefore implicitly
+async. `async actor` is intentionally redundant/illegal rather than a second
+spelling for the same declaration.
 
 ## Await
 
@@ -95,7 +444,25 @@ restore frame and continue after await
 ```
 
 `await` is a scheduling boundary even when the Future was already settled.
-The continuation is enqueued for a later turn instead of being resumed inline.
+The continuation is enqueued for another scheduler dispatch instead of being
+resumed inline.
+
+The scheduler is allowed to choose that continuation immediately if no
+higher-priority work is runnable. With a one-carrier scheduler it can therefore
+run again on the **same OS thread**. That does not weaken the invariant:
+
+```text
+carrier-7:
+  dispatch #100 -> actor/task reaches await
+  unwind all guest frames
+  return to scheduler
+  dispatch #101 -> same actor/task resumes
+```
+
+The physical native stack storage may be reused, but the previous guest call
+frames are gone. Resumption starts from the heap/state-machine continuation in
+a fresh logical dispatch. Runtime dispatch IDs exist specifically so tests can
+distinguish "same carrier" from "same execution turn".
 
 For actors, the current runtime target is
 `ActorContext.suspendOn(OresFuture, ActorContinuation)`. The existing host
@@ -211,19 +578,46 @@ operation that must be moved to the VM blocking bridge.
 The compiler must reject ordinary borrows/guards that would escape across a
 suspension unless their ownership/lifetime representation explicitly permits it.
 
+Actor external-state rules are stricter:
+
+- actor-owned mutable fields/state may be written only while that actor holds its
+  single-executor lease;
+- mutable lexical captures from outside the actor are forbidden;
+- SHARED actors may receive an explicit `OresRwLock<T>` capability and acquire
+  only its read guard;
+- private/isoactors and untrusted actors cannot access that shared-memory
+  capability;
+- no actor may acquire an `OresRwLock<T>` write guard;
+- actor/scheduler carriers never block waiting for an external RW lock; a
+  contended immediate acquisition fails with `WouldBlock` and future async-lock
+  lowering will suspend through `OresFuture` instead of parking a carrier;
+- `SharedMutex<T>` is not an actor escape hatch for external mutation and is
+  rejected when acquired from actor execution;
+- legacy `SyncCell<T>` is host/root-only; actors cannot receive, read, update,
+  close, or create it as shared mutable state;
+- an RwLock guard is lexical/thread-affine and therefore may not live across
+  `await`.
+
+Outside actors, ordinary root/scheduler code may hold the write side of an
+`OresRwLock<T>` and publish updates. The Oreslang type checker must expose an
+actor read guard's value as read-only.
+
 ## Current lowering boundary
 
-The actor scheduler, OresFuture, timer path, and blocking bridge provide the
-runtime substrate. The recursive reference evaluator cannot safely preserve an
-arbitrary Java call stack across an actor `await`.
+Async source evaluation is lowered into explicit heap/state-machine plans.
+Await points hold the Future plus a continuation; scheduler tasks resume that
+plan only through their owning scheduler. Actor callables use the corresponding
+stackless actor plan runner and `ActorContext.suspendOn(...)` ABI.
 
-Until the stackless/CPS source-frame transformation lands, source `await`
-encountered inside an actor turn fails closed instead of:
+The recursive reference evaluator remains only as a host/root compatibility
+path. It cannot preserve an arbitrary Java call stack across an actor `await`
+and therefore still fails closed inside actor turns instead of:
 
 - blocking the carrier;
-- using `join()`;
+- using `join()` from actor code;
 - inline-resuming an already-completed Future;
 - allowing a producer thread to execute guest code.
 
-The compiler lowerer must produce heap-safe resume frames containing the program
-counter and live Oreslang locals and call the existing suspension ABI.
+This split is intentional: all actor/async guest execution uses the heap-safe
+continuation path, while host embedding compatibility remains explicit and
+non-authoritative for scheduling.

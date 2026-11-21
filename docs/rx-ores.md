@@ -32,10 +32,10 @@ A `next()` call admits at most one item. This gives us real backpressure before
 we add a larger demand protocol.
 
 There may be only one outstanding `next()` per subscription. The demand slot
-is not released until the exposed pull Future itself has reached a terminal
-state; source completion alone is not enough to admit a second pull.
+is not released until the **exposed pull Future itself** reaches a terminal
+state; source completion alone is not enough to admit another pull.
 
-A pull settles with either:
+A pull settles with exactly one of:
 
 - `NEXT(value)`;
 - `COMPLETE`;
@@ -43,8 +43,13 @@ A pull settles with either:
 - a cancelled Future for structured cancellation.
 
 Errors are not encoded as ordinary values, and cancellation is not demoted into
-an ordinary stream failure. A cancelled producer, a cancelled pull, and an
-explicitly cancelled subscription remain distinguishable runtime states.
+an ordinary failure. Cancellation identity comes from Future state, not merely
+from seeing a `CancellationException`: a domain failure whose error happens to
+be a `CancellationException` is still a failure unless that Future was
+actually cancelled.
+
+`NEXT(null)` is invalid. Oreslang absence is represented with `Option<T>`,
+not a null reactive payload.
 
 ## Scheduler invariant
 
@@ -64,40 +69,31 @@ producer
 
 This is the same invariant already used by actor `await`.
 
-## Callable discipline for higher-order operators
+## Scheduler-bound transform callbacks
 
-When higher-order operators land, their guest callable arguments are first-class
-`fnc` values or anonymous lambdas. A `routine` is intentionally not a callback
-value, and an instance method is not implicitly converted into a bound callback.
-A compatible static function/method may be passed where the callable type
-matches.
+Push-style `subscribe(Consumer<T>)` is still intentionally absent. A producer
+thread must never run guest observer code directly.
 
-For actor-owned pipelines, captured actor state does not weaken the scheduler
-rule above. A producer thread settles a Future; the owning actor continuation is
-re-enqueued; only that actor turn executes the `fnc`/lambda.
+Scheduler-bound transform callbacks are now safe because every transform is
+executed as an `OresScheduler` task turn:
 
-## Why callback-style subscribe is not in the first patch
-
-The familiar surface eventually wants forms such as:
-
-```ores
-val doubled = values.map(|int value| -> int {
-  return value * 2;
-});
-
-val sub = doubled.subscribe(|int value| -> void {
-  consume(value);
-});
+```text
+upstream next() Future settles
+  -> operator task becomes runnable
+  -> owning OresScheduler dispatches task
+  -> map/filter guest transform executes
+  -> operator Future settles after the turn unwinds
 ```
 
-But exposing that before scheduler-bound guest callbacks exist would be wrong:
-a Future completion callback could accidentally execute guest code on an I/O or
-JNI completion thread.
+The native runtime therefore exposes scheduler-bound `map` and `filter`
+operators. Their callback surface always includes an explicit
+`OresScheduler`; there is no unscheduled public `Function`/`Predicate`
+variant.
 
-So the first runtime API deliberately exposes no public Java
-`Consumer`/`Function` observer surface. Native higher-order operators come
-after the compiler/runtime can bind the operator lambda to an Ores task or actor
-continuation.
+`filter` is deliberately implemented as a resumable pull state machine. A
+rejected item awaits another upstream pull, even when that source is already
+complete/immediate, so a long run of rejected cold values cannot recurse inline
+or execute on the producer stack.
 
 ## Core library, explicit linking, and executable size
 
@@ -131,13 +127,6 @@ The Oreslang toolchain distribution may ship rx-ores so `std/rx` is always
 available to import. Shipping it with the compiler is separate from bundling it
 into a user's application executable.
 
-For Native Image, the no-RX path is directly tested: a no-RX Oreslang executable
-must not retain the `OresObservable`, `OresSubscription`, or
-`OresNotification` runtime type names. The current development Maven/JAR
-artifact is still monolithic and therefore physically contains these Java
-classes; selective/minimized JVM application packaging remains linker/emitter
-work and must not be claimed as implemented yet.
-
 The native substrate in this draft is intentionally not registered eagerly by
 an OresVM/global runtime singleton. Source lowering and the standard-library
 linker should be the only path that makes RX runtime support reachable.
@@ -158,7 +147,7 @@ Using the current callable direction, the target shape is approximately:
 ```ores
 pub interface Subscription<T> {
   fnc next(): Future<Notification<T>>;
-  fnc cancel(): void;
+  fnc cancel(): bool;
 }
 
 pub interface Observable<T> {
@@ -220,12 +209,16 @@ reject null elements rather than emitting `NEXT(null)`. Iterator construction,
 iteration, and null-element failures become failed pull Futures and terminate
 that subscription; they do not execute guest callbacks on producer threads.
 
+
 ## Future / Observable bridge
 
-The first native bridge includes:
+The native bridge/operators currently include:
 
-- `Observable.fromValues(...)`: cold replayable finite source;
+- `Observable.fromValues(...)`: immutable eager snapshot of a finite source;
+- `Observable.fromIterable(...)`: fresh lazy iterator per cold subscription;
 - `Observable.fromFuture(...)`: adapt one shared `OresFuture<T>`;
+- scheduler-bound `map(scheduler, mapper)`;
+- scheduler-bound `filter(scheduler, predicate)`;
 - `take(n)`: bounded upstream consumption;
 - `first()`: adapt the first stream item back into `OresFuture<T>`.
 
@@ -238,8 +231,8 @@ Per-subscription owned producers will be added with a deferred-source primitive.
 
 The next layers should add, in roughly this order:
 
-1. scheduler-bound guest operator execution;
-2. `map`, `filter`, `scan`, `take_while`;
+1. source-level `std/rx` facade over the scheduler-bound runtime operators;
+2. `scan`, `take_while`;
 3. `flat_map` / `switch_map` with structured child cancellation;
 4. `merge`, `concat`, `zip`, `combine_latest`;
 5. timer operators such as `delay`, `debounce`, `throttle`;
@@ -275,9 +268,16 @@ downstream subscription cancel
   -> stop future production
 ```
 
-The subscription substrate owns the terminal transition and invokes its runtime
-cleanup hook at most once across explicit cancellation, source completion,
-source failure, invalid source pulls, and cancellation/completion races.
+The subscription substrate owns the terminal transition and runs its runtime
+cleanup hook at most once across explicit cancellation, natural completion,
+source failure, invalid source output, pull cancellation, and completion/cancel
+races. Calling `cancel()` after the subscription is already terminal returns
+`false` because no new cancellation transition occurred.
+
+Cancelling a derived/shared pull detaches its runtime waiter so it does not keep
+continuation state alive. It must not cancel a shared producer unless that
+operator/source explicitly owns the producer and requests cancellation
+propagation.
 
 As with ordinary Ores Futures, cancellation is a request to underlying host work,
 not proof that an uncooperative host call has stopped.

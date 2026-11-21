@@ -206,7 +206,10 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
-        return current == null ? Thread.currentThread() : current.executionDomain();
+        if (current != null) return current.executionDomain();
+
+        Object taskDomain = OresScheduler.currentTaskDomain();
+        return taskDomain != null ? taskDomain : Thread.currentThread();
     }
 
     /**
@@ -387,6 +390,16 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public int controlParallelism() {
             return sharedParallelism;
+        }
+
+        /**
+         * Ordinary/root Oreslang code gets two logical scheduler lanes by
+         * default while the remaining CONTROL carriers stay available for
+         * supervisors and ActorMailman work. Explicit tiny test configs still
+         * retain at least one root lane.
+         */
+        public int rootParallelism() {
+            return Math.max(1, Math.min(2, controlParallelism() - 1));
         }
 
         public int maxControlParallelism() {
@@ -864,6 +877,11 @@ public final class ActorRuntime implements AutoCloseable {
     public record ActorId(UUID value) {
         public ActorId { Objects.requireNonNull(value); }
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
+
+        @Override
+        public String toString() {
+            return value.toString();
+        }
     }
 
     public static final class ActorTerminatedException extends IllegalStateException {
@@ -1263,6 +1281,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ScheduledThreadPoolExecutor messageWatchdog;
         private final ActorTimerWheel actorTimerWheel;
         private final Semaphore rootSlots;
+        private final ArrayBlockingQueue<Runnable> rootSchedulerQueue;
         private final AtomicInteger controlCompensatingThreads = new AtomicInteger();
         private final AtomicInteger privateCompensatingThreads = new AtomicInteger();
         private final AtomicInteger sharedCompensatingThreads = new AtomicInteger();
@@ -1286,7 +1305,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.config = Objects.requireNonNull(config);
             this.maxActorMemoryBytes = configuredProcessActorMemoryLimit();
             int controlParallelism = config.controlParallelism();
-            int rootPermits = Math.max(1, controlParallelism - 1);
+            int rootPermits = config.rootParallelism();
             int readyQueueCapacity;
             try {
                 readyQueueCapacity = Math.addExact(config.maxActors(), rootPermits);
@@ -1319,6 +1338,7 @@ public final class ActorRuntime implements AutoCloseable {
                     namedFactory(prefix + "actor-turn-watchdog-"));
             this.actorTimerWheel = new ActorTimerWheel(prefix + "actor-timer-wheel-");
             this.rootSlots = new Semaphore(rootPermits, true);
+            this.rootSchedulerQueue = new ArrayBlockingQueue<>(readyQueueCapacity, true);
         }
 
         private synchronized void reserveActor(ActorKind kind) {
@@ -1419,6 +1439,67 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Admit one ordinary/root OresScheduler turn onto the CONTROL pool.
+         *
+         * <p>Async root work shares the same rootSlots permits as legacy
+         * executeRootTask(), so scheduler continuations can never consume every
+         * CONTROL carrier and starve supervisors/mailmen. Admission is bounded;
+         * producer/completion threads enqueue and return rather than blocking on
+         * a permit.</p>
+         */
+        void executeControlTask(Runnable task) {
+            Objects.requireNonNull(task, "task");
+            if (controlDispatcher.isShutdown()) {
+                throw new RejectedExecutionException("CONTROL dispatcher is shut down");
+            }
+            if (!rootSchedulerQueue.offer(task)) {
+                throw new RejectedExecutionException(
+                        "root OresScheduler ready queue is full");
+            }
+            pumpRootScheduler();
+        }
+
+        private void pumpRootScheduler() {
+            while (!controlDispatcher.isShutdown()) {
+                if (!rootSlots.tryAcquire()) return;
+
+                Runnable next = rootSchedulerQueue.poll();
+                if (next == null) {
+                    rootSlots.release();
+                    return;
+                }
+
+                submitRootSchedulerTurn(next);
+            }
+        }
+
+        private void submitRootSchedulerTurn(Runnable task) {
+            try {
+                controlDispatcher.execute(() -> {
+                    try {
+                        task.run();
+                    } finally {
+                        rootSlots.release();
+                        pumpRootScheduler();
+                    }
+                });
+            } catch (RejectedExecutionException rejected) {
+                if (controlDispatcher.isShutdown() || messageWatchdog.isShutdown()) {
+                    rootSlots.release();
+                    return;
+                }
+
+                // CONTROL's own bounded queue can be temporarily saturated by
+                // supervisor/mailman work. Keep this logical root slot reserved
+                // and retry without running guest code on the caller thread.
+                messageWatchdog.schedule(
+                        () -> submitRootSchedulerTurn(task),
+                        1L,
+                        TimeUnit.MILLISECONDS);
+            }
+        }
+
         void shutdownNow() {
             controlDispatcher.shutdownNow();
             privateDispatcher.shutdownNow();
@@ -1426,6 +1507,7 @@ public final class ActorRuntime implements AutoCloseable {
             untrustedDispatcher.shutdownNow();
             untrustedWatchdog.shutdownNow();
             messageWatchdog.shutdownNow();
+            rootSchedulerQueue.clear();
             actorTimerWheel.close();
         }
     }
@@ -1482,6 +1564,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final OresVM vm;
+    private final OresScheduler rootScheduler;
     private final ActorGenerationLeaseFactory generationLeaseFactory;
     private final RuntimePlacement runtimePlacement;
     private final DispatcherGroup dispatcherGroup;
@@ -1659,6 +1742,13 @@ public final class ActorRuntime implements AutoCloseable {
         this.privateRejectedTurns = dispatcherGroup.privateRejectedTurns;
         this.sharedRejectedTurns = dispatcherGroup.sharedRejectedTurns;
         this.untrustedRejectedTurns = dispatcherGroup.untrustedRejectedTurns;
+
+        int rootParallelism = dispatcherConfig.rootParallelism();
+        this.rootScheduler = OresScheduler.runtimeOwned(
+                "ores-root-" + Integer.toHexString(System.identityHashCode(this)),
+                rootParallelism,
+                this::dispatchRootSchedulerCarrier,
+                this::executeRootSchedulerGuestTurn);
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
@@ -1667,6 +1757,51 @@ public final class ActorRuntime implements AutoCloseable {
     RuntimePlacement runtimePlacement() { return runtimePlacement; }
     public boolean usesProcessSharedDispatchers() { return vm.processVm(); }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    /**
+     * Implicit scheduler for ordinary async Oreslang tasks in this runtime.
+     * Its physical carriers come from VM CONTROL, but every turn re-enters this
+     * runtime's owning Truffle context through TurnExecutor.
+     */
+    public OresScheduler rootScheduler() {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        return rootScheduler;
+    }
+
+    /**
+     * Dispatch scheduler bookkeeping onto the VM CONTROL pool without entering
+     * the Truffle context. Guest context admission is deliberately narrower:
+     * only the actual scheduler turn is entered by
+     * {@link #executeRootSchedulerGuestTurn(Runnable)}.
+     */
+    private void dispatchRootSchedulerCarrier(Runnable carrierTask) {
+        Objects.requireNonNull(carrierTask, "carrierTask");
+        dispatcherGroup.executeControlTask(() -> {
+            ACTOR_CARRIER.set(Boolean.TRUE);
+            CURRENT_ROOT_RUNTIME.set(ActorRuntime.this);
+            try {
+                carrierTask.run();
+            } finally {
+                CURRENT_ROOT_RUNTIME.remove();
+                ACTOR_CARRIER.remove();
+            }
+        });
+    }
+
+    /**
+     * Enter the owning Oreslang/Truffle context for guest work only.
+     *
+     * <p>OresScheduler invokes its after-turn publication after this method
+     * returns. Therefore an awaited root Future cannot wake Context.eval() (or
+     * a host close) while this carrier is still entered in the context.</p>
+     */
+    private void executeRootSchedulerGuestTurn(Runnable turn) {
+        Objects.requireNonNull(turn, "turn");
+        turnExecutor.execute(() -> {
+            schedulerSafepoint();
+            turn.run();
+        });
+    }
 
     /**
      * Define one runtime-owned actor group. The group always owns exactly one
@@ -2008,7 +2143,7 @@ public final class ActorRuntime implements AutoCloseable {
             armRootDeadline();
             if (closed.get()) carrier.interrupt();
             try {
-                turnExecutor.execute(() -> {
+                rootScheduler.runBound(() -> turnExecutor.execute(() -> {
                     try {
                         schedulerSafepoint();
                         completion.complete(task.get());
@@ -2018,7 +2153,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (failure instanceof ThreadDeath fatal) throw fatal;
                         if (failure instanceof LinkageError fatal) throw fatal;
                     }
-                });
+                }));
             } catch (Throwable failure) {
                 completion.completeExceptionally(failure);
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
@@ -2445,8 +2580,9 @@ public final class ActorRuntime implements AutoCloseable {
      * Explicit synchronized shared-memory cell.
      *
      * Actor fields do not use this: a mailbox turn already provides exclusive
-     * mutation of actor-owned state. SyncCell is for state intentionally shared
-     * by multiple SHARED actors.
+     * mutation of actor-owned state. SyncCell is retained as a host/root runtime
+     * synchronization primitive; actor code may not access it. Shared actors
+     * read external state only through explicit OresRwLock read capabilities.
      */
     public final class SyncCell<T> implements AutoCloseable {
         private final ReentrantLock lock = new ReentrantLock(true);
@@ -2471,7 +2607,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public T snapshot() {
-            rejectPrivateActorSharedMemoryAccess("SyncCell.snapshot");
+            rejectActorSyncCellAccess("SyncCell.snapshot");
             boolean entered = enterSyncCell(this);
             lock.lock();
             try {
@@ -2485,7 +2621,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public <R> R read(Function<? super T, ? extends R> reader) {
             Objects.requireNonNull(reader);
-            requireSharedActorTurn();
+            rejectActorSyncCellAccess("SyncCell.read");
             boolean entered = enterSyncCell(this);
             lock.lock();
             try {
@@ -2504,7 +2640,7 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         public T update(UnaryOperator<T> updater) {
             Objects.requireNonNull(updater);
-            requireSharedActorTurn();
+            rejectActorSyncCellAccess("SyncCell.update");
             boolean entered = enterSyncCell(this);
             lock.lock();
             try {
@@ -2532,7 +2668,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
-            rejectPrivateActorSharedMemoryAccess("SyncCell.close");
+            rejectActorSyncCellAccess("SyncCell.close");
             boolean entered = enterSyncCell(this);
             try {
                 closeFromRuntime();
@@ -2618,6 +2754,26 @@ public final class ActorRuntime implements AutoCloseable {
     @FunctionalInterface
     public interface Invocation<M, R> {
         R run(M message, ActorContext<M> context) throws Exception;
+    }
+
+    /**
+     * Compiler/runtime ABI for a one-shot actor callable whose source frame may
+     * suspend one or more times. The invocation must eventually complete or
+     * fail the supplied result exactly once. Calling ActorContext.suspendOn()
+     * unwinds the current carrier turn without completing this result.
+     */
+    @FunctionalInterface
+    public interface SuspendingInvocation<M, R> {
+        void run(
+                M message,
+                ActorContext<M> context,
+                InvocationCompletion<R> completion) throws Exception;
+    }
+
+    public interface InvocationCompletion<R> {
+        void complete(R value);
+        void fail(Throwable failure);
+        boolean isDone();
     }
 
     /**
@@ -2801,13 +2957,16 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Two-phase source-level actor spawn handle.
+     * Internal two-phase actor spawn ticket used by compiler/runtime lowering.
      *
-     * Creation returns after identity reservation and mailbox admission. The
-     * readiness future completes only after behavior initialization has
-     * succeeded; the result future tracks the one-shot actor callable itself.
+     * <p>Ordinary source-level {@code spawn Foo(...)} projects this ticket to
+     * the actor ID's stable string representation immediately. The strong
+     * {@link ActorId} capability remains runtime-internal. Direct
+     * {@code await spawn Foo(...)} keeps the
+     * ticket hidden until readiness succeeds, then exposes the started-actor
+     * control surface (identity/liveness/completion/result) to source code.</p>
      */
-    public final class ActorSpawn<M, R> {
+    public final class ActorSpawn<M, R> implements Awaitable<ActorRef<M>> {
         private final ActorRef<M> ref;
         private final OresFuture<R> result;
         private final OresFuture<Boolean> done;
@@ -2826,6 +2985,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public ActorId id() { return ref.id(); }
+        public boolean isAlive() { return ref.isAlive(); }
+
+        @Override
+        public OresFuture<ActorRef<M>> getAwaited() { return ready(); }
+
         public OresFuture<ActorRef<M>> ready() { return ref.readiness(); }
         public OresFuture<Boolean> done() { return done; }
         public OresFuture<R> result() { return result; }
@@ -3454,6 +3618,24 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind,
             M message,
             Invocation<M, R> invocation) {
+        Objects.requireNonNull(invocation, "invocation");
+        return spawnSuspendingInvocation(
+                kind,
+                message,
+                (delivered, context, completion) ->
+                        completion.complete(invocation.run(delivered, context)));
+    }
+
+    /**
+     * Stackless compiler lowering target for source actor callables containing
+     * await. The source frame owns its continuation state; this runtime owns
+     * mailbox admission, actor-lease resumption, lifecycle, and final result
+     * publication.
+     */
+    public <M, R> ActorSpawn<M, R> spawnSuspendingInvocation(
+            ActorKind kind,
+            M message,
+            SuspendingInvocation<M, R> invocation) {
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(invocation, "invocation");
         requireCallerRuntimeAffinity("spawn actor callables");
@@ -3463,6 +3645,8 @@ public final class ActorRuntime implements AutoCloseable {
         AtomicReference<R> invocationValue = new AtomicReference<>();
         AtomicReference<Throwable> invocationFailure = new AtomicReference<>();
         AtomicBoolean invocationReturned = new AtomicBoolean();
+        AtomicBoolean terminalSignalled = new AtomicBoolean();
+
         OresFuture<R> completion = new OresFuture<>(() -> {
             ActorRef<M> ref = spawnedRef.get();
             if (ref != null && ref.isAlive()) {
@@ -3474,41 +3658,88 @@ public final class ActorRuntime implements AutoCloseable {
             }
         });
 
+        final class ResultSink implements InvocationCompletion<R> {
+            @Override
+            public void complete(R value) {
+                if (!terminalSignalled.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "actor invocation result completed more than once");
+                }
+                @SuppressWarnings("unchecked")
+                R frozen = (R) freeze(value);
+                invocationValue.set(frozen);
+                invocationReturned.set(true);
+                stopActor();
+            }
+
+            @Override
+            public void fail(Throwable failure) {
+                Objects.requireNonNull(failure, "failure");
+                if (!terminalSignalled.compareAndSet(false, true)) return;
+                invocationFailure.compareAndSet(null, failure);
+                stopActor();
+            }
+
+            @Override
+            public boolean isDone() {
+                return terminalSignalled.get();
+            }
+
+            private void stopActor() {
+                ActorRef<M> ref = spawnedRef.get();
+                if (ref != null && ref.isAlive()) {
+                    try {
+                        ref.stop();
+                    } catch (IllegalStateException ignored) {
+                        // Actor finalization already won the race.
+                    }
+                }
+            }
+        }
+
+        ResultSink resultSink = new ResultSink();
+
         ActorRef<M> ref = spawnInternal(
                 kind,
                 policy,
                 factoryContext -> (delivered, turnContext) -> {
                     try {
-                        @SuppressWarnings("unchecked")
-                        R frozen = (R) freeze(invocation.run(delivered, turnContext));
-                        invocationValue.set(frozen);
-                        invocationReturned.set(true);
+                        invocation.run(delivered, turnContext, resultSink);
+                        if (!resultSink.isDone()) {
+                            IllegalStateException incomplete =
+                                    new IllegalStateException(
+                                            "suspending actor invocation returned without "
+                                                    + "completion or ActorContext.suspendOn()");
+                            resultSink.fail(incomplete);
+                            throw incomplete;
+                        }
+                    } catch (ActorTurnSuspendedSignal suspended) {
+                        // Normal compiler/runtime control transfer. The live
+                        // frame is already captured by the continuation.
+                        throw suspended;
                     } catch (VirtualMachineError fatal) {
-                        invocationFailure.compareAndSet(null, fatal);
+                        resultSink.fail(fatal);
                         throw fatal;
                     } catch (ThreadDeath fatal) {
-                        invocationFailure.compareAndSet(null, fatal);
+                        resultSink.fail(fatal);
                         throw fatal;
                     } catch (LinkageError fatal) {
-                        invocationFailure.compareAndSet(null, fatal);
+                        resultSink.fail(fatal);
                         throw fatal;
                     } catch (Exception failure) {
-                        invocationFailure.compareAndSet(null, failure);
+                        resultSink.fail(failure);
                         throw failure;
                     } catch (Error failure) {
-                        invocationFailure.compareAndSet(null, failure);
+                        resultSink.fail(failure);
                         throw failure;
-                    } finally {
-                        turnContext.self().stop();
                     }
                 },
                 true);
         spawnedRef.set(ref);
         ActorSpawn<M, R> spawn = new ActorSpawn<>(ref, completion);
 
-        // Do not publish a source-level actor result until the actor has fully
-        // finalized and its carrier has left the Truffle context. Otherwise a
-        // root awaiting result() can race Context.close() with the actor turn.
+        // Publish a source actor result only after the actor has fully finalized
+        // and its carrier has left the Truffle context.
         ref.finalization().whenComplete((ignored, finalizationFailure) -> {
             if (completion.isDone()) return;
             Throwable failure = invocationFailure.get();
@@ -3750,6 +3981,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     public <T> SyncCell<T> syncCell(T initialValue) {
         requireCallerRuntimeAffinity("create shared SyncCell values");
+        rejectActorSyncCellAccess("SyncCell creation");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         IsolatePolicy callerPolicy = currentActorPolicy();
         if (callerPolicy != null) {
@@ -3798,10 +4030,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private void requireSharedActorTurn() {
-        ActorCell<?> cell = currentActor.get();
-        if (cell == null || cell.kind != ActorKind.SHARED) {
-            throw new IllegalStateException("shared state mutation requires a shared actor mailbox turn");
+    private void rejectActorSyncCellAccess(String operation) {
+        if (inActorExecution()) {
+            throw new SecurityException(
+                    "actors cannot access SyncCell external mutable state via " + operation
+                            + "; use actor-owned state for writes or OresRwLock<T> read guards "
+                            + "for explicit external reads");
         }
     }
 
@@ -4246,11 +4480,36 @@ public final class ActorRuntime implements AutoCloseable {
                             depth + 1));
             return;
         }
+        if (value instanceof OresRwLock<?> rwLock) {
+            if (target.kind != ActorKind.SHARED) {
+                throw new SecurityException("memory-isolated actors cannot receive OresRwLock<T>");
+            }
+            ActorKind senderKind = currentActorKind();
+            if (senderKind != null && senderKind != ActorKind.SHARED) {
+                throw new SecurityException("memory-isolated actors cannot send OresRwLock<T>");
+            }
+            IsolatePolicy senderPolicy = currentActorPolicy();
+            if (senderPolicy != null) {
+                senderPolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "OresRwLock actor send");
+            } else {
+                policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "OresRwLock host send");
+            }
+            target.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "OresRwLock actor receive");
+            if (!rwLock.bindToRuntime(this)) {
+                throw new IllegalArgumentException(
+                        "OresRwLock may cross actor mailboxes only within its owning ActorRuntime");
+            }
+            return;
+        }
         if (value instanceof Shared<?> shared) {
             requireMutexTransport(target, shared.value(), visiting, depth + 1);
             return;
         }
-        if (value instanceof SyncCell<?>) return;
+        if (value instanceof SyncCell<?>) {
+            throw new SecurityException(
+                    "actors cannot receive SyncCell mutable shared state; "
+                            + "use OresRwLock<T> for explicit external reads");
+        }
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
@@ -4390,6 +4649,7 @@ public final class ActorRuntime implements AutoCloseable {
             requireOwnedActorRefs(sharedMutex.transportValue(), visiting, depth + 1);
             return;
         }
+        if (value instanceof OresRwLock<?>) return;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
@@ -4448,6 +4708,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof OresMutex.Shared<?>) {
             // Runtime affinity is reserved atomically immediately before mailbox admission.
+            return;
+        }
+        if (value instanceof OresRwLock<?> rwLock) {
+            if (!rwLock.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "OresRwLock belongs to a different ActorRuntime and cannot cross shared-memory domains");
+            }
             return;
         }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -4575,6 +4842,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof OresMutex.Shared<?>) {
             throw new IllegalArgumentException("SharedMutex is mutable shared state and cannot be wrapped as Shared");
         }
+        if (value instanceof OresRwLock<?>) {
+            throw new IllegalArgumentException(
+                    "OresRwLock is a live shared capability and cannot be wrapped as Shared");
+        }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot be wrapped as Shared");
         }
@@ -4637,7 +4908,8 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.Recipient<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
-                || value instanceof OresMutex.Shared<?>) {
+                || value instanceof OresMutex.Shared<?>
+                || value instanceof OresRwLock<?>) {
             return;
         }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -4713,7 +4985,8 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
-                || value instanceof OresMutex.Guard<?>) {
+                || value instanceof OresMutex.Guard<?>
+                || value instanceof OresRwLock<?>) {
             throw new IllegalArgumentException(
                     "freeze() accepts data values only; live actor/shared capabilities require explicit actor transport");
         }
@@ -4759,6 +5032,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
+        if (value instanceof OresRwLock<?> rwLock) return rwLock;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
@@ -4818,6 +5092,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof OresMutex.Shared<?>) {
             throw new IllegalArgumentException("private actors cannot receive SharedMutex<T>");
+        }
+        if (value instanceof OresRwLock<?>) {
+            throw new IllegalArgumentException("private actors cannot receive OresRwLock<T>");
         }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
@@ -4879,6 +5156,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
         if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
+        if (value instanceof OresRwLock<?>) return requireWithinLimit(64L, limit);
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
@@ -4947,6 +5225,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Shared<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
+        if (value instanceof OresRwLock<?>) return 64L;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
@@ -5126,6 +5405,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.Recipient<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
+        if (value instanceof OresRwLock<?>) return 64L;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot be frozen");
         }
@@ -5198,6 +5478,7 @@ public final class ActorRuntime implements AutoCloseable {
         for (RootTask<?> rootTask : List.copyOf(rootTasks)) {
             rootTask.cancelFromRuntimeClose();
         }
+        if (firstClose) rootScheduler.close();
 
         if (firstClose && ownsVm) {
             // Dedicated/test runtimes own their complete VM scheduler set.

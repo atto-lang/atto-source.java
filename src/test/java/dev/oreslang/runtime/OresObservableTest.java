@@ -5,7 +5,9 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -89,14 +91,18 @@ final class OresObservableTest {
         OresFuture<OresNotification<Integer>> first = one.next();
         OresFuture<OresNotification<Integer>> second = two.next();
 
+        assertEquals(2, source.pendingRuntimeWaiterCount());
+
         assertTrue(one.cancel());
         assertFalse(source.isCancelled(),
                 "one rx subscriber must not cancel a shared source Future");
+        assertEquals(1, source.pendingRuntimeWaiterCount());
 
         source.completeFromRuntime(99);
 
         assertThrows(CancellationException.class, first::join);
         assertEquals(99, second.join().value());
+        assertEquals(0, source.pendingRuntimeWaiterCount());
     }
 
     @Test
@@ -109,11 +115,11 @@ final class OresObservableTest {
         assertTrue(source.cancel(true));
 
         assertTrue(pull.isCancelled(),
-                "upstream cancellation must not be converted into an ordinary stream failure");
+                "upstream cancellation must remain cancellation");
         assertThrows(CancellationException.class, pull::join);
         assertTrue(subscription.isTerminated());
         assertFalse(subscription.isCancelled(),
-                "the source cancelled; the subscriber did not explicitly cancel itself");
+                "the producer cancelled; the subscriber did not explicitly cancel itself");
     }
 
     @Test
@@ -157,23 +163,109 @@ final class OresObservableTest {
         assertTrue(subscription.isTerminated());
         assertTrue(subscription.next().join().isComplete());
         assertFalse(subscription.cancel(),
-                "cancellation after terminal source failure must not reopen teardown");
+                "cancellation after terminal failure must not reopen teardown");
     }
 
     @Test
-    void subscriptionRuntimeCleanupRunsExactlyOnceAcrossCancellationCascade() {
-        AtomicInteger cleanups = new AtomicInteger();
-        OresFuture<OresNotification<Integer>> pending = new OresFuture<>();
+    void publicObservableCallbacksAreSchedulerBound() {
+        assertFalse(
+                java.util.Arrays.stream(OresObservable.class.getMethods())
+                        .flatMap(method -> java.util.Arrays.stream(method.getParameterTypes()))
+                        .anyMatch(java.util.function.Consumer.class::isAssignableFrom),
+                "rx-ores must not expose push-style Consumer callbacks");
+
+        java.util.Arrays.stream(OresObservable.class.getMethods())
+                .filter(method -> java.util.Arrays.stream(method.getParameterTypes())
+                        .anyMatch(type -> java.util.function.Function.class.isAssignableFrom(type)
+                                || java.util.function.Predicate.class.isAssignableFrom(type)))
+                .forEach(method -> {
+                    Class<?>[] parameters = method.getParameterTypes();
+                    assertTrue(
+                            parameters.length >= 2
+                                    && parameters[0] == OresScheduler.class,
+                            () -> "guest transform callback must be explicitly scheduler-bound: "
+                                    + method);
+                });
+    }
+    @Test
+    void foreignProducerRxCompletionResumesOnlyOnOwningScheduler() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresObservable<Integer> observable = OresObservable.fromFuture(source);
+            AtomicInteger pc = new AtomicInteger();
+            AtomicReference<Thread> producerThread = new AtomicReference<>();
+
+            OresFuture<Integer> consumed = scheduler.start(resume -> {
+                assertSame(scheduler, OresScheduler.current());
+
+                if (pc.getAndIncrement() == 0) {
+                    return OresScheduler.await(observable.first());
+                }
+
+                assertNull(resume.failure());
+                assertEquals(77, resume.value());
+                assertNotSame(
+                        producerThread.get(),
+                        Thread.currentThread(),
+                        "rx producer/completion thread must not execute guest continuation");
+                return OresScheduler.done((Integer) resume.value());
+            });
+
+            Thread producer = Thread.ofPlatform().start(() -> {
+                producerThread.set(Thread.currentThread());
+                source.completeFromRuntime(77);
+            });
+            producer.join();
+
+            assertEquals(77, consumed.get(5, TimeUnit.SECONDS));
+            assertEquals(2, pc.get());
+        }
+    }
+
+    @Test
+    void runtimeCancellationCleanupRunsOnceAfterTerminalFailure() {
+        AtomicInteger cleanupCalls = new AtomicInteger();
+        OresFuture<OresNotification<Integer>> source = new OresFuture<>();
 
         OresSubscription<Integer> subscription = new OresSubscription<>() {
             @Override
             protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
-                return pending;
+                return source;
             }
 
             @Override
             protected void cancelFromRuntime() {
-                cleanups.incrementAndGet();
+                cleanupCalls.incrementAndGet();
+            }
+        };
+
+        OresFuture<OresNotification<Integer>> pull = subscription.next();
+        source.failFromRuntime(new IllegalStateException("source-failed"));
+
+        CompletionException failure =
+                assertThrows(CompletionException.class, pull::join);
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+        assertEquals(1, cleanupCalls.get());
+
+        assertFalse(subscription.cancel(),
+                "terminal subscription cancellation must report no state transition");
+        assertEquals(1, cleanupCalls.get());
+    }
+
+    @Test
+    void subscriptionRuntimeCleanupRunsExactlyOnceAcrossCancellationCascade() {
+        AtomicInteger cleanupCalls = new AtomicInteger();
+        OresFuture<OresNotification<Integer>> source = new OresFuture<>();
+
+        OresSubscription<Integer> subscription = new OresSubscription<>() {
+            @Override
+            protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
+                return source;
+            }
+
+            @Override
+            protected void cancelFromRuntime() {
+                cleanupCalls.incrementAndGet();
             }
         };
 
@@ -181,14 +273,12 @@ final class OresObservableTest {
         assertTrue(subscription.cancel());
         assertThrows(CancellationException.class, pull::join);
         assertFalse(subscription.cancel());
-
-        assertEquals(1, cleanups.get(),
-                "subscription cleanup must be exactly-once even when cancelling the active pull");
+        assertEquals(1, cleanupCalls.get());
     }
 
     @Test
     void synchronousSourceFailureStillRunsRuntimeCleanupExactlyOnce() {
-        AtomicInteger cleanups = new AtomicInteger();
+        AtomicInteger cleanupCalls = new AtomicInteger();
 
         OresSubscription<Integer> subscription = new OresSubscription<>() {
             @Override
@@ -198,7 +288,7 @@ final class OresObservableTest {
 
             @Override
             protected void cancelFromRuntime() {
-                cleanups.incrementAndGet();
+                cleanupCalls.incrementAndGet();
             }
         };
 
@@ -207,12 +297,12 @@ final class OresObservableTest {
         assertInstanceOf(IllegalStateException.class, failure.getCause());
         assertTrue(subscription.isTerminated());
         assertFalse(subscription.cancel());
-        assertEquals(1, cleanups.get());
+        assertEquals(1, cleanupCalls.get());
     }
 
     @Test
     void naturalCompletionRunsRuntimeCleanupExactlyOnce() {
-        AtomicInteger cleanups = new AtomicInteger();
+        AtomicInteger cleanupCalls = new AtomicInteger();
 
         OresSubscription<Integer> subscription = new OresSubscription<>() {
             @Override
@@ -222,7 +312,7 @@ final class OresObservableTest {
 
             @Override
             protected void cancelFromRuntime() {
-                cleanups.incrementAndGet();
+                cleanupCalls.incrementAndGet();
             }
         };
 
@@ -230,24 +320,24 @@ final class OresObservableTest {
         assertTrue(subscription.isTerminated());
         assertFalse(subscription.isCancelled());
         assertFalse(subscription.cancel());
-        assertEquals(1, cleanups.get());
+        assertEquals(1, cleanupCalls.get());
     }
 
     @Test
     void cancellationAndProducerCompletionRaceStillTearsDownOnce() throws Exception {
         for (int attempt = 0; attempt < 200; attempt++) {
-            AtomicInteger cleanups = new AtomicInteger();
-            OresFuture<OresNotification<Integer>> pending = new OresFuture<>();
+            AtomicInteger cleanupCalls = new AtomicInteger();
+            OresFuture<OresNotification<Integer>> source = new OresFuture<>();
 
             OresSubscription<Integer> subscription = new OresSubscription<>() {
                 @Override
                 protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
-                    return pending;
+                    return source;
                 }
 
                 @Override
                 protected void cancelFromRuntime() {
-                    cleanups.incrementAndGet();
+                    cleanupCalls.incrementAndGet();
                 }
             };
 
@@ -262,7 +352,7 @@ final class OresObservableTest {
                     Thread.currentThread().interrupt();
                     return;
                 }
-                pending.completeFromRuntime(OresNotification.next(7));
+                source.completeFromRuntime(OresNotification.next(7));
             });
             Thread canceller = Thread.ofVirtual().start(() -> {
                 try {
@@ -279,7 +369,7 @@ final class OresObservableTest {
             canceller.join();
 
             assertTrue(subscription.isTerminated());
-            assertEquals(1, cleanups.get(),
+            assertEquals(1, cleanupCalls.get(),
                     "producer/cancel race must not duplicate runtime cleanup");
 
             if (!pull.isCancelled()) {
@@ -301,14 +391,169 @@ final class OresObservableTest {
     }
 
     @Test
-    void publicObservableSurfaceDoesNotExposeGuestCallbackSubscribe() {
-        assertFalse(
-                java.util.Arrays.stream(OresObservable.class.getMethods())
-                        .flatMap(method -> java.util.Arrays.stream(method.getParameterTypes()))
-                        .anyMatch(type -> java.util.function.Consumer.class.isAssignableFrom(type)
-                                || java.util.function.Function.class.isAssignableFrom(type)),
-                "initial rx-ores surface must not run guest callbacks on producer threads");
+    void schedulerBoundMapNeverRunsOnForeignProducerThread() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            AtomicReference<Thread> producerThread = new AtomicReference<>();
+            AtomicReference<Thread> mapperThread = new AtomicReference<>();
+            AtomicReference<OresScheduler> mapperScheduler = new AtomicReference<>();
+
+            OresSubscription<Integer> subscription =
+                    OresObservable.fromFuture(source)
+                            .map(scheduler, value -> {
+                                mapperThread.set(Thread.currentThread());
+                                mapperScheduler.set(OresScheduler.current());
+                                return value + 1;
+                            })
+                            .subscribe();
+
+            OresFuture<OresNotification<Integer>> pull = subscription.next();
+
+            Thread producer = Thread.ofPlatform().start(() -> {
+                producerThread.set(Thread.currentThread());
+                source.completeFromRuntime(41);
+            });
+            producer.join();
+
+            assertEquals(42, pull.get(5, TimeUnit.SECONDS).value());
+            assertSame(scheduler, mapperScheduler.get());
+            assertNotSame(producerThread.get(), mapperThread.get(),
+                    "rx map callback must execute on the bound scheduler, not producer thread");
+        }
     }
+
+    @Test
+    void schedulerBoundMapPreservesUpstreamCancellation() {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresSubscription<Integer> subscription =
+                    OresObservable.fromFuture(source)
+                            .map(scheduler, value -> value + 1)
+                            .subscribe();
+
+            OresFuture<OresNotification<Integer>> pull = subscription.next();
+            assertTrue(source.cancel(true));
+
+            assertThrows(
+                    CancellationException.class,
+                    () -> pull.get(5, TimeUnit.SECONDS));
+            assertTrue(pull.isCancelled(),
+                    "scheduler-bound map must preserve upstream cancellation identity");
+            assertTrue(subscription.isTerminated());
+        }
+    }
+
+    @Test
+    void schedulerBoundFilterPreservesUpstreamCancellation() {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresSubscription<Integer> subscription =
+                    OresObservable.fromFuture(source)
+                            .filter(scheduler, value -> true)
+                            .subscribe();
+
+            OresFuture<OresNotification<Integer>> pull = subscription.next();
+            assertTrue(source.cancel(true));
+
+            assertThrows(
+                    CancellationException.class,
+                    () -> pull.get(5, TimeUnit.SECONDS));
+            assertTrue(pull.isCancelled(),
+                    "scheduler-bound filter must preserve upstream cancellation identity");
+            assertTrue(subscription.isTerminated());
+        }
+    }
+
+    @Test
+    void schedulerBoundMapDoesNotMisclassifyCancellationExceptionFailure() {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source =
+                    OresFuture.failed(new CancellationException("domain failure"));
+            OresFuture<OresNotification<Integer>> pull =
+                    OresObservable.fromFuture(source)
+                            .map(scheduler, value -> value + 1)
+                            .subscribe()
+                            .next();
+
+            CompletionException failure =
+                    assertThrows(CompletionException.class, pull::join);
+            assertInstanceOf(CancellationException.class, failure.getCause());
+            assertFalse(pull.isCancelled(),
+                    "domain failure identity comes from Future state, not exception class");
+        }
+    }
+
+    @Test
+    void filterYieldsBetweenRejectedImmediateItems() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            java.util.ArrayList<Long> dispatches = new java.util.ArrayList<>();
+
+            OresSubscription<Integer> subscription =
+                    OresObservable.fromValues(List.of(1, 2, 3, 4))
+                            .filter(scheduler, value -> {
+                                dispatches.add(OresScheduler.currentDispatchId());
+                                assertSame(scheduler, OresScheduler.current());
+                                return value == 4;
+                            })
+                            .subscribe();
+
+            assertEquals(4, subscription.next().get(5, TimeUnit.SECONDS).value());
+            assertEquals(4, dispatches.size());
+            assertEquals(4, new java.util.HashSet<>(dispatches).size(),
+                    "each rejected immediate item must return through a later scheduler turn");
+        }
+    }
+
+    @Test
+    void cancellingMappedPullDetachesSharedUpstreamWithoutCancellingProducer() {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            OresSubscription<Integer> subscription =
+                    OresObservable.fromFuture(source)
+                            .map(scheduler, value -> value + 1)
+                            .subscribe();
+
+            OresFuture<OresNotification<Integer>> pull = subscription.next();
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (source.pendingRuntimeWaiterCount() == 0
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertEquals(1, source.pendingRuntimeWaiterCount());
+
+            assertTrue(pull.cancel(true));
+
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (source.pendingRuntimeWaiterCount() != 0
+                    && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            assertEquals(0, source.pendingRuntimeWaiterCount());
+            assertFalse(source.isCancelled(),
+                    "operator cancellation must detach a shared source Future, not cancel it");
+            assertTrue(subscription.isTerminated());
+        }
+    }
+
+    @Test
+    void mapRejectsNullReactiveValues() {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresSubscription<String> subscription =
+                    OresObservable.fromValues(List.of("x"))
+                            .<String>map(scheduler, ignored -> null)
+                            .subscribe();
+
+            CompletionException failure =
+                    assertThrows(CompletionException.class, () -> subscription.next().join());
+            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+            assertTrue(failure.getCause().getMessage().contains("Option<T>"));
+            assertTrue(subscription.isTerminated());
+        }
+    }
+
+
 
     @Test
     void fromValuesSnapshotsInputAndRejectsNulls() {
@@ -439,7 +684,7 @@ final class OresObservableTest {
 
     @Test
     void notificationAndFutureBridgesRejectStandaloneNullValues() {
-        assertThrows(NullPointerException.class, () -> OresNotification.next(null));
+        assertThrows(IllegalArgumentException.class, () -> OresNotification.next(null));
 
         OresFuture<Integer> source = new OresFuture<>();
         OresSubscription<Integer> subscription =
@@ -450,7 +695,7 @@ final class OresObservableTest {
 
         CompletionException failure =
                 assertThrows(CompletionException.class, pull::join);
-        assertInstanceOf(NullPointerException.class, failure.getCause());
+        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
         assertTrue(subscription.isTerminated());
         assertTrue(subscription.next().join().isComplete());
     }
@@ -499,6 +744,36 @@ final class OresObservableTest {
         assertTrue(subscription.next().join().isComplete());
         assertEquals(0, iterators.get(),
                 "take(0) must short-circuit without subscribing to the iterable");
+    }
+
+    @Test
+    void fatalHostErrorsAreNeverConvertedToOrdinaryPullFailures() {
+        LinkageError fatal = new LinkageError("fatal class linkage");
+        Iterable<Integer> broken = () -> new java.util.Iterator<>() {
+            @Override
+            public boolean hasNext() {
+                throw fatal;
+            }
+            @Override
+            public Integer next() {
+                throw new AssertionError("must not consume");
+            }
+        };
+        OresSubscription<Integer> subscription = OresObservable.fromIterable(broken).subscribe();
+        assertSame(fatal, assertThrows(LinkageError.class, () -> subscription.next()));
+        assertTrue(subscription.isTerminated(),
+                "host-fatal exit must retire the in-flight pull reservation");
+        assertTrue(subscription.next().join().isComplete());
+
+        OresSubscription<Integer> direct = new OresSubscription<>() {
+            @Override
+            protected OresFuture<OresNotification<Integer>> nextFromRuntime() {
+                throw fatal;
+            }
+        };
+        assertSame(fatal, assertThrows(LinkageError.class, () -> direct.next()));
+        assertTrue(direct.isTerminated());
+        assertTrue(direct.next().join().isComplete());
     }
 
 }

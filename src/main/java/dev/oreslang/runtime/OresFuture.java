@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -29,33 +30,81 @@ import java.util.function.Supplier;
  * Future. Guest code may observe state, await, or request cancellation, but it
  * cannot forge a value/failure.</p>
  */
-public final class OresFuture<T> implements Future<T> {
+public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private static final Object PENDING = new Object();
+
+    /**
+     * Single-shot completion capability used to adapt callback-only APIs.
+     *
+     * <p>Calling resolve/reject/cancel settles the target Future but never
+     * resumes Oreslang guest code inline. Awaiting code is still resumed only
+     * by its owning scheduler after the suspending turn has unwound.</p>
+     */
+    public interface Callback<T> {
+        void resolve(T value);
+        void reject(Throwable failure);
+        void cancel();
+        boolean isDone();
+
+        default void complete(Throwable failure, T value) {
+            if (failure == null) resolve(value);
+            else reject(failure);
+        }
+    }
+
+    public static final class AlreadySettledException extends IllegalStateException {
+        public AlreadySettledException(String message) {
+            super(message);
+        }
+    }
 
     private record Success<T>(T value) { }
     private record Failure(Throwable failure) { }
     private record Cancelled(CancellationException failure) { }
 
-    private static final class Waiter<T> {
+    /**
+     * Runtime-only detachable completion waiter.
+     *
+     * <p>The waiter is also its own registration handle. Keeping the callback,
+     * exactly-once claim bit, owner, and detach operation in one object avoids
+     * allocating a second registration wrapper and captured removal lambda for
+     * every genuinely suspending await.</p>
+     *
+     * <p>Detaching never changes the Future's producer/cancellation state. It
+     * only prevents this runtime continuation waiter from retaining or being
+     * invoked after its owning scheduler/task has been cancelled.</p>
+     */
+    static final class RuntimeWaiterRegistration<T> {
+        private final OresFuture<T> owner;
         private final BiConsumer<? super T, ? super Throwable> callback;
         private final AtomicBoolean claimed = new AtomicBoolean();
 
-        private Waiter(BiConsumer<? super T, ? super Throwable> callback) {
-            this.callback = callback;
+        private RuntimeWaiterRegistration(
+                OresFuture<T> owner,
+                BiConsumer<? super T, ? super Throwable> callback) {
+            this.owner = Objects.requireNonNull(owner, "owner");
+            this.callback = Objects.requireNonNull(callback, "callback");
+        }
+
+        boolean detach() {
+            if (!claimed.compareAndSet(false, true)) return false;
+            owner.waiters.remove(this);
+            return true;
         }
     }
 
-    private final Runnable cancelHook;
+    private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
-    private final ConcurrentLinkedQueue<Waiter<T>> waiters = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
     public OresFuture() {
         this(() -> { });
     }
 
     OresFuture(Runnable cancelHook) {
-        this.cancelHook = Objects.requireNonNull(cancelHook, "cancelHook");
+        this.cancelHook = new AtomicReference<>(
+                Objects.requireNonNull(cancelHook, "cancelHook"));
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -68,6 +117,91 @@ public final class OresFuture<T> implements Future<T> {
         OresFuture<T> future = new OresFuture<>();
         future.failFromRuntime(Objects.requireNonNull(failure, "failure"));
         return future;
+    }
+
+    /**
+     * Adapt a single-shot callback registration API into an Ores Future.
+     *
+     * <p>The registrar may invoke the callback synchronously. That only settles
+     * the Future; it cannot re-enter an awaiting Oreslang frame. A second
+     * callback settlement is rejected deterministically.</p>
+     */
+    public static <T> OresFuture<T> fromCallback(
+            Consumer<? super Callback<T>> registrar) {
+        Objects.requireNonNull(registrar, "registrar");
+        OresFuture<T> future = new OresFuture<>();
+        AtomicBoolean callbackClaimed = new AtomicBoolean();
+
+        Callback<T> completion = new Callback<>() {
+            private boolean claim(String operation) {
+                if (!callbackClaimed.compareAndSet(false, true)) {
+                    throw new AlreadySettledException(
+                            "callback Future already settled; duplicate " + operation);
+                }
+
+                // Consumer cancellation may legitimately win before a foreign
+                // callback arrives. The first late producer callback is then a
+                // no-op rather than an exception escaping onto the producer's
+                // thread. Marking the callback claimed still diagnoses any
+                // subsequent duplicate callback invocation.
+                return !future.isCancelled();
+            }
+
+            @Override
+            public void resolve(T value) {
+                if (!claim("resolve")) return;
+                if (!future.completeFromRuntime(value) && !future.isCancelled()) {
+                    throw new AlreadySettledException(
+                            "callback Future was already settled before resolve");
+                }
+            }
+
+            @Override
+            public void reject(Throwable failure) {
+                Objects.requireNonNull(failure, "failure");
+                if (!claim("reject")) return;
+                if (!future.failFromRuntime(failure) && !future.isCancelled()) {
+                    throw new AlreadySettledException(
+                            "callback Future was already settled before reject");
+                }
+            }
+
+            @Override
+            public void cancel() {
+                if (!claim("cancel")) return;
+                if (!future.cancel(false) && !future.isCancelled()) {
+                    throw new AlreadySettledException(
+                            "callback Future was already settled before cancel");
+                }
+            }
+
+            @Override
+            public boolean isDone() {
+                return callbackClaimed.get() || future.isDone();
+            }
+        };
+
+        try {
+            registrar.accept(completion);
+        } catch (Throwable failure) {
+            // Promise-style constructor semantics: a registrar failure rejects
+            // only if the callback has not already won the single-shot race.
+            if (callbackClaimed.compareAndSet(false, true)) {
+                future.failFromRuntime(failure);
+            } else if (failure instanceof VirtualMachineError fatal) {
+                throw fatal;
+            } else if (failure instanceof ThreadDeath fatal) {
+                throw fatal;
+            } else if (failure instanceof LinkageError fatal) {
+                throw fatal;
+            }
+        }
+        return future;
+    }
+
+    @Override
+    public OresFuture<T> getAwaited() {
+        return this;
     }
 
     @SuppressWarnings("unchecked")
@@ -88,19 +222,152 @@ public final class OresFuture<T> implements Future<T> {
         stage.whenComplete((value, failure) -> {
             if (failure == null) {
                 result.completeFromRuntime(value);
+                return;
+            }
+
+            Throwable terminalFailure = unwrap(failure);
+            boolean cancelled = stage instanceof Future<?> hostFuture
+                    ? hostFuture.isCancelled()
+                    : terminalFailure instanceof CancellationException;
+
+            if (cancelled) {
+                result.cancel(false);
             } else {
-                result.failFromRuntime(unwrap(failure));
+                result.failFromRuntime(terminalFailure);
             }
         });
         return result;
     }
 
+    /**
+     * Chain a callback-only operation after this Future on an explicit Ores
+     * scheduler. Guest registrar code executes only as a scheduler turn.
+     *
+     * <p>If the callback fires synchronously, the dependent Future is already
+     * settled when this turn returns Await, but TaskRunner still requires the
+     * current turn to unwind before the continuation can be dispatched.</p>
+     */
+    public <U> OresFuture<U> attachCallback(
+            OresScheduler scheduler,
+            java.util.function.BiConsumer<? super T, ? super Callback<U>> registrar) {
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(registrar, "registrar");
+        OresFuture<T> source = this;
+        AtomicReference<OresFuture<U>> dependentRef = new AtomicReference<>();
+
+        OresFuture<U> task = scheduler.start(new OresScheduler.Task<>() {
+            private int pc;
+
+            @Override
+            public OresScheduler.Step<U> resume(OresScheduler.Resume resume) {
+                if (pc == 0) {
+                    if (!resume.initial()) {
+                        throw new IllegalStateException(
+                                "callback chain started with a non-initial resume");
+                    }
+                    pc = 1;
+                    return OresScheduler.await(source);
+                }
+
+                if (pc == 1) {
+                    if (resume.failure() != null) {
+                        throw propagate(resume.failure());
+                    }
+                    @SuppressWarnings("unchecked")
+                    T value = (T) resume.value();
+                    OresFuture<U> dependent = OresFuture.fromCallback(
+                            callback -> registrar.accept(value, callback));
+                    dependentRef.set(dependent);
+                    pc = 2;
+                    return OresScheduler.await(dependent);
+                }
+
+                if (pc == 2) {
+                    if (resume.failure() != null) {
+                        throw propagate(resume.failure());
+                    }
+                    @SuppressWarnings("unchecked")
+                    U value = (U) resume.value();
+                    pc = 3;
+                    return OresScheduler.done(value);
+                }
+
+                throw new IllegalStateException(
+                        "callback Future chain resumed after completion");
+            }
+
+            private RuntimeException propagate(Throwable failure) {
+                Throwable unwrapped = OresFuture.unwrap(failure);
+                if (unwrapped instanceof RuntimeException runtime) return runtime;
+                if (unwrapped instanceof Error error) throw error;
+                return new RuntimeException(unwrapped);
+            }
+        });
+
+        AtomicReference<RuntimeWaiterRegistration<U>> taskWaiter =
+                new AtomicReference<>();
+
+        Runnable detach = () -> {
+            RuntimeWaiterRegistration<U> registration =
+                    taskWaiter.getAndSet(null);
+            if (registration != null) registration.detach();
+        };
+
+        OresFuture<U> exposed = new OresFuture<>(() -> {
+            detach.run();
+            task.cancel(true);
+
+            // The callback-produced Future belongs to this chain. Marking it
+            // cancelled prevents a late foreign callback from reviving work;
+            // OresFuture.fromCallback safely drops the first such late callback.
+            OresFuture<U> dependent = dependentRef.getAndSet(null);
+            if (dependent != null) dependent.cancel(false);
+
+            // The source may be shared by other consumers, so chain
+            // cancellation deliberately never cancels it.
+        });
+
+        RuntimeWaiterRegistration<U> registration =
+                task.whenCompleteRuntimeCancellable((value, failure) -> {
+                    try {
+                        if (exposed.isDone()) return;
+
+                        OresFuture<U> dependent = dependentRef.get();
+                        if (failure == null) {
+                            exposed.completeFromRuntime(value);
+                        } else if (task.isCancelled()
+                                || source.isCancelled()
+                                || (dependent != null && dependent.isCancelled())) {
+                            exposed.cancel(false);
+                        } else {
+                            exposed.failFromRuntime(OresFuture.unwrap(failure));
+                        }
+                    } finally {
+                        detach.run();
+                        dependentRef.set(null);
+                    }
+                });
+
+        taskWaiter.set(registration);
+        if (exposed.isDone()) {
+            detach.run();
+            dependentRef.set(null);
+        }
+
+        return exposed;
+    }
+
     boolean completeFromRuntime(T value) {
-        return settle(new Success<>(value));
+        boolean completed = settle(new Success<>(value));
+        if (completed) cancelHook.set(null);
+        return completed;
     }
 
     boolean failFromRuntime(Throwable failure) {
-        return settle(new Failure(Objects.requireNonNull(failure, "failure")));
+        boolean completed = settle(
+                new Failure(Objects.requireNonNull(failure, "failure")));
+        if (completed) cancelHook.set(null);
+        return completed;
     }
 
     /**
@@ -109,32 +376,33 @@ public final class OresFuture<T> implements Future<T> {
      * <p>Callbacks registered here must be scheduler plumbing only: transition a
      * dependent Future, enqueue a continuation, or release runtime accounting.
      * They must never execute Oreslang guest code directly.</p>
-     *
-     * <p>Registration is race-safe against completion and does not retain
-     * already-delivered waiters on a terminal Future. That matters for shared
-     * Futures used as reactive sources, where many subscriptions may observe the
-     * same already-completed producer.</p>
      */
     void whenCompleteRuntime(BiConsumer<? super T, ? super Throwable> callback) {
+        whenCompleteRuntimeCancellable(callback);
+    }
+
+    RuntimeWaiterRegistration<T> whenCompleteRuntimeCancellable(
+            BiConsumer<? super T, ? super Throwable> callback) {
         Objects.requireNonNull(callback, "callback");
-        Waiter<T> waiter = new Waiter<>(callback);
+        RuntimeWaiterRegistration<T> waiter =
+                new RuntimeWaiterRegistration<>(this, callback);
+        waiters.add(waiter);
 
         Object observed = state.get();
         if (observed != PENDING) {
-            notifyWaiter(waiter, observed);
-            return;
-        }
-
-        waiters.add(waiter);
-
-        observed = state.get();
-        if (observed != PENDING) {
-            // Completion may have raced either before or after queue insertion.
-            // Remove our queue node when it is still present; claimed prevents
-            // duplicate delivery if the settling thread already polled it.
+            // A registration racing with (or following) settlement must not
+            // leave an already-claimed callback strongly retained in the
+            // pending waiter queue. Removing before notification is race-safe:
+            // if settle() already polled it, remove is a no-op and the claimed
+            // bit still guarantees exactly-once callback delivery.
             waiters.remove(waiter);
             notifyWaiter(waiter, observed);
         }
+        return waiter;
+    }
+
+    int pendingRuntimeWaiterCount() {
+        return waiters.size();
     }
 
     @Override
@@ -143,9 +411,10 @@ public final class OresFuture<T> implements Future<T> {
                 new CancellationException("OresFuture was cancelled");
         if (!settle(new Cancelled(cancelled))) return false;
 
-        if (cancelHookRun.compareAndSet(false, true)) {
+        Runnable hook = cancelHook.getAndSet(null);
+        if (hook != null && cancelHookRun.compareAndSet(false, true)) {
             try {
-                cancelHook.run();
+                hook.run();
             } catch (RuntimeException | Error ignored) {
                 // Cancellation state is already authoritative. A host
                 // cancellation hook cannot roll it back or poison waiter
@@ -163,6 +432,40 @@ public final class OresFuture<T> implements Future<T> {
     @Override
     public boolean isDone() {
         return state.get() != PENDING;
+    }
+
+    /**
+     * Allocation-free runtime observation used by scheduler await fast paths.
+     *
+     * <p>A non-null value is the Future's immutable terminal state object. A
+     * null result means the Future was still pending at the observation point.
+     * Callers that observe pending must still register normally, because
+     * settlement may race immediately after this load.</p>
+     */
+    Object runtimeTerminalStateOrNull() {
+        Object observed = state.get();
+        return observed == PENDING ? null : observed;
+    }
+
+    /**
+     * Decode a terminal state previously returned by
+     * {@link #runtimeTerminalStateOrNull()} without allocating a wrapper.
+     */
+    static Object runtimeTerminalValue(Object terminal) {
+        if (terminal instanceof Success<?> success) return success.value();
+        if (terminal instanceof Failure || terminal instanceof Cancelled) return null;
+        throw new IllegalArgumentException("terminal Future state required");
+    }
+
+    /**
+     * Decode the failure/cancellation of a terminal state previously returned
+     * by {@link #runtimeTerminalStateOrNull()} without allocating a wrapper.
+     */
+    static Throwable runtimeTerminalFailure(Object terminal) {
+        if (terminal instanceof Success<?>) return null;
+        if (terminal instanceof Failure failed) return failed.failure();
+        if (terminal instanceof Cancelled cancelled) return cancelled.failure();
+        throw new IllegalArgumentException("terminal Future state required");
     }
 
     /**
@@ -233,7 +536,7 @@ public final class OresFuture<T> implements Future<T> {
     private boolean settle(Object terminal) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
 
-        Waiter<T> waiter;
+        RuntimeWaiterRegistration<T> waiter;
         while ((waiter = waiters.poll()) != null) {
             notifyWaiter(waiter, terminal);
         }
@@ -241,7 +544,7 @@ public final class OresFuture<T> implements Future<T> {
     }
 
     @SuppressWarnings("unchecked")
-    private void notifyWaiter(Waiter<T> waiter, Object terminal) {
+    private void notifyWaiter(RuntimeWaiterRegistration<T> waiter, Object terminal) {
         if (!waiter.claimed.compareAndSet(false, true)) return;
         try {
             if (terminal instanceof Success<?> success) {

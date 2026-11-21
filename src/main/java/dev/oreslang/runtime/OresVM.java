@@ -83,8 +83,10 @@ final class OresVM {
             String threadPrefix,
             boolean processVm) {
         String prefix = Objects.requireNonNull(threadPrefix, "threadPrefix");
+        ActorRuntime.DispatcherConfig schedulerConfig =
+                Objects.requireNonNull(config, "config");
         this.dispatchers = new ActorRuntime.DispatcherGroup(
-                Objects.requireNonNull(config, "config"),
+                schedulerConfig,
                 prefix);
         this.blockingIo = new BlockingIoExecutor(prefix);
         this.processVm = processVm;

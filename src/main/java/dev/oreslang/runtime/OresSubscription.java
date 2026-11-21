@@ -1,7 +1,6 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Pull-oriented reactive subscription used by rx-ores.
@@ -15,11 +14,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public abstract class OresSubscription<T> {
     private final Object gate = new Object();
-    private final AtomicBoolean runtimeCancelHookRun = new AtomicBoolean();
 
     private boolean cancelled;
     private boolean terminal;
     private boolean pulling;
+    private boolean runtimeCancelIssued;
     private OresFuture<OresNotification<T>> active;
 
     /**
@@ -27,7 +26,7 @@ public abstract class OresSubscription<T> {
      *
      * <p>Calling next concurrently is a programming error. After cancellation
      * or terminal completion, next returns COMPLETE. Cancelling the returned
-     * pull Future is terminal for this subscription: a cancelled demand is not
+     * pull Future is terminal for this subscription: cancelled demand is not
      * silently retried or replaced.</p>
      */
     public final OresFuture<OresNotification<T>> next() {
@@ -47,12 +46,22 @@ public abstract class OresSubscription<T> {
             source = Objects.requireNonNull(
                     nextFromRuntime(),
                     "nextFromRuntime returned null Future");
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            // Preserve host-fatal identity and bypass guest-visible Futures.
+            // Retire the claimed demand slot, so a containable host failure
+            // never leaves an apparently live subscription stuck in pulling.
+            // Avoid invoking arbitrary cleanup callbacks on the fatal path.
+            synchronized (gate) {
+                pulling = false;
+                terminal = true;
+            }
+            throw fatal;
         } catch (Throwable failure) {
             synchronized (gate) {
                 pulling = false;
                 terminal = true;
             }
-            runCancelFromRuntimeOnce();
+            cancelRuntimeOnce();
             return OresFuture.failed(failure);
         }
 
@@ -71,7 +80,7 @@ public abstract class OresSubscription<T> {
 
         if (rejectPull) {
             source.cancel(true);
-            runCancelFromRuntimeOnce();
+            cancelRuntimeOnce();
             return OresFuture.completed(OresNotification.complete());
         }
 
@@ -81,10 +90,10 @@ public abstract class OresSubscription<T> {
             boolean terminalTransition = false;
 
             synchronized (gate) {
-                // Keep active/pulling claimed until the exposed Future is
-                // actually settled. Releasing the slot here would let a
-                // concurrent next() start before the previous pull is done and
-                // would let cancel() miss an in-flight exposed pull.
+                // Keep active/pulling claimed until the exposed Future itself
+                // is terminal. Releasing the slot before publication would let
+                // another next() overlap the previous demand and could let a
+                // concurrent cancel() miss the in-flight pull.
                 if (terminalFailure != null) {
                     terminal = true;
                     terminalTransition = true;
@@ -100,7 +109,7 @@ public abstract class OresSubscription<T> {
             }
 
             if (terminalTransition) {
-                runCancelFromRuntimeOnce();
+                cancelRuntimeOnce();
             }
 
             if (!exposed.isDone()) {
@@ -128,9 +137,8 @@ public abstract class OresSubscription<T> {
      * Cancel this subscription and any currently outstanding pull.
      *
      * <p>Cancellation wins only while the subscription is live. Cancelling an
-     * already-terminal subscription returns false, matching ordinary Future
-     * cancellation semantics. The runtime source hook is invoked at most once
-     * across cancellation, completion, failure, and cancellation races.</p>
+     * already-terminal subscription returns false. Runtime cleanup remains
+     * exactly-once across cancellation, completion, failure, and races.</p>
      */
     public final boolean cancel() {
         OresFuture<OresNotification<T>> toCancel;
@@ -148,8 +156,22 @@ public abstract class OresSubscription<T> {
         if (toCancel != null) {
             toCancel.cancel(true);
         }
-        runCancelFromRuntimeOnce();
+        cancelRuntimeOnce();
         return true;
+    }
+
+    private void cancelRuntimeOnce() {
+        synchronized (gate) {
+            if (runtimeCancelIssued) return;
+            runtimeCancelIssued = true;
+        }
+
+        try {
+            cancelFromRuntime();
+        } catch (RuntimeException | Error ignored) {
+            // Cancellation/terminal state is already authoritative. Runtime
+            // cleanup hooks must not roll it back or execute guest code.
+        }
     }
 
     public final boolean isCancelled() {
@@ -174,23 +196,11 @@ public abstract class OresSubscription<T> {
      * Runtime source cleanup/cancellation hook.
      *
      * <p>The subscription substrate invokes this hook at most once. It may be
-     * triggered by explicit cancellation, terminal COMPLETE, source failure, an
-     * invalid source pull, or cancellation of the outstanding pull Future.
-     * Implementations must not execute guest code here.</p>
+     * triggered by explicit cancellation, terminal COMPLETE, source failure,
+     * invalid source output, or pull cancellation. It must not execute guest
+     * code.</p>
      */
     protected void cancelFromRuntime() {
         // Default no-op.
-    }
-
-    private void runCancelFromRuntimeOnce() {
-        if (!runtimeCancelHookRun.compareAndSet(false, true)) {
-            return;
-        }
-        try {
-            cancelFromRuntime();
-        } catch (RuntimeException | Error ignored) {
-            // Subscription terminal state is already authoritative. Runtime
-            // cleanup failure cannot reopen the stream or duplicate teardown.
-        }
     }
 }
