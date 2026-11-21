@@ -61,7 +61,7 @@ public final class Ast {
      * effects, and for virtual actors logical-identity incarnation fencing.
      */
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl,
-            TypeAliasDecl, StateContainerDecl, VirtualActorDecl { }
+            TypeAliasDecl, StateContainerDecl, VirtualActorDecl, StandaloneActorDecl { }
 
     public record ProtectedStateField(String name, TypeRef type, Expr initializer) {
         public ProtectedStateField {
@@ -119,6 +119,29 @@ public final class Ast {
             java.util.Objects.requireNonNull(visibility, "visibility");
             stateFields = List.copyOf(stateFields);
             methods = List.copyOf(methods);
+        }
+    }
+
+    /**
+     * Parsed source-level actor identity plus its local receiver-binding name.
+     * Deliberately distinct from an executable ClassDecl: until the actor
+     * dispatcher, state-loan and activation-generation checks understand this
+     * declaration, it must not be turned into an empty actor class.
+     */
+    public record StandaloneActorDecl(
+            String name, String receiverName, Visibility visibility, ActorKind actorKind)
+            implements Decl {
+        public StandaloneActorDecl {
+            if (name == null || name.isBlank() || receiverName == null
+                    || receiverName.isBlank() || name.equals(receiverName)) {
+                throw new IllegalArgumentException(
+                        "standalone actor requires distinct nominal type and receiver binding names");
+            }
+            java.util.Objects.requireNonNull(visibility, "standalone actor visibility");
+            if (actorKind != ActorKind.SHARED) {
+                throw new IllegalArgumentException(
+                        "standalone actor AST currently supports only generic shared actors");
+            }
         }
     }
 

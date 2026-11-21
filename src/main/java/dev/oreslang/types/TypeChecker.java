@@ -159,6 +159,13 @@ public final class TypeChecker {
     private static void rejectUnloweredCheckedEffects(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.StandaloneActorDecl actor) {
+                    throw new IllegalArgumentException(
+                            "STANDALONE_ACTOR_LOWERING_UNSUPPORTED: '" + actor.name()
+                                    + "' parsed with receiver binding '" + actor.receiverName()
+                                    + "' but requires checked actor context, mailbox dispatch, "
+                                    + "state ownership and generation-fenced runtime lowering");
+                }
                 if (declaration instanceof Ast.FunctionDecl fn && !fn.effects().isEmpty()) {
                     throw new IllegalArgumentException(
                             "checked exceptional effect on function '" + fn.name()
