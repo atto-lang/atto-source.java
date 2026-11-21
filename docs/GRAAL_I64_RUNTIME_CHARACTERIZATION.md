@@ -11,23 +11,52 @@ process exit status.
 
 The currently inspected `OresEvalRootNode.numeric` uses unchecked Java
 `long` operations for addition, subtraction, multiplication and remainder,
-and `negate` uses Java `-long`. The twelve typed observations characterize
+and `negate` uses Java `-long`. The sixteen typed observations characterize
 the resulting wrapping behavior, including cancellation after an intermediate
-overflow; a thirteenth test checks a true guest remainder-by-zero failure.
+overflow; the divisor-zero test exercises two guest expressions and rejects unrelated parser, host, or startup errors.
 The separate JS Program IR v2 implementation currently reports checked
 overflow. That mismatch **must not be represented as verified parity**.
 
 ## Reproducing on an authorized runner
 
-Run `.github/workflows/graal-typed-i64-characterization.yml` with
-GraalVM JDK 25, a complete and independently pinned source Git checkout, and
-Maven. The workflow runs:
+The reviewed workflow `.github/workflows/graal-typed-i64-characterization.yml`
+is push-only and source-repository-only. It refuses execution until an
+independent administrator verifies the protected source ref, source repository
+identity/privacy, exact reviewed commit and tree, and a disposable source-local
+runner labelled `oreslang-private-ephemeral`. The independently reviewed
+repository variables `ORESLANG_I64_PRIVATE_RUNNER`,
+`ORESLANG_I64_APPROVED_SHA`, and `ORESLANG_I64_APPROVED_TREE` must match the
+approved push; neither a private external carrier nor an unprotected PR ref is
+sufficient. The actual authorized GraalVM JDK 25 workflow runs:
 
 1. `mvn -B -ntp -Dtest=GraalI64RuntimeCharacterizationTest test`
 2. The existing Java semantic fixture validator and real Java compiler/guest
    probe for all required cases from `contracts/v1/semantics/cases.json`.
-3. Archival of Surefire reports, Java semantic results and retained
-   Truffle engine logs.
+3. A source-local adversarial regression suite with an enforced minimum
+   of 33 executed tests and no failures/skips/expected failures.
+4. `scripts/ci/verify_graal_i64_evidence.py`: fail-closed receipt admission
+   for at least 17 actual JUnit cases, all 15 canonical semantic fixture IDs,
+   their exact expected full-width-independent guest exit codes or diagnostic
+   classes, the independently recomputed canonical suite SHA-256, and approved
+   source commit/tree identity. Duplicate JSON keys, NaN, symlinked inputs,
+   pending cases, extra or missing cases, and forged success labels are rejected.
+   The Surefire XML must identify the exact `GraalI64RuntimeCharacterizationTest`
+   class and all 17 reviewed test names; arbitrary passing JUnit records are
+   rejected.
+5. A bounded 7-day artifact containing only the approved Surefire XML and
+   semantic JSON report, uploaded only after all required tests pass.
+
+An independent source-free Java/GraalVM **host arithmetic** reference can
+exercise the same expected signed-long values in an alternative private CI
+organization, without copying Oreslang source. Such a run is a toolchain
+characterization only: it is **not** Oreslang guest execution or parity proof.
+The source-local runner preflight rejects inherited Git/Python/Maven launch
+injection and denies Maven `.mvn` configuration overrides not present in the
+approved source tree. These checks require a reviewed, disposable runner and
+cannot replace runner isolation, independent branch protection, or signed
+provenance.
+The Python JSON Schema dependency is top-level pinned but its transitive
+dependency graph remains subject to supply-chain review before certification.
 
 A Java semantic report must be admitted only after external verification of
 the actual GitHub Actions job steps, source Git tree, compiled artifact
