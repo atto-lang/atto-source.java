@@ -409,7 +409,8 @@ public final class OresScheduler implements AutoCloseable {
         }
     }
 
-    private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
+    private final class TaskRunner<T> implements BiConsumer<Object, Throwable>,
+            CriticalRwGate.FencedLogicalOwner {
         private static final int NEW = 0;
         private static final int QUEUED = 1;
         private static final int RUNNING = 2;
@@ -421,6 +422,11 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        // A cancellation requested during guest execution must NOT settle the
+        // task Future (and release critical permits) until the carrier unwinds.
+        // This lock protects the transition from cancellable to executing.
+        private final Object cancellationAdmission = new Object();
+        private final AtomicBoolean cancellationRequested = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -431,7 +437,18 @@ public final class OresScheduler implements AutoCloseable {
 
         private TaskRunner(Task<T> task) {
             this.task = task;
-            this.completion = new OresFuture<>(this::cancelFromFuture);
+            this.completion = new OresFuture<>(
+                    this::admitCancellation, this::cancelFromFuture);
+        }
+
+        @Override
+        public void cancelAndReleaseAfterUnwind(Runnable release) {
+            Objects.requireNonNull(release, "release");
+            // Even when the task has already returned Done, publishing its
+            // Future waits for afterCarrierTurn(): never free a critical permit
+            // from a foreign callback while the guest stack is still live.
+            completion.whenCompleteRuntime((value, failure) -> release.run());
+            completion.cancel(false);
         }
 
         private void scheduleInitial() {
@@ -456,7 +473,14 @@ public final class OresScheduler implements AutoCloseable {
 
         private void runTurn() {
             if (!phase.compareAndSet(QUEUED, RUNNING)) return;
-            if (!executing.compareAndSet(false, true)) {
+            boolean started;
+            synchronized (cancellationAdmission) {
+                // If cancellation won before this dispatch, there must be no
+                // new guest turn, even while the cancel hook is pending.
+                if (cancellationRequested.get()) return;
+                started = executing.compareAndSet(false, true);
+            }
+            if (!started) {
                 failTerminal(new IllegalStateException(
                         "OresScheduler task execution lease violation"));
                 return;
@@ -521,9 +545,23 @@ public final class OresScheduler implements AutoCloseable {
          * this carrier is still executing guest continuation code.
          */
         private void afterCarrierTurn() {
-            executing.set(false);
+            synchronized (cancellationAdmission) {
+                executing.set(false);
+            }
+            // Cancellation while guest code was executing is only published
+            // after the entire turn (including interpreter/Truffle frames)
+            // has unwound. A releaseOnCompletion RW ticket is therefore never
+            // revoked while guest code still executes under that ticket.
+            if (cancellationRequested.get()) completion.cancel(false);
             publishTerminalIfReady();
             scheduleReadyResume();
+        }
+
+        private boolean admitCancellation() {
+            synchronized (cancellationAdmission) {
+                cancellationRequested.set(true);
+                return !executing.get();
+            }
         }
 
         private void armCooperate() {

@@ -6,6 +6,48 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class CriticalKeywordTest {
+    @Test void unloweredRwCriticalCannotDowngradeToLegacyWrite() {
+        // The runtime has a verified legacy critical WRITE lane, but has not
+        // integrated source-level read loans / mode-specific effect proofs.
+        // Every adjacent compound spelling must fail before execution.
+        String[] unlowered = {
+                "pub critical-read fnc peek(): int { return 1; }",
+                "pub critical-write fnc put(): int { return 1; }",
+                "pub fnc critical-read peek(): int { return 1; }",
+                "pub fnc critical-write put(): int { return 1; }",
+                "define class Box as pub critical-read get(): int { return 1; } end",
+                "define class Box as pub fnc critical-write set(): int { return 1; } end",
+                "define actor Box as pub critical-read get(): int { return 1; } end",
+                "define actor Box as pub fnc critical-write put(): int { return 1; } end"
+        };
+        for (String source : unlowered) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse(source), source);
+            assertTrue(error.getMessage().contains("reader/writer critical declaration requires"),
+                    () -> source + ": " + error.getMessage());
+        }
+    }
+
+    @Test void nearMissRwModifiersCannotMisclassifyLegacyCritical() {
+        // Exact adjacency is mandatory. In particular comments, whitespace
+        // and longer suffix identifiers cannot grant source-level RW effects.
+        String[] nearMisses = {
+                "pub fnc critical - read peek(): int { return 1; }",
+                "pub fnc critical- read peek(): int { return 1; }",
+                "pub fnc critical -read peek(): int { return 1; }",
+                "pub fnc critical/*comment*/-read peek(): int { return 1; }",
+                "pub fnc critical-readonly peek(): int { return 1; }",
+                "pub fnc critical--write peek(): int { return 1; }"
+        };
+        for (String source : nearMisses) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source), source);
+            assertFalse(error.getMessage().contains("reader/writer critical declaration requires"),
+                    () -> "near-miss classified as an RW mode: " + source);
+        }
+    }
+
     @Test void criticalModifiersPreserveFileAndInstanceEffects() {
         Ast.Program parsed = Parser.parse("""
                 pub critical fnc file_counter(): int { return 1; }

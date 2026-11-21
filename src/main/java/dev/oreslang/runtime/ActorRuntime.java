@@ -1167,6 +1167,14 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public interface ActorOwnedGuestState {
         ActorId ownerActorId();
+
+        /**
+         * Runtime-only, nonblocking capability revocation after the last actor
+         * carrier/guest turn has unwound and before owned memory is reclaimed.
+         * Implementations must not execute guest code, park a carrier, or
+         * publish a new actor continuation from this hook.
+         */
+        default void revokeRuntimeAdmissions() { }
     }
 
     /**
@@ -5665,7 +5673,18 @@ public final class ActorRuntime implements AutoCloseable {
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
-        private final Object executionDomain = new Object();
+        private final Object executionDomain = new CriticalRwGate.FencedLogicalOwner() {
+            @Override
+            public void cancelAndReleaseAfterUnwind(Runnable release) {
+                Objects.requireNonNull(release, "release");
+                // Actor finalization (not STOP publication) is the safety
+                // barrier: it occurs after the final guest TurnExecutor exit.
+                // Never revoke a live actor's critical permit from a foreign
+                // host callback while its current envelope is still running.
+                finalizedFuture.whenCompleteRuntime((value, failure) -> release.run());
+                ActorCell.this.stop();
+            }
+        };
         private int activeTurns;
         private boolean carrierActive;
         /**
@@ -5921,7 +5940,23 @@ public final class ActorRuntime implements AutoCloseable {
             }
             drainMailboxReservations();
             staticSelectCursors.clear();
+            ActorOwnedGuestState expiredState = codeActorState;
             codeActorState = null;
+            // Finalization already proved activeTurns==0, !scheduled and
+            // !carrierActive. Revoke source-state gates only after all guest
+            // instructions have unwound, but BEFORE reclaiming its arena.
+            if (expiredState != null) {
+                try {
+                    expiredState.revokeRuntimeAdmissions();
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable revocationFailure) {
+                    ref.terminationCause.compareAndSet(null,
+                            new IllegalStateException(
+                                    "failed to revoke actor-owned runtime admissions",
+                                    revocationFailure));
+                }
+            }
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
             if (memorySlice != null) memorySlice.close();

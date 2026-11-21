@@ -1,0 +1,631 @@
+package dev.oreslang.runtime;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Test;
+
+final class CriticalRwGateTest {
+    @Test
+    void concurrentReadersExcludeWritersAndPreserveWriterQueueOrder() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var first = gate.newTicket(CriticalRwGate.Mode.READ);
+        var second = gate.newTicket(CriticalRwGate.Mode.READ);
+        var writer = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        var lateReader = gate.newTicket(CriticalRwGate.Mode.READ);
+
+        assertTrue(first.enterAsync().isDone());
+        assertTrue(second.enterAsync().isDone());
+        assertFalse(writer.enterAsync().isDone());
+        assertFalse(lateReader.enterAsync().isDone());
+        assertEquals(2, gate.activeReaderCount());
+        assertEquals(2, gate.queuedCount());
+
+        first.close();
+        assertFalse(writer.isHeld(), "writer cannot overlap the remaining reader");
+        second.close();
+        assertTrue(writer.isHeld(), "writer at head must win before newer reader");
+        assertFalse(lateReader.isHeld());
+        assertEquals(0, gate.activeReaderCount());
+        writer.close();
+        assertTrue(lateReader.isHeld());
+        assertEquals(1, gate.activeReaderCount());
+        lateReader.close();
+        assertEquals(0, gate.queuedCount());
+        assertFalse(gate.hasWriter());
+    }
+
+    @Test
+    void consecutiveHeadReadersAreAdmittedAsACohort() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var initial = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        var readA = gate.newTicket(CriticalRwGate.Mode.READ);
+        var readB = gate.newTicket(CriticalRwGate.Mode.READ);
+        var nextWrite = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        initial.enterAsync();
+        readA.enterAsync();
+        readB.enterAsync();
+        nextWrite.enterAsync();
+
+        initial.close();
+        assertTrue(readA.isHeld());
+        assertTrue(readB.isHeld());
+        assertFalse(nextWrite.isHeld());
+        readA.close();
+        assertFalse(nextWrite.isHeld());
+        readB.close();
+        assertTrue(nextWrite.isHeld());
+        nextWrite.close();
+    }
+
+    @Test
+    void cancellingHeadWriterUnblocksReadersBehindItWithoutWaitingForActiveReader() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var firstRead = gate.newTicket(CriticalRwGate.Mode.READ);
+        var cancelledWriter = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        var waitingRead = gate.newTicket(CriticalRwGate.Mode.READ);
+        firstRead.enterAsync();
+        OresFuture<Void> pendingWriter = cancelledWriter.enterAsync();
+        OresFuture<Void> pendingRead = waitingRead.enterAsync();
+        assertEquals(2, gate.queuedCount());
+        assertFalse(pendingRead.isDone());
+        assertTrue(pendingWriter.cancel(false));
+        assertFalse(cancelledWriter.isHeld());
+        assertTrue(waitingRead.isHeld(),
+                "reader behind removed writer must join active readers immediately");
+        assertEquals(2, gate.activeReaderCount());
+        firstRead.close();
+        waitingRead.close();
+        assertEquals(0, gate.queuedCount());
+    }
+
+    @Test
+    void cancellingWaiterRetractsItsSlotAndCannotResurrectAfterHandoff() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var current = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        var cancelled = gate.newTicket(CriticalRwGate.Mode.READ);
+        var next = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        current.enterAsync();
+        OresFuture<Void> pending = cancelled.enterAsync();
+        next.enterAsync();
+        assertTrue(pending.cancel(false));
+        assertTrue(pending.isCancelled());
+        assertEquals(1, gate.queuedCount());
+        current.close();
+        assertFalse(cancelled.isHeld());
+        assertTrue(next.isHeld());
+        next.close();
+    }
+
+    @Test
+    void cancellingGrantHandoffNeverLeaksReadersOrWriters() throws Exception {
+        for (int n = 0; n < 200; n++) {
+            CriticalRwGate gate = new CriticalRwGate();
+            var owner = gate.newTicket(CriticalRwGate.Mode.WRITE);
+            var candidate = gate.newTicket(CriticalRwGate.Mode.READ);
+            var following = gate.newTicket(CriticalRwGate.Mode.WRITE);
+            owner.enterAsync();
+            OresFuture<Void> pending = candidate.enterAsync();
+            following.enterAsync();
+            Thread canceller = new Thread(() -> pending.cancel(false));
+            canceller.start();
+            owner.close();
+            canceller.join();
+            if (pending.isCancelled()) assertFalse(candidate.isHeld());
+            candidate.close();
+            if (following.isHeld()) following.close();
+            assertEquals(0, gate.queuedCount());
+            assertEquals(0, gate.activeReaderCount());
+            assertFalse(gate.hasWriter());
+            gate.close();
+        }
+    }
+
+    @Test
+    void queuedTasksYieldCarrierAndResumeOnSchedulerAfterGrant() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        var owner = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        owner.enterAsync();
+        var queued = new AtomicReference<CriticalRwGate.Ticket>();
+        var wasQueued = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                if (resume.initial()) {
+                    var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+                    queued.set(reader);
+                    OresFuture<Void> admitted = reader.enterAsync();
+                    wasQueued.countDown();
+                    return OresScheduler.await(admitted);
+                }
+                assertNull(resume.failure());
+                var reader = queued.get();
+                assertTrue(reader.isHeld(), "cannot execute after revoked admission");
+                reader.close();
+                return OresScheduler.done(42);
+            });
+            assertTrue(wasQueued.await(5, TimeUnit.SECONDS));
+            assertEquals(1, gate.queuedCount());
+            assertTrue(scheduler.startSync(() -> true).join(),
+                    "carrier must service another task while reader waits");
+            owner.close();
+            assertEquals(42, task.join());
+        }
+        assertEquals(0, gate.queuedCount());
+    }
+
+    @Test
+    void pendingFutureBlockingBridgeCannotParkOrdinarySchedulerCarrier() {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Boolean> checked = scheduler.startSync(() -> {
+                var pending = new OresFuture<Void>();
+                assertThrows(IllegalStateException.class, pending::join);
+                assertThrows(IllegalStateException.class, pending::get);
+                assertThrows(IllegalStateException.class,
+                        () -> pending.get(1, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> pending.get(0, TimeUnit.SECONDS),
+                        "zero-timeout polling should remain allowed");
+                assertEquals(42, OresFuture.completed(42).join(),
+                        "settled Future must still be readable synchronously");
+                return true;
+            });
+            assertTrue(checked.join());
+        }
+    }
+
+    @Test
+    void cancellingExecutingTaskDoesNotReleaseCriticalWriteBeforeUnwind()
+            throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch allowReturn = new CountDownLatch(1);
+        AtomicReference<CriticalRwGate.Ticket> owning = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                var legacy = gate.newCriticalTicket();
+                owning.set(legacy);
+                legacy.enterAsync();
+                entered.countDown();
+                if (!allowReturn.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("test-owned carrier was not released");
+                }
+                return OresScheduler.done(7);
+            });
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            owning.get().releaseOnCompletion(task);
+            var nextReader = gate.newTicket(CriticalRwGate.Mode.READ);
+            OresFuture<Void> waiting = nextReader.enterAsync();
+            assertFalse(waiting.isDone());
+
+            // Cancellation is requested, but it cannot settle or revoke the
+            // writer until the running guest turn has completely unwound.
+            assertFalse(task.cancel(false), "active execution cannot be cancelled inline");
+            assertTrue(owning.get().isHeld(), "writer permit released during guest execution");
+            assertFalse(task.isDone(), "task completion published before carrier unwind");
+            assertFalse(nextReader.isHeld(), "reader overlapped live cancelled writer");
+
+            allowReturn.countDown();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while ((!task.isCancelled() || owning.get().isHeld() || !nextReader.isHeld())
+                    && System.nanoTime() < deadline) Thread.yield();
+            // Future settlement publishes the terminal bit BEFORE delivering
+            // runtime completion callbacks. Observe the actual ownership
+            // release, not merely task.isDone() in that intermediate window.
+            assertTrue(task.isCancelled(), "pending cancellation must publish on carrier unwind");
+            assertFalse(owning.get().isHeld(), "cancelled writer ticket was not cleaned up");
+            assertTrue(nextReader.isHeld(), "reader did not enter after carrier exit");
+            nextReader.close();
+        } finally {
+            allowReturn.countDown();
+            gate.close();
+        }
+    }
+
+    @Test
+    void cancellingSchedulerTaskRevokesContendedRwAdmission() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        var writer = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        writer.enterAsync();
+        var queued = new AtomicReference<CriticalRwGate.Ticket>();
+        var enqueued = new CountDownLatch(1);
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                if (!resume.initial()) {
+                    fail("cancelled continuation must never enter guest code");
+                }
+                var ticket = gate.newTicket(CriticalRwGate.Mode.READ);
+                queued.set(ticket);
+                var admission = ticket.enterAsync();
+                enqueued.countDown();
+                return OresScheduler.await(admission);
+            });
+            assertTrue(enqueued.await(5, TimeUnit.SECONDS));
+            var ticket = queued.get();
+            ticket.releaseOnCompletion(task);
+            assertEquals(1, gate.queuedCount());
+            // The task may still be completing its initial carrier turn.
+            // cancel(false) is then deferred until the carrier unwinds.
+            task.cancel(false);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while ((!task.isCancelled() || gate.queuedCount() != 0)
+                    && System.nanoTime() < deadline) Thread.yield();
+            // OresFuture publishes terminal state before invoking its runtime
+            // completion waiters. Permit revocation must be observed itself,
+            // even after task.isCancelled() becomes true.
+            assertTrue(task.isCancelled(),
+                    "scheduler cancellation must eventually publish after carrier unwind");
+            assertEquals(0, gate.queuedCount(),
+                    "cancelling the scheduler owner must retract pending admission");
+            assertFalse(ticket.isHeld());
+        } finally {
+            writer.close();
+        }
+        assertFalse(gate.hasWriter());
+    }
+
+    @Test
+    void gateShutdownCannotRevokeActiveSchedulerWriterBeforeUnwind()
+            throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch exitGuest = new CountDownLatch(1);
+        AtomicReference<CriticalRwGate.Ticket> currentWriter = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                var writer = gate.newCriticalTicket();
+                currentWriter.set(writer);
+                writer.enterAsync();
+                entered.countDown();
+                if (!exitGuest.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("scheduler writer exit never signaled");
+                }
+                assertTrue(writer.isHeld(), "gate.close revoked live guest writer");
+                return OresScheduler.done(5);
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var writer = currentWriter.get();
+                writer.releaseOnCompletion(task);
+                var waiting = gate.newTicket(CriticalRwGate.Mode.READ);
+                var admission = waiting.enterAsync();
+                assertFalse(admission.isDone());
+                int before = CriticalRwGate.waitingLogicalDomains();
+
+                gate.close();
+                gate.close();
+                assertTrue(writer.isHeld(), "gate shutdown must retain writer until unwind");
+                assertFalse(task.isDone(), "task settled before current guest turn exited");
+                assertTrue(admission.isDone(), "gate shutdown did not revoke queued waiter");
+                assertFalse(waiting.isHeld(), "closed gate must not admit stale reader");
+                assertEquals(before - 1, CriticalRwGate.waitingLogicalDomains());
+                assertEquals(0, gate.queuedCount());
+                assertThrows(IllegalStateException.class, gate::newCriticalTicket);
+
+                exitGuest.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while ((!task.isCancelled() || writer.isHeld())
+                        && System.nanoTime() < deadline) Thread.yield();
+                assertTrue(task.isCancelled(), "closed gate must cancel owning logical task");
+                assertFalse(writer.isHeld(), "unwound scheduler owner leaked writer");
+                assertFalse(gate.hasWriter());
+            } finally {
+                exitGuest.countDown();
+            }
+        } finally {
+            exitGuest.countDown();
+            gate.close();
+        }
+    }
+
+    @Test
+    void gateShutdownRetainsHostWriterUntilHostLeavesLexicalRegion()
+            throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch leave = new CountDownLatch(1);
+        AtomicReference<CriticalRwGate.Ticket> writerRef = new AtomicReference<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        Thread owner = Thread.ofPlatform().name("gate-close-host-owner").start(() -> {
+            var writer = gate.newCriticalTicket();
+            try {
+                writer.enterSync();
+                writerRef.set(writer);
+                entered.countDown();
+                if (!leave.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("host lexical exit never signaled");
+                }
+                assertTrue(writer.isHeld(), "gate closed while synchronous host still executing");
+            } catch (Throwable failure) {
+                error.set(failure);
+            } finally {
+                writer.close();
+            }
+        });
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var writer = writerRef.get();
+            var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+            var pending = reader.enterAsync();
+            assertFalse(pending.isDone());
+            gate.close();
+            assertTrue(writer.isHeld(), "gate shutdown revoked live host writer");
+            assertTrue(pending.isDone());
+            assertFalse(reader.isHeld(), "closed gate admitted stale read");
+            assertThrows(IllegalStateException.class, gate::newCriticalTicket);
+            leave.countDown();
+            owner.join(TimeUnit.SECONDS.toMillis(5));
+            assertFalse(owner.isAlive());
+            assertNull(error.get());
+            assertFalse(writer.isHeld());
+            assertFalse(gate.hasWriter());
+            assertEquals(0, gate.queuedCount());
+        } finally {
+            leave.countDown();
+            owner.join(TimeUnit.SECONDS.toMillis(5));
+            gate.close();
+        }
+    }
+
+    @Test
+    void foreignHostCannotReleaseLiveSynchronousOwnerTicket() throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch leave = new CountDownLatch(1);
+        AtomicReference<CriticalRwGate.Ticket> active = new AtomicReference<>();
+        AtomicReference<Throwable> hostFailure = new AtomicReference<>();
+        Thread owner = Thread.ofPlatform().name("rw-host-owner").start(() -> {
+            var writer = gate.newCriticalTicket();
+            try {
+                writer.enterSync();
+                active.set(writer);
+                entered.countDown();
+                if (!leave.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("host guest turn did not finish");
+                }
+            } catch (Throwable failure) {
+                hostFailure.set(failure);
+            } finally {
+                writer.close();
+            }
+        });
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var writer = active.get();
+            var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+            reader.enterAsync();
+            assertFalse(reader.isHeld());
+            var failure = assertThrows(IllegalStateException.class, writer::close);
+            assertTrue(failure.getMessage().contains("foreign thread"));
+            assertTrue(writer.isHeld(), "external host close released live writer");
+            assertFalse(reader.isHeld(), "reader overlapped host-owned writer");
+            leave.countDown();
+            owner.join(TimeUnit.SECONDS.toMillis(5));
+            assertFalse(owner.isAlive());
+            assertNull(hostFailure.get());
+            assertTrue(reader.isHeld(), "reader must enter after owner exits");
+            reader.close();
+        } finally {
+            leave.countDown();
+            owner.join(TimeUnit.SECONDS.toMillis(5));
+            gate.close();
+        }
+    }
+
+    @Test
+    void foreignCloseCannotReleaseRunningSchedulerWriterBeforeCarrierUnwind()
+            throws Exception {
+        CriticalRwGate gate = new CriticalRwGate();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch exitGuest = new CountDownLatch(1);
+        AtomicReference<CriticalRwGate.Ticket> active = new AtomicReference<>();
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Integer> task = scheduler.start(resume -> {
+                var writer = gate.newCriticalTicket();
+                active.set(writer);
+                writer.enterAsync();
+                entered.countDown();
+                if (!exitGuest.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("guest writer was never released");
+                }
+                assertTrue(writer.isHeld(),
+                        "foreign cancellation released WRITE while guest was executing");
+                return OresScheduler.done(9);
+            });
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var writer = active.get();
+                writer.releaseOnCompletion(task);
+                var nextReader = gate.newTicket(CriticalRwGate.Mode.READ);
+                nextReader.enterAsync();
+                assertFalse(nextReader.isHeld());
+
+                // This call is made on the host, not by the owning scheduler
+                // continuation. It must cancel the owner and defer release.
+                writer.close();
+                writer.close();
+                assertTrue(writer.isHeld(), "foreign close released active WRITE");
+                assertFalse(task.isDone(), "task completed before guest unwind");
+                assertFalse(nextReader.isHeld(), "reader overtook live writer");
+                exitGuest.countDown();
+
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while ((!task.isCancelled() || writer.isHeld() || !nextReader.isHeld())
+                        && System.nanoTime() < deadline) Thread.yield();
+                assertTrue(task.isCancelled(), "foreign close must cancel owning task");
+                assertFalse(writer.isHeld(), "writer ticket leaked after task terminal");
+                assertTrue(nextReader.isHeld(), "reader was not admitted after unwind");
+                nextReader.close();
+                assertEquals(0, gate.queuedCount());
+                assertEquals(0, gate.activeReaderCount());
+            } finally {
+                exitGuest.countDown();
+            }
+        } finally {
+            exitGuest.countDown();
+            gate.close();
+        }
+    }
+
+    @Test
+    void sameLogicalContinuationCannotUpgradeOrNestWhileUnverified() {
+        CriticalRwGate gate = new CriticalRwGate();
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Void> completed = scheduler.startSync(() -> {
+                var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+                reader.enterAsync();
+                var write = gate.newTicket(CriticalRwGate.Mode.WRITE);
+                try {
+                    var error = assertThrows(IllegalStateException.class, write::enterAsync);
+                    assertTrue(error.getMessage().contains("read-to-write"));
+                } finally {
+                    reader.close();
+                }
+                return null;
+            });
+            completed.join();
+        }
+        assertEquals(0, gate.activeReaderCount());
+    }
+
+    @Test
+    void failureCompletionAndGateCloseRevokeAllGrantsAndWaiters() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var active = gate.newTicket(CriticalRwGate.Mode.READ);
+        var queued = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        active.enterAsync();
+        OresFuture<Void> pending = queued.enterAsync();
+        gate.close();
+        assertFalse(active.isHeld());
+        assertFalse(queued.isHeld());
+        assertTrue(pending.isDone());
+        assertEquals(0, gate.queuedCount());
+        assertEquals(0, gate.activeReaderCount());
+        assertFalse(gate.hasWriter());
+        assertThrows(IllegalStateException.class,
+                () -> gate.newTicket(CriticalRwGate.Mode.READ));
+        active.close();
+        queued.close();
+    }
+
+    @Test
+    void unrequestedAdmissionCannotBecomeAnInfiniteWait() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var ticket = gate.newTicket(CriticalRwGate.Mode.READ);
+        var failure = assertThrows(IllegalStateException.class, ticket::admission);
+        assertTrue(failure.getMessage().contains("not requested"));
+        ticket.close();
+        assertTrue(ticket.admission().isDone(), "closed ticket must be terminal");
+    }
+
+    @Test
+    void activeReaderBoundQueuesExcessReadersAndAdmitsWhenCapacityReturns() {
+        CriticalRwGate gate = new CriticalRwGate();
+        java.util.List<CriticalRwGate.Ticket> admitted = new java.util.ArrayList<>();
+        for (int i = 0; i < CriticalRwGate.MAX_ACTIVE_READERS; i++) {
+            var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+            assertTrue(reader.enterAsync().isDone());
+            admitted.add(reader);
+        }
+        assertEquals(CriticalRwGate.MAX_ACTIVE_READERS, gate.activeReaderCount());
+        var overflow = gate.newTicket(CriticalRwGate.Mode.READ);
+        assertFalse(overflow.enterAsync().isDone(), "reader cap must not over-admit");
+        assertEquals(1, gate.queuedCount());
+        admitted.getFirst().close();
+        assertTrue(overflow.isHeld(), "vacated reader slot must hand off without parking");
+        assertEquals(CriticalRwGate.MAX_ACTIVE_READERS, gate.activeReaderCount());
+        gate.close();
+        assertFalse(overflow.isHeld());
+        assertEquals(0, gate.activeReaderCount());
+        assertEquals(0, gate.queuedCount());
+    }
+
+    @Test
+    void crossGateLogicalOwnershipRejectsOverlapWithoutBlockingOtherDomains() {
+        CriticalRwGate one = new CriticalRwGate();
+        CriticalRwGate two = new CriticalRwGate();
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            var result = scheduler.startSync(() -> {
+                var writer = one.newTicket(CriticalRwGate.Mode.WRITE);
+                writer.enterAsync();
+                try {
+                    var reader = two.newTicket(CriticalRwGate.Mode.READ);
+                    assertThrows(IllegalStateException.class, reader::enterAsync,
+                            "same logical task cannot hold two unverified critical domains");
+                } finally {
+                    writer.close();
+                }
+                return true;
+            });
+            assertTrue(result.join());
+        }
+        assertFalse(one.hasWriter());
+        assertEquals(0, two.queuedCount());
+    }
+
+    @Test
+    void completionBindingIsSingleOwnerAndCancelsQueuedTickets() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var owner = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        var waiter = gate.newTicket(CriticalRwGate.Mode.READ);
+        owner.enterAsync();
+        OresFuture<Void> pending = waiter.enterAsync();
+        OresFuture<Void> taskCompletion = new OresFuture<>();
+        waiter.releaseOnCompletion(taskCompletion);
+        var duplicate = assertThrows(IllegalStateException.class,
+                () -> waiter.releaseOnCompletion(new OresFuture<>()));
+        assertTrue(duplicate.getMessage().contains("already bound"));
+        assertTrue(taskCompletion.cancel(false));
+        assertTrue(pending.isDone(), "owner cancellation must settle admission Future");
+        assertFalse(waiter.isHeld());
+        assertEquals(0, gate.queuedCount());
+        owner.close();
+        assertEquals(0, gate.activeReaderCount());
+        assertFalse(gate.hasWriter());
+    }
+
+    @Test
+    void alreadySettledCompletionReleasesGrantAndCannotBeAttachedAgain() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var reader = gate.newTicket(CriticalRwGate.Mode.READ);
+        reader.enterAsync();
+        reader.releaseOnCompletion(OresFuture.completed(null));
+        assertFalse(reader.isHeld());
+        assertThrows(IllegalStateException.class,
+                () -> reader.releaseOnCompletion(new OresFuture<>()));
+        assertEquals(0, gate.activeReaderCount());
+    }
+
+    @Test
+    void taskCompletionReleasesPermitEvenWhenTaskFails() {
+        CriticalRwGate gate = new CriticalRwGate();
+        var writer = gate.newTicket(CriticalRwGate.Mode.WRITE);
+        writer.enterAsync();
+        OresFuture<Void> end = new OresFuture<>();
+        writer.releaseOnCompletion(end);
+        end.failFromRuntime(new IllegalStateException("task failed"));
+        assertFalse(writer.isHeld());
+        assertFalse(gate.hasWriter());
+    }
+
+    @Test
+    void independentGatesAndDoubleCloseAreSafe() {
+        CriticalRwGate first = new CriticalRwGate();
+        CriticalRwGate second = new CriticalRwGate();
+        var a = first.newTicket(CriticalRwGate.Mode.WRITE);
+        var b = second.newTicket(CriticalRwGate.Mode.READ);
+        a.enterAsync();
+        b.enterAsync();
+        assertTrue(a.isHeld());
+        assertTrue(b.isHeld());
+        a.close();
+        a.close();
+        b.close();
+        assertFalse(first.hasWriter());
+        assertEquals(0, second.activeReaderCount());
+        first.close();
+        first.close();
+        second.close();
+    }
+}
