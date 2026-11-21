@@ -4851,8 +4851,9 @@ public final class Parser {
 
 
     /**
-     * AttoLang guard inverts a boolean precondition and runs its mandatory
-     * terminal failure block. Both `guard cond { ... }` and
+     * AttoLang guard inverts a boolean precondition and runs a mandatory
+     * explicitly returning failure block. Loop break/continue and throws
+     * do not discharge the return requirement. Both `guard cond { ... }` and
      * `guard cond else ... end` lower through the same checked IfStmt.
      * The positive path stays in the current scope; ownership/effects,
      * condition-once evaluation and cleanup must not depend on style.
@@ -4900,7 +4901,7 @@ public final class Parser {
             throw error(peek(), "guard requires '{ ... }' or 'else ... end' failure block");
         }
         if (!guardFailureTerminates(failureBody)) {
-            throw error(previous(), "guard failure block must exit with return, break or continue");
+            throw error(previous(), "guard failure block must explicitly return from the enclosing function on every path");
         }
         return new Ast.IfStmt(
                 List.of(new Ast.IfBranch(new Ast.UnaryExpr("!", condition), failureBody)),
@@ -4910,8 +4911,7 @@ public final class Parser {
     private boolean guardFailureTerminates(List<Ast.Stmt> body) {
         if (body.isEmpty()) return false;
         Ast.Stmt last = body.getLast();
-        if (last instanceof Ast.ReturnStmt || last instanceof Ast.BreakStmt
-                || last instanceof Ast.ContinueStmt) return true;
+        if (last instanceof Ast.ReturnStmt) return true;
         if (last instanceof Ast.BlockStmt block) return guardFailureTerminates(block.body());
         if (last instanceof Ast.IfStmt branch) {
             if (branch.elseBody().isEmpty() || !guardFailureTerminates(branch.elseBody()))
