@@ -4900,12 +4900,44 @@ public final class Parser {
         } else {
             throw error(peek(), "guard requires '{ ... }' or 'else ... end' failure block");
         }
-        if (!guardFailureTerminates(failureBody)) {
+        if (guardFailureContainsNonReturnExit(failureBody)
+                || !guardFailureTerminates(failureBody)) {
             throw error(previous(), "guard failure block must explicitly return from the enclosing function on every path");
         }
         return new Ast.IfStmt(
                 List.of(new Ast.IfBranch(new Ast.UnaryExpr("!", condition), failureBody)),
                 List.of());
+    }
+
+    /** A control transfer earlier in the failure block cannot satisfy the
+     * mandatory return just because a syntactic return appears later.
+     * Conservative rejection applies inside nested loops, conditionals and
+     * try/catch/finally until a richer control-effect proof is available. */
+    private boolean guardFailureContainsNonReturnExit(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt) return true;
+            if (stmt instanceof Ast.BlockStmt block
+                    && guardFailureContainsNonReturnExit(block.body())) return true;
+            if (stmt instanceof Ast.IfStmt condition) {
+                if (guardFailureContainsNonReturnExit(condition.elseBody())) return true;
+                for (Ast.IfBranch arm : condition.branches()) {
+                    if (guardFailureContainsNonReturnExit(arm.body())) return true;
+                }
+            }
+            if (stmt instanceof Ast.LoopStmt loop
+                    && guardFailureContainsNonReturnExit(loop.body())) return true;
+            if (stmt instanceof Ast.ForStmt loop
+                    && guardFailureContainsNonReturnExit(loop.body())) return true;
+            if (stmt instanceof Ast.DoWhileStmt loop
+                    && guardFailureContainsNonReturnExit(loop.body())) return true;
+            if (stmt instanceof Ast.ForOfStmt loop
+                    && guardFailureContainsNonReturnExit(loop.body())) return true;
+            if (stmt instanceof Ast.TryStmt attempt
+                    && (guardFailureContainsNonReturnExit(attempt.body())
+                        || guardFailureContainsNonReturnExit(attempt.catchBody())
+                        || guardFailureContainsNonReturnExit(attempt.finallyBody()))) return true;
+        }
+        return false;
     }
 
     private boolean guardFailureTerminates(List<Ast.Stmt> body) {
