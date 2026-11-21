@@ -1,0 +1,33 @@
+fnc left(int n): int {
+  if n == 0; do
+    return 0;
+  else
+    return right(n - 1);
+  fi
+}
+
+fnc right(int n): int {
+  if n == 0; do
+    return 0;
+  else
+    return left(n - 1);
+  fi
+}
+
+define actor MutualWorker as
+  receive(ActorMail<String> mail): void {
+    self.send(left(100000));
+    self.end();
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = spawn MutualWorker();
+  await worker.get_ready();
+  worker.send("run");
+  val result = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(result.value);
+  await worker.get_done();
+  return;
+}

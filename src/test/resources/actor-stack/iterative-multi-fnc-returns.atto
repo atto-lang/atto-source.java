@@ -1,0 +1,27 @@
+fnc leaf(int n): int {
+  return n + 2;
+}
+
+fnc combine(int n): int {
+  val int a = leaf(n);
+  return leaf(a) + leaf(n);
+}
+
+define actor ScalarReturnWorker as
+  receive(ActorMail<String> mail): void {
+    val int sum = combine(20);
+    self.send(sum);
+    self.end();
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = spawn ScalarReturnWorker();
+  await worker.get_ready();
+  worker.send("run");
+  val result = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(result.value);
+  await worker.get_done();
+  return;
+}
