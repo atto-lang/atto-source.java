@@ -3450,6 +3450,9 @@ public final class Parser {
 
         List<Ast.MatchArm> handlers = new ArrayList<>();
         while (!check(END) && !check(EOF)) {
+            // Backward-compatible contextual spelling "on Err(e) -> ...".
+            // An identifier named "on" elsewhere remains legal.
+            if (isContextualIdentifier("on")) advance();
             Ast.Pattern pattern = parsePattern();
             if (!maybeFailureVariant(pattern, "Err")
                     && !maybeFailureVariant(pattern, "None")
