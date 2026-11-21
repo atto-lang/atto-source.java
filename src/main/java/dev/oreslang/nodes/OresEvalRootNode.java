@@ -1361,13 +1361,21 @@ public final class OresEvalRootNode extends RootNode {
                         // authenticated actor-owned frame before binding Env.
                         // Object roots / wide arguments explicitly fall back
                         // to the existing JVM source interpreter path.
-                        bindCallableArguments(
-                                params,
-                                parameters,
-                                OresScheduler.bindCompilerSourceArguments(arguments),
-                                function != null
-                                        ? "function " + function.name()
-                                        : "method " + method.name());
+                        // Formal parameters already occupy typed slots
+                        // when scalar lowering succeeds. Preserve room in the
+                        // same frame for actual lexical local declarations.
+                        params.suspendActorLocalBinding = true;
+                        try {
+                            bindCallableArguments(
+                                    params,
+                                    parameters,
+                                    OresScheduler.bindCompilerSourceArguments(arguments),
+                                    function != null
+                                            ? "function " + function.name()
+                                            : "method " + method.name());
+                        } finally {
+                            params.suspendActorLocalBinding = false;
+                        }
                     }
 
                     List<Ast.Stmt> body =
@@ -10435,6 +10443,8 @@ public final class OresEvalRootNode extends RootNode {
         private final String lexicalModule;
         private final OresObject constructingObject;
         private final Map<String, Slot> slots = new HashMap<>();
+        /** Only suppress while formal parameter values are bound separately. */
+        private boolean suspendActorLocalBinding;
         // Logical structured scope follows the source continuation and captured
         // child Env across carrier migration; it is never a ThreadLocal token.
         private TaskScope structuredTaskScope;
@@ -10528,9 +10538,16 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 Ast.BindingKind kind,
                 Ast.ClassDecl staticClassView) {
-            if (slots.putIfAbsent(name, new Slot(value, kind, staticClassView)) != null) {
+            if (slots.containsKey(name)) {
                 throw new IllegalArgumentException("duplicate binding " + name);
             }
+            Slot slot = new Slot(value, kind, staticClassView);
+            if (!suspendActorLocalBinding
+                    && OresScheduler.bindCompilerScalarLocal(scopeEpoch, name, value)) {
+                slot.actorScalarBound = true;
+                slot.scalarScopeEpoch = scopeEpoch;
+            }
+            slots.put(name, slot);
         }
         private void reserve(String name, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(MISSING, kind, null)) != null) throw new IllegalArgumentException("duplicate binding " + name);
@@ -10538,6 +10555,12 @@ public final class OresEvalRootNode extends RootNode {
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
+            if (slot.actorScalarBound) {
+                OresScheduler.writeCompilerScalarLocal(slot.scalarScopeEpoch, name, value);
+            } else if (OresScheduler.bindCompilerScalarLocal(scopeEpoch, name, value)) {
+                slot.actorScalarBound = true;
+                slot.scalarScopeEpoch = scopeEpoch;
+            }
             slot.value = value;
         }
         private Slot lookupSlot(String name) {
@@ -10555,7 +10578,9 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "binding '" + name + "' was moved into an eager Task");
                 }
-                return slot.value;
+                return slot.actorScalarBound
+                        ? OresScheduler.readCompilerScalarLocal(slot.scalarScopeEpoch, name)
+                        : slot.value;
             }
             return parent == null ? MISSING : parent.lookup(name);
         }
@@ -10563,6 +10588,12 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
+                if (slot.actorScalarBound) {
+                    OresScheduler.writeCompilerScalarLocal(slot.scalarScopeEpoch, name, value);
+                } else if (OresScheduler.bindCompilerScalarLocal(scopeEpoch, name, value)) {
+                    slot.actorScalarBound = true;
+                    slot.scalarScopeEpoch = scopeEpoch;
+                }
                 slot.value = value;
                 return;
             }
@@ -10907,6 +10938,8 @@ public final class OresEvalRootNode extends RootNode {
         private Object value;
         private final Ast.BindingKind kind;
         private final Ast.ClassDecl staticClassView;
+        private boolean actorScalarBound;
+        private long scalarScopeEpoch;
         private Slot(
                 Object value,
                 Ast.BindingKind kind,

@@ -462,6 +462,36 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Compiler Env bridge. Attempt to store an exactly typed scalar source
+     * local in the active actor-owned SourceTask frame. Unsupported values,
+     * non-actor execution and slot capacity exhaustion preserve the legacy
+     * interpreter path without allocating a partial managed slot.
+     */
+    public static boolean bindCompilerScalarLocal(
+            long scopeEpoch, String name, Object value) {
+        ActorSourceTaskFrame frame = currentActorSourceTaskFrame();
+        return frame != null && frame.bindLexicalScalar(scopeEpoch, name, value);
+    }
+
+    /** A managed Env binding must never fall back to a JVM shadow after await. */
+    public static Object readCompilerScalarLocal(long scopeEpoch, String name) {
+        ActorSourceTaskFrame frame = currentActorSourceTaskFrame();
+        if (frame == null) throw new SecurityException(
+                "actor lexical frame read outside its owning SourceTask turn");
+        return frame.readLexicalScalar(scopeEpoch, name);
+    }
+
+    /** Update the existing managed slot, retaining its primitive kind. */
+    public static void writeCompilerScalarLocal(
+            long scopeEpoch, String name, Object value) {
+        ActorSourceTaskFrame frame = currentActorSourceTaskFrame();
+        if (frame == null) throw new SecurityException(
+                "actor lexical frame write outside its owning SourceTask turn");
+        frame.writeLexicalScalar(scopeEpoch, name, value);
+    }
+
+
+    /**
      * Identifier for the current scheduler dispatch turn, or {@code 0} outside
      * an OresScheduler dispatch. A continuation resumed after {@code await}
      * always observes a different dispatch id, even when the scheduler chooses

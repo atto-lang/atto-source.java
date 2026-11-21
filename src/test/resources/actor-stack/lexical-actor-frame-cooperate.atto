@@ -1,0 +1,42 @@
+suspends fnc scalar_local_across_cooperate(int starting): int {
+  let int running = starting;
+  rt cooperate;
+  running = running + 1;
+  rt cooperate;
+  running = running + 1;
+  return running;
+}
+
+define actor LexicalWorker as
+  receive(ActorMail<String> mail): void {
+    if mail.value == "first"; do
+      self.send("before");
+      val int result = await scalar_local_across_cooperate(40);
+      self.send(result);
+      return;
+    fi
+    if mail.value == "second"; do
+      self.send("second");
+      self.end();
+      return;
+    fi
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = spawn LexicalWorker();
+  await worker.get_ready();
+  worker.send("first");
+  worker.send("second");
+  val first = (await worker.outputs.next()).value.unwrap();
+  val second = (await worker.outputs.next()).value.unwrap();
+  val third = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(first.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(second.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(third.value);
+  await worker.get_done();
+  return;
+}
