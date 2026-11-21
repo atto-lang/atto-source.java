@@ -1,4 +1,4 @@
-name: Atto Java migrated-main exact-source Ready-four integration (review-only)
+name: Atto Java migrated-main pinned 41-blob fourway integration (review-only)
 on:
   workflow_dispatch:
   push:
@@ -10,7 +10,26 @@ concurrency:
   group: atto-java-main61-ready-four-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  source-closure-integrity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source-owned four-way candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify immutable Git tree SHA and all 41 pinned PR blob identities
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          python3 ci/compiler/verify-fourway-source-closure.py
+          echo 'ATTO_FOURWAY_SOURCE_CLOSURE_GATE=PASS'
   baseline-maven:
+    needs: source-closure-integrity
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     steps:
@@ -45,6 +64,7 @@ jobs:
           mvn -B -ntp -Dmaven.test.failure.ignore=false verify
           echo ATTO_JAVA_MIGRATED_MAIN_MAVEN_VERIFY=PASS
   four-ready-compiler-checks:
+    needs: source-closure-integrity
     runs-on: ubuntu-24.04
     timeout-minutes: 70
     strategy:
@@ -97,6 +117,7 @@ jobs:
           grep -Fx "$REQUIRED_MARKER" /tmp/atto-source-local-original-script.log
           echo ATTO_JAVA_FOUR_READY_SOURCE_LOCAL_JOB_PASS=PASS
   admission-regressions:
+    needs: source-closure-integrity
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
