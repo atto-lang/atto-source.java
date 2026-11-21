@@ -54,4 +54,42 @@ final class SourceCriticalActorStateTest {
         }
         assertEquals("1\n2\n3\n", output.toString(StandardCharsets.UTF_8));
     }
+    @Test void compiledActorCanReturnDetachedIntegerListSnapshot() throws Exception {
+        String source = """
+            define actor Snapshot as
+                state { items: List[int] = [1, 2]; }
+
+                pub sample(): int with state.read {
+                    val detached = self.handle_state(|s| -> { return s.items; });
+                    detached[0] = 99;
+                    val current = self.handle_state(|s| -> { return s.items; });
+                    return detached[0] * 10 + current[0];
+                }
+
+                receive(ActorMail<String> mail): void {
+                    stdio.println(self.sample());
+                    self.end();
+                    return;
+                }
+            end
+
+            pub async routine main(): void {
+                val worker = spawn Snapshot();
+                await worker.ready;
+                worker.send("read");
+                await worker.done;
+                return;
+            }
+            """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            Source compiled = Source.newBuilder(
+                    OresLanguage.ID, source, "actor-int-list-snapshot.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            assertDoesNotThrow(() -> context.eval(compiled));
+        }
+        assertEquals("991\n", output.toString(StandardCharsets.UTF_8));
+    }
+
 }
