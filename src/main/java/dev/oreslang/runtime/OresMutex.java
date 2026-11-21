@@ -390,10 +390,20 @@ public final class OresMutex {
 
         synchronized boolean reserveRuntimePublication(ActorRuntime runtime) {
             Objects.requireNonNull(runtime, "runtime");
+            if (pendingPublications < 0
+                    || (owningRuntime == null && pendingPublications != 0)) {
+                throw new IllegalStateException(
+                        "SharedMutex publication reservation state is corrupted");
+            }
+            if (owningRuntime != null && owningRuntime != runtime) {
+                return false;
+            }
+            if (pendingPublications == Integer.MAX_VALUE) {
+                throw new IllegalStateException(
+                        "SharedMutex publication reservation capacity exhausted");
+            }
             if (owningRuntime == null) {
                 owningRuntime = runtime;
-            } else if (owningRuntime != runtime) {
-                return false;
             }
             pendingPublications++;
             return true;
