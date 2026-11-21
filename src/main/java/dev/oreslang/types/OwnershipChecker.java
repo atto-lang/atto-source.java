@@ -918,6 +918,23 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            // Immutable enum symbols have no actor-owned receiver or loan.
+            // A local binding with the same spelling must still be checked as
+            // ordinary member access, not promoted to enum namespace authority.
+            if (member.receiver() instanceof Ast.NameExpr enumOwner
+                    && scope.lookup(enumOwner.name()) == null) {
+                NominalEnumRegistry.Case enumCase = nominalEnums.caseOrNull(
+                        enumOwner.name() + "." + member.member());
+                if (enumCase != null) {
+                    if (enumCase.payload() != null) {
+                        throw error("enum case " + enumCase.qualifiedName()
+                                + " requires a payload argument");
+                    }
+                    return new ValueInfo(
+                            Ast.TypeRef.simple(enumCase.qualifiedName()),
+                            ValueKind.COPY, null);
+                }
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {

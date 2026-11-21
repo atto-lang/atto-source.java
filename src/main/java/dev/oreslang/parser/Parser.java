@@ -1748,6 +1748,16 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
+            if (match(MATCH)) {
+                // A direct terminal return-match can be lowered to ordered
+                // match arms that each return from the enclosing callable.
+                // This focused compatibility path is observationally identical
+                // for one-result arms, and avoids claiming general MatchExpr
+                // support before that AST/lowering has been integrated.
+                Ast.MatchStmt matched = parseTerminalReturnMatch();
+                consumeStatementTerminator("return match should end with ';' or a statement boundary");
+                return matched;
+            }
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "return statement should end with ';'");
             return new Ast.ReturnStmt(value);
@@ -2560,6 +2570,64 @@ public final class Parser {
                     normalizeLegacyConditionPipe(binary.right()));
         }
         return expr;
+    }
+
+    /**
+     * Terminal return-match compatibility for closed nominal enum cases.
+     * Each branch has exactly one result expression, optionally spelled as
+     * `{ return expression; }`. There is no nested statement CFG or hidden
+     * function-return escape in the source value of the chosen branch.
+     *
+     * Unlike a general MatchExpr, this deliberately works only when the
+     * entire match is the directly returned result of the enclosing callable.
+     * It preserves ordered match/exhaustiveness checking in MatchStmt.
+     */
+    private Ast.MatchStmt parseTerminalReturnMatch() {
+        boolean previousSuppression = suppressRefinementOperators;
+        suppressRefinementOperators = true;
+        Ast.Expr subject;
+        try {
+            subject = parseExpression();
+        } finally {
+            suppressRefinementOperators = previousSuppression;
+        }
+        if (!matchContextualIdentifier("over")) {
+            throw error(peek(), "return match requires 'over' before arms");
+        }
+        List<Ast.MatchArm> arms = new ArrayList<>();
+        while (!check(END) && !check(EOF)) {
+            if (!matchContextualIdentifier("on")) {
+                throw error(peek(), "return match arm requires 'on'");
+            }
+            Ast.Pattern pattern = parsePattern();
+            Ast.Expr guard = matchWhenKeyword() ? parseExpression() : null;
+            if (check(FAT_ARROW)) {
+                throw error(peek(), "return match arms use '->' rather than '=>'");
+            }
+            consume(ARROW, "return match arm requires '->'");
+
+            Ast.Expr result;
+            if (check(LBRACE)) {
+                List<Ast.Stmt> block = parseBlock();
+                if (block.size() != 1
+                        || !(block.getFirst() instanceof Ast.ReturnStmt returned)
+                        || returned.value() == null) {
+                    throw error(previous(),
+                            "return match block arm requires exactly one 'return expression;'");
+                }
+                result = returned.value();
+            } else {
+                result = parseExpression();
+                consume(SEMICOLON, "return match expression arm requires ';'");
+            }
+            arms.add(new Ast.MatchArm(
+                    pattern, guard, List.of(new Ast.ReturnStmt(result))));
+        }
+        consume(END, "expected 'end' after return match arms");
+        if (arms.isEmpty()) {
+            throw error(previous(), "return match requires at least one 'on' arm");
+        }
+        return new Ast.MatchStmt(subject, true, arms);
     }
 
     private Ast.MatchStmt parseMatch() {
