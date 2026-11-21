@@ -27,19 +27,25 @@ public final class DopInvertedScalarTruffleRootV1 extends RootNode {
     // Null only for the isolated host-owned calltarget test API; language
     // executions *must* hold the exact live single-use source scope.
     private final Object sourceLease;
-    // Defense-in-depth against a parsed root being reused under another
-    // polyglot context while the same host thread still holds its lease.
-    private final java.util.concurrent.atomic.AtomicReference<java.util.UUID> boundContextId =
-            new java.util.concurrent.atomic.AtomicReference<>();
+    // Captured from the parsing context BEFORE the root is published. Never
+    // adopt whichever context executes the root first: cached/retained roots
+    // must not gain authority from a foreign initial caller.
+    private final java.util.UUID parsedContextId;
 
     @Children private final OperationNode[] instructions;
 
     private DopInvertedScalarTruffleRootV1(
             OresLanguage language, DopInvertedScalarCompilerV1.Plan plan,
-            Object sourceLease) {
+            Object sourceLease, java.util.UUID parsedContextId) {
         super(language);
         this.plan = Objects.requireNonNull(plan, "verified bounded compiler plan");
+        if ((sourceLease == null) != (parsedContextId == null)
+                || (sourceLease != null && language == null)) {
+            throw new IllegalArgumentException(
+                    "DOP scoped roots require a language, lease and parse-context identity");
+        }
         this.sourceLease = sourceLease;
+        this.parsedContextId = parsedContextId;
         List<DopInvertedScalarCompilerV1.Instruction> ops = plan.instructions();
         if (ops.isEmpty() || ops.getLast().op()
                 != DopInvertedScalarCompilerV1.Op.RETURN_READ) {
@@ -67,7 +73,7 @@ public final class DopInvertedScalarTruffleRootV1 extends RootNode {
      * or create a foreign AST escape route.
      */
     public static RootCallTarget lowerVerified(DopInvertedScalarCompilerV1.Plan plan) {
-        return new DopInvertedScalarTruffleRootV1(null, plan, null).getCallTarget();
+        return new DopInvertedScalarTruffleRootV1(null, plan, null, null).getCallTarget();
     }
 
     /**
@@ -78,12 +84,24 @@ public final class DopInvertedScalarTruffleRootV1 extends RootNode {
      */
     public static RootCallTarget lowerForVerifiedSource(
             OresLanguage language, DopInvertedScalarCompilerV1.Plan plan,
-            Object sourceLease) {
+            Object sourceLease, java.util.UUID parsedContextId) {
         Objects.requireNonNull(language, "registered OresLanguage");
         Objects.requireNonNull(sourceLease, "active verified DOP source lease");
+        Objects.requireNonNull(parsedContextId, "source parse-context identity");
         OresLanguage.requireLiveVerifiedDopLease(sourceLease);
         return new DopInvertedScalarTruffleRootV1(
-                language, plan, sourceLease).getCallTarget();
+                language, plan, sourceLease, parsedContextId).getCallTarget();
+    }
+
+    /**
+     * The expected UUID comes from OresLanguage.parse, not from this root's
+     * first caller. Exposed only to sibling compiler-package regression tests.
+     */
+    static void requireParsedContext(java.util.UUID expected, java.util.UUID actual) {
+        if (expected == null || actual == null || !expected.equals(actual)) {
+            throw new SecurityException(
+                    "DOP_VERIFIED_CONTEXT_MISMATCH: root cannot cross isolate context");
+        }
     }
 
     @Override public String getName() { return "atto-dop-inverted-i64-v1"; }
@@ -100,12 +118,7 @@ public final class DopInvertedScalarTruffleRootV1 extends RootNode {
             // general actor/tenant or adversarial-isolate execution.
             OresLanguage.requireLiveVerifiedDopLease(sourceLease);
             OresContext context = OresContext.get(this);
-            java.util.UUID currentContextId = context.contextId();
-            boundContextId.compareAndSet(null, currentContextId);
-            if (!currentContextId.equals(boundContextId.get())) {
-                throw new SecurityException(
-                        "DOP_VERIFIED_CONTEXT_MISMATCH: root cannot cross isolate context");
-            }
+            requireParsedContext(parsedContextId, context.contextId());
             if (context.isolatePolicy().adversarial()) {
                 throw new SecurityException(
                         "DOP_VERIFIED_TENANT_UNSUPPORTED: adversarial isolate admission remains closed");

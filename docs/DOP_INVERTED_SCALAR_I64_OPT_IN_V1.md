@@ -111,9 +111,14 @@ programs through the existing parser and TypeChecker.
 
 The Truffle execution root **revalidates the live private token on every
 invocation**, including calls through a cached source or a retained
-`Context.parse` result. Reusing the same compiled root after the scope
+`Context.parse` result. `OresLanguage.parse` resolves the active
+`OresContext` and binds its immutable UUID to the new typed root **during
+parsing, before the root is published**. No first caller is allowed to choose
+the root's context identity. Reusing the same compiled root after the scope
 closes, borrowing its root under a new lease, invoking it on a different host
-thread, or crossing to another polyglot context are all denied. Mismatched
+thread, or crossing to another polyglot context are all denied.
+Adversarial-isolate admission is rejected at parse time and checked again
+at each execution. Mismatched
 source or source name consumes the token permanently. Nested/interleaved
 `PrecheckedProgramScope` and DOP leases are denied in both directions.
 Adversarial/untrusted tenant execution remains denied, even with a trusted
@@ -141,11 +146,12 @@ subset; it does **not** enable arbitrary user-provided inverted source,
 general `OresLanguage` AST/ownership analysis, an actor runtime, native AOT,
 an untrusted tenant, or Java/LLVM guest parity. No compiler-backed
 GraalVM/polyglot JUnit run is claimed until actual source-org CI executes.
-The dedicated `OresLanguageVerifiedDopLeaseTest` contains eleven regression
-methods covering normal Context eval, 32 fresh swap-delete source leases,
-cached-source/replayed parsed values,
-source/name mismatch, thread ownership, lease coexistence and fail-closed
-admission; they are authored but not executed.
+The dedicated `OresLanguageVerifiedDopLeaseTest` contains thirteen
+regression methods, including 32 unique source leases, 256 additional
+signed-i64 sources with 1,024 repeated cached `Context.eval` invocations,
+post-close rejection for each source, actual polyglot source-name mismatch,
+retained-value cache replay, thread ownership, lease coexistence and
+fail-closed admission; they are authored but not executed.
 
 ## Promotion gates
 

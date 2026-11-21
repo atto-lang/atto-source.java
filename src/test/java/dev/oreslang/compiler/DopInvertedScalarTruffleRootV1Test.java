@@ -4,6 +4,7 @@ import com.oracle.truffle.api.RootCallTarget;
 import dev.oreslang.parser.Parser;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -115,6 +116,31 @@ final class DopInvertedScalarTruffleRootV1Test {
             }
         }
         assertEquals(320L, totalCalls);
+    }
+
+    @Test
+    void parseTimeContextUuidRejectsForeignFirstCallBeforeAnyOwnerExists() {
+        UUID parseContext =
+                UUID.fromString("11111111-1111-4111-8111-111111111111");
+        UUID foreignFirstCaller =
+                UUID.fromString("22222222-2222-4222-8222-222222222222");
+        assertDoesNotThrow(() ->
+                DopInvertedScalarTruffleRootV1.requireParsedContext(
+                        parseContext, parseContext));
+        for (UUID actual : new UUID[]{foreignFirstCaller, null}) {
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> DopInvertedScalarTruffleRootV1.requireParsedContext(
+                            parseContext, actual));
+            assertTrue(denied.getMessage().contains("DOP_VERIFIED_CONTEXT_MISMATCH"));
+        }
+        assertThrows(SecurityException.class, () ->
+                DopInvertedScalarTruffleRootV1.requireParsedContext(
+                        null, parseContext));
+        // A first foreign attempted invocation never gets to "claim" or
+        // initialize the parse-context identity; a valid call remains valid.
+        assertDoesNotThrow(() ->
+                DopInvertedScalarTruffleRootV1.requireParsedContext(
+                        parseContext, parseContext));
     }
 
     @Test

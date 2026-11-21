@@ -289,8 +289,18 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
 
         Object verifiedDop = consumeVerifiedDopSource(codeUnitId, text);
         if (verifiedDop != null) {
+            // ContextReference.get(null) resolves the *current parse context*.
+            // Fence the root now instead of trusting its first invocation to
+            // choose the context. An adversarial isolate is denied before any
+            // typed Truffle child tree or bounded owner can be created.
+            OresContext parsingContext = OresContext.get(null);
+            if (parsingContext.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "DOP_VERIFIED_TENANT_UNSUPPORTED: adversarial isolate admission remains closed");
+            }
             RootCallTarget restricted = DopInvertedScalarTruffleRootV1.lowerForVerifiedSource(
-                    this, checkedDopPlan(verifiedDop), verifiedDop);
+                    this, checkedDopPlan(verifiedDop), verifiedDop,
+                    parsingContext.contextId());
             return new OresInteropRootNode(this, restricted).getCallTarget();
         }
 

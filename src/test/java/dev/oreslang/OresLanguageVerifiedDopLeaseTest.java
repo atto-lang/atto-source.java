@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
@@ -207,6 +208,79 @@ final class OresLanguageVerifiedDopLeaseTest {
                 }
                 assertThrows(PolyglotException.class, () -> context.eval(guest),
                         "unscoped execution must be denied seed=" + seed);
+            }
+        }
+    }
+
+    @Test
+    void twoHundredFiftySixSourceProgramsReplayCachedGuestCallsWithFreshOwners()
+            throws Exception {
+        final String template = """
+                define inverted struct Row as
+                    let value: int;
+                    token: int;
+                end
+                fnc main(): int {
+                    let rows = InvertedArray<Row>.with_capacity(2);
+                    rows.push(17, 100);
+                    rows.push(__VALUE__, 7);
+                    rows.erase_swap(0);
+                    return rows.get(0, value);
+                }
+                """;
+        int guestCalls = 0;
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            for (int seed = 1; seed <= 256; seed++) {
+                long expected = switch (seed % 8) {
+                    case 0 -> Long.MIN_VALUE;
+                    case 1 -> Long.MAX_VALUE;
+                    case 2 -> 0L;
+                    case 3 -> -((long) seed);
+                    default -> ((long) seed) * 37L;
+                };
+                String sourceText = template.replace(
+                        "__VALUE__", Long.toString(expected));
+                String identity = "dop-cached-seed-" + seed + ".atto";
+                var guest = Source.newBuilder(OresLanguage.ID, sourceText, identity)
+                        .mimeType(OresLanguage.MIME_TYPE).cached(true).build();
+
+                long independentHost =
+                        OresCompiler.compileDopInvertedScalarI64(sourceText)
+                                .executeHostReference();
+                assertEquals(expected, independentHost, "host model seed=" + seed);
+
+                try (var permit =
+                        OresLanguage.openVerifiedDopSource(identity, sourceText)) {
+                    for (int replay = 0; replay < 4; replay++) {
+                        assertEquals(expected, context.eval(guest).asLong(),
+                                "parsed/typed guest seed=" + seed + " replay=" + replay);
+                        guestCalls++;
+                    }
+                }
+                assertThrows(PolyglotException.class, () -> context.eval(guest),
+                        "cached target must lose scope after seed=" + seed);
+            }
+        }
+        assertEquals(1024, guestCalls);
+    }
+
+    @Test
+    void actualPolyglotParseMismatchCannotClaimAnotherUnitIdentity() throws Exception {
+        Source wrongName = source(CODE, "wrong-" + UNIT);
+        Source correctName = source(CODE, UNIT);
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            try (var lease = OresLanguage.openVerifiedDopSource(UNIT, CODE)) {
+                assertThrows(PolyglotException.class,
+                        () -> context.eval(wrongName));
+                // The failed match permanently consumes this particular token.
+                assertThrows(PolyglotException.class,
+                        () -> context.eval(correctName));
+            }
+            try (var newLease = OresLanguage.openVerifiedDopSource(UNIT, CODE)) {
+                assertEquals(42L, context.eval(correctName).asLong(),
+                        "a distinct newly compiled lease may still admit exact source");
             }
         }
     }
