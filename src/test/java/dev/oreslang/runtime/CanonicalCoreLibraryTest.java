@@ -17,7 +17,9 @@ final class CanonicalCoreLibraryTest {
 
     @Test
     void packagedCoreIdentityAndClosedRegistry() throws Exception {
-        assertEquals(Set.of("numeric.ores"), CoreLibrarySources.packagedCorePaths());
+        // The active physical Core source is canonical .atto (#2601); the
+        // historical @ores.core/numeric.ores unit ID below stays stable.
+        assertEquals(Set.of("numeric.atto"), CoreLibrarySources.packagedCorePaths());
         assertEquals("@ores.core/numeric.ores",
                 CoreLibrarySources.oresCoreUnitId("ores.core/numeric"));
         assertTrue(CoreLibrarySources.oresCoreSource("ores.core/numeric")
