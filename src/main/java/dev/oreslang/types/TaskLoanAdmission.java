@@ -15,7 +15,7 @@ import java.util.Objects;
  * or physical-quiescence lifecycle callbacks may release the verifier ticket.</p>
  */
 public final class TaskLoanAdmission
-        implements OresTaskScope.CompilerLoanRetirement {
+        implements OresTaskScope.CompilerReadLoanRetirement {
     private enum State {
         MINTED,
         SCOPE_BOUND,
@@ -36,6 +36,11 @@ public final class TaskLoanAdmission
             TaskAccessVerifier.Ticket ticket) {
         this.verifier = Objects.requireNonNull(verifier, "verifier");
         this.ticket = Objects.requireNonNull(ticket, "ticket");
+        if (verifier.loanKind(ticket)
+                != TaskAccessVerifier.LoanKind.SCOPED_READ_BORROW) {
+            throw new IllegalArgumentException(
+                    "runtime TaskLoanAdmission requires SCOPED_READ_BORROW authority");
+        }
     }
 
     @Override
@@ -138,6 +143,15 @@ public final class TaskLoanAdmission
 
     synchronized boolean retiredForTesting() {
         return state == State.RETIRED;
+    }
+
+    synchronized boolean schedulerBoundForTesting() {
+        return state == State.SCHEDULER_BOUND && schedulerChild != null;
+    }
+
+    synchronized boolean scopedReadBorrowForTesting() {
+        return verifier.loanKind(ticket)
+                == TaskAccessVerifier.LoanKind.SCOPED_READ_BORROW;
     }
 
     private void requireExactSchedulerChild(
