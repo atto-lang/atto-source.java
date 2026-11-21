@@ -21,6 +21,9 @@ public record OresNotification<T>(Kind kind, T value) {
         if (kind == Kind.COMPLETE && value != null) {
             throw new IllegalArgumentException("COMPLETE notifications cannot carry a value");
         }
+        if (kind == Kind.NEXT && value == null) {
+            throw new IllegalArgumentException("NEXT notifications require a non-null item");
+        }
     }
 
     public static <T> OresNotification<T> next(T value) {

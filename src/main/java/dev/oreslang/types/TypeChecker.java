@@ -1772,7 +1772,8 @@ public final class TypeChecker {
             validateActorCallableBoundaryType(named.arguments().getFirst(), actorKind, false, where + " item");
             return;
         }
-        if (named.name().equals("Subscription") || named.name().equals("Notification"))
+        if (named.name().equals("Subscription") || named.name().equals("Reader")
+                || named.name().equals("Notification"))
             throw new IllegalArgumentException(where + " cannot transport subscription control state");
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")) {
@@ -2051,15 +2052,31 @@ public final class TypeChecker {
         if (type.name().equals("Observable") || type.name().equals("Stream")) {
             return switch (member) {
                 case "subscribe" -> new Function(List.of(), new Named("Subscription", List.of(item)));
+                case "get_reader" -> {
+                    if (!type.name().equals("Stream")) {
+                        throw new IllegalArgumentException(
+                                "Observable readers are per-subscription: use subscribe().get_reader()");
+                    }
+                    yield new Function(List.of(), new Named("Reader", List.of(item)));
+                }
                 case "close" -> new Function(List.of(), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown " + type.name() + " member '" + member + "'");
             };
         }
         if (type.name().equals("Subscription")) {
             return switch (member) {
+                case "get_reader" -> new Function(List.of(), new Named("Reader", List.of(item)));
                 case "next" -> new Function(List.of(), new Named("Future", List.of(new Named("Notification", List.of(item)))));
                 case "cancel" -> new Function(List.of(), Primitive.BOOL);
                 default -> throw new IllegalArgumentException("unknown Subscription member '" + member + "'");
+            };
+        }
+        if (type.name().equals("Reader")) {
+            return switch (member) {
+                case "next" -> new Function(List.of(), new Named("Future", List.of(new Named("Notification", List.of(item)))));
+                case "release_lock" -> new Function(List.of(), Primitive.VOID);
+                case "cancel" -> new Function(List.of(), Primitive.BOOL);
+                default -> throw new IllegalArgumentException("unknown Reader member '" + member + "'");
             };
         }
         if (type.name().equals("Notification")) {
@@ -3018,7 +3035,7 @@ public final class TypeChecker {
                 }
                 yield new Named("Mutex", List.of(element));
             }
-            case "Observable", "Stream", "Subscription", "Notification" -> {
+            case "Observable", "Stream", "Subscription", "Reader", "Notification" -> {
                 if (ref.arguments().size() != 1)
                     throw new IllegalArgumentException(ref.name() + " requires one item type");
                 Type item = resolve(ref.arguments().getFirst(), generics, self);

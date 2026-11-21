@@ -59,7 +59,9 @@ public abstract class OresObservable<T> {
     public static <T> OresObservable<T> fromValues(List<? extends T> values) {
         Objects.requireNonNull(values, "values");
         ArrayList<T> snapshot = new ArrayList<>(values.size());
-        snapshot.addAll(values);
+        for (T value : values) {
+            snapshot.add(Objects.requireNonNull(value, "rx-ores streams cannot contain null items"));
+        }
         List<T> immutable = Collections.unmodifiableList(snapshot);
 
         return new OresObservable<>() {

@@ -40,6 +40,42 @@ we add a larger demand protocol.
 
 There may be only one outstanding `next()` per subscription.
 
+## Exclusive readers vs observable fanout
+
+A `Stream<T>` has one subscription and a transferable reader lease:
+
+```ores
+val stream = Stream.from_values([10, 20]);
+val reader = stream.get_reader();
+val first = await reader.next();
+reader.release_lock();
+val next_reader = stream.get_reader(); // continues at 20, no resubscription
+val second = await next_reader.next();
+next_reader.release_lock();
+```
+
+An `Observable<T>` instead provides independent subscriptions:
+
+```ores
+val observable = Observable.from_values([10, 20]);
+val sub_a = observable.subscribe();
+val sub_b = observable.subscribe();
+val reader_a = sub_a.get_reader();
+val reader_b = sub_b.get_reader();
+```
+
+Only one reader can hold a given subscription. Calling `subscription.next()`
+while its lease is held fails; calling `reader.next()` after release fails.
+There is still only one outstanding pull per subscription, even for the
+current reader. A reader cannot release while a pull is unsettled; cancel
+the subscription/reader first if necessary. Releasing the lease does not
+complete, cancel, or close the source. This is logical consumer ownership,
+not an OS thread/mutex/RW-lock and not a lock shared by all observers.
+
+This reader bridge is currently enforced by the Java runtime substrate and
+Oreslang reference interpreter. Static affine ownership and native-source
+stdlib linking remain separate follow-ups.
+
 A pull settles with either:
 
 - `NEXT(value)`;

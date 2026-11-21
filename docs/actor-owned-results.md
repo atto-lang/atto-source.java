@@ -45,6 +45,21 @@ The runtime wraps returned reactive values in an actor-owned result capability:
   continuations of the original actor. A pending pull does not retain a carrier.
   External producers settle Futures and enqueue work; they do not run source
   cleanup hooks on their producer threads.
+* Reader ownership is explicit, like the Web Streams API but not an OS RW lock:
+  `stream.get_reader()` acquires an exclusive consumer lease on the stream's
+  one subscription; `reader.release_lock()` hands off the same cursor to a
+  later reader. Release does **not** cancel the producer or settle a pending
+  pull, and release while a pull is outstanding is rejected. Use
+  `reader.cancel()` first when abandoning a pending operation.
+* `Observable<T>` intentionally has no global reader lock. Each
+  `observable.subscribe()` creates an independent subscription, and
+  `subscription.get_reader()` locks only that subscription. Its direct
+  `next()` is rejected while a reader lease is active. Observable fanout
+  cannot be serialized through a global mutex.
+* Reader leases are runtime-checked, not yet a compiler-proven affine type.
+  Releasing invalidates that reader even if an alias still exists. Actor-owned
+  results still need `close()` or cancellation when abandoned; releasing a
+  lock alone does not finalize the producer.
 * One pending pull is allowed per subscription. Admission uses bounded actor
   continuation and subscription queues. Items pass runtime sendability and
   private-transport size checks; mutable host objects and control handles cannot

@@ -1098,6 +1098,12 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof OresObservable<?> observable) {
                 return switch (name) {
                     case "subscribe" -> (Invokable) args -> { requireZero(args, "subscribe"); return observable.subscribe(); };
+                    case "get_reader" -> (Invokable) args -> {
+                        requireZero(args, "get_reader");
+                        if (!(observable instanceof OresStream<?> stream))
+                            throw new IllegalArgumentException("get_reader belongs to Stream; use observable.subscribe().get_reader()");
+                        return stream.getReader();
+                    };
                     case "close" -> (Invokable) args -> {
                         requireZero(args, "close");
                         if (!(observable instanceof AutoCloseable owned))
@@ -1109,8 +1115,17 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown Observable member " + name);
                 };
             }
+            if (receiver instanceof OresSubscription.Reader<?> reader) {
+                return switch (name) {
+                    case "next" -> (Invokable) args -> { requireZero(args, "next"); return reader.next(); };
+                    case "release_lock" -> (Invokable) args -> { requireZero(args, "release_lock"); reader.releaseLock(); return null; };
+                    case "cancel" -> (Invokable) args -> { requireZero(args, "cancel"); return reader.cancel(); };
+                    default -> throw new IllegalArgumentException("unknown Reader member " + name);
+                };
+            }
             if (receiver instanceof OresSubscription<?> subscription) {
                 return switch (name) {
+                    case "get_reader" -> (Invokable) args -> { requireZero(args, "get_reader"); return subscription.getReader(); };
                     case "next" -> (Invokable) args -> { requireZero(args, "next"); return subscription.next(); };
                     case "cancel" -> (Invokable) args -> { requireZero(args, "cancel"); return subscription.cancel(); };
                     default -> throw new IllegalArgumentException("unknown Subscription member " + name);
