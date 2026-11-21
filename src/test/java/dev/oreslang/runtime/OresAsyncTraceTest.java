@@ -161,6 +161,118 @@ final class OresAsyncTraceTest {
         assertTrue(trace.render().contains("Worker.receive_message"));
     }
     @Test
+    void tenHopActorChainSurvivesUnrelatedAwaitEventElision() {
+        OresAsyncTrace.Trace trace = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("entry", site(1)));
+        for (int actor = 1; actor <= 10; actor++) {
+            OresAsyncTrace.SourceSite handoff = site(20 + actor);
+            trace = trace.child(new OresAsyncTrace.Frame("Actor" + actor, handoff), handoff);
+            trace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, handoff);
+            try (OresAsyncTrace.Scope executed = OresAsyncTrace.install(trace)) {
+                for (int await = 0; await < 150; await++) {
+                    trace.awaitAt(site(1000 + actor * 150 + await));
+                }
+            }
+        }
+        assertEquals(10, trace.actorVisits().size());
+        assertEquals(0, trace.elidedActorVisits());
+        assertTrue(trace.elidedEvents() > 0);
+        assertEquals("Actor1", trace.actorVisits().getFirst().actor().symbol());
+        assertEquals("Actor10", trace.actorVisits().getLast().actor().symbol());
+
+        IllegalStateException failure = new IllegalStateException("last actor failed");
+        OresAsyncTrace.attach(failure, trace);
+        String text = OresDiagnosticRenderer.renderText(failure);
+        String json = OresDiagnosticRenderer.renderJson(failure);
+        assertTrue(text.contains("Actor causality (newest first):"), text);
+        assertTrue(text.indexOf("actor 1: Actor10") < text.indexOf("actor 5: Actor6"), text);
+        assertTrue(json.contains("\"actor_history_order\":\"oldest_to_newest\""), json);
+        String history = json.substring(json.indexOf("\"actor_history\":["),
+                json.indexOf(",\"elided_actor_visits\""));
+        for (int actor = 1; actor <= 10; actor++) {
+            assertTrue(history.contains("\"symbol\":\"Actor" + actor + "\""), history);
+        }
+        assertTrue(history.indexOf("\"symbol\":\"Actor6\"")
+                < history.indexOf("\"symbol\":\"Actor10\""), history);
+    }
+
+    @Test
+    void twoHundredActorVisitsKeepLastSixteenAndMarkEarlierElision() {
+        OresAsyncTrace.Trace trace = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("entry", site(1)));
+        for (int actor = 1; actor <= 200; actor++) {
+            OresAsyncTrace.SourceSite handoff = site(10 + actor);
+            trace = trace.child(new OresAsyncTrace.Frame("Actor" + actor, handoff), handoff);
+            trace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, handoff);
+            try (OresAsyncTrace.Scope executed = OresAsyncTrace.install(trace)) { }
+        }
+        assertEquals(16, trace.actorVisits().size());
+        assertEquals(184, trace.elidedActorVisits());
+        assertEquals("Actor185", trace.actorVisits().getFirst().actor().symbol());
+        assertEquals("Actor200", trace.actorVisits().getLast().actor().symbol());
+
+        IllegalStateException failure = new IllegalStateException("last actor failed");
+        OresAsyncTrace.attach(failure, trace);
+        String json = OresDiagnosticRenderer.renderJson(failure);
+        String history = json.substring(json.indexOf("\"actor_history\":["),
+                json.indexOf(",\"elided_actor_visits\""));
+        for (int actor = 196; actor <= 200; actor++) {
+            assertTrue(history.contains("\"symbol\":\"Actor" + actor + "\""), history);
+        }
+        assertFalse(history.contains("\"symbol\":\"Actor184\""), history);
+        assertTrue(json.contains("\"elided_actor_visits\":184"), json);
+        assertTrue(OresDiagnosticRenderer.renderText(failure)
+                .contains("184 older actor visits elided"));
+    }
+
+    @Test
+    void polyglotInteropKeepsLastSixteenActorsAfterEventElision() throws Exception {
+        OresAsyncTrace.Trace trace = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("entry", site(1)));
+        for (int actor = 1; actor <= 20; actor++) {
+            OresAsyncTrace.SourceSite handoff = site(100 + actor);
+            trace = trace.child(new OresAsyncTrace.Frame("Actor" + actor, handoff),
+                    handoff);
+            trace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, handoff);
+            try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(trace)) {
+                for (int await = 0; await < 30; await++) {
+                    trace.awaitAt(site(1000 + actor * 30 + await));
+                }
+            }
+        }
+
+        IllegalStateException failure = new IllegalStateException("actor failure");
+        OresAsyncTrace.attach(failure, trace);
+        OresGuestException guest = OresGuestException.from(failure);
+        com.oracle.truffle.api.interop.InteropLibrary interop =
+                com.oracle.truffle.api.interop.InteropLibrary.getUncached();
+        Object traces = interop.readMember(guest, "async_traces");
+        assertEquals(1, interop.getArraySize(traces));
+
+        Object logical = interop.readArrayElement(traces, 0);
+        assertEquals("oldest_to_newest",
+                interop.readMember(logical, "actor_history_order"));
+        assertEquals(4L,
+                ((Number) interop.readMember(logical, "elided_actor_visits")).longValue());
+        Object actors = interop.readMember(logical, "actor_history");
+        assertEquals(16, interop.getArraySize(actors));
+        assertEquals("Actor5", interop.readMember(
+                interop.readArrayElement(actors, 0), "symbol"));
+        assertEquals("Actor20", interop.readMember(
+                interop.readArrayElement(actors, 15), "symbol"));
+
+        Object frames = interop.readMember(logical, "frames");
+        Object last = interop.readArrayElement(frames, 1);
+        assertEquals("actor", interop.readMember(last, "kind"));
+        assertEquals("Actor20", interop.readMember(last, "symbol"));
+        // Unrelated awaits may elide, but every retained actor hop survives.
+        for (int actor = 16; actor <= 20; actor++) {
+            Object visit = interop.readArrayElement(actors, actor - 5);
+            assertEquals("Actor" + actor, interop.readMember(visit, "symbol"));
+        }
+    }
+
+    @Test
     void deepestSynchronousGuestStackIsAttachedExactlyOnce() {
         OresAsyncTrace.Trace caller = OresAsyncTrace.root(
                 new OresAsyncTrace.Frame("caller", site(75)));

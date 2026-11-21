@@ -158,9 +158,12 @@ public final class OresGuestException extends AbstractTruffleException {
                     && guest.isEmpty()) {
                 guest = frames(logical.snapshot());
             } else if (suppressed instanceof OresAsyncTrace.LogicalAsyncStackTrace logical) {
+                OresAsyncTrace.TraceSnapshot trace = logical.snapshot();
                 async.add(new TraceValue(
-                        frames(logical.snapshot()),
-                        logical.snapshot().elidedEvents()));
+                        frames(trace),
+                        trace.elidedEvents(),
+                        actorHistory(trace),
+                        trace.elidedActorVisits()));
             } else if (suppressed instanceof OresAsyncTrace.LogicalAsyncTraceElision elision) {
                 elidedAsync = saturatingAdd(elidedAsync, elision.elidedTraces());
             }
@@ -183,6 +186,15 @@ public final class OresGuestException extends AbstractTruffleException {
                 "frame",
                 trace.currentFrame().symbol(),
                 trace.currentFrame().site()));
+
+        // Actor hops have a separate fixed-size ring. Surface them in the
+        // logical frame stream even when ordinary async events were elided.
+        List<OresAsyncTrace.ActorVisit> visits = trace.actorVisits();
+        for (int i = visits.size() - 1; i >= 0; i--) {
+            OresAsyncTrace.ActorVisit visit = visits.get(i);
+            frames.add(FrameValue.frame("actor", visit.actor().symbol(),
+                    visit.messageSite()));
+        }
 
         List<OresAsyncTrace.Event> events = trace.events();
         for (int i = events.size() - 1; i >= 0; i--) {
@@ -219,6 +231,15 @@ public final class OresGuestException extends AbstractTruffleException {
             frames.add(FrameValue.elided(trace.elidedEvents()));
         }
         return new FrameArray(frames);
+    }
+
+    private static FrameArray actorHistory(OresAsyncTrace.TraceSnapshot trace) {
+        ArrayList<FrameValue> visits = new ArrayList<>();
+        for (OresAsyncTrace.ActorVisit visit : trace.actorVisits()) {
+            visits.add(FrameValue.frame("actor", visit.actor().symbol(),
+                    visit.messageSite()));
+        }
+        return new FrameArray(visits);
     }
 
     private static Throwable unwrap(Throwable failure) {
@@ -395,14 +416,20 @@ public final class OresGuestException extends AbstractTruffleException {
     @ExportLibrary(InteropLibrary.class)
     static final class TraceValue implements TruffleObject {
         private static final MemberNames MEMBERS =
-                new MemberNames("frames", "elided_events");
+                new MemberNames("frames", "elided_events", "actor_history",
+                        "actor_history_order", "elided_actor_visits");
 
         private final FrameArray frames;
         private final long elidedEvents;
+        private final FrameArray actorHistory;
+        private final long elidedActorVisits;
 
-        private TraceValue(FrameArray frames, long elidedEvents) {
+        private TraceValue(FrameArray frames, long elidedEvents,
+                FrameArray actorHistory, long elidedActorVisits) {
             this.frames = Objects.requireNonNull(frames, "frames");
             this.elidedEvents = elidedEvents;
+            this.actorHistory = Objects.requireNonNull(actorHistory, "actorHistory");
+            this.elidedActorVisits = elidedActorVisits;
         }
 
         private FrameArray frames() {
@@ -424,7 +451,10 @@ public final class OresGuestException extends AbstractTruffleException {
         @ExportMessage
         @SuppressWarnings("static-method")
         boolean isMemberReadable(String member) {
-            return member.equals("frames") || member.equals("elided_events");
+            return member.equals("frames") || member.equals("elided_events")
+                    || member.equals("actor_history")
+                    || member.equals("actor_history_order")
+                    || member.equals("elided_actor_visits");
         }
 
         @ExportMessage
@@ -432,6 +462,9 @@ public final class OresGuestException extends AbstractTruffleException {
             return switch (member) {
                 case "frames" -> frames;
                 case "elided_events" -> elidedEvents;
+                case "actor_history" -> actorHistory;
+                case "actor_history_order" -> "oldest_to_newest";
+                case "elided_actor_visits" -> elidedActorVisits;
                 default -> throw UnknownIdentifierException.create(member);
             };
         }
