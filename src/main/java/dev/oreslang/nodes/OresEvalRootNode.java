@@ -4330,6 +4330,23 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        /** Runtime defense in depth for both synchronous and suspended
+         * guest method dispatch. The type checker already seals these names,
+         * but a dynamic/aliased member must never become an ordinary callable
+         * actor field or method while typed pipeline lowering is disabled. */
+        private void requireCompiledPipelineRouting(OresObject object, String member) {
+            if (object.klass.actorKind() == Ast.ActorKind.NONE) return;
+            switch (member) {
+                case "forward", "forward_all", "forward_round_robin",
+                     "forward_to", "forward_by_key", "backward", "reply" ->
+                        throw new IllegalArgumentException(
+                                "self." + member
+                                        + " requires compiled typed pipeline actor routing and "
+                                        + "scheduler-owned admission; source lowering is not enabled");
+                default -> { }
+            }
+        }
+
         private Invocation prepareInvocationEvaluated(
                 Ast.CallExpr call,
                 Object receiver,
@@ -4339,6 +4356,7 @@ public final class OresEvalRootNode extends RootNode {
                     (Ast.MemberExpr) call.callee();
 
             if (receiver instanceof OresObject object) {
+                requireCompiledPipelineRouting(object, member.member());
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
                     if (!args.isEmpty()) {
@@ -5786,6 +5804,7 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresObject object) {
+                    requireCompiledPipelineRouting(object, methodCall.member());
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("end")) {
                         if (!args.isEmpty()) {
@@ -7092,6 +7111,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
+                requireCompiledPipelineRouting(object, name);
                 if (object.fields.containsKey(name)) {
                     OwnedField ownedField = object.owner.findField(
                             object.klass, name, new LinkedHashSet<>());
