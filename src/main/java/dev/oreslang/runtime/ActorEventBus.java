@@ -632,6 +632,23 @@ public final class ActorEventBus implements AutoCloseable {
             ActorRuntime.ActorId publisher,
             Runnable commitState,
             boolean strictNonblocking) {
+        // Admission's linearization order is membership -> topic delivery.
+        // leaveId() and actor termination use the same outer membership
+        // fence before physically removing topic subscription edges.
+        // Hold it until commit/fanout finishes, so a checked publisher cannot
+        // lose membership between authority validation and delivery.
+        return group.withEventAdmissionMembershipFence(() ->
+                publishFrozenUnderMembershipFence(
+                        topic, frozenPayload, publisher,
+                        commitState, strictNonblocking));
+    }
+
+    private PublishReceipt publishFrozenUnderMembershipFence(
+            TopicState topic,
+            ActorRuntime.FrozenActorGroupEventPayload frozenPayload,
+            ActorRuntime.ActorId publisher,
+            Runnable commitState,
+            boolean strictNonblocking) {
         Event<Object> event = null;
         try {
             synchronized (topic.deliveryLock) {
