@@ -20,12 +20,21 @@ import java.util.Set;
  * FFI/serialization, actor and hot-reload boundaries enforce the invariants.
  */
 public final class RefinementRules {
+    // Bounded checked-schema admission. Individual host Interval records
+    // remain useful for large formal proofs, but untrusted source clauses
+    // must never cause unbounded compiler work or serialized ABI payloads.
+    private static final int MAX_SOURCE_REFINEMENT_CLAUSES = 4096;
+
     private RefinementRules() { }
 
     public record Interval(String property, long min, long max, Set<Long> excluded) {
         public Interval {
             excluded = Set.copyOf(excluded);
-            if (min > max)
+            // Public host proof records must not manufacture a metric outside
+            // the closed scalar refinement kernel or negative Unicode length.
+            if (!"value".equals(property) && !"length".equals(property))
+                throw new IllegalArgumentException("unsupported refinement metric");
+            if (min > max || (property.equals("length") && min < 0))
                 throw new IllegalArgumentException("unsatisfiable refinement interval");
             for (long hole : excluded) {
                 if (hole < min || hole > max)
@@ -99,19 +108,36 @@ public final class RefinementRules {
     }
 
     private static boolean qualifiedIdentity(String identity) {
-        return identity != null && identity.matches(
+        // Descriptor hashing and nominal wrapper creation may be reached by
+        // untrusted schema input. Reject oversized identities before regex,
+        // digest construction or unbounded module-path storage.
+        if (identity == null || identity.length() > 256) return false;
+        int components = 1;
+        for (int i = 0; i < identity.length(); i++)
+            if (identity.charAt(i) == '.' && ++components > 16) return false;
+        return identity.matches(
                 "[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)+");
     }
 
     /** Interval implication is decidable for this closed built-in comparison fragment. */
     public static Interval normalize(Ast.TypeRef base, List<Ast.RefinementBound> clauses) {
         Objects.requireNonNull(clauses);
+        int suppliedCount = clauses.size();
+        if (suppliedCount > MAX_SOURCE_REFINEMENT_CLAUSES) {
+            throw new IllegalArgumentException(
+                    "source refinement clause limit exceeded (4096)");
+        }
+        // A hostile host list may mutate between admission and iteration.
+        // Freeze the bounded source schema before interpreting any clause.
+        List<Ast.RefinementBound> sourceClauses = List.copyOf(clauses);
+        if (sourceClauses.size() != suppliedCount)
+            throw new IllegalArgumentException("refinement clauses changed during snapshot");
         String canonicalBase = canonicalBaseName(base);
         String prop = canonicalBase.equals("string") ? "length" : "value";
         long min = prop.equals("length") ? 0 : Long.MIN_VALUE;
         long max = Long.MAX_VALUE;
         Set<Long> excluded = new HashSet<>();
-        for (Ast.RefinementBound b : clauses) {
+        for (Ast.RefinementBound b : sourceClauses) {
             if (!prop.equals(b.property()))
                 throw new IllegalArgumentException("invalid " + b.property() + " property on " + base.name());
             long n = b.constant();
@@ -152,7 +178,17 @@ public final class RefinementRules {
                              long min, long max, List<Long> excluded,
                              String nominalIdentity, String fingerprint) {
         public Descriptor {
+            Objects.requireNonNull(excluded, "excluded");
+            int suppliedCount = excluded.size();
+            // Reject before allocating a second, potentially unbounded list.
+            if (suppliedCount > MAX_SOURCE_REFINEMENT_CLAUSES) {
+                throw new IllegalArgumentException(
+                        "refinement descriptor exclusion quota exceeded (4096)");
+            }
             excluded = List.copyOf(excluded);
+            if (excluded.size() != suppliedCount)
+                throw new IllegalArgumentException(
+                        "refinement exclusions changed during snapshot");
             if (version != 1 || base == null || property == null
                     || (!base.equals("int") && !base.equals("string"))
                     || !(base.equals("int") ? property.equals("value")

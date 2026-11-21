@@ -241,4 +241,82 @@ final class RefinementRulesTest {
     }
 
 
+    @Test void intervalRecordsRejectForgedMetricsAndNegativeLengths() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Interval("memory", 0, 4, java.util.Set.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Interval("length", -1, 4, java.util.Set.of()));
+        var legitimate = new RefinementRules.Interval(
+                "length", 0, 4, java.util.Set.of(3L));
+        assertTrue(legitimate.contains(0));
+        assertFalse(legitimate.contains(3));
+    }
+
+    @Test void oversizedNominalIdentifiersCannotMintFingerprintsOrNewtypes() {
+        var nominal = alias("@MinLength(1) define newtype Name(string);");
+        var valid = RefinementRules.descriptor(
+                "app.Name", nominal.target(), nominal.refinement());
+        assertTrue(valid.accepts("x"));
+        String huge = "app." + "A".repeat(256);
+        String deep = "app." + "A.".repeat(17) + "Name";
+        assertThrows(IllegalArgumentException.class, () ->
+                RefinementRules.descriptor(huge, nominal.target(), nominal.refinement()));
+        assertThrows(IllegalArgumentException.class, () ->
+                RefinementRules.descriptor(deep, nominal.target(), nominal.refinement()));
+        assertThrows(IllegalArgumentException.class, () ->
+                RefinementRules.tryFrom(huge, nominal.target(), nominal.refinement(), "valid"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Descriptor(1, "string", "length", 1, Long.MAX_VALUE,
+                        java.util.List.of(), huge, valid.fingerprint()));
+    }
+
+    @Test void untrustedSourceBoundsAreLimitedBeforeExpensiveNormalization() {
+        var bounds = new java.util.ArrayList<Ast.RefinementBound>();
+        for (int i = 0; i < 4096; ++i)
+            bounds.add(new Ast.RefinementBound("value", "ne", i + 1L));
+        var inBudget = RefinementRules.normalize(Ast.TypeRef.simple("int"), bounds);
+        assertTrue(inBudget.contains(0));
+        assertFalse(inBudget.contains(4096));
+        bounds.add(new Ast.RefinementBound("value", "ne", 4097L));
+        var tooMany = assertThrows(IllegalArgumentException.class,
+                () -> RefinementRules.normalize(Ast.TypeRef.simple("int"), bounds));
+        assertTrue(tooMany.getMessage().contains("limit"));
+    }
+
+    @Test void publicDescriptorCannotSkipCanonicalExcludedValueQuota() {
+        var spec = alias("type Count = int with value gte 0;");
+        var valid = RefinementRules.descriptor(null, spec.target(), spec.refinement());
+        var exclusions = new java.util.ArrayList<Long>();
+        for (long i = 0; i <= 4096; i++) exclusions.add(i);
+        assertThrows(IllegalArgumentException.class, () ->
+                new RefinementRules.Descriptor(1, "int", "value", 0,
+                        Long.MAX_VALUE, exclusions, "", valid.fingerprint()));
+        // Formal Interval may still represent a large sparse proof. It is
+        // compiler source-schema admission, not interval arithmetic, that
+        // must be budgeted.
+        assertDoesNotThrow(() -> new RefinementRules.Interval(
+                "value", Long.MIN_VALUE, Long.MAX_VALUE,
+                java.util.Set.of(Long.MIN_VALUE, Long.MAX_VALUE)));
+    }
+
+    @Test void overBudgetHostListsCannotForceSchemaTraversalBeforeRejection() {
+        var hostileBounds = new java.util.AbstractList<Ast.RefinementBound>() {
+            @Override public int size() { return 4097; }
+            @Override public Ast.RefinementBound get(int index) {
+                throw new AssertionError("oversized schema must not be read");
+            }
+        };
+        var hostileExclusions = new java.util.AbstractList<Long>() {
+            @Override public int size() { return 4097; }
+            @Override public Long get(int index) {
+                throw new AssertionError("oversized exclusion list must not be copied");
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> RefinementRules.normalize(Ast.TypeRef.simple("int"), hostileBounds));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RefinementRules.Descriptor(1, "int", "value", 0,
+                        Long.MAX_VALUE, hostileExclusions, "", "0".repeat(64)));
+    }
+
 }
