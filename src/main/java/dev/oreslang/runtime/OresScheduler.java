@@ -55,6 +55,9 @@ public final class OresScheduler implements AutoCloseable {
             new ThreadLocal<>();
     private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<ExecutionContext> CURRENT_EXECUTION_CONTEXT = new ThreadLocal<>();
+    /** Only physically admitted scheduler turns may borrow this frame. */
+    private static final ThreadLocal<ActorSourceTaskFrame> CURRENT_ACTOR_TASK_FRAME =
+            new ThreadLocal<>();
     private static final ThreadLocal<Boolean> SCHEDULER_CARRIER = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> CURRENT_CANCELLATION_CLEANUP =
             new ThreadLocal<>();
@@ -413,6 +416,20 @@ public final class OresScheduler implements AutoCloseable {
      */
     public static ExecutionContext currentExecutionContext() {
         return CURRENT_EXECUTION_CONTEXT.get();
+    }
+
+    /**
+     * Internal compiler/runtime bridge. A scheduler reference by itself does
+     * not grant frame authority; physical actor and task identities must both
+     * match the active carrier. Never export this capability to guest source.
+     */
+    static ActorSourceTaskFrame currentActorSourceTaskFrame() {
+        ActorSourceTaskFrame frame = CURRENT_ACTOR_TASK_FRAME.get();
+        if (frame != null && (CURRENT_EXECUTION_CONTEXT.get() == null
+                || ActorRuntime.currentActorFrameArena() != frame.arena())) {
+            throw new SecurityException("foreign actor SourceTask frame binding");
+        }
+        return frame;
     }
 
     /**
@@ -966,7 +983,10 @@ public final class OresScheduler implements AutoCloseable {
             ActorTurnWatchdog.Lease previousWatchdog = CURRENT_WATCHDOG_LEASE.get();
             CURRENT_WATCHDOG_LEASE.set(lease);
             ExecutionContext priorExecutionContext = CURRENT_EXECUTION_CONTEXT.get();
+            ActorSourceTaskFrame priorActorTaskFrame = CURRENT_ACTOR_TASK_FRAME.get();
             CURRENT_EXECUTION_CONTEXT.set(executionContext);
+            if (actorFrame == null) CURRENT_ACTOR_TASK_FRAME.remove();
+            else CURRENT_ACTOR_TASK_FRAME.set(actorFrame);
             try {
                 if (actorFrame != null) {
                     try {
@@ -1091,6 +1111,11 @@ public final class OresScheduler implements AutoCloseable {
                     CURRENT_EXECUTION_CONTEXT.remove();
                 } else {
                     CURRENT_EXECUTION_CONTEXT.set(priorExecutionContext);
+                }
+                if (priorActorTaskFrame == null) {
+                    CURRENT_ACTOR_TASK_FRAME.remove();
+                } else {
+                    CURRENT_ACTOR_TASK_FRAME.set(priorActorTaskFrame);
                 }
             }
         }
