@@ -84,15 +84,19 @@ public final class SevSnpVcekEndorsement {
             X509Certificate vcek = parse_cert(factory, endorsements.vcek_der);
             if (root.getBasicConstraints() < 0 || ask.getBasicConstraints() < 0)
                 return Outcome.INVALID_CERTIFICATES;
+            // PKIX treats the ARK as a trusted anchor; explicitly validate its
+            // own lifetime and self-signature as an additional offline gate.
+            root.checkValidity();
+            root.verify(root.getPublicKey());
+            ask.checkValidity();
+            vcek.checkValidity();
             if (endorsements.issuer_crl_der == null ||
                     endorsements.issuer_crl_der.length == 0 ||
                     endorsements.root_issuer_crl_der == null ||
                     endorsements.root_issuer_crl_der.length == 0)
                 return Outcome.MISSING_REVOCATION_EVIDENCE;
-            X509CRL crl = (X509CRL) factory.generateCRL(
-                    new ByteArrayInputStream(endorsements.issuer_crl_der));
-            X509CRL rootCrl = (X509CRL) factory.generateCRL(
-                    new ByteArrayInputStream(endorsements.root_issuer_crl_der));
+            X509CRL crl = parse_crl(factory, endorsements.issuer_crl_der);
+            X509CRL rootCrl = parse_crl(factory, endorsements.root_issuer_crl_der);
             var now = new java.util.Date();
             if (crl.getNextUpdate() == null || !crl.getNextUpdate().after(now) ||
                     rootCrl.getNextUpdate() == null || !rootCrl.getNextUpdate().after(now))
@@ -126,7 +130,22 @@ public final class SevSnpVcekEndorsement {
             throws GeneralSecurityException {
         if (der == null || der.length == 0 || der.length > 65536)
             throw new java.security.cert.CertificateException("missing/oversized cert");
-        return (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(der));
+        var input = new ByteArrayInputStream(der);
+        var cert = (X509Certificate) factory.generateCertificate(input);
+        if (input.available() != 0)
+            throw new java.security.cert.CertificateException("certificate has trailing DER bytes");
+        return cert;
+    }
+
+    private static X509CRL parse_crl(CertificateFactory factory, byte[] der)
+            throws java.security.cert.CRLException {
+        if (der == null || der.length == 0 || der.length > 4 * 1024 * 1024)
+            throw new java.security.cert.CRLException("CRL missing or oversized");
+        var input = new ByteArrayInputStream(der);
+        var crl = (X509CRL) factory.generateCRL(input);
+        if (input.available() != 0)
+            throw new java.security.cert.CRLException("CRL contains trailing DER bytes");
+        return crl;
     }
 
     private static boolean valid_root_pin(Bundle bundle) {
