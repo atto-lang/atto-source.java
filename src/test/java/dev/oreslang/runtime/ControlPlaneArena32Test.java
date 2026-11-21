@@ -49,6 +49,7 @@ public final class ControlPlaneArena32Test {
             pairWriter.join();
             a.readI128(parent, limbs);
             check(limbs[1] == ~limbs[0], "final coherent scalar");
+            System.out.println("PASS java control i128 coherent concurrent host (NOT compiled Atto)");
             a.writeRef32(parent, child);
             check(a.readRef32(parent) == child, "checked four-byte child Ref32");
             // The result is host JVM-hotpath evidence ONLY, not Atto compiled guest proof.
