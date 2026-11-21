@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -44,6 +45,7 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
+    private final boolean allocJsonImported;
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -59,7 +61,50 @@ public final class OwnershipChecker {
         // Preserve AST declaration identity: equality-based maps can merge
         // separate bindings with identical syntax in different scopes.
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
+        this.allocJsonImported = program.imports().stream()
+                .anyMatch(OwnershipChecker::isCanonicalAllocJsonImport);
         index(program);
+    }
+
+    private static boolean isCanonicalAllocJsonImport(Ast.ImportDecl imported) {
+        if (imported.kind() != Ast.ImportKind.MODULE || imported.wildcard()) return false;
+        String path = imported.path();
+        if (!(path.equals("alloc/json") || path.equals("alloc/json.ores"))) return false;
+        return imported.names().size() == 1
+                && imported.names().getFirst().equals("Json")
+                && ImportRules.localName(imported, "Json").equals("Json");
+    }
+
+    private boolean isAllocJsonStringifyCall(Ast.CallExpr call, Scope scope) {
+        if (!allocJsonImported
+                || !(call.callee() instanceof Ast.MemberExpr member)
+                || !member.member().equals("stringify")
+                || !(member.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("Json")) {
+            return false;
+        }
+        return scope.lookup("Json") == null;
+    }
+
+    private static boolean isJsonObjectMapType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow()) {
+            type = type == null ? null : type.borrowedTarget();
+        }
+        if (type == null
+                || !type.name().equals("Map")
+                || type.inferArguments()
+                || type.arguments().size() != 2) {
+            return false;
+        }
+        Ast.TypeRef key = type.arguments().get(0);
+        Ast.TypeRef value = type.arguments().get(1);
+        boolean stringKey = !key.inferArguments()
+                && key.arguments().isEmpty()
+                && (key.name().equals("String") || key.name().equals("string"));
+        boolean jsonValue = !value.inferArguments()
+                && value.arguments().isEmpty()
+                && value.name().equals("JsonValue");
+        return stringKey && jsonValue;
     }
 
     public static Ast.Program check(Ast.Program program) {
@@ -1506,6 +1551,26 @@ public final class OwnershipChecker {
                 }
             }
         }
+
+        if (isAllocJsonStringifyCall(call, scope)) {
+            if (call.typeArgumentsPresent()) {
+                throw error("Json.stringify does not accept call-site type arguments");
+            }
+            if (call.arguments().size() != 1
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                throw error(
+                        "Json.stringify expects exactly one Map<String, JsonValue>");
+            }
+            // Stringification is a scoped read: do not move the affine Map.
+            ValueInfo input = checkExpr(call.arguments().getFirst(), scope, false);
+            if (!isJsonObjectMapType(input.type)) {
+                throw error(
+                        "Json.stringify currently requires Map<String, JsonValue>");
+            }
+            return new ValueInfo(
+                    Ast.TypeRef.simple("String"), ValueKind.COPY, null);
+        }
+
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);

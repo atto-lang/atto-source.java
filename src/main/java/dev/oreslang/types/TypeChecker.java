@@ -2709,6 +2709,24 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (isAllocJsonStringifyCall(call, env)) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "Json.stringify does not accept call-site type arguments");
+                }
+                if (call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException(
+                            "Json.stringify expects exactly one Map<String, JsonValue>");
+                }
+                Type input = typeOf(
+                        call.arguments().getFirst(), env, generics, self);
+                if (!isJsonObjectMapType(input)) {
+                    throw new IllegalArgumentException(
+                            "Json.stringify currently requires Map<String, JsonValue>");
+                }
+                return Primitive.STRING;
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -9147,6 +9165,26 @@ public final class TypeChecker {
                 || concrete == Primitive.BOOL
                 || concrete == Primitive.STRING
                 || concrete instanceof StringLiteral;
+    }
+
+    private boolean isAllocJsonStringifyCall(Ast.CallExpr call, Env env) {
+        if (!allocJsonImported || call.callee() == null) return false;
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !member.member().equals("stringify")
+                || !(member.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("Json")) {
+            return false;
+        }
+        // A lexical binding named Json shadows the imported module and must
+        // not inherit compiler-intrinsic authority.
+        return env.lookup("Json") == null;
+    }
+
+    private boolean isJsonObjectMapType(Type type) {
+        Type concrete = type instanceof Borrow borrow ? borrow.target() : type;
+        if (!isTypedMapType(concrete)) return false;
+        return typedMapKeyType(concrete) == Primitive.STRING
+                && isJsonValueType(typedMapValueType(concrete));
     }
 
     private boolean isSupportedTypedMapKey(Type key) {
