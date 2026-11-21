@@ -9104,6 +9104,19 @@ public final class TypeChecker {
                 }
                 yield jsonValue;
             }
+            case "parse" -> {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Json.parse expects exactly one String argument");
+                }
+                Type actual = deref(typeOf(
+                        call.arguments().getFirst(), env, generics, self));
+                if (actual != Primitive.STRING && !(actual instanceof StringLiteral)) {
+                    throw new IllegalArgumentException(
+                            "Json.parse requires a String argument");
+                }
+                yield jsonValue;
+            }
             case "stringify" -> {
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException(

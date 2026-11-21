@@ -248,6 +248,34 @@ final class AllocJsonStdlibTest {
     }
 
     @Test
+    void sourceJsonParseProducesOwnedCanonicalJsonValue() throws Exception {
+        Path entry = temp.resolve("parse.ores");
+        Files.writeString(entry, """
+                import class JsonValue from "alloc/json";
+                import class Json from "alloc/json";
+
+                pub routine main(): void {
+                  val JsonValue parsed =
+                      Json.parse("{\\\"name\\\":\\\"Ada\\\",\\\"n\\\":9007199254740993}");
+                  stdio.println(Json.stringify(parsed));
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                entry,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertEquals(
+                "{\"name\":\"Ada\",\"n\":9007199254740993}",
+                out.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void sourceStringifyIsStableAndNonConsuming() throws Exception {
         Path entry = temp.resolve("stringify.ores");
         Files.writeString(entry, """

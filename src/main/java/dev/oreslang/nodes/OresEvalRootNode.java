@@ -4945,6 +4945,11 @@ public final class OresEvalRootNode extends RootNode {
                                     (OresKeyedMap<String, OresJsonValue>) map;
                             yield OresJsonValue.object(jsonMap);
                         }
+                        case "parse" -> {
+                            requireOne(args, "Json.parse");
+                            yield dev.oreslang.runtime.AllocJsonText.parse(
+                                    requireString(args.getFirst(), "Json.parse input"));
+                        }
                         case "stringify" -> {
                             requireOne(args, "Json.stringify");
                             Object raw = args.getFirst();
