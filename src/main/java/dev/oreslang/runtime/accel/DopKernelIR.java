@@ -1,6 +1,7 @@
 package dev.oreslang.runtime.accel;
 
 import dev.oreslang.runtime.DataOrientedLayout;
+import dev.oreslang.runtime.DopRegionSchedule;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Objects;
@@ -46,7 +47,8 @@ public final class DopKernelIR {
 
     private static final class State {
         final DataOrientedLayout.Plan layout;
-        final ByteBuffer bytes;
+        ByteBuffer bytes;
+        final HostBuffer.RegionToken regionToken;
         int readLoans;
         boolean writeLoan;
         boolean closed;
@@ -60,6 +62,7 @@ public final class DopKernelIR {
             this.layout = layout;
             this.bytes = ByteBuffer.allocateDirect(Math.toIntExact(layout.byteLength()))
                     .order(ByteOrder.LITTLE_ENDIAN);
+            this.regionToken = new HostBuffer.RegionToken(layout.rows(), layout.fields());
         }
     }
 
@@ -68,6 +71,22 @@ public final class DopKernelIR {
      * loan exists. Closing invalidates all operations; GC is not the lifetime API.
      */
     public static final class HostBuffer implements AutoCloseable {
+        /** Opaque allocation identity; never exposes the underlying bytes. */
+        public static final class RegionToken {
+            private final long rows;
+            private final int fields;
+            // Volatile retirement is monotonic; a region cannot be resurrected.
+            // Never retain State or its direct ByteBuffer in a region descriptor.
+            private volatile boolean live = true;
+            private RegionToken(long rows, int fields) {
+                this.rows = rows;
+                this.fields = fields;
+            }
+            public long rows() { return rows; }
+            public int fields() { return fields; }
+            public boolean isLive() { return live; }
+            private void retire() { live = false; }
+        }
         private final State state;
         private boolean moved;
 
@@ -76,6 +95,16 @@ public final class DopKernelIR {
         }
 
         private HostBuffer(State state) { this.state = state; }
+
+        public RegionToken regionToken() {
+            synchronized (state) {
+                active();
+                return state.regionToken;
+            }
+        }
+        public DopRegionSchedule.Root regionRoot() {
+            return DopRegionSchedule.Root.fromHostBuffer(this);
+        }
         public DataOrientedLayout.Plan layout() {
             synchronized (state) {
                 active();
@@ -133,6 +162,8 @@ public final class DopKernelIR {
                 if (moved) return; // The successor owns the same storage.
                 if (state.readLoans != 0 || state.writeLoan) throw new IllegalStateException("borrowed buffer must be released before close");
                 state.closed = true;
+                state.regionToken.retire();
+                state.bytes = null; // Retired owner must not pin direct memory.
             }
         }
     }
@@ -198,6 +229,51 @@ public final class DopKernelIR {
                     };
                     destination.write(row, field, transformed);
                 }
+            }
+        }
+    }
+
+    /**
+     * Checked host scalar CPU lowering of a single field / half-open row slice.
+     * Runtime buffer-wide loans are intentionally exclusive; field-disjoint
+     * parallel execution is not yet admitted without a field-aware loan system.
+     */
+    public static void executeCpuRegion(Kernel kernel, HostBuffer input, HostBuffer output,
+                                        DopRegionSchedule.Access source,
+                                        DopRegionSchedule.Access destination) {
+        Objects.requireNonNull(kernel, "kernel");
+        Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(output, "output");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(destination, "destination");
+        if (input.state == output.state) {
+            throw new IllegalArgumentException("region input/output alias forbidden");
+        }
+        if (!kernel.layout().equals(input.layout()) || !kernel.layout().equals(output.layout())) {
+            throw new IllegalArgumentException("region kernel layout mismatch");
+        }
+        if (source.mode() != DopRegionSchedule.Mode.READ
+                || destination.mode() != DopRegionSchedule.Mode.WRITE
+                || source.field() != destination.field()
+                || source.begin() != destination.begin()
+                || source.end() != destination.end()
+                || !source.root().sameRoot(input.regionRoot())
+                || !destination.root().sameRoot(output.regionRoot())) {
+            throw new IllegalArgumentException("invalid CPU region owner, privilege or footprint");
+        }
+        DopRegionSchedule.requireLiveOwned(new DopRegionSchedule.Task(
+                "cpu-region", java.util.List.of(source, destination)));
+        // Both leases must be acquired before the first write. Failed output
+        // admission closes the acquired input loan via try-with-resources.
+        try (ReadLoan read = input.borrowRead(); WriteLoan write = output.borrowWrite()) {
+            for (long row = source.begin(); row < source.end(); ++row) {
+                float v = read.read(row, source.field());
+                float transformed = switch (kernel.operation()) {
+                    case SCALE -> v * kernel.scale();
+                    case BIAS -> v + kernel.bias();
+                    case SCALE_BIAS -> (v * kernel.scale()) + kernel.bias();
+                };
+                write.write(row, destination.field(), transformed);
             }
         }
     }
