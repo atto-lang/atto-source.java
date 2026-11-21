@@ -1,0 +1,93 @@
+name: ML actor compiled guest - protected source-local ephemeral runner
+
+# No pull_request or workflow_dispatch path. Never mirror the private source.
+on:
+  push:
+    branches:
+      - test/ml-actor-state-scalar-guest-20261018
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ml-scalar-source-local-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deny-unapproved:
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.repository_id != '1400792274' || github.event.repository.private != true || github.event.repository.fork == true || github.ref != 'refs/heads/test/ml-actor-state-scalar-guest-20261018' || github.ref_protected != true || vars.ORESLANG_ML_PRIVATE_RUNNER != 'true' || vars.ORESLANG_ML_APPROVED_SHA == '' || vars.ORESLANG_ML_APPROVED_SHA != github.sha || vars.ORESLANG_ML_APPROVED_TREE == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Deny unsafe or unapproved private-source execution
+        run: |
+          echo "Protected ref, reviewed exact head/tree, and isolated source-local runner required" >&2
+          exit 1
+
+  approved-ml-guest:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.repository_id == '1400792274' && github.event.repository.private == true && github.event.repository.fork == false && github.ref == 'refs/heads/test/ml-actor-state-scalar-guest-20261018' && github.ref_protected == true && vars.ORESLANG_ML_PRIVATE_RUNNER == 'true' && vars.ORESLANG_ML_APPROVED_SHA != '' && vars.ORESLANG_ML_APPROVED_SHA == github.sha && vars.ORESLANG_ML_APPROVED_TREE != '' }}
+    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 120
+    env:
+      APPROVED_SHA: ${{ vars.ORESLANG_ML_APPROVED_SHA }}
+      APPROVED_TREE: ${{ vars.ORESLANG_ML_APPROVED_TREE }}
+      APPROVED_RUNNER: ${{ vars.ORESLANG_ML_PRIVATE_RUNNER }}
+    steps:
+      - name: Verify protected source authorization before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = "push"
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_REPOSITORY_ID" = "1400792274"
+          test "$GITHUB_REF" = "refs/heads/test/ml-actor-state-scalar-guest-20261018"
+          test "$GITHUB_REF_PROTECTED" = "true"
+          test "$APPROVED_RUNNER" = "true"
+          test "$GITHUB_SHA" = "$APPROVED_SHA"
+          [[ "$APPROVED_TREE" =~ ^[0-9a-f]{40}$ ]]
+
+      - name: Checkout only reviewed source commit in original repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          clean: true
+
+      - name: Verify pinned commit and tree and reject injected worktree content
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "f4b77392173631475a0dda6a835aa69361a69557"
+          test "$(git hash-object -- tests/golden/ml-actor-state-scalar.stdout)" = "b602f9821817696f16499af1a74cb22d49a0ecab"
+          echo "ML_SOURCE_LOCAL_EXACT_SHA_TREE=PASS"
+          echo "CROSS_ORG_PRIVATE_SOURCE_EXPORT=NONE"
+
+      - name: Execute Node guard on actual source (not guest evidence)
+        run: node --test tests/java-ml-guest-junit-guard.test.mjs
+
+      - name: Setup pinned GraalVM JDK25 without shared dependency cache
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+
+      - name: Execute actual scalar actor JUnit and polyglot guest
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=MlActorStateScalarGuestTest test
+
+      - name: Run full fresh Maven verification
+        run: mvn -B -ntp -Dores.runtime.carriers=native clean verify
+
+      - name: Report exact source-only certification boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPROVED_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$APPROVED_TREE"
+          echo "ML_JAVA_GRAAL_REAL_GUEST=EXECUTED"
+          echo "LLVM_PARITY=NOT_VERIFIED"
+          echo "CROSS_REPO_TENSOR_TRAINING=NOT_EXECUTED"
+          echo "PRIVATE_SOURCE_MIRRORED=FALSE"

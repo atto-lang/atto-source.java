@@ -60,6 +60,7 @@ public final class TypeChecker {
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+    private TaggedMessageContracts.Registry taggedMessages;
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
@@ -108,7 +109,9 @@ public final class TypeChecker {
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
         program = AnnotationExpander.expand(program);
+        TaggedMessageContracts.Registry tagged = TaggedMessageContracts.verify(program);
         TypeChecker checker = new TypeChecker();
+        checker.taggedMessages = tagged;
         checker.validateImports(program);
         checker.collect(program);
         ActorStateContract.verify(program);
@@ -138,6 +141,12 @@ public final class TypeChecker {
                 else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
                 else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
                 else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+                else if (declaration instanceof Ast.EnumDecl enumDecl) {
+                    if (!localNames.add(enumDecl.name())) {
+                        throw new IllegalArgumentException(
+                                "enum name conflicts with a local, module, or builtin name: " + enumDecl.name());
+                    }
+                }
             }
         }
 
@@ -2011,6 +2020,29 @@ public final class TypeChecker {
             Type mlScalarIntrinsic =
                     typeMlScalarIntrinsic(call, env, generics, self);
             if (mlScalarIntrinsic != null) return mlScalarIntrinsic;
+
+            if (call.callee() instanceof Ast.MemberExpr variantMember
+                    && variantMember.receiver() instanceof Ast.NameExpr variantEnum) {
+                TaggedMessageContracts.Case enumCase =
+                        taggedCaseOrNull(variantEnum.name() + "." + variantMember.member());
+                if (enumCase != null) {
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException("enum constructors cannot take type arguments");
+                    }
+                    int expected = enumCase.sourcePayload() == null ? 0 : 1;
+                    if (call.arguments().size() != expected) {
+                        throw new IllegalArgumentException("enum constructor "
+                                + enumCase.qualifiedName() + " expects " + expected + " argument(s)");
+                    }
+                    if (expected == 1) {
+                        Type actual = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                        requireAssignable(actual,
+                                resolve(enumCase.sourcePayload(), generics, self),
+                                "payload for " + enumCase.qualifiedName());
+                    }
+                    return new Named(enumCase.qualifiedName(), List.of());
+                }
+            }
 
             if (call.callee() instanceof Ast.MemberExpr stdioCall
                     && stdioCall.receiver() instanceof Ast.NameExpr stdio
@@ -5075,6 +5107,48 @@ public final class TypeChecker {
         }
     }
 
+    private TaggedMessageContracts.Case taggedCaseOrNull(String qualified) {
+        if (taggedMessages == null) return null;
+        int dot = qualified.indexOf('.');
+        if (dot < 1 || dot == qualified.length() - 1) return null;
+        TaggedMessageContracts.EnumType owner =
+                taggedMessages.enums().get(qualified.substring(0, dot));
+        if (owner == null) return null;
+        for (TaggedMessageContracts.Case candidate : owner.cases()) {
+            if (candidate.name().equals(qualified.substring(dot + 1))) return candidate;
+        }
+        return null;
+    }
+
+    private TaggedMessageContracts.Domain matchCaseDomain(Type subject) {
+        if (!(subject instanceof Named named) || !named.arguments().isEmpty()
+                || taggedMessages == null) return null;
+        if (taggedMessages.enums().containsKey(named.name())) {
+            return taggedMessages.requireDomain(named.name());
+        }
+        TaggedMessageContracts.Case singleton = taggedCaseOrNull(named.name());
+        return singleton == null ? null
+                : new TaggedMessageContracts.Domain(named.name(), List.of(singleton));
+    }
+
+    private boolean constructorCoversPayload(
+            Ast.ConstructorPattern pattern, Type payload,
+            Set<String> generics, Type self) {
+        if (payload == null) return pattern.arguments().isEmpty();
+        return pattern.arguments().size() == 1
+                && patternCoversType(pattern.arguments().getFirst(),
+                        payload, generics, self);
+    }
+
+    private boolean hasCompleteConstructorArm(
+            List<Ast.MatchArm> arms, String constructor,
+            Type payload, Set<String> generics, Type self) {
+        return arms.stream().anyMatch(arm -> arm.guard() == null
+                && arm.pattern() instanceof Ast.ConstructorPattern candidate
+                && candidate.constructor().equals(constructor)
+                && constructorCoversPayload(candidate, payload, generics, self));
+    }
+
     private void checkPattern(
             Ast.Pattern pattern, Type subject, Env bindings, Set<String> generics, Type self) {
         if (pattern instanceof Ast.WildcardPattern) return;
@@ -5148,6 +5222,33 @@ public final class TypeChecker {
             return;
         }
         if (pattern instanceof Ast.ConstructorPattern constructor) {
+            TaggedMessageContracts.Case enumCase =
+                    taggedCaseOrNull(constructor.constructor());
+            if (enumCase != null) {
+                TaggedMessageContracts.Domain domain = matchCaseDomain(subject);
+                if (domain == null || domain.cases().stream().noneMatch(
+                        candidate -> candidate.qualifiedName().equals(enumCase.qualifiedName()))) {
+                    throw new IllegalArgumentException("enum case "
+                            + enumCase.qualifiedName()
+                            + " is not in match subject domain " + subject);
+                }
+                int arity = enumCase.sourcePayload() == null ? 0 : 1;
+                if (constructor.arguments().size() != arity) {
+                    throw new IllegalArgumentException("enum case pattern "
+                            + enumCase.qualifiedName() + " expects " + arity
+                            + " payload pattern(s), got " + constructor.arguments().size());
+                }
+                if (arity == 1) {
+                    checkPattern(constructor.arguments().getFirst(),
+                            deref(resolve(enumCase.sourcePayload(), generics, self)),
+                            bindings, generics, self);
+                }
+                return;
+            }
+            if (constructor.constructor().contains(".")) {
+                throw new IllegalArgumentException(
+                        "unknown enum case in match pattern " + constructor.constructor());
+            }
             if (!(subject instanceof Named named)) {
                 throw new IllegalArgumentException("constructor pattern " + constructor.constructor() + " requires a sum/constructor type, got " + subject);
             }
@@ -5395,6 +5496,18 @@ public final class TypeChecker {
             }
         }
 
+        TaggedMessageContracts.Domain enumDomain = matchCaseDomain(subject);
+        if (enumDomain != null) {
+            return enumDomain.cases().stream().allMatch(enumCase ->
+                    hasCompleteConstructorArm(
+                            arms,
+                            enumCase.qualifiedName(),
+                            enumCase.sourcePayload() == null ? null
+                                    : deref(resolve(enumCase.sourcePayload(), generics, self)),
+                            generics,
+                            self));
+        }
+
         // Finite unions are exhaustively covered when every alternative is
         // completely covered by at least one unguarded arm.
         if (subject instanceof Union union) {
@@ -5413,21 +5526,18 @@ public final class TypeChecker {
             }
             return yes && no;
         }
-        if (subject instanceof Named named && named.name().equals("Option")) {
-            boolean some = false, none = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                some |= c.constructor().equals("Some");
-                none |= c.constructor().equals("None");
-            }
-            return some && none;
+        if (subject instanceof Named named && named.name().equals("Option")
+                && named.arguments().size() == 1) {
+            return hasCompleteConstructorArm(
+                            arms, "Some", named.arguments().getFirst(), generics, self)
+                    && hasCompleteConstructorArm(arms, "None", null, generics, self);
         }
-        if (subject instanceof Named named && named.name().equals("Result")) {
-            boolean ok = false, err = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                ok |= c.constructor().equals("Ok");
-                err |= c.constructor().equals("Err");
-            }
-            return ok && err;
+        if (subject instanceof Named named && named.name().equals("Result")
+                && named.arguments().size() == 2) {
+            return hasCompleteConstructorArm(
+                            arms, "Ok", named.arguments().get(0), generics, self)
+                    && hasCompleteConstructorArm(
+                            arms, "Err", named.arguments().get(1), generics, self);
         }
         return false;
     }
@@ -7554,6 +7664,14 @@ public final class TypeChecker {
                 yield new Function(args.subList(0, args.size() - 1), args.getLast());
             }
             default -> {
+                if (taggedMessages != null
+                        && taggedMessages.enums().containsKey(ref.name())) {
+                    if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "enum type '" + ref.name() + "' is not generic");
+                    }
+                    yield new Named(ref.name(), List.of());
+                }
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
@@ -7682,6 +7800,27 @@ public final class TypeChecker {
             return structuralRecordAssignable(sourceShape, targetShape);
         }
 
+        if (isNominalEnumCaseWidening(actual, expected)) return true;
+
+        // Ok(value) and Err(error) synthesize Result with Unknown in the
+        // constructor's opposite slot. Permit that local constructor hole,
+        // plus the exact case->owner nominal enum widening above, without
+        // weakening the language-wide invariant generic relation.
+        if (actual instanceof Named actualResult
+                && expected instanceof Named expectedResult
+                && actualResult.name().equals("Result")
+                && expectedResult.name().equals("Result")
+                && actualResult.arguments().size() == 2
+                && expectedResult.arguments().size() == 2
+                && resultConstructorSlotAssignable(
+                        actualResult.arguments().get(0),
+                        expectedResult.arguments().get(0))
+                && resultConstructorSlotAssignable(
+                        actualResult.arguments().get(1),
+                        expectedResult.arguments().get(1))) {
+            return true;
+        }
+
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
@@ -7737,6 +7876,28 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    private boolean isNominalEnumCaseWidening(Type actual, Type expected) {
+        if (!(actual instanceof Named caseType)
+                || !(expected instanceof Named enumType)
+                || !caseType.arguments().isEmpty()
+                || !enumType.arguments().isEmpty()) {
+            return false;
+        }
+        TaggedMessageContracts.Case enumCase = taggedCaseOrNull(caseType.name());
+        return enumCase != null && enumCase.owner().equals(enumType.name());
+    }
+
+    private boolean resultConstructorSlotAssignable(Type actual, Type expected) {
+        if (actual == Unknown.INSTANCE || expected == Unknown.INSTANCE) return true;
+        if (isNominalEnumCaseWidening(actual, expected)) return true;
+
+        // Preserve the existing invariant generic/value relation in every
+        // non-hole, non-enum slot. This deliberately does not recurse through
+        // arbitrary same-name generics using this checker's subtype relation.
+        return Types.isAssignable(actual, expected)
+                && Types.isAssignable(expected, actual);
     }
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {

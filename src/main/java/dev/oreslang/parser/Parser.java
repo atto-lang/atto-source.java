@@ -132,7 +132,13 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, or trait after 'define'");
+                if (match(ENUM)) {
+                    validateNoModifiers(modifiers, "enums");
+                    rejectCallableStructuralAnnotation(annotations, "enums");
+                    rootDeclarations.add(parseTaggedEnum());
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, trait, or enum after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -922,6 +928,50 @@ public final class Parser {
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
         return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+    }
+
+
+    private Ast.EnumDecl parseTaggedEnum() {
+        String name = consume(IDENT, "expected enum name").lexeme();
+        consume(AS, "expected 'as' after enum name");
+        List<Ast.EnumCase> cases = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        java.util.Set<Integer> tags = new java.util.HashSet<>();
+        int nextTag = 1;
+        while (!check(END) && !check(EOF)) {
+            if (cases.size() >= 4096) {
+                throw error(peek(), "enum may declare at most 4096 cases");
+            }
+            Token start = consume(IDENT, "expected enum case name");
+            if (!names.add(start.lexeme())) throw error(start, "duplicate enum case " + start.lexeme());
+            Ast.TypeRef payload = match(COLON) ? parseTypeRef() : null;
+            int tag;
+            if (match(EQUAL)) {
+                long raw = parseSignedI64(consume(INT, "expected positive enum tag"));
+                if (raw < 1 || raw > Integer.MAX_VALUE) {
+                    throw error(previous(), "enum tags must be positive 32-bit integers");
+                }
+                tag = (int) raw;
+            } else {
+                tag = nextTag;
+            }
+            if (!tags.add(tag)) throw error(start, "duplicate enum tag " + tag);
+            if (!cases.isEmpty() && tag <= cases.getLast().tag()) {
+                throw error(start, "enum tags must increase monotonically");
+            }
+            cases.add(new Ast.EnumCase(start.lexeme(), payload, tag));
+            boolean separator = match(COMMA, SEMICOLON);
+            if (tag == Integer.MAX_VALUE && !check(END)) {
+                throw error(start, "cannot define another enum case after INT32_MAX");
+            }
+            nextTag = tag == Integer.MAX_VALUE ? tag : tag + 1;
+            if (!separator && !check(END) && peek().line() <= previous().line()) {
+                throw error(peek(), "enum cases require separate lines, commas or semicolons");
+            }
+        }
+        consume(END, "expected 'end' after enum " + name);
+        if (cases.isEmpty()) throw error(previous(), "enum must declare at least one case");
+        return new Ast.EnumDecl(name, cases);
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
@@ -2607,6 +2657,12 @@ public final class Parser {
 
         if (check(IDENT)) {
             String name = advance().lexeme();
+            if (match(DOT)) {
+                name += "." + consume(IDENT, "expected enum case after '.' in match pattern").lexeme();
+                if (match(AS)) {
+                    return new Ast.ConstructorPattern(name, List.of(parsePattern()));
+                }
+            }
             if (match(LPAREN)) {
                 List<Ast.Pattern> args = new ArrayList<>();
                 if (!check(RPAREN)) {

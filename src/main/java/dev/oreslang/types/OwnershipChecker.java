@@ -55,8 +55,10 @@ public final class OwnershipChecker {
             new java.util.ArrayDeque<>();
     private int loopDepth;
     private boolean currentAsyncGenerator;
+    private final TaggedMessageContracts.Registry taggedMessages;
 
     private OwnershipChecker(Ast.Program program) {
+        taggedMessages = TaggedMessageContracts.verify(program);
         index(program);
     }
 
@@ -2393,6 +2395,23 @@ public final class OwnershipChecker {
 
     private List<Ast.TypeRef> constructorPatternTypes(String constructor, Ast.TypeRef subjectType) {
         if (subjectType == null) return List.of();
+        if (constructor.indexOf('.') > 0) {
+            TaggedMessageContracts.Case enumCase = taggedMessages.requireCase(constructor);
+            Ast.TypeRef domainType = subjectType.isBorrow()
+                    ? subjectType.borrowedTarget() : subjectType;
+            if (!domainType.arguments().isEmpty()) {
+                throw error("enum match domain cannot have type parameters: " + domainType.name());
+            }
+            TaggedMessageContracts.Domain domain =
+                    taggedMessages.requireDomain(domainType.name());
+            if (domain.cases().stream().noneMatch(candidate ->
+                    candidate.qualifiedName().equals(enumCase.qualifiedName()))) {
+                throw error("enum case " + constructor
+                        + " does not belong to match subject " + domainType.name());
+            }
+            return enumCase.sourcePayload() == null
+                    ? List.of() : List.of(enumCase.sourcePayload());
+        }
         if (constructor.equals("Some") && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {
             return List.of(subjectType.arguments().getFirst());
         }

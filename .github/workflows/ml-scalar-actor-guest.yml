@@ -1,0 +1,63 @@
+name: ML scalar actor compiled guest gate (private source)
+on:
+  pull_request:
+    paths:
+      - "src/main/**"
+      - "src/test/java/dev/oreslang/MlActorStateScalarGuestTest.java"
+      - "tests/java-ml-guest-junit-guard.test.mjs"
+      - "tests/fixtures/ml-actor-state-scalar.ores"
+      - "tests/golden/ml-actor-state-scalar.stdout"
+      - "stdlib/**"
+      - "pom.xml"
+      - ".github/workflows/ml-scalar-actor-guest.yml"
+      - ".github/workflows/ml-scalar-actor-private-ephemeral.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pinned-java-graal-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact source PR head, never a cross-org carrier
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source revision and clean checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "JAVA_GUEST_SOURCE_SHA=$EXPECTED_SHA"
+          echo "CROSS_ORG_PRIVATE_SOURCE_EXPORT=NONE"
+      - name: Fail closed on scalar fixture/golden drift before installing GraalVM
+        run: |
+          set -euo pipefail
+          test "$(git hash-object -- tests/fixtures/ml-actor-state-scalar.ores)" = "f4b77392173631475a0dda6a835aa69361a69557"
+          test "$(git hash-object -- tests/golden/ml-actor-state-scalar.stdout)" = "b602f9821817696f16499af1a74cb22d49a0ecab"
+          echo "ML_SCALAR_FIXTURE_AND_GOLDEN=EXACT_REVIEWED_BLOBS"
+      - name: Host-only JUnit structural regression (not guest evidence)
+        run: node --test tests/java-ml-guest-junit-guard.test.mjs
+      - name: Install pinned GraalVM/JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # pinned from source-local security CI
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+      - name: Show Java and Maven toolchain
+        run: |
+          java -version
+          mvn -version
+      - name: Execute real parser, effect, ownership and scalar actor guest
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=MlActorStateScalarGuestTest test
+      - name: Full JVM verification (only after guest passes)
+        run: mvn -B -ntp -Dores.runtime.carriers=native clean verify
+      - name: Certifying evidence boundary
+        run: |
+          echo "JAVA_GRAAL_ML_SCALAR_GUEST=EXECUTED"
+          echo "LLVM_PARITY=NOT_VERIFIED"
+          echo "CROSS_REPO_TENSOR_TRAINING=NOT_EXECUTED"
+          echo "PRIVATE_SOURCE_NOT_MIRRORED=TRUE"

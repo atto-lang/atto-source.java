@@ -139,6 +139,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+        private final dev.oreslang.types.TaggedMessageContracts.Registry enumTypes;
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
 
@@ -193,6 +194,7 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.enumTypes = dev.oreslang.types.TaggedMessageContracts.verify(program);
             indexImports();
             indexDeclarations();
         }
@@ -5864,6 +5866,39 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        private record EnumNamespace(String name) { }
+        private record NominalEnumValue(
+                String owner, String name, int tag, Object payload) {
+            private String qualifiedName() { return owner + "." + name; }
+        }
+
+        private dev.oreslang.types.TaggedMessageContracts.Case enumCase(String qualified) {
+            int dot = qualified.indexOf('.');
+            if (dot < 1 || dot == qualified.length() - 1) return null;
+            var owner = enumTypes.enums().get(qualified.substring(0, dot));
+            if (owner == null) return null;
+            for (var candidate : owner.cases()) {
+                if (candidate.name().equals(qualified.substring(dot + 1))) return candidate;
+            }
+            return null;
+        }
+
+        private Object constructEnumCase(
+                dev.oreslang.types.TaggedMessageContracts.Case enumCase,
+                Object payload,
+                boolean payloadPresent) {
+            if (enumCase.sourcePayload() == null && payloadPresent) {
+                throw new IllegalArgumentException(
+                        "payloadless enum case cannot carry data: " + enumCase.qualifiedName());
+            }
+            if (enumCase.sourcePayload() != null && !payloadPresent) {
+                throw new IllegalArgumentException(
+                        "enum case requires payload: " + enumCase.qualifiedName());
+            }
+            return new NominalEnumValue(
+                    enumCase.owner(), enumCase.name(), enumCase.tag(), payload);
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
@@ -5873,6 +5908,9 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.NameExpr name) {
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
+                if (enumTypes.enums().containsKey(name.name())) {
+                    return new EnumNamespace(name.name());
+                }
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("std")) return new StdFacade(context);
                 if (name.name().equals("fs") || name.name().equals("File")) return new FileSystemFacade(context);
@@ -6299,6 +6337,25 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof EnumNamespace namespace) {
+                var enumCase = enumCase(namespace.name() + "." + name);
+                if (enumCase == null) {
+                    throw new IllegalArgumentException(
+                            "unknown enum case " + namespace.name() + "." + name);
+                }
+                return (Invokable) args -> {
+                    int expected = enumCase.sourcePayload() == null ? 0 : 1;
+                    if (args.size() != expected) {
+                        throw new IllegalArgumentException(
+                                "enum constructor " + enumCase.qualifiedName()
+                                        + " expects " + expected + " argument(s)");
+                    }
+                    return constructEnumCase(
+                            enumCase,
+                            expected == 0 ? null : args.getFirst(),
+                            expected == 1);
+                };
+            }
             if (receiver instanceof dev.oreslang.runtime.SealedActorState.Access stateAccess) {
                 return stateAccess.read(name);
             }
@@ -7918,6 +7975,21 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.ConstructorPattern constructor) {
                 String name = constructor.constructor();
+                if (name.indexOf('.') > 0) {
+                    var expected = enumCase(name);
+                    if (expected == null) return false;
+                    if (!(value instanceof NominalEnumValue actual)
+                            || !actual.qualifiedName().equals(expected.qualifiedName())
+                            || actual.tag() != expected.tag()) return false;
+                    if (expected.sourcePayload() == null) {
+                        return constructor.arguments().isEmpty();
+                    }
+                    return constructor.arguments().size() == 1
+                            && patternMatches(
+                                    constructor.arguments().getFirst(),
+                                    actual.payload(),
+                                    bindings);
+                }
                 if (name.equals("Some")) {
                     if (!(value instanceof OptionValue option) || !option.present() || constructor.arguments().size() != 1) return false;
                     return patternMatches(constructor.arguments().getFirst(), option.value(), bindings);
@@ -8085,6 +8157,10 @@ public final class OresEvalRootNode extends RootNode {
          * (directly or through the narrow JNI bridge), never JVM Class.isInstance/instanceof.
          */
         private boolean oresTypeMatches(Object value, Ast.TypeRef target) {
+            if (value instanceof NominalEnumValue enumValue) {
+                if (target.name().equals(enumValue.owner())
+                        || target.name().equals(enumValue.qualifiedName())) return true;
+            }
             if (target.isUnion()) {
                 for (Ast.TypeRef option : target.arguments()) {
                     if (oresTypeMatches(value, option)) return true;
