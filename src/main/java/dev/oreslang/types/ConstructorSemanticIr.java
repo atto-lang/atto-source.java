@@ -1,0 +1,584 @@
+package dev.oreslang.types;
+
+import dev.oreslang.ast.Ast;
+
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+
+/**
+ * Backend-neutral semantic objects for ordinary-class construction, callables,
+ * and recursive aliases.
+ *
+ * <p>These records deliberately sit above parser spelling and below backend ABI
+ * lowering. In particular, an optional source {@code self} receiver is metadata,
+ * never a user parameter, and constructor identity is only owner + effective
+ * caller-visible arity.</p>
+ */
+public final class ConstructorSemanticIr {
+    private ConstructorSemanticIr() { }
+
+    public enum ReceiverBinding {
+        IMPLICIT,
+        EXPLICIT_SELF
+    }
+
+    public enum ConstructionPhase {
+        ALLOCATED,
+        INITIALIZING,
+        INITIALIZED,
+        CONSTRUCTED;
+
+        public boolean canTransitionTo(ConstructionPhase next) {
+            Objects.requireNonNull(next, "next construction phase");
+            return next.ordinal() >= ordinal();
+        }
+    }
+
+    public record ConstructorKey(String owner, int effectiveArity) {
+        public ConstructorKey {
+            if (owner == null || owner.isBlank()) {
+                throw new IllegalArgumentException("constructor owner cannot be blank");
+            }
+            if (effectiveArity < 0) {
+                throw new IllegalArgumentException("constructor arity cannot be negative");
+            }
+        }
+    }
+
+    /**
+     * Semantic constructor declaration. {@code userParameters} never contains
+     * the compiler-supplied receiver.
+     */
+    public record ConstructorDecl(
+            ConstructorKey key,
+            ReceiverBinding receiverBinding,
+            List<Ast.Param> userParameters,
+            Ast.ConstructorDecl source,
+            ConstructorKey delegatesTo) {
+        public ConstructorDecl {
+            Objects.requireNonNull(key, "constructor key");
+            Objects.requireNonNull(receiverBinding, "receiver binding");
+            Objects.requireNonNull(source, "source constructor");
+            userParameters = List.copyOf(userParameters);
+            if (key.effectiveArity() != userParameters.size()
+                    || source.arity() != key.effectiveArity()
+                    || !source.parameters().equals(userParameters)) {
+                throw new IllegalArgumentException(
+                        "constructor semantic parameters must match exact source declaration");
+            }
+            if (delegatesTo != null && delegatesTo.equals(key)) {
+                throw new IllegalArgumentException(
+                        "constructor cannot delegate directly to itself");
+            }
+            if (delegatesTo != null && !key.owner().equals(delegatesTo.owner())) {
+                throw new IllegalArgumentException(
+                        "constructor delegation must stay within owner '" + key.owner() + "'");
+            }
+        }
+
+        public static ConstructorDecl of(
+                String owner,
+                ReceiverBinding receiverBinding,
+                Ast.ConstructorDecl source) {
+            return new ConstructorDecl(
+                    new ConstructorKey(owner, source.arity()),
+                    receiverBinding,
+                    source.parameters(),
+                    source,
+                    null);
+        }
+
+        public ConstructorDecl withDelegation(ConstructorKey target) {
+            return new ConstructorDecl(key, receiverBinding, userParameters, source, target);
+        }
+    }
+
+    public record ConstructionRegionId(String owner, int constructorArity, long ordinal) {
+        public ConstructionRegionId {
+            if (owner == null || owner.isBlank()) {
+                throw new IllegalArgumentException("construction region owner cannot be blank");
+            }
+            if (constructorArity < 0) {
+                throw new IllegalArgumentException("construction region arity cannot be negative");
+            }
+            if (ordinal < 0) {
+                throw new IllegalArgumentException("construction region ordinal cannot be negative");
+            }
+        }
+    }
+
+    public enum CleanupKind {
+        DEFER,
+        FINALLY,
+        FIELD_DROP,
+        BASE_DROP,
+        STORAGE_RECLAIM
+    }
+
+    public record CleanupEdge(CleanupKind kind, String subject) {
+        public CleanupEdge {
+            Objects.requireNonNull(kind, "cleanup kind");
+            subject = subject == null ? "" : subject;
+        }
+    }
+
+    /**
+     * Construction state carried by semantic CFG edges.
+     *
+     * <p>{@link ConstructionPhase#INITIALIZED} is not publication. Only
+     * CONSTRUCTED may be converted to an ordinary object capability.</p>
+     */
+    public record ConstructionState(
+            ConstructionRegionId region,
+            ConstructionPhase phase,
+            ConstructorFlowState fields,
+            List<CleanupEdge> pendingCleanups,
+            Set<String> fixedFields) {
+        public ConstructionState {
+            Objects.requireNonNull(region, "construction region");
+            Objects.requireNonNull(phase, "construction phase");
+            Objects.requireNonNull(fields, "constructor field state");
+            pendingCleanups = List.copyOf(pendingCleanups);
+            fixedFields = Set.copyOf(fixedFields);
+            if (!fields.snapshot().keySet().containsAll(fixedFields)) {
+                throw new IllegalArgumentException("fixed constructor field not present in state");
+            }
+        }
+
+        /** Compatibility constructor: all tracked fields are immutable. */
+        public ConstructionState(
+                ConstructionRegionId region,
+                ConstructionPhase phase,
+                ConstructorFlowState fields,
+                List<CleanupEdge> pendingCleanups) {
+            this(region, phase, fields, pendingCleanups, fields.snapshot().keySet());
+        }
+
+        // Field mutability is fixed by the declaring class when this region
+        // is created. It must not be relaxed after validation begins.
+
+        public ConstructionState transitionTo(ConstructionPhase next) {
+            if (!phase.canTransitionTo(next)) {
+                throw new IllegalArgumentException(
+                        "construction phase cannot move backward from " + phase + " to " + next);
+            }
+            if (next == ConstructionPhase.CONSTRUCTED
+                    && (!fields.completeWithFixedFields(fixedFields)
+                        || !pendingCleanups.isEmpty())) {
+                throw new IllegalArgumentException(
+                        "construction cannot complete with uninitialized fields or pending cleanup");
+            }
+            return new ConstructionState(region, next, fields, pendingCleanups, fixedFields);
+        }
+
+        public ConstructionState withFields(ConstructorFlowState nextFields) {
+            Objects.requireNonNull(nextFields, "new constructor field state");
+            if (!fields.snapshot().keySet().equals(nextFields.snapshot().keySet())) {
+                throw new IllegalArgumentException(
+                        "construction field-set cannot change across state transitions");
+            }
+            if (phase == ConstructionPhase.CONSTRUCTED) {
+                throw new IllegalArgumentException("constructed state cannot mutate fields");
+            }
+            return new ConstructionState(region, phase, nextFields, pendingCleanups, fixedFields);
+        }
+
+        public ConstructionState withCleanup(CleanupEdge cleanup) {
+            if (phase == ConstructionPhase.CONSTRUCTED) {
+                throw new IllegalArgumentException("constructed state cannot register cleanup");
+            }
+            java.util.ArrayList<CleanupEdge> next = new java.util.ArrayList<>(pendingCleanups);
+            next.add(Objects.requireNonNull(cleanup, "cleanup"));
+            return new ConstructionState(region, phase, fields, next, fixedFields);
+        }
+
+        /**
+         * A cleanup completes in strict LIFO order. The region must discharge
+         * every pending cleanup before transitioning to CONSTRUCTED.
+         */
+        public ConstructionState completeCleanup(CleanupEdge expectedTop) {
+            Objects.requireNonNull(expectedTop, "completed cleanup");
+            if (phase == ConstructionPhase.CONSTRUCTED || pendingCleanups.isEmpty()) {
+                throw new IllegalArgumentException("no pending constructor cleanup to complete");
+            }
+            CleanupEdge top = pendingCleanups.get(pendingCleanups.size() - 1);
+            if (!top.equals(expectedTop)) {
+                throw new IllegalArgumentException("constructor cleanup must complete in LIFO order");
+            }
+            return new ConstructionState(
+                    region, phase,
+                    fields,
+                    pendingCleanups.subList(0, pendingCleanups.size() - 1),
+                    fixedFields);
+        }
+
+        public ConstructionState join(ConstructionState other) {
+            Objects.requireNonNull(other, "other construction state");
+            if (!region.equals(other.region)) {
+                throw new IllegalArgumentException("cannot join different construction regions");
+            }
+            if (phase != other.phase) {
+                throw new IllegalArgumentException(
+                        "cannot join construction states in different phases: "
+                                + phase + " and " + other.phase);
+            }
+            if (!pendingCleanups.equals(other.pendingCleanups)) {
+                throw new IllegalArgumentException(
+                        "cleanup-stack join requires identical registered cleanup edges");
+            }
+            if (!fixedFields.equals(other.fixedFields)) {
+                throw new IllegalArgumentException(
+                        "cannot join construction states with different immutable field contracts");
+            }
+            return new ConstructionState(
+                    region,
+                    phase,
+                    fields.join(other.fields),
+                    pendingCleanups,
+                    fixedFields);
+        }
+
+        public boolean publishable() {
+            return phase == ConstructionPhase.CONSTRUCTED
+                    && pendingCleanups.isEmpty()
+                    && fields.completeWithFixedFields(fixedFields);
+        }
+    }
+
+    public enum CallableEffect {
+        SUSPENDS,
+        THROWS,
+        RAISES,
+        PANICS,
+        READS_CONSTRUCTION,
+        WRITES_CONSTRUCTION
+    }
+
+    public enum CallableCapability {
+        BORROWED,
+        CONSTRUCTION_SCOPED,
+        ACTOR_LOCAL,
+        CAPTURES_SHAREABLE_DATA,
+        /**
+         * All captured DATA values are independently serializable. This never
+         * means the callable, its code pointer, environment or AnyCallable
+         * erasure may be serialized or admitted to actor DATA.
+         */
+        CAPTURES_SERIALIZABLE_DATA
+    }
+
+    public enum CaptureOrigin {
+        /** A lexically resolved binding owned outside the closure activation. */
+        EXTERNAL_BINDING,
+        /**
+         * The pre-reserved slot used to tie a recursive lambda's runtime
+         * fixpoint. This is required for invocation but is not an external
+         * ownership capture and can never become portable DATA.
+         */
+        RECURSIVE_SELF,
+        /**
+         * The runtime-proven current actor receiver. This semantic tag, never
+         * source spelling, is the authority for the actor-turn reborrow rule.
+         */
+        CANONICAL_ACTOR_SELF
+    }
+
+    /** Stable lexical identity after name resolution; spelling alone is never identity. */
+    public record CaptureBindingId(String declarationId) {
+        public CaptureBindingId {
+            if (declarationId == null || declarationId.isBlank()) {
+                throw new IllegalArgumentException("capture binding id cannot be blank");
+            }
+        }
+    }
+
+    public enum CaptureAccess {
+        READ,
+        WRITE;
+
+        public CaptureAccess merge(CaptureAccess other) {
+            Objects.requireNonNull(other, "capture access");
+            return this == WRITE || other == WRITE ? WRITE : READ;
+        }
+    }
+
+    public enum CaptureTransfer {
+        /** Ordinary lexical closure shares the resolved binding cell. */
+        LEXICAL_SLOT_ALIAS,
+        /** Detached read-only Copy capture snapshots the registration-time value. */
+        DETACHED_VALUE_SNAPSHOT,
+        /** Detached mutable or move-only capture transfers ownership to the continuation. */
+        DETACHED_OWNERSHIP_MOVE,
+        /** Canonical actor self is re-entered only through the same actor continuation lane. */
+        ACTOR_SELF_REBORROW;
+
+        public CaptureTransfer merge(CaptureTransfer other) {
+            Objects.requireNonNull(other, "capture transfer");
+            if (this == other) return this;
+            if ((this == DETACHED_VALUE_SNAPSHOT && other == DETACHED_OWNERSHIP_MOVE)
+                    || (this == DETACHED_OWNERSHIP_MOVE && other == DETACHED_VALUE_SNAPSHOT)) {
+                return DETACHED_OWNERSHIP_MOVE;
+            }
+            throw new IllegalArgumentException(
+                    "incompatible capture transfer modes: " + this + " vs " + other);
+        }
+    }
+
+    /**
+     * One resolved free-variable dependency of a callable/deferred continuation.
+     *
+     * <p>{@code debugName} exists only for diagnostics. Shadowed declarations may
+     * share the same source spelling but must carry distinct binding ids.</p>
+     */
+    public record ResolvedCaptureBinding(
+            CaptureBindingId bindingId,
+            String debugName,
+            Types.Type type,
+            CaptureOrigin origin,
+            CaptureAccess access,
+            CaptureTransfer transfer,
+            Set<CallableCapability> capabilities) {
+        public ResolvedCaptureBinding {
+            Objects.requireNonNull(bindingId, "capture binding id");
+            if (debugName == null || debugName.isBlank()) {
+                throw new IllegalArgumentException("capture debug name cannot be blank");
+            }
+            Objects.requireNonNull(type, "capture type");
+            Objects.requireNonNull(origin, "capture origin");
+            Objects.requireNonNull(access, "capture access");
+            Objects.requireNonNull(transfer, "capture transfer");
+            capabilities = Set.copyOf(capabilities);
+
+            if (origin == CaptureOrigin.RECURSIVE_SELF) {
+                if (access != CaptureAccess.READ) {
+                    throw new IllegalArgumentException(
+                            "recursive callable self slot cannot be an outer mutable capture");
+                }
+                if (transfer != CaptureTransfer.LEXICAL_SLOT_ALIAS) {
+                    throw new IllegalArgumentException(
+                            "recursive callable self slot must retain its lexical fixpoint cell");
+                }
+                if (!capabilities.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "recursive callable self slot cannot carry outer ownership/capability metadata");
+                }
+            } else if (origin == CaptureOrigin.CANONICAL_ACTOR_SELF) {
+                if (access != CaptureAccess.READ) {
+                    throw new IllegalArgumentException(
+                            "canonical actor self is a read-only actor-turn capability binding");
+                }
+                if (transfer != CaptureTransfer.ACTOR_SELF_REBORROW) {
+                    throw new IllegalArgumentException(
+                            "canonical actor self must use actor-self reborrow transfer");
+                }
+                if (!capabilities.equals(Set.of(CallableCapability.ACTOR_LOCAL))) {
+                    throw new IllegalArgumentException(
+                            "canonical actor self must carry only ACTOR_LOCAL capability metadata");
+                }
+            } else if (transfer == CaptureTransfer.ACTOR_SELF_REBORROW) {
+                throw new IllegalArgumentException(
+                        "actor-self reborrow requires canonical actor-self semantic origin");
+            }
+        }
+
+        /** Compatibility constructor: ordinary resolved captures are external bindings. */
+        public ResolvedCaptureBinding(
+                CaptureBindingId bindingId,
+                String debugName,
+                Types.Type type,
+                CaptureAccess access,
+                CaptureTransfer transfer,
+                Set<CallableCapability> capabilities) {
+            this(bindingId, debugName, type, CaptureOrigin.EXTERNAL_BINDING,
+                    access, transfer, capabilities);
+        }
+
+        public boolean participatesInExternalOwnership() {
+            return origin == CaptureOrigin.EXTERNAL_BINDING;
+        }
+
+        public ResolvedCaptureBinding merge(ResolvedCaptureBinding other) {
+            Objects.requireNonNull(other, "other capture binding");
+            if (!bindingId.equals(other.bindingId)
+                    || !debugName.equals(other.debugName)
+                    || !type.equals(other.type)
+                    || origin != other.origin) {
+                throw new IllegalArgumentException(
+                        "cannot merge inconsistent semantic capture bindings");
+            }
+            java.util.LinkedHashSet<CallableCapability> mergedCapabilities =
+                    new java.util.LinkedHashSet<>(capabilities);
+            mergedCapabilities.addAll(other.capabilities);
+            return new ResolvedCaptureBinding(
+                    bindingId,
+                    debugName,
+                    type,
+                    origin,
+                    access.merge(other.access),
+                    transfer.merge(other.transfer),
+                    mergedCapabilities);
+        }
+    }
+
+    /**
+     * Backend-neutral resolved capture plan.
+     *
+     * <p>Ownership validation and runtime lowering must consume the same plan.
+     * Re-running a spelling-based free-variable walk in a backend is not
+     * authoritative. The plan never grants actor/network transport authority.</p>
+     */
+    public record CapturePlan(List<ResolvedCaptureBinding> bindings) {
+        public CapturePlan {
+            bindings = List.copyOf(bindings);
+            java.util.HashSet<CaptureBindingId> ids = new java.util.HashSet<>();
+            CaptureBindingId recursiveSelf = null;
+            CaptureBindingId canonicalActorSelf = null;
+            for (ResolvedCaptureBinding binding : bindings) {
+                Objects.requireNonNull(binding, "capture binding");
+                if (!ids.add(binding.bindingId())) {
+                    throw new IllegalArgumentException(
+                            "duplicate semantic capture binding id: "
+                                    + binding.bindingId().declarationId());
+                }
+                if (binding.origin() == CaptureOrigin.RECURSIVE_SELF) {
+                    if (recursiveSelf != null) {
+                        throw new IllegalArgumentException(
+                                "one callable capture plan cannot contain multiple recursive self fixpoint cells: "
+                                        + recursiveSelf.declarationId() + " and "
+                                        + binding.bindingId().declarationId());
+                    }
+                    recursiveSelf = binding.bindingId();
+                } else if (binding.origin() == CaptureOrigin.CANONICAL_ACTOR_SELF) {
+                    if (canonicalActorSelf != null) {
+                        throw new IllegalArgumentException(
+                                "one capture plan cannot contain multiple canonical actor-self bindings: "
+                                        + canonicalActorSelf.declarationId() + " and "
+                                        + binding.bindingId().declarationId());
+                    }
+                    canonicalActorSelf = binding.bindingId();
+                }
+            }
+            bindings = bindings.stream()
+                    .sorted(java.util.Comparator.comparing(
+                            binding -> binding.bindingId().declarationId()))
+                    .toList();
+        }
+
+        public static CapturePlan empty() {
+            return new CapturePlan(List.of());
+        }
+
+        public List<ResolvedCaptureBinding> externalOwnershipBindings() {
+            return bindings.stream()
+                    .filter(ResolvedCaptureBinding::participatesInExternalOwnership)
+                    .toList();
+        }
+
+        public boolean capturesBorrow() {
+            return externalOwnershipBindings().stream().anyMatch(binding ->
+                    binding.capabilities().contains(CallableCapability.BORROWED));
+        }
+
+        public boolean capturesConstructionState() {
+            return externalOwnershipBindings().stream().anyMatch(binding ->
+                    binding.capabilities().contains(CallableCapability.CONSTRUCTION_SCOPED));
+        }
+
+        public CapturePlan merge(CapturePlan other) {
+            Objects.requireNonNull(other, "other capture plan");
+            java.util.LinkedHashMap<CaptureBindingId, ResolvedCaptureBinding> merged =
+                    new java.util.LinkedHashMap<>();
+            for (ResolvedCaptureBinding binding : bindings) {
+                merged.put(binding.bindingId(), binding);
+            }
+            for (ResolvedCaptureBinding binding : other.bindings) {
+                merged.merge(binding.bindingId(), binding, ResolvedCaptureBinding::merge);
+            }
+            return new CapturePlan(List.copyOf(merged.values()));
+        }
+
+        /** Executable environments are never network/persistence DATA. */
+        public boolean serializableExecutableValue() {
+            return false;
+        }
+
+        /** Executable environments are never actor DATA, even when captures are serializable. */
+        public boolean actorDataAdmissible() {
+            return false;
+        }
+    }
+
+    /**
+     * Concrete callable semantic type. Parameter names never participate in
+     * identity; ownership/effect metadata does.
+     */
+    public record CallableType(
+            List<Types.Type> parameters,
+            Types.Type result,
+            Set<CallableEffect> effects,
+            Set<CallableCapability> captureCapabilities) {
+        public CallableType {
+            parameters = List.copyOf(parameters);
+            Objects.requireNonNull(result, "callable result");
+            effects = Set.copyOf(effects);
+            captureCapabilities = Set.copyOf(captureCapabilities);
+        }
+
+        public Types.Function erasedToLegacyFunction() {
+            return new Types.Function(parameters, result);
+        }
+
+        public Types.Type erasedCallableTop() {
+            return Types.AnyCallable.INSTANCE;
+        }
+
+        /**
+         * Executable callable values are never portable DATA. Capture metadata
+         * may prove properties of referenced data, but cannot mint a network
+         * codec, ActorMessageCodec, Sendable proof or supervisor authority.
+         */
+        public boolean serializableExecutableValue() {
+            return false;
+        }
+
+        public boolean actorDataAdmissible() {
+            return false;
+        }
+    }
+
+    /**
+     * Nominal fixpoint wrapper for a recursive alias. The body is finite and
+     * may refer back to {@code declarationId}; consumers must never expand it
+     * textually without cycle detection.
+     */
+    public record RecursiveAliasType(
+            String declarationId,
+            String name,
+            List<String> genericParameters,
+            Ast.TypeRef body,
+            boolean representationGuarded,
+            boolean regularGenericRecursion) {
+        public RecursiveAliasType {
+            if (declarationId == null || declarationId.isBlank()) {
+                throw new IllegalArgumentException("recursive alias declaration id cannot be blank");
+            }
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("recursive alias name cannot be blank");
+            }
+            genericParameters = List.copyOf(genericParameters);
+            Objects.requireNonNull(body, "recursive alias body");
+        }
+
+        public void requireWellFormed() {
+            if (!representationGuarded) {
+                throw new IllegalArgumentException(
+                        "recursive alias '" + name + "' has an infinite inline representation");
+            }
+            if (!regularGenericRecursion) {
+                throw new IllegalArgumentException(
+                        "recursive alias '" + name + "' changes its own generic arguments recursively");
+            }
+        }
+    }
+}

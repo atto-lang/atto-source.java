@@ -95,6 +95,26 @@ public final class ConstructorFlowState {
         return count(field).maybeInitialized();
     }
 
+    /**
+     * A class is fully initialized when each blank field has been written.
+     * Immutable fields additionally require exactly one write; mutable fields
+     * may have multiple writes. This is the publication proof for mixed
+     * `val`/`let` classes.
+     */
+    public boolean completeWithFixedFields(java.util.Set<String> fixedFields) {
+        Objects.requireNonNull(fixedFields, "fixed fields");
+        if (!fields.keySet().containsAll(fixedFields)) {
+            throw new IllegalArgumentException(
+                    "fixed-field requirements contain an untracked constructor field");
+        }
+        for (Map.Entry<String, AssignmentCount> entry : fields.entrySet()) {
+            AssignmentCount count = entry.getValue();
+            if (!count.definitelyInitialized()) return false;
+            if (fixedFields.contains(entry.getKey()) && !count.exactlyOnce()) return false;
+        }
+        return true;
+    }
+
     public boolean completeExactlyOnce() {
         for (AssignmentCount count : fields.values()) {
             if (!count.exactlyOnce()) return false;

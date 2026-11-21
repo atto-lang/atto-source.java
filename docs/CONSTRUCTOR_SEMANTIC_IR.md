@@ -45,8 +45,8 @@ constructor is rejected before overload analysis.
 
 ## ConstructionState
 
-Each blank constructor-initialized immutable field carries a saturated
-assignment interval:
+Each declaration-uninitialized instance field carries a saturated
+assignment interval (for both immutable `val` and mutable `let`):
 
 ```text
 AssignmentCount {
@@ -69,8 +69,13 @@ The useful states are:
 A direct write maps `[a,b]` to
 `[min(2+,a+1), min(2+,b+1)]`.
 
-For a blank `val`, a write is admitted only from `[0,0]`. A normal
-constructor completion requires `[1,1]` for every required field.
+For a blank immutable `val`, a write is admitted only from `[0,0]`
+and normal construction requires `[1,1]`. A blank mutable `let` must
+have been assigned on every normal path but can be reassigned; its lower
+interval bound must be at least `1` and its upper bound may be `2+`.
+A construction region therefore carries the set of immutable tracked fields
+separately from its assignment intervals. Joining states with different
+immutable-field contracts is forbidden.
 
 Control-flow join is:
 
@@ -88,6 +93,7 @@ ConstructionState {
   region: ConstructionRegionId
   phase: ALLOCATED | INITIALIZING | INITIALIZED | CONSTRUCTED
   fields: Map<FieldId, AssignmentCount>
+  fixed_fields: Set<FieldId>  // val fields requiring exactly one write
   pending_cleanups: CleanupEdge[]
 }
 ```
@@ -123,7 +129,10 @@ catch-all (`_` or a binding pattern) locally; richer finite-domain
 exhaustiveness remains owned by the general match checker.
 
 Loop backedges, exceptional edges and deferred cleanups must be represented
-explicitly before they may establish required-field initialization. A backend
+explicitly before they may establish required-field initialization.
+Pending cleanups are tracked in LIFO order: `completeCleanup(edge)` may
+only discharge the newest registered edge. Publication is rejected until
+all cleanups have been discharged and every required field is initialized. A backend
 must fail closed rather than infer initialization from syntax alone.
 
 ## Construction suspension
@@ -174,6 +183,25 @@ ordinary values and therefore may widen to `AnyCallable` or `Any`.
 
 Erasing to `AnyCallable` never erases capture, borrow, actor-isolation,
 serialization, sharing or construction-region restrictions.
+
+Recursive lexical callables have one additional semantic distinction. The runtime
+may retain a pre-reserved self slot so the closure can call itself after the
+binding is initialized. That slot is modeled as
+`CaptureOrigin.RECURSIVE_SELF`: it is a runtime fixpoint cell, not an external
+ownership capture. Ownership accounting therefore excludes it from outer
+move/borrow capture effects, while runtime lowering preserves the slot identity.
+It is never serializable, shareable authority, actor DATA, or supervisor
+CONTROL.
+
+A callable's capture metadata is descriptive of the values retained by its
+environment; it is **not transport authorization**. In particular,
+`CallableCapability.CAPTURES_SERIALIZABLE_DATA` means captured data satisfies an
+independent serialization property. It never means the executable callable,
+closure environment, code pointer, `AnyCallable` erasure, or callback ABI may
+be encoded by `NetworkCodec`/`ActorMessageCodec`, admitted as actor DATA, or
+used to construct supervisor CONTROL. The semantic IR therefore exposes
+`serializableExecutableValue() == false` and
+`actorDataAdmissible() == false` for every `CallableType`.
 
 ### Borrowed callable parameters
 
@@ -234,6 +262,75 @@ Ordinary objects do not become callable by declaring a method named `call`.
 Constructors do not become callable values. Instance methods do not silently
 become bound callables; an explicit lambda makes receiver capture visible to
 ownership analysis.
+
+## CapturePlan
+
+Callable and deferred-continuation capture analysis has one backend-neutral
+resolved representation:
+
+```text
+CapturePlan {
+  bindings: ResolvedCaptureBinding[]
+}
+
+ResolvedCaptureBinding {
+  binding_id: CaptureBindingId   // declaration identity, never source spelling
+  debug_name: String
+  type: Type
+  origin: EXTERNAL_BINDING | RECURSIVE_SELF | CANONICAL_ACTOR_SELF
+  access: READ | WRITE
+  transfer: LEXICAL_SLOT_ALIAS
+          | DETACHED_VALUE_SNAPSHOT
+          | DETACHED_OWNERSHIP_MOVE
+          | ACTOR_SELF_REBORROW
+  capabilities: CapabilitySet
+}
+```
+
+A source name is diagnostic metadata only. Two shadowed locals with the same
+spelling have distinct `CaptureBindingId` values. Reusing one binding id with a
+different name or type is an invalid compiler state.
+
+`RECURSIVE_SELF` is the pre-reserved lexical fixpoint cell for a recursive
+lambda. It remains in the runtime capture plan so recursive invocation can find
+the initialized slot, but it does not participate in external ownership
+accounting. It is READ-only, must use `LEXICAL_SLOT_ALIAS`, and carries no
+borrow/serialization/construction capability metadata. Reclassifying the same
+binding identity between `RECURSIVE_SELF` and `EXTERNAL_BINDING` is an invalid
+compiler state.
+
+`CANONICAL_ACTOR_SELF` is a runtime-proven semantic origin, not a name check.
+It is the only origin allowed to use `ACTOR_SELF_REBORROW`; it is READ-only and
+carries exactly `ACTOR_LOCAL` metadata. A local merely spelled `self` cannot
+mint the actor-turn lifetime exception, and a capture plan may contain at most
+one canonical actor-self binding.
+
+Joining control-flow/deferred alternatives merges captures by binding id. WRITE
+dominates READ, detached ownership-move dominates detached value-snapshot, and
+capability sets are unioned. Lexical-slot aliasing and detached transfer modes
+are deliberately incompatible, as is actor-self reborrow with ordinary data
+capture. Capture plans are canonicalized by stable binding identity after
+validation, so equivalent CFG joins do not depend on AST/branch traversal order
+for environment layout, hashing, caching, or backend lowering. Ownership
+checking validates this resolved plan before lowering; runtimes/backends consume
+the same plan.
+A backend must not run an independent spelling-based free-variable walk and
+silently retain extra environment state.
+
+This is especially important for detached actor continuations such as
+nonblocking select arms and channel callbacks: channel expressions and payloads
+are evaluated before registration, select result bindings are arm-local, and
+the continuation environment contains only resolved free bindings from the
+deferred body. Unused `self`, codec handles, actor CONTROL authority and other
+ambient locals must not be retained.
+
+`CapturePlan.actorDataAdmissible()` is always false. Serializable captured
+DATA does not make an executable closure, `AnyCallable`, callback ABI or
+continuation environment serializable or sendable.
+
+The current semantic-IR slice establishes this identity and merge contract.
+The Java ownership/runtime scanners still require migration to emit/consume
+the plan directly; until then cross-scanner parity tests are a release gate.
 
 ## RecursiveAliasType
 
