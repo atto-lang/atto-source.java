@@ -134,6 +134,73 @@ final class QueueRuntimeAuthorityTest {
         }
     }
 
+    @Test
+    void directParentDelegationUsesLiveActorRefsAndRevokesLinearly() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var results = new LinkedBlockingQueue<String>();
+            var queue = new AtomicReference<ActorRuntime.ActorRef<String>>();
+            var producer = new AtomicReference<ActorRuntime.ActorRef<String>>();
+
+            producer.set(runtime.<String>spawnShared(
+                    () -> (message, context) -> queue.get().send(message)));
+            var outsider = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        if (message.equals("grant")) {
+                            try {
+                                runtime.grantCurrentQueueProducer(
+                                        queue.get(), 0, producer.get());
+                                results.add("UNSAFE");
+                            } catch (SecurityException expected) {
+                                results.add("outsider-denied");
+                            }
+                        }
+                    });
+            var parent = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        switch (message) {
+                            case "spawn" -> {
+                                var child = runtime.<String>spawnChildShared(
+                                        startup -> (value, childContext) -> {
+                                            var authority = childContext.queueCommandAuthority()
+                                                    .orElseThrow();
+                                            results.add("send:" + authority.permits(
+                                                    ActorRuntime.QueueOperation.SEND, 0));
+                                        });
+                                queue.set(child.ref());
+                                results.add("spawned");
+                            }
+                            case "grant" -> {
+                                runtime.grantCurrentQueueProducer(
+                                        queue.get(), 0, producer.get());
+                                results.add("granted");
+                            }
+                            case "revoke" -> {
+                                runtime.revokeCurrentQueueProducer(queue.get(), 0);
+                                results.add("revoked");
+                            }
+                            default -> results.add("unexpected");
+                        }
+                    });
+            parent.send("spawn");
+            expect(results, "spawned");
+            assertThrows(SecurityException.class,
+                    () -> runtime.grantCurrentQueueProducer(
+                            queue.get(), 0, producer.get()),
+                    "host main cannot grant on behalf of an actor parent");
+
+            outsider.send("grant");
+            expect(results, "outsider-denied");
+            parent.send("grant");
+            expect(results, "granted");
+            producer.get().send("probe");
+            expect(results, "send:true");
+            parent.send("revoke");
+            expect(results, "revoked");
+            producer.get().send("probe");
+            expect(results, "send:false");
+        }
+    }
+
     private static void expect(LinkedBlockingQueue<String> observed, String expected)
             throws InterruptedException {
         assertEquals(expected, observed.poll(5, TimeUnit.SECONDS));

@@ -1532,6 +1532,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> owner;
         private final ActorId supervisor;
         private final ActorId[] producerGrants = new ActorId[2];
+        /** First mailbox sequence admitted AFTER each producer grant. */
+        private final long[] producerAdmissionFloor = new long[2];
         private long grantRevision;
 
         private QueueCommandAuthority(ActorCell<?> owner) {
@@ -1578,8 +1580,38 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /** Bind a producer actor by verified runtime ID; never accept a guest token. */
-        public synchronized void grantProducer(int slot, ActorId producer) {
-            requireSupervisor();
+        public void grantProducer(int slot, ActorId producer) {
+            // Mail admission holds lifecycleLock when assigning sequence.
+            // Lock order is lifecycleLock then the authority monitor.
+            synchronized (owner.lifecycleLock) {
+                synchronized (this) {
+                    requireSupervisor();
+                    bindProducer(slot, producer, owner.nextUserMessageSequence);
+                }
+            }
+        }
+
+        private void requireStructuredParentCaller() {
+            ActorCell<?> caller = currentActor.get();
+            if (caller == null || caller != owner.parent || caller.stopped.get()
+                    || caller.finalized || owner.stopped.get() || owner.finalized) {
+                throw new SecurityException(
+                        "only the active structured parent may delegate queue producers");
+            }
+        }
+
+        private synchronized void grantFromParent(
+                int slot, ActorId producer, long admissionFloor) {
+            requireStructuredParentCaller();
+            bindProducer(slot, producer, admissionFloor);
+        }
+
+        private synchronized void revokeFromParent(int slot) {
+            requireStructuredParentCaller();
+            unbindProducer(slot);
+        }
+
+        private void bindProducer(int slot, ActorId producer, long admissionFloor) {
             if (slot < 0 || slot >= producerGrants.length) {
                 throw new IllegalArgumentException("invalid queue producer slot");
             }
@@ -1599,12 +1631,17 @@ public final class ActorRuntime implements AutoCloseable {
             }
             long next = Math.addExact(grantRevision, 1L);
             producerGrants[slot] = producer;
+            producerAdmissionFloor[slot] = admissionFloor;
             grantRevision = next;
         }
 
         /** Revoke grants at the owning mailbox's single linearization point. */
         public synchronized void revokeProducer(int slot) {
             requireSupervisor();
+            unbindProducer(slot);
+        }
+
+        private void unbindProducer(int slot) {
             if (slot < 0 || slot >= producerGrants.length) {
                 throw new IllegalArgumentException("invalid queue producer slot");
             }
@@ -1627,6 +1664,7 @@ public final class ActorRuntime implements AutoCloseable {
                 case SEND, CANCEL -> slot >= 0
                         && slot < producerGrants.length
                         && sender.equals(producerGrants[slot])
+                        && owner.activeMail.sequence() >= producerAdmissionFloor[slot]
                         && senderCell != null
                         && !senderCell.stopped.get()
                         && !senderCell.finalized;
@@ -1671,13 +1709,125 @@ public final class ActorRuntime implements AutoCloseable {
                 || operation == QueueOperation.CANCEL;
         if (producerCommand ? producerSlot < 0 || producerSlot > 1
                 : producerSlot != -1) return false;
-        if (actor.queueAuthority == null) {
-            actor.queueAuthority = new QueueCommandAuthority(actor);
-        }
         try {
-            return actor.queueAuthority.permits(operation, producerSlot);
+            return authorityForChild(actor).permits(operation, producerSlot);
         } catch (SecurityException denial) {
             return false;
+        }
+    }
+
+    private QueueCommandAuthority authorityForChild(ActorCell<?> actor) {
+        if (actor.parent == null) {
+            throw new SecurityException("root actor has no queue supervisor");
+        }
+        synchronized (actor) {
+            if (actor.queueAuthority == null) {
+                actor.queueAuthority = new QueueCommandAuthority(actor);
+            }
+            return actor.queueAuthority;
+        }
+    }
+
+    private ActorCell<?> requireCurrentQueueParent(ActorRef<?> queue) {
+        requireCallerRuntimeAffinity("delegate queue producer");
+        Objects.requireNonNull(queue, "queue actor");
+        if (!queue.ownedBy(this)) {
+            throw new SecurityException("queue actor belongs to another runtime");
+        }
+        ActorCell<?> parent = currentActor.get();
+        ActorCell<?> child = actors.get(queue.id());
+        if (parent == null || parent.stopped.get() || parent.finalized
+                || child == null || child.ref != queue || child.parent != parent
+                || child.stopped.get() || child.finalized) {
+            throw new SecurityException(
+                    "queue delegation requires a live direct structured child");
+        }
+        return child;
+    }
+
+    /**
+     * Out-of-band delegation: the actual spawning parent authorizes a live
+     * producer ActorRef, not an ActorId or guest-supplied integer identity.
+     * Grant/revoke and SEND authorization linearize on the same authority
+     * monitor. Requires a real executing parent actor, never host main.
+     */
+    public void grantCurrentQueueProducer(
+            ActorRef<?> queue, int slot, ActorRef<?> producer) {
+        Objects.requireNonNull(producer, "producer actor");
+        ActorCell<?> child = requireCurrentQueueParent(queue);
+        if (!producer.ownedBy(this)) {
+            throw new SecurityException("producer actor belongs to another runtime");
+        }
+        ActorCell<?> grantee = actors.get(producer.id());
+        if (grantee == null || grantee.ref != producer
+                || grantee.stopped.get() || grantee.finalized) {
+            throw new SecurityException("queue producer must be a live actor reference");
+        }
+        synchronized (child.lifecycleLock) {
+            if (child.stopped.get() || child.finalized) {
+                throw new SecurityException("queue actor retired during grant");
+            }
+            authorityForChild(child).grantFromParent(
+                    slot, producer.id(), child.nextUserMessageSequence);
+        }
+    }
+
+    public void revokeCurrentQueueProducer(ActorRef<?> queue, int slot) {
+        ActorCell<?> child = requireCurrentQueueParent(queue);
+        synchronized (child.lifecycleLock) {
+            if (child.stopped.get() || child.finalized) {
+                throw new SecurityException("queue actor retired during revoke");
+            }
+            authorityForChild(child).revokeFromParent(slot);
+        }
+    }
+
+    /**
+     * Runtime-only atomic authenticated admission. The active queue actor's
+     * trusted mailbox envelope supplies sender identity and sequence; guest
+     * payloads cannot provide either. Lock order is lifecycleLock ->
+     * QueueCommandAuthority -> QueueAdmissionTransaction. Revocation and
+     * admission use the same first two locks, so an admitted command is
+     * linearized wholly before or after a grant revocation.
+     *
+     * No guest callback is invoked under these locks. The transaction merely
+     * reserves bounded ingress/completion capacity and publishes a data-only
+     * Delivery record.
+     */
+    public <T> QueueAdmissionTransaction.AdmissionResult<T> admitCurrentQueueCommand(
+            QueueAdmissionTransaction<T> transaction,
+            int producerSlot,
+            long expectedGeneration) {
+        Objects.requireNonNull(transaction, "transaction");
+        requireCallerRuntimeAffinity("admit authenticated queue command");
+        ActorCell<?> actor = currentActor.get();
+        if (actor == null || actor.parent == null || actor.stopped.get()
+                || actor.finalized || actor.activeMail == null) {
+            return new QueueAdmissionTransaction.AdmissionResult<>(
+                    QueueAdmissionTransaction.AdmissionStatus.UNAUTHORIZED,
+                    Optional.empty());
+        }
+        QueueCommandAuthority authority = authorityForChild(actor);
+        synchronized (actor.lifecycleLock) {
+            if (actor.stopped.get() || actor.finalized || actor.activeMail == null) {
+                return new QueueAdmissionTransaction.AdmissionResult<>(
+                        QueueAdmissionTransaction.AdmissionStatus.UNAUTHORIZED,
+                        Optional.empty());
+            }
+            synchronized (authority) {
+                if (!authority.permits(QueueOperation.SEND, producerSlot)) {
+                    return new QueueAdmissionTransaction.AdmissionResult<>(
+                            QueueAdmissionTransaction.AdmissionStatus.UNAUTHORIZED,
+                            Optional.empty());
+                }
+                ActorId sender = authority.admittedSender();
+                long mailboxSequence = actor.activeMail.sequence();
+                @SuppressWarnings("unchecked")
+                T frozenPayload = (T) actor.activeMail.value();
+                return transaction.admitAuthorized(
+                        actor.ref.id(), sender, mailboxSequence,
+                        expectedGeneration, frozenPayload);
+            }
         }
     }
 
@@ -6788,10 +6938,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     @Override public Optional<QueueCommandAuthority> queueCommandAuthority() {
                         if (parent == null) return Optional.empty();
-                        if (queueAuthority == null) {
-                            queueAuthority = new QueueCommandAuthority(ActorCell.this);
-                        }
-                        return Optional.of(queueAuthority);
+                        return Optional.of(authorityForChild(ActorCell.this));
                     }
                     @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
                         return Optional.ofNullable(codeImage);
