@@ -13112,24 +13112,50 @@ public final class TypeChecker {
     }
 
     private void requireRuntimeValue(Type actual, String where) {
+        // Identity-based traversal protects recursive inferred shapes from
+        // unbounded validation, without conflating structurally equal types.
+        requireRuntimeValue(actual, where, new IdentityHashMap<>());
+    }
+
+    private void requireRuntimeValue(
+            Type actual, String where, IdentityHashMap<Type, Boolean> visited) {
+        if (visited.put(actual, Boolean.TRUE) != null) return;
         if (actual instanceof ClassNamespace namespace) {
             throw new IllegalArgumentException(
                     "E_TYPE_NOT_VALUE: " + where + " cannot use class declaration '"
                             + namespace.className() + "' as a runtime value; "
                             + "construct an instance or access a static member");
         }
-        // Inferred aggregate and lambda types must not launder a nominal
-        // declaration through a list/tuple/record or callback signature.
+        // All compiler type wrappers must be inspected. Unknown and generic
+        // value slots do not authorize a namespace to become a runtime object.
         if (actual instanceof Record record) {
             record.members().forEach((name, member) ->
-                    requireRuntimeValue(member, where + "." + name));
+                    requireRuntimeValue(member, where + "." + name, visited));
         } else if (actual instanceof Tuple tuple) {
-            for (Type element : tuple.elements()) requireRuntimeValue(element, where + " tuple element");
+            for (Type element : tuple.elements()) {
+                requireRuntimeValue(element, where + " tuple element", visited);
+            }
         } else if (actual instanceof ListType list) {
-            requireRuntimeValue(list.element(), where + " list element");
+            requireRuntimeValue(list.element(), where + " list element", visited);
         } else if (actual instanceof Function function) {
-            requireRuntimeValue(function.result(), where + " callable result");
-            for (Type param : function.parameters()) requireRuntimeValue(param, where + " callable parameter");
+            requireRuntimeValue(function.result(), where + " callable result", visited);
+            for (Type param : function.parameters()) {
+                requireRuntimeValue(param, where + " callable parameter", visited);
+            }
+        } else if (actual instanceof Named named) {
+            for (Type argument : named.arguments()) {
+                requireRuntimeValue(argument, where + " generic value type", visited);
+            }
+        } else if (actual instanceof Union union) {
+            for (Type option : union.options()) {
+                requireRuntimeValue(option, where + " union alternative", visited);
+            }
+        } else if (actual instanceof Borrow borrow) {
+            requireRuntimeValue(borrow.target(), where + " borrowed value", visited);
+        } else if (actual instanceof SelfType receiver) {
+            requireRuntimeValue(receiver.bound(), where + " self bound", visited);
+        } else if (actual instanceof Not excluded) {
+            requireRuntimeValue(excluded.excluded(), where + " exclusion type", visited);
         }
     }
 

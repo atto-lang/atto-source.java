@@ -61,6 +61,35 @@ final class TypeDeclarationsAreNotValuesTest {
     }
 
     @Test
+    void classNamespaceCannotEscapeThroughCollectionsAndGenericArguments() {
+        assertTrue(rejects("fnc bad(): void { val elements = [Box]; }")
+                .getMessage().contains("E_TYPE_NOT_VALUE"));
+        assertTrue(rejects("fnc bad(): void { val elements = tuple (Box, 42); }")
+                .getMessage().contains("E_TYPE_NOT_VALUE"));
+        assertTrue(rejects("""
+                fnc identity<T>(T value): T { return value; }
+                fnc bad(): void { val escaped = identity(Box); }
+                """).getMessage().contains("E_TYPE_NOT_VALUE"));
+    }
+
+    @Test
+    void interfaceDeclarationIsTypeOnly() {
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface Endpoint as end
+                        fnc bad(): void { val escaped = Endpoint; }
+                        """))).getMessage().contains("E_TYPE_NOT_VALUE"));
+    }
+
+    @Test
+    void lexicalValueShadowingStillWorksForClassTypedInstances() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(BOX + """
+                fnc echo(Box Box): Box { return Box; }
+                fnc send_instance(): Box { return echo(new Box()); }
+                """)));
+    }
+
+    @Test
     void staticAccessAndConcreteInstanceArgumentReturnRemainValid() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(BOX + """
                 fnc make(): Box { return new Box(); }
