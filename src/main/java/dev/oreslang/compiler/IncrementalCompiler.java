@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
@@ -194,12 +195,15 @@ public final class IncrementalCompiler {
                         }
                     }
                 }
-                if (resolved == null || linked.putIfAbsent(name, resolved) != null) {
+                String localName = ImportRules.localName(imported, name);
+                if (resolved == null
+                        || linked.putIfAbsent(localName, resolved) != null) {
                     throw new IllegalArgumentException(
                             "missing or duplicate public linked class '" + name
+                                    + "' as local binding '" + localName
                                     + "' in source unit '" + unitId + "'");
                 }
-                aliases.put(name, classAliases);
+                aliases.put(localName, classAliases);
             }
         }
         return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));

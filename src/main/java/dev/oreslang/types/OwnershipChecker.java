@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -49,6 +50,16 @@ public final class OwnershipChecker {
     private boolean currentAsyncGenerator;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
+    /** Exact compiler-owned alloc/json JsonValue type import for this unit. */
+    private final boolean compilerJsonValueImported;
+    /** Exact compiler-owned alloc/json Json construction namespace import. */
+    private final boolean compilerJsonFactoryImported;
+    /**
+     * One narrowly proven terminal Map insertion may move normally while
+     * excluding only that exact transfer from the enclosing catch observer.
+     * The runtime returns the exact candidate on admission rejection.
+     */
+    private RecoverableOwnedMapMove recoverableOwnedMapMove;
 
     private OwnershipChecker(Ast.Program program) {
         this(program, Map.of());
@@ -59,6 +70,10 @@ public final class OwnershipChecker {
         // Preserve AST declaration identity: equality-based maps can merge
         // separate bindings with identical syntax in different scopes.
         this.validatedShortAliases = new IdentityHashMap<>(validatedShortAliases);
+        this.compilerJsonValueImported = program.imports().stream()
+                .anyMatch(ImportRules::isAllocJsonValueImport);
+        this.compilerJsonFactoryImported = program.imports().stream()
+                .anyMatch(ImportRules::isAllocJsonFactoryImport);
         index(program);
     }
 
@@ -88,21 +103,26 @@ public final class OwnershipChecker {
         }
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
-            String name = entry.getKey();
+            String localName = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
-            if (name == null || declaration == null || !name.equals(declaration.name())
+            if (localName == null || declaration == null
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException("invalid linked ownership class: " + name);
+                throw new IllegalArgumentException(
+                        "invalid linked ownership class: " + localName);
             }
             boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                            && use.names().contains(name));
-            if (!imported || checker.classes.containsKey(name)
-                    || checker.ambiguousClasses.contains(name)) {
+                    use.kind() == Ast.ImportKind.CLASS
+                            && !use.wildcard()
+                            && use.names().contains(declaration.name())
+                            && ImportRules.localName(
+                                    use, declaration.name()).equals(localName));
+            if (!imported || checker.classes.containsKey(localName)
+                    || checker.ambiguousClasses.contains(localName)) {
                 throw new IllegalArgumentException(
-                        "linked ownership class was not uniquely imported: " + name);
+                        "linked ownership class was not uniquely imported as: "
+                                + localName);
             }
-            checker.classes.put(name, declaration);
+            checker.classes.put(localName, declaration);
         }
         checker.validate(program);
         return program;
@@ -556,11 +576,42 @@ public final class OwnershipChecker {
             // Catch can run after any throwing operation, including one after
             // a move in a nested branch or in an expression. Tracking moves
             // directly is safer than looking only at the try's final state.
-            Set<VarState> movedDuringTry = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            Set<VarState> movedDuringTry =
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            boolean topLevelDefer = attempted.body().stream()
+                    .anyMatch(Ast.DeferStmt.class::isInstance);
             tryMoveObservers.add(movedDuringTry);
+            Scope tryScope = new Scope(scope);
             try {
-                checkBlock(attempted.body(), scope, returnType);
+                for (int i = 0; i < attempted.body().size(); i++) {
+                    Ast.Stmt bodyStatement = attempted.body().get(i);
+                    boolean terminal = i == attempted.body().size() - 1;
+                    RecoverableOwnedMapMove candidate =
+                            terminal && !topLevelDefer && !tryScope.hasLiveMutexGuard()
+                                    ? recoverableOwnedMapMove(bodyStatement, tryScope, entry)
+                                    : null;
+                    if (candidate == null) {
+                        checkStatement(bodyStatement, tryScope, returnType);
+                        continue;
+                    }
+
+                    if (recoverableOwnedMapMove != null) {
+                        throw new IllegalStateException(
+                                "nested recoverable Map ownership proof is unsupported");
+                    }
+                    recoverableOwnedMapMove = candidate;
+                    try {
+                        checkStatement(bodyStatement, tryScope, returnType);
+                        if (!candidate.consumed) {
+                            throw new IllegalStateException(
+                                    "recoverable Map ownership proof did not consume its candidate");
+                        }
+                    } finally {
+                        recoverableOwnedMapMove = null;
+                    }
+                }
             } finally {
+                tryScope.close();
                 tryMoveObservers.removeLast();
             }
             Map<VarState, StateSnapshot> normal = stateSnapshot(scope);
@@ -569,7 +620,13 @@ public final class OwnershipChecker {
                 if (entry.containsKey(moved)) moved.moved = true;
             }
             Scope caught = new Scope(scope);
-            caught.define(attempted.errorName(), new VarState(Ast.TypeRef.inferred(), false, ValueKind.MOVE_ONLY, Origin.LOCAL));
+            caught.define(
+                    attempted.errorName(),
+                    new VarState(
+                            Ast.TypeRef.inferred(),
+                            false,
+                            ValueKind.MOVE_ONLY,
+                            Origin.LOCAL));
             checkBlock(attempted.catchBody(), caught, returnType);
             caught.close();
             Map<VarState, StateSnapshot> exceptional = stateSnapshot(scope);
@@ -1150,7 +1207,8 @@ public final class OwnershipChecker {
             if (directRebind) {
                 checkAssignmentTarget(assignment.target(), scope);
             }
-            ValueInfo assigned = checkExpr(assignment.value(), scope, true);
+            ValueInfo assigned =
+                    checkOwnedMapInsertionValue(assignment.value(), scope);
             if (containsTypedMapType(assigned.type)) {
                 throw error("Map<K,V> cannot be assigned into another storage location in the closed v1 surface");
             }
@@ -1224,6 +1282,12 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (isCompilerJsonNullMember(member, scope)) {
+                return new ValueInfo(
+                        Ast.TypeRef.simple("JsonValue"),
+                        ValueKind.MOVE_ONLY,
+                        null);
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -1506,6 +1570,9 @@ public final class OwnershipChecker {
                 }
             }
         }
+        ValueInfo jsonFactory = checkCompilerJsonFactoryCall(call, scope);
+        if (jsonFactory != null) return jsonFactory;
+
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -1642,6 +1709,10 @@ public final class OwnershipChecker {
                             "Map." + member.member());
                 }
             }
+
+            ValueInfo typedMapCall =
+                    checkTypedMapCall(member, call.arguments(), scope);
+            if (typedMapCall != null) return typedMapCall;
 
             if (member.receiver() instanceof Ast.NameExpr receiverName
                     && receiverName.name().equals("self")
@@ -1923,6 +1994,231 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private ValueInfo checkTypedMapCall(
+            Ast.MemberExpr member,
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        Ast.TypeRef receiver = receiverType(member.receiver(), scope);
+        if (!isTypedMapType(receiver)) return null;
+        if (!(member.receiver() instanceof Ast.NameExpr)) {
+            throw error("typed Map methods require a directly owned local Map binding");
+        }
+
+        Ast.TypeRef keyType = receiver.arguments().get(0);
+        Ast.TypeRef valueType = receiver.arguments().get(1);
+        switch (member.member()) {
+            case "put" -> {
+                if (arguments.size() != 2) {
+                    throw error("Map.put expects 2 arguments, got " + arguments.size());
+                }
+                checkExpr(member.receiver(), scope, false);
+                checkExpr(arguments.get(0), scope, false);
+                ValueInfo value =
+                        checkOwnedMapInsertionValue(arguments.get(1), scope);
+                if (containsMutexGuardType(value.type) || isBorrowValue(value)) {
+                    throw error("Map.put requires an owned storable value");
+                }
+                Ast.TypeRef result =
+                        new Ast.TypeRef("Option", List.of(valueType), false);
+                return new ValueInfo(result, kindOfType(result), null);
+            }
+            case "take" -> {
+                if (arguments.size() != 1) {
+                    throw error("Map.take expects 1 argument, got " + arguments.size());
+                }
+                checkExpr(member.receiver(), scope, false);
+                checkExpr(arguments.getFirst(), scope, false);
+                Ast.TypeRef result =
+                        new Ast.TypeRef("Option", List.of(valueType), false);
+                return new ValueInfo(result, kindOfType(result), null);
+            }
+            case "remove" -> {
+                if (arguments.size() != 1) {
+                    throw error("Map.remove expects 1 argument, got " + arguments.size());
+                }
+                checkExpr(member.receiver(), scope, false);
+                checkExpr(arguments.getFirst(), scope, false);
+                return new ValueInfo(
+                        Ast.TypeRef.simple("bool"),
+                        ValueKind.COPY,
+                        null);
+            }
+            default -> {
+                return null;
+            }
+        }
+    }
+
+    /**
+     * Consume the exact value expression selected by the terminal recoverable
+     * Map proof without publishing that move to the enclosing try/catch
+     * observer. The normal path is still moved. All unrelated moves remain
+     * visible to catch analysis.
+     */
+    private ValueInfo checkOwnedMapInsertionValue(
+            Ast.Expr expression,
+            Scope scope) {
+        RecoverableOwnedMapMove proof = recoverableOwnedMapMove;
+        if (proof == null || proof.valueExpression != expression) {
+            return checkExpr(expression, scope, true);
+        }
+        if (!(expression instanceof Ast.NameExpr name)) {
+            throw new IllegalStateException(
+                    "recoverable Map ownership proof requires a named candidate");
+        }
+        VarState state = requireState(scope, name.name());
+        VarState root = ownershipRoot(state);
+        if (root != proof.root || root.kind != ValueKind.MOVE_ONLY
+                || !root.aggregateSources.isEmpty()) {
+            throw new IllegalStateException(
+                    "recoverable Map ownership proof lost candidate identity");
+        }
+        ValueInfo value = checkExpr(expression, scope, false);
+        moveInternal(state, name.name(), false);
+        proof.consumed = true;
+        return value;
+    }
+
+    private RecoverableOwnedMapMove recoverableOwnedMapMove(
+            Ast.Stmt statement,
+            Scope scope,
+            Map<VarState, StateSnapshot> tryEntry) {
+        Ast.Expr receiver = null;
+        Ast.Expr value = null;
+
+        if (statement instanceof Ast.ExprStmt exprStatement) {
+            Ast.Expr expression = exprStatement.expression();
+            if (expression instanceof Ast.AssignExpr assignment
+                    && assignment.target() instanceof Ast.IndexExpr indexed) {
+                receiver = indexed.receiver();
+                value = assignment.value();
+            } else if (expression instanceof Ast.CallExpr call
+                    && call.callee() instanceof Ast.MemberExpr member
+                    && member.member().equals("put")
+                    && call.arguments().size() == 2) {
+                receiver = member.receiver();
+                value = call.arguments().get(1);
+            }
+        } else if (statement instanceof Ast.BindingStmt binding
+                && binding.initializer() instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr member
+                && member.member().equals("put")
+                && call.arguments().size() == 2) {
+            receiver = member.receiver();
+            value = call.arguments().get(1);
+        }
+
+        if (!(receiver instanceof Ast.NameExpr mapName)
+                || !(value instanceof Ast.NameExpr valueName)) {
+            return null;
+        }
+        VarState mapState = scope.lookup(mapName.name());
+        VarState sourceState = scope.lookup(valueName.name());
+        if (mapState == null || sourceState == null) return null;
+
+        Ast.TypeRef mapType = mapState.type.isBorrow()
+                ? mapState.type.borrowedTarget() : mapState.type;
+        if (!isTypedMapType(mapType)) return null;
+        Ast.TypeRef mapValueType = mapType.arguments().get(1);
+        if (isCopyType(mapValueType)
+                || !isCommitAwareOwnedMapValueType(mapValueType)) {
+            return null;
+        }
+
+        VarState sourceRoot = ownershipRoot(sourceState);
+        VarState mapRoot = ownershipRoot(mapState);
+        if (sourceRoot == mapRoot
+                || sourceState != sourceRoot
+                || mapState != mapRoot
+                || sourceState.aliasSource != null
+                || sourceState.borrowSource != null
+                || mapState.aliasSource != null
+                || mapState.borrowSource != null
+                || sourceRoot.kind != ValueKind.MOVE_ONLY
+                || sourceRoot.origin != Origin.LOCAL
+                || mapRoot.origin != Origin.LOCAL
+                || !sourceRoot.aggregateSources.isEmpty()
+                || !mapRoot.aggregateSources.isEmpty()
+                || !sourceRoot.type.equals(mapValueType)
+                || !tryEntry.containsKey(sourceRoot)
+                || !tryEntry.containsKey(mapRoot)) {
+            return null;
+        }
+        return new RecoverableOwnedMapMove(value, sourceRoot);
+    }
+
+    private boolean isCompilerJsonFactoryName(
+            Ast.Expr receiver,
+            Scope scope) {
+        return compilerJsonFactoryImported
+                && compilerJsonValueImported
+                && receiver instanceof Ast.NameExpr name
+                && name.name().equals("Json")
+                && scope.lookup("Json") == null;
+    }
+
+    private boolean isCompilerJsonNullMember(
+            Ast.MemberExpr member,
+            Scope scope) {
+        return member.member().equals("null")
+                && isCompilerJsonFactoryName(member.receiver(), scope);
+    }
+
+    private ValueInfo checkCompilerJsonFactoryCall(
+            Ast.CallExpr call,
+            Scope scope) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !isCompilerJsonFactoryName(member.receiver(), scope)) {
+            return null;
+        }
+        if (call.typeArgumentsPresent()) {
+            throw error("compiler-owned Json factories do not accept type arguments");
+        }
+
+        Ast.TypeRef jsonValue = Ast.TypeRef.simple("JsonValue");
+        switch (member.member()) {
+            case "of" -> {
+                if (call.arguments().size() != 1) {
+                    throw error("Json.of expects exactly one scalar argument");
+                }
+                // TypeChecker proves the scalar domain. Scalars are copy-safe,
+                // so constructing a JsonValue never consumes the source scalar.
+                checkExpr(call.arguments().getFirst(), scope, false);
+                return new ValueInfo(jsonValue, ValueKind.MOVE_ONLY, null);
+            }
+            case "array", "object" -> {
+                if (call.arguments().size() != 1) {
+                    throw error("Json." + member.member()
+                            + " expects exactly one owned container argument");
+                }
+                ValueInfo container =
+                        checkExpr(call.arguments().getFirst(), scope, true);
+                if (container.type != null && container.type.isBorrow()) {
+                    throw error("Json." + member.member()
+                            + " requires an owned container, not a borrow");
+                }
+                if (containsMutexGuardType(container.type)) {
+                    throw error("Json." + member.member()
+                            + " cannot capture guard-bearing state");
+                }
+                return new ValueInfo(jsonValue, ValueKind.MOVE_ONLY, null);
+            }
+            case "stringify" -> {
+                if (call.arguments().size() != 1) {
+                    throw error("Json.stringify expects exactly one argument");
+                }
+                // Synchronous compiler intrinsic: this is a scoped read, not a
+                // transfer. TypeChecker proves JsonValue or Map<String, JsonValue>.
+                checkExpr(call.arguments().getFirst(), scope, false);
+                return new ValueInfo(
+                        Ast.TypeRef.simple("String"), ValueKind.COPY, null);
+            }
+            case "null" -> throw error("Json.null is a value, not a function");
+            default -> throw error(
+                    "unknown compiler-owned Json factory '" + member.member() + "'");
+        }
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
@@ -3496,6 +3792,13 @@ public final class OwnershipChecker {
     }
 
     private void move(VarState state, String name) {
+        moveInternal(state, name, true);
+    }
+
+    private void moveInternal(
+            VarState state,
+            String name,
+            boolean notifyTryObservers) {
         VarState root = ownershipRoot(state);
         requireUsable(root, name, false);
         if (root.immutableBorrows > 0 || root.mutableBorrowed) {
@@ -3523,12 +3826,27 @@ public final class OwnershipChecker {
             for (VarState source : root.aggregateSources) {
                 VarState sourceRoot = ownershipRoot(source);
                 if (sourceRoot.kind == ValueKind.MOVE_ONLY) {
-                    move(sourceRoot, source.debugName);
+                    moveInternal(
+                            sourceRoot,
+                            source.debugName,
+                            notifyTryObservers);
                 }
             }
         }
 
-        for (Set<VarState> observer : tryMoveObservers) observer.add(root);
+        if (notifyTryObservers) {
+            for (Set<VarState> observer : tryMoveObservers) {
+                observer.add(root);
+            }
+        } else {
+            // Only the innermost catch is allowed to recover this exact
+            // admission-time candidate. Any enclosing try can observe a later
+            // throw after the inner try completed normally, so outer catches
+            // must conservatively retain the committed move.
+            for (int i = 0; i + 1 < tryMoveObservers.size(); i++) {
+                tryMoveObservers.get(i).add(root);
+            }
+        }
         root.moved = true;
     }
 
@@ -3999,6 +4317,19 @@ public final class OwnershipChecker {
         return Ast.TypeRef.union(List.of(left, right));
     }
 
+    /**
+     * Keep the recoverable move proof coupled to the one runtime domain that
+     * currently guarantees one-shot rollback. A user-declared class named
+     * JsonValue is not that compiler-owned descriptor.
+     */
+    private boolean isCommitAwareOwnedMapValueType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow() || !type.arguments().isEmpty()) {
+            return false;
+        }
+        return compilerJsonValueImported
+                && type.name().equals("JsonValue");
+    }
+
     private static boolean isTypedMapType(Ast.TypeRef type) {
         if (type == null) return false;
         Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
@@ -4132,6 +4463,25 @@ public final class OwnershipChecker {
 
     private enum ValueKind { COPY, MOVE_ONLY, IMM_BORROW, MUT_BORROW }
     private enum Origin { PARAM, LOCAL, CAPTURE }
+
+    private static final class RecoverableOwnedMapMove {
+        private final Ast.Expr valueExpression;
+        private final VarState root;
+        private boolean consumed;
+
+        private RecoverableOwnedMapMove(
+                Ast.Expr valueExpression,
+                VarState root) {
+            this.valueExpression =
+                    java.util.Objects.requireNonNull(
+                            valueExpression,
+                            "recoverable Map value expression");
+            this.root =
+                    java.util.Objects.requireNonNull(
+                            root,
+                            "recoverable Map ownership root");
+        }
+    }
 
     private static final class ValueInfo {
         private final Ast.TypeRef type;

@@ -18,6 +18,7 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresKeyedMap;
+import dev.oreslang.runtime.OresJsonValue;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -133,6 +134,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final boolean compilerJsonValueImported;
+        private final boolean compilerJsonFactoryImported;
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -217,6 +220,10 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.compilerJsonValueImported = program.imports().stream()
+                    .anyMatch(ImportRules::isAllocJsonValueImport);
+            this.compilerJsonFactoryImported = program.imports().stream()
+                    .anyMatch(ImportRules::isAllocJsonFactoryImport);
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -4707,9 +4714,24 @@ public final class OresEvalRootNode extends RootNode {
                     (OresKeyedMap<Object, Object>) rawMap;
             return invokableInvocation(ignored -> {
                 if (member.equals("put")) {
-                    // Typed Maps reject null values, so null unambiguously
-                    // means this key was absent before the committed write.
-                    Object previous = map.put(key, args.get(1));
+                    Object offered = args.get(1);
+                    if (map.valueDomain() == OresKeyedMap.ValueDomain.JSON) {
+                        OresKeyedMap.OwnedPutAttempt<Object> attempt =
+                                map.attemptOwnedPut(key, offered);
+                        if (!attempt.committed()) {
+                            Object recovered = attempt.takeRejectedValue();
+                            if (recovered != offered) {
+                                throw new IllegalStateException(
+                                        "owned Map rollback returned a different value identity");
+                            }
+                            throw attempt.rejection();
+                        }
+                        Object previous = attempt.takePrevious();
+                        return new OptionValue(previous != null, previous);
+                    }
+                    // Scalar typed Maps reject null values, so null
+                    // unambiguously means this key was absent.
+                    Object previous = map.put(key, offered);
                     return new OptionValue(previous != null, previous);
                 }
                 OresKeyedMap.Lookup<Object> removed = map.take(key);
@@ -4816,6 +4838,10 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (receiver instanceof ClassFacade klass) {
+                if (isCompilerJsonFactoryFacade(klass)) {
+                    return compilerJsonFactoryInvocation(
+                            member.member(), args);
+                }
                 Ast.MethodDecl method =
                         klass.owner().findStaticFunction(
                                 klass.klass(),
@@ -4853,6 +4879,95 @@ public final class OresEvalRootNode extends RootNode {
                         "member is not callable: " + member.member());
             }
             return invokableInvocation(invokable, args);
+        }
+
+        private boolean isCompilerJsonFactoryFacade(ClassFacade facade) {
+            return compilerJsonFactoryImported
+                    && compilerJsonValueImported
+                    && facade.klass().name().equals("Json");
+        }
+
+        private Invocation compilerJsonFactoryInvocation(
+                String member,
+                List<Object> args) {
+            return invokableInvocation(
+                    ignored -> switch (member) {
+                        case "of" -> {
+                            requireOne(args, "Json.of");
+                            Object value = args.getFirst();
+                            if (value instanceof Boolean b) yield OresJsonValue.of(b);
+                            if (value instanceof String s) yield OresJsonValue.of(s);
+                            if (value instanceof Byte || value instanceof Short
+                                    || value instanceof Integer || value instanceof Long) {
+                                yield OresJsonValue.of(((Number) value).longValue());
+                            }
+                            if (value instanceof java.math.BigInteger integer) {
+                                yield OresJsonValue.of(integer);
+                            }
+                            if (value instanceof java.math.BigDecimal decimal) {
+                                yield OresJsonValue.of(decimal);
+                            }
+                            if (value instanceof Float || value instanceof Double) {
+                                throw new IllegalArgumentException(
+                                        "Json.of floating input is fail-closed until Oreslang carries an exact decimal scalar");
+                            }
+                            throw new IllegalArgumentException(
+                                    "Json.of accepts bool, int, String, or an exact numeric carrier");
+                        }
+                        case "array" -> {
+                            requireOne(args, "Json.array");
+                            Object raw = args.getFirst();
+                            if (!(raw instanceof Iterable<?> values)) {
+                                throw new IllegalArgumentException(
+                                        "Json.array requires an iterable JsonValue container");
+                            }
+                            ArrayList<OresJsonValue> copy = new ArrayList<>();
+                            for (Object value : values) {
+                                if (!(value instanceof OresJsonValue json)) {
+                                    throw new IllegalArgumentException(
+                                            "Json.array elements must be JsonValue");
+                                }
+                                copy.add(json);
+                            }
+                            yield OresJsonValue.array(copy);
+                        }
+                        case "object" -> {
+                            requireOne(args, "Json.object");
+                            Object raw = args.getFirst();
+                            if (!(raw instanceof OresKeyedMap<?, ?> map)
+                                    || map.keyDomain() != OresKeyedMap.KeyDomain.STRING
+                                    || map.valueDomain() != OresKeyedMap.ValueDomain.JSON) {
+                                throw new IllegalArgumentException(
+                                        "Json.object requires Map<String, JsonValue>");
+                            }
+                            @SuppressWarnings("unchecked")
+                            OresKeyedMap<String, OresJsonValue> jsonMap =
+                                    (OresKeyedMap<String, OresJsonValue>) map;
+                            yield OresJsonValue.object(jsonMap);
+                        }
+                        case "stringify" -> {
+                            requireOne(args, "Json.stringify");
+                            Object raw = args.getFirst();
+                            if (raw instanceof OresJsonValue json) {
+                                yield OresJsonValue.stringify(json);
+                            }
+                            if (raw instanceof OresKeyedMap<?, ?> map
+                                    && map.keyDomain() == OresKeyedMap.KeyDomain.STRING
+                                    && map.valueDomain() == OresKeyedMap.ValueDomain.JSON) {
+                                @SuppressWarnings("unchecked")
+                                OresKeyedMap<String, OresJsonValue> jsonMap =
+                                        (OresKeyedMap<String, OresJsonValue>) map;
+                                yield OresJsonValue.stringifyObject(jsonMap);
+                            }
+                            throw new IllegalArgumentException(
+                                    "Json.stringify requires JsonValue or Map<String, JsonValue>");
+                        }
+                        case "null" -> throw new IllegalArgumentException(
+                                "Json.null is a value, not a function");
+                        default -> throw new IllegalArgumentException(
+                                "unknown compiler-owned Json factory " + member);
+                    },
+                    List.of());
         }
 
         private static int sequenceIndex(Object value) {
@@ -5094,6 +5209,27 @@ public final class OresEvalRootNode extends RootNode {
                 @SuppressWarnings("unchecked")
                 OresKeyedMap<Object, Object> map =
                         (OresKeyedMap<Object, Object>) rawMap;
+                if (map.valueDomain() == OresKeyedMap.ValueDomain.JSON) {
+                    OresKeyedMap.OwnedPutAttempt<Object> attempt =
+                            map.attemptOwnedPut(key, value);
+                    if (!attempt.committed()) {
+                        // Recover the exact offered move-only value before the
+                        // admission failure is rethrown. The lexical runtime
+                        // slot still owns the same object; taking it here
+                        // discharges the one-shot rollback token so lowering
+                        // cannot duplicate the candidate.
+                        Object recovered = attempt.takeRejectedValue();
+                        if (recovered != value) {
+                            throw new IllegalStateException(
+                                    "owned Map rollback returned a different value identity");
+                        }
+                        throw attempt.rejection();
+                    }
+                    // Indexed assignment discards any displaced value. Consume
+                    // the linear token exactly once before returning the RHS.
+                    attempt.takePrevious();
+                    return value;
+                }
                 map.put(key, value);
                 return value;
             }
@@ -5196,6 +5332,12 @@ public final class OresEvalRootNode extends RootNode {
             Ast.TypeRef valueType = type.arguments().get(1);
             OresKeyedMap.ValueDomain values = mapValueDomain(valueType);
 
+            if (values == OresKeyedMap.ValueDomain.JSON
+                    && !isStringMapKeyType(keyType)) {
+                throw new IllegalArgumentException(
+                        "Map<String, JsonValue> requires a String-only key domain");
+            }
+
             if (!keyType.isUnion()) {
                 if (!keyType.inferArguments() && keyType.arguments().isEmpty()) {
                     if (keyType.name().equals("String")
@@ -5237,10 +5379,13 @@ public final class OresEvalRootNode extends RootNode {
                     && type.name().equals("Symbol");
         }
 
-        private static OresKeyedMap.ValueDomain mapValueDomain(Ast.TypeRef type) {
+        private OresKeyedMap.ValueDomain mapValueDomain(Ast.TypeRef type) {
             if (type.inferArguments() || !type.arguments().isEmpty()) {
                 throw new IllegalArgumentException(
-                        "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+                        "closed Map<K,V> values require a directly named value type");
+            }
+            if (compilerJsonValueImported && type.name().equals("JsonValue")) {
+                return OresKeyedMap.ValueDomain.JSON;
             }
             if (Set.of(
                     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
@@ -5257,13 +5402,41 @@ public final class OresEvalRootNode extends RootNode {
                 return OresKeyedMap.ValueDomain.SYMBOL;
             }
             throw new IllegalArgumentException(
-                    "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+                    "closed Map<K,V> values must be int, string, bool, Symbol, "
+                            + "or imported alloc/json JsonValue");
+        }
+
+        private boolean isOpaqueAllocJsonBinding(
+                String localName,
+                boolean jsonValue) {
+            for (Ast.ImportDecl imported : program.imports()) {
+                boolean selected = jsonValue
+                        ? ImportRules.isAllocJsonValueSelection(imported)
+                        : ImportRules.isAllocJsonFactorySelection(imported);
+                if (!selected) continue;
+                String sourceName = jsonValue ? "JsonValue" : "Json";
+                if (ImportRules.localName(imported, sourceName)
+                        .equals(localName)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private Object instantiateEvaluated(
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (isOpaqueAllocJsonBinding(
+                    created.type().name(), true)) {
+                throw new IllegalArgumentException(
+                        "JsonValue is an opaque alloc/json value; construct it through Json.* APIs");
+            }
+            if (isOpaqueAllocJsonBinding(
+                    created.type().name(), false)) {
+                throw new IllegalArgumentException(
+                        "Json is a compiler-owned construction namespace and cannot be instantiated");
+            }
             if (created.type().name().equals("Map") && findClass("Map") == null) {
                 if (!args.isEmpty()) {
                     throw new IllegalArgumentException(
@@ -6645,6 +6818,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ClassFacade klass) {
+                    if (isCompilerJsonFactoryFacade(klass)) {
+                        return compilerJsonFactoryInvocation(
+                                methodCall.member(), args);
+                    }
                     Ast.MethodDecl fn = klass.owner().findStaticFunction(
                             klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
                     if (fn == null) {
@@ -7150,6 +7327,16 @@ public final class OresEvalRootNode extends RootNode {
                         indexed.receiver());
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (isOpaqueAllocJsonBinding(
+                        created.type().name(), true)) {
+                    throw new IllegalArgumentException(
+                            "JsonValue is an opaque alloc/json value; construct it through Json.* APIs");
+                }
+                if (isOpaqueAllocJsonBinding(
+                        created.type().name(), false)) {
+                    throw new IllegalArgumentException(
+                            "Json is a compiler-owned construction namespace and cannot be instantiated");
+                }
                 if (created.type().name().equals("Map") && findClass("Map") == null) {
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException(
@@ -7895,6 +8082,17 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
             if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
             if (receiver instanceof ClassFacade klass) {
+                if (isCompilerJsonFactoryFacade(klass)) {
+                    if (name.equals("null")) return OresJsonValue.nullValue();
+                    if (name.equals("of") || name.equals("array")
+                            || name.equals("object") || name.equals("stringify")) {
+                        throw new IllegalArgumentException(
+                                "Json." + name
+                                        + " is direct-call-only; invoke it instead of extracting a callable value");
+                    }
+                    throw new IllegalArgumentException(
+                            "unknown compiler-owned Json member " + name);
+                }
                 List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();

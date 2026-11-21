@@ -69,6 +69,11 @@
         <targetPath>dev/oreslang/std</targetPath>
         <includes><include>**/*.ores</include></includes>
       </resource>
+      <resource>
+        <directory>alloclib</directory>
+        <targetPath>dev/oreslang/alloc</targetPath>
+        <includes><include>**/*.ores</include></includes>
+      </resource>
     </resources>
     <plugins>
       <plugin>

@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Dedicated guest Map storage foundation. This is NOT a record/struct and does
@@ -36,6 +37,10 @@ public final class OresKeyedMap<K, V> {
     public static final int MAX_TEXT_KEY_BYTES = SymbolPropertyKeyCodec.MAX_TEXT_KEY_BYTES;
     public static final long MAX_KEY_SET_WIRE_BYTES =
             SymbolPropertyKeyCodec.MAX_KEY_SET_WIRE_BYTES;
+    // JSON graph-edge creation must serialize before taking any individual
+    // JSON Map monitor. Keep this lock private so host interop cannot stall
+    // guest JSON admission by synchronizing on a published runtime object.
+    private static final Object JSON_GRAPH_ADMISSION_LOCK = new Object();
 
     public enum KeyDomain {
         STRING, SYMBOL, STRING_OR_SYMBOL
@@ -46,7 +51,7 @@ public final class OresKeyedMap<K, V> {
      * protects dynamic/foreign callers. ANY is explicitly dynamic only.
      */
     public enum ValueDomain {
-        ANY, INT, STRING, SYMBOL, BOOL
+        ANY, INT, STRING, SYMBOL, BOOL, JSON
     }
 
     /**
@@ -76,6 +81,122 @@ public final class OresKeyedMap<K, V> {
     }
 
     /**
+     * Compiler/runtime-only result for fallible insertion of a move-only
+     * offered value.
+     *
+     * <p>On commit, ownership of the offered value has transferred into this
+     * Map and {@code rejectedValue}/{@code rejection} are null. On rejection,
+     * live storage is unchanged and {@code rejectedValue} is the exact offered
+     * object by identity so lowering can restore the source owner without
+     * reconstructing or copying a move-only value.</p>
+     */
+    public static final class OwnedPutAttempt<V> {
+        private final boolean committed;
+        private V previous;
+        private V rejectedValue;
+        private final RuntimeException rejection;
+        private boolean previousTaken;
+        private boolean rejectedTaken;
+
+        private OwnedPutAttempt(
+                boolean committed,
+                V previous,
+                V rejectedValue,
+                RuntimeException rejection) {
+            this.committed = committed;
+            this.previous = previous;
+            this.rejectedValue = rejectedValue;
+            this.rejection = rejection;
+            if (committed) {
+                if (rejectedValue != null || rejection != null) {
+                    throw new IllegalArgumentException(
+                            "committed owned put cannot carry rejected state");
+                }
+            } else {
+                if (previous != null) {
+                    throw new IllegalArgumentException(
+                            "rejected owned put cannot report a displaced value");
+                }
+                Objects.requireNonNull(rejectedValue, "rejected offered Map value");
+                Objects.requireNonNull(rejection, "owned put rejection");
+            }
+        }
+
+        public static <V> OwnedPutAttempt<V> committed(V previous) {
+            return new OwnedPutAttempt<>(true, previous, null, null);
+        }
+
+        public static <V> OwnedPutAttempt<V> rejected(
+                V offered,
+                RuntimeException rejection) {
+            return new OwnedPutAttempt<>(
+                    false,
+                    null,
+                    Objects.requireNonNull(offered, "offered Map value"),
+                    Objects.requireNonNull(rejection, "owned put rejection"));
+        }
+
+        public boolean committed() {
+            return committed;
+        }
+
+        /**
+         * Take the displaced value exactly once after a committed replacement.
+         * A successful insertion into an absent key returns null.
+         */
+        public synchronized V takePrevious() {
+            if (!committed) {
+                throw new IllegalStateException(
+                        "rejected owned put has no displaced value");
+            }
+            if (previousTaken) {
+                throw new IllegalStateException(
+                        "owned put displaced value was already taken");
+            }
+            previousTaken = true;
+            V value = previous;
+            previous = null;
+            return value;
+        }
+
+        /**
+         * Take the exact uncommitted offered value exactly once after rejection.
+         */
+        public synchronized V takeRejectedValue() {
+            if (committed) {
+                throw new IllegalStateException(
+                        "committed owned put has no rejected offered value");
+            }
+            if (rejectedTaken) {
+                throw new IllegalStateException(
+                        "owned put rejected value was already taken");
+            }
+            rejectedTaken = true;
+            V value = rejectedValue;
+            rejectedValue = null;
+            return value;
+        }
+
+        /**
+         * Compatibility spelling for lowering/tests; this is consuming.
+         */
+        public V previous() {
+            return takePrevious();
+        }
+
+        /**
+         * Compatibility spelling for lowering/tests; this is consuming.
+         */
+        public V rejectedValue() {
+            return takeRejectedValue();
+        }
+
+        public RuntimeException rejection() {
+            return rejection;
+        }
+    }
+
+    /**
      * Runtime policy hook used by compiler-owned typed Map descriptors.
      *
      * <p>Validators must be deterministic and side-effect free. The container
@@ -100,9 +221,9 @@ public final class OresKeyedMap<K, V> {
     // Java monitors are reentrant. A key-aware validator must never be able
     // to mutate this same map while an outer mutation is still validating.
     private boolean entryValidationActive;
-    // A caller-supplied host Map can invoke this map's methods from size(),
-    // entrySet(), iterator.next() or Entry getters during a putAll snapshot.
-    // Reject such reentrant mutation until the whole batch is committed.
+    // Detached putAll inputs are snapshotted before any internal Map/JSON
+    // lock is acquired. During the later checked batch admission/commit phase,
+    // reject reentrant mutation until the whole batch is committed.
     private boolean bulkMutationActive;
 
     private OresKeyedMap(
@@ -179,6 +300,19 @@ public final class OresKeyedMap<K, V> {
 
     public ValueDomain valueDomain() {
         return valueDomain;
+    }
+
+    /**
+     * Run compiler/runtime-owned JSON graph work while edge-creating writes are
+     * excluded. The lock object itself never escapes this class.
+     *
+     * <p>Callers must not invoke guest callbacks from the supplied action.</p>
+     */
+    static <T> T withJsonGraphLock(Supplier<T> action) {
+        Objects.requireNonNull(action, "JSON graph action");
+        synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+            return action.get();
+        }
     }
 
     /**
@@ -276,6 +410,14 @@ public final class OresKeyedMap<K, V> {
 
     private void checkValueDomain(Object value) {
         Objects.requireNonNull(value, "map value");
+        if (valueDomain == ValueDomain.JSON) {
+            if (!(value instanceof OresJsonValue json)) {
+                throw new IllegalArgumentException(
+                        "value is incompatible with Map value domain JSON");
+            }
+            OresJsonValue.validateForMapInsertion(this, json);
+            return;
+        }
         boolean valid = switch (valueDomain) {
             case ANY -> true;
             case INT -> value instanceof Byte || value instanceof Short
@@ -284,6 +426,8 @@ public final class OresKeyedMap<K, V> {
             case STRING -> value instanceof String;
             case SYMBOL -> value instanceof OresSymbol;
             case BOOL -> value instanceof Boolean;
+            case JSON -> throw new IllegalStateException(
+                    "JSON value domain must use recursive descriptor validation");
         };
         if (!valid) {
             throw new IllegalArgumentException(
@@ -318,7 +462,59 @@ public final class OresKeyedMap<K, V> {
         return SymbolPropertyKeyCodec.encodedWireLength(key);
     }
 
-    public synchronized V put(K key, V value) {
+    public V put(K key, V value) {
+        if (valueDomain == ValueDomain.JSON) {
+            // Lock order for recursive mutable JSON graphs is global graph
+            // admission first, destination Map second. This prevents two Maps
+            // from concurrently validating opposite edges and committing a
+            // cycle after both observed an acyclic pre-state.
+            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+                synchronized (this) {
+                    return putUnderMonitor(key, value);
+                }
+            }
+        }
+        synchronized (this) {
+            return putUnderMonitor(key, value);
+        }
+    }
+
+    /**
+     * Internal lowering primitive for move-only values. Unlike {@link #put},
+     * preflight rejection is returned as data together with the exact offered
+     * value. Errors outside the runtime's ordinary checked/policy rejection
+     * surface (for example VM {@link Error}s) still propagate.
+     *
+     * <p>This method is not a guest Map member. Source-level lowering may use
+     * it only after proving direct owner authority and must commit the source
+     * ownership move only when {@link OwnedPutAttempt#committed()} is true.</p>
+     */
+    public OwnedPutAttempt<V> attemptOwnedPut(K key, V offered) {
+        Objects.requireNonNull(offered, "offered Map value");
+        if (valueDomain == ValueDomain.JSON) {
+            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+                synchronized (this) {
+                    return attemptOwnedPutUnderMonitor(key, offered);
+                }
+            }
+        }
+        synchronized (this) {
+            return attemptOwnedPutUnderMonitor(key, offered);
+        }
+    }
+
+    private OwnedPutAttempt<V> attemptOwnedPutUnderMonitor(K key, V offered) {
+        try {
+            return OwnedPutAttempt.committed(putUnderMonitor(key, offered));
+        } catch (RuntimeException rejection) {
+            // putUnderMonitor performs all fallible structural/domain/quota
+            // and policy checks before entries.put(), so an ordinary runtime
+            // rejection here has not modified live storage.
+            return OwnedPutAttempt.rejected(offered, rejection);
+        }
+    }
+
+    private V putUnderMonitor(K key, V value) {
         rejectReentrantMutation();
         checkKey(key);
         checkValueDomain(value);
@@ -342,15 +538,35 @@ public final class OresKeyedMap<K, V> {
 
     /**
      * Validate the entire incoming batch before modifying the destination.
-     * No partial insertion occurs if any key or value is invalid. Entries are
-     * copied to immutable pairs before validation so mutable source Map.Entry
-     * objects cannot change after the validation pass.
+     * No partial insertion occurs if any key or value is invalid.
+     *
+     * <p>The caller-supplied Map is untrusted foreign input. Snapshot all of
+     * its potentially callback-capable operations before acquiring either the
+     * JSON graph-admission lock or this Map's monitor. Admission below sees
+     * only detached immutable entry pairs.</p>
      */
-    public synchronized void putAll(Map<? extends K, ? extends V> values) {
-        rejectReentrantMutation();
+    public void putAll(Map<? extends K, ? extends V> values) {
+        List<Map.Entry<K, V>> prepared = snapshotBatch(values);
+        if (prepared.isEmpty()) {
+            return;
+        }
+        if (valueDomain == ValueDomain.JSON) {
+            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+                synchronized (this) {
+                    putAllPreparedUnderMonitor(prepared);
+                }
+            }
+            return;
+        }
+        synchronized (this) {
+            putAllPreparedUnderMonitor(prepared);
+        }
+    }
+
+    private List<Map.Entry<K, V>> snapshotBatch(
+            Map<? extends K, ? extends V> values) {
         Objects.requireNonNull(values, "map entries");
-        bulkMutationActive = true;
-        try {
+
         // Host-supplied Map.size() is not trusted. Enforce the guest bound
         // before using it as an allocation hint, then enforce it again while
         // consuming entries (custom Maps may lie about their size).
@@ -359,10 +575,6 @@ public final class OresKeyedMap<K, V> {
             throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
         }
         List<Map.Entry<K, V>> prepared = new ArrayList<>(reportedSize);
-        // Snapshot the hostile host collection before invoking any entry
-        // validator. A custom Map may lie about size() or change cardinality
-        // while iterating; such an input must not trigger validator side
-        // effects for a batch that is rejected before semantic admission.
         for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
             if (prepared.size() >= MAX_ENTRIES) {
                 throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
@@ -375,58 +587,63 @@ public final class OresKeyedMap<K, V> {
         if (prepared.size() != reportedSize) {
             throw new IllegalArgumentException("host Map size changed during batch snapshot");
         }
+        return List.copyOf(prepared);
+    }
 
-        if (prepared.isEmpty()) {
-            return;
-        }
-
-        // A caller may supply IdentityHashMap or a custom Map whose equality
-        // differs from the guest Map's nominal String/Symbol equality. Reject
-        // duplicate *logical* keys before any writes rather than letting
-        // iteration order silently determine the winning value.
-        Set<K> incomingKeys = new HashSet<>();
-        for (Map.Entry<K, V> entry : prepared) {
-            K key = entry.getKey();
-            V value = entry.getValue();
-            checkKey(key);
-            checkValueDomain(value);
-            if (!incomingKeys.add(key)) {
-                throw new IllegalArgumentException("duplicate logical key in Map batch");
-            }
-        }
-
-        Set<K> additions = new HashSet<>();
-        long additionalKeyWireBytes = 0L;
-        for (Map.Entry<K, V> entry : prepared) {
-            K key = entry.getKey();
-            if (!entries.containsKey(key) && additions.add(key)) {
-                additionalKeyWireBytes += wireKeyBytes(key);
-                if (additionalKeyWireBytes > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
-                    throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
+    private void putAllPreparedUnderMonitor(List<Map.Entry<K, V>> prepared) {
+        rejectReentrantMutation();
+        bulkMutationActive = true;
+        try {
+            // A caller may supply IdentityHashMap or a custom Map whose equality
+            // differs from the guest Map's nominal String/Symbol equality.
+            // Reject duplicate logical keys before any writes.
+            Set<K> incomingKeys = new HashSet<>();
+            for (Map.Entry<K, V> entry : prepared) {
+                K key = entry.getKey();
+                V value = entry.getValue();
+                checkKey(key);
+                checkValueDomain(value);
+                if (!incomingKeys.add(key)) {
+                    throw new IllegalArgumentException(
+                            "duplicate logical key in Map batch");
                 }
             }
-        }
-        if (additions.size() > MAX_ENTRIES - entries.size()) {
-            throw new IllegalArgumentException("typed Map exceeds maximum key count");
-        }
 
-        // Stage every host allocation/hash-table expansion before policy hooks.
-        // Keys are already restricted to immutable String/Symbol values, so
-        // staging cannot dispatch arbitrary guest equality/hash callbacks.
-        LinkedHashMap<K, V> staged = new LinkedHashMap<>(entries);
-        for (Map.Entry<K, V> entry : prepared) {
-            staged.put(entry.getKey(), entry.getValue());
-        }
+            Set<K> additions = new HashSet<>();
+            long additionalKeyWireBytes = 0L;
+            for (Map.Entry<K, V> entry : prepared) {
+                K key = entry.getKey();
+                if (!entries.containsKey(key) && additions.add(key)) {
+                    additionalKeyWireBytes += wireKeyBytes(key);
+                    if (additionalKeyWireBytes
+                            > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
+                        throw new IllegalArgumentException(
+                                "typed Map exceeds aggregate key byte budget");
+                    }
+                }
+            }
+            if (additions.size() > MAX_ENTRIES - entries.size()) {
+                throw new IllegalArgumentException(
+                        "typed Map exceeds maximum key count");
+            }
 
-        // Only a structurally admissible, fully staged candidate may invoke
-        // compiler-owned policy validators. The live map remains unchanged if
-        // any policy check rejects the candidate.
-        for (Map.Entry<K, V> entry : prepared) {
-            runEntryValidator(entry.getKey(), entry.getValue());
-        }
+            // Stage every internal allocation/hash-table expansion before
+            // policy hooks. Keys are already restricted to immutable
+            // String/Symbol values, so staging cannot dispatch guest callbacks.
+            LinkedHashMap<K, V> staged = new LinkedHashMap<>(entries);
+            for (Map.Entry<K, V> entry : prepared) {
+                staged.put(entry.getKey(), entry.getValue());
+            }
 
-        entries = staged;
-        storedKeyWireBytes += additionalKeyWireBytes;
+            // Only a structurally admissible, fully staged candidate may invoke
+            // compiler-owned policy validators. The live map remains unchanged
+            // if any policy check rejects the candidate.
+            for (Map.Entry<K, V> entry : prepared) {
+                runEntryValidator(entry.getKey(), entry.getValue());
+            }
+
+            entries = staged;
+            storedKeyWireBytes += additionalKeyWireBytes;
         } finally {
             bulkMutationActive = false;
         }
@@ -436,7 +653,20 @@ public final class OresKeyedMap<K, V> {
      * Atomically remove and transfer a value while preserving key absence as
      * an explicit outer state.  No public has/get/remove sequence is needed.
      */
-    public synchronized Lookup<V> take(Object key) {
+    public Lookup<V> take(Object key) {
+        if (valueDomain == ValueDomain.JSON) {
+            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+                synchronized (this) {
+                    return takeUnderMonitor(key);
+                }
+            }
+        }
+        synchronized (this) {
+            return takeUnderMonitor(key);
+        }
+    }
+
+    private Lookup<V> takeUnderMonitor(Object key) {
         rejectReentrantMutation();
         checkKey(key);
         V existing = entries.get(key);
@@ -453,11 +683,25 @@ public final class OresKeyedMap<K, V> {
     }
 
     /** Host compatibility API; guest consuming lowering should prefer take(). */
-    public synchronized V remove(Object key) {
+    public V remove(Object key) {
         return take(key).value();
     }
 
-    public synchronized void clear() {
+    public void clear() {
+        if (valueDomain == ValueDomain.JSON) {
+            synchronized (JSON_GRAPH_ADMISSION_LOCK) {
+                synchronized (this) {
+                    clearUnderMonitor();
+                }
+            }
+            return;
+        }
+        synchronized (this) {
+            clearUnderMonitor();
+        }
+    }
+
+    private void clearUnderMonitor() {
         rejectReentrantMutation();
         entries.clear();
         storedKeyWireBytes = 0L;

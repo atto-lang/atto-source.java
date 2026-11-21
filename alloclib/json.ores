@@ -1,0 +1,7 @@
+pub define class JsonValue as
+end
+
+// Compiler-owned construction namespace. The implementation is intrinsic so
+// no host object or reflective constructor becomes part of the source ABI.
+pub define class Json as
+end

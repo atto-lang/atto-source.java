@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.OwnershipChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,169 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class TypedMapClosedSurfaceLanguageTest {
+    @Test
+    void ownershipCheckerRestoresTerminalIndexedMoveOnlyMapCandidateOnCatchEdge() {
+        String source = """
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+
+                  try {
+                    values["x"] = item;
+                  } catch (err) {
+                    rt take item;
+                  }
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() ->
+                OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void ownershipCheckerRestoresTerminalNamedPutCandidateOnCatchEdge() {
+        String source = """
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+
+                  try {
+                    const Option<JsonValue> previous =
+                        values.put("x", item);
+                  } catch (err) {
+                    rt take item;
+                  }
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() ->
+                OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void ownershipCheckerKeepsTerminalCandidateMovedAfterNormalTryExit() {
+        String source = """
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+
+                  try {
+                    values["x"] = item;
+                  } catch (err) {
+                  }
+
+                  rt take item;
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void ownershipCheckerDoesNotRestoreMoveWhenMapWriteIsNotTerminal() {
+        String source = """
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+
+                  try {
+                    values["x"] = item;
+                    stdio.println("after commit");
+                  } catch (err) {
+                    rt take item;
+                  }
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void outerCatchKeepsInnerCommittedRecoverableMapMoveConservative() {
+        String source = """
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+
+                  try {
+                    try {
+                      values["x"] = item;
+                    } catch (inner) {
+                    }
+                  } catch (outer) {
+                    rt take item;
+                  }
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void ownershipCheckerDoesNotGrantRollbackToUserClassNamedJsonValue() {
+        String source = """
+                define class JsonValue as
+                end
+
+                import class JsonValue from "alloc/json";
+
+                fnc stage(JsonValue item): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+
+                  try {
+                    values["x"] = item;
+                  } catch (err) {
+                    rt take item;
+                  }
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void ownershipCheckerFailsClosedOnTypedMapMutatorArity() {
+        String source = """
+                import class JsonValue from "alloc/json";
+
+                pub fnc main(): void {
+                  val Map<string, JsonValue> values =
+                      new Map<string, JsonValue>();
+                  values.put("x");
+                  return;
+                }
+                """;
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(source)));
+    }
+
     @Test
     void stringAndNominalSymbolKeysExecuteWithoutCoercion() {
         String source = """

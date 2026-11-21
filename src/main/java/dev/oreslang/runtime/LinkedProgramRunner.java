@@ -10,6 +10,7 @@ import dev.oreslang.interop.MixedJavaCompiler;
 import dev.oreslang.interop.MixedSourceUnit;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.stdlib.AllocLibrarySources;
 import dev.oreslang.stdlib.CoreLibrarySources;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -394,6 +395,14 @@ public final class LinkedProgramRunner {
             ImportRules.validate(imported);
             if (ImportRules.isJavaPath(imported.path())) continue;
 
+            if (AllocLibrarySources.isAllocImport(imported.path())) {
+                String targetId = AllocLibrarySources.unitId(imported.path());
+                recordImportResolution(importResolutions, id, imported.path(), targetId);
+                collectAllocImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
+                continue;
+            }
+
             if (CoreLibrarySources.isCoreImport(imported.path())) {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
@@ -424,6 +433,61 @@ public final class LinkedProgramRunner {
             recordImportResolution(importResolutions, id, imported.path(), targetId);
             collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
                     budget, depth + 1);
+        }
+    }
+
+
+    /**
+     * Collects compiler-owned allocator-backed portable sources under alloc/.
+     * Project roots and ORESLANG_PATH cannot shadow this namespace.
+     */
+    private static void collectAllocImportClosure(
+            String importPath,
+            Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
+        String id = AllocLibrarySources.unitId(importPath);
+        if (units.containsKey(id)) return;
+        budget.checkCanAdmitUnit(depth);
+
+        String allocSource = AllocLibrarySources.source(importPath);
+        budget.admit(
+                allocSource.getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
+                depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(
+                id,
+                AllocLibrarySources.fileName(importPath),
+                allocSource);
+        if (mixed.hasJavaSource()) {
+            throw new SecurityException(
+                    "packaged alloc/* modules must be native Oreslang, not Java source islands: "
+                            + importPath);
+        }
+
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
+            if (ImportRules.isJavaPath(imported.path())) {
+                throw new SecurityException(
+                        "alloc/* cannot import Java host classes: "
+                                + importPath + " -> " + imported.path());
+            }
+            if (!AllocLibrarySources.isAllocImport(imported.path())) {
+                throw new IllegalArgumentException(
+                        "alloc/* cannot import project or ambient modules: "
+                                + importPath + " -> " + imported.path());
+            }
+            AllocLibrarySources.unitId(imported.path());
+        }
+
+        units.put(id, mixed);
+        for (Ast.ImportDecl imported : program.imports()) {
+            String targetId = AllocLibrarySources.unitId(imported.path());
+            recordImportResolution(
+                    importResolutions, id, imported.path(), targetId);
+            collectAllocImportClosure(
+                    imported.path(), units, importResolutions, budget, depth + 1);
         }
     }
 

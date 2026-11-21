@@ -86,6 +86,14 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
+    /** Exact compiler-owned alloc/json JsonValue type import for this unit. */
+    private boolean compilerJsonValueImported;
+    /** Exact compiler-owned alloc/json Json construction namespace import. */
+    private boolean compilerJsonFactoryImported;
+    /** All local bindings selecting the opaque alloc/json JsonValue class, aliases included. */
+    private final Set<String> opaqueAllocJsonValueBindings = new HashSet<>();
+    /** All local bindings selecting the compiler-owned Json namespace, aliases included. */
+    private final Set<String> opaqueAllocJsonFactoryBindings = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -177,23 +185,28 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
-            String name = entry.getKey();
+            String localName = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
-            if (name == null || declaration == null || !name.equals(declaration.name())
+            if (localName == null || declaration == null
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException("invalid linked public class: " + name);
+                throw new IllegalArgumentException(
+                        "invalid linked public class: " + localName);
             }
             boolean imported = program.imports().stream().anyMatch(use ->
-                    use.kind() == Ast.ImportKind.CLASS && !use.wildcard()
-                            && use.names().contains(name));
-            if (!imported || checker.classes.containsKey(name)
-                    || checker.ambiguousClasses.contains(name)) {
+                    use.kind() == Ast.ImportKind.CLASS
+                            && !use.wildcard()
+                            && use.names().contains(declaration.name())
+                            && ImportRules.localName(
+                                    use, declaration.name()).equals(localName));
+            if (!imported || checker.classes.containsKey(localName)
+                    || checker.ambiguousClasses.contains(localName)) {
                 throw new IllegalArgumentException(
-                        "linked public class was not uniquely imported: " + name);
+                        "linked public class was not uniquely imported as: "
+                                + localName);
             }
-            checker.classes.put(name, declaration);
+            checker.classes.put(localName, declaration);
             Map<String, Ast.TypeAliasDecl> aliases =
-                    linkedAliases.getOrDefault(name, Map.of());
+                    linkedAliases.getOrDefault(localName, Map.of());
             for (Map.Entry<String, Ast.TypeAliasDecl> alias : aliases.entrySet()) {
                 if (alias.getKey() == null || alias.getValue() == null
                         || !alias.getKey().equals(alias.getValue().name())) {
@@ -249,6 +262,20 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (ImportRules.isAllocJsonValueImport(imported)) {
+                compilerJsonValueImported = true;
+            }
+            if (ImportRules.isAllocJsonFactoryImport(imported)) {
+                compilerJsonFactoryImported = true;
+            }
+            if (ImportRules.isAllocJsonValueSelection(imported)) {
+                opaqueAllocJsonValueBindings.add(
+                        ImportRules.localName(imported, "JsonValue"));
+            }
+            if (ImportRules.isAllocJsonFactorySelection(imported)) {
+                opaqueAllocJsonFactoryBindings.add(
+                        ImportRules.localName(imported, "Json"));
+            }
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
@@ -3364,6 +3391,9 @@ public final class TypeChecker {
                 }
 
                 if (receiver instanceof ClassNamespace classNamespace) {
+                    Type jsonFactoryResult = compilerJsonFactoryCallType(
+                            call, member, classNamespace, env, generics, self);
+                    if (jsonFactoryResult != null) return jsonFactoryResult;
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
                     int staticArity = fixedCallArity(
@@ -3819,6 +3849,22 @@ public final class TypeChecker {
                         || name.name().equals("net")
                         || name.name().equals("http")
                         || name.name().equals("env"))) return Unknown.INSTANCE;
+            if (receiver instanceof ClassNamespace classNamespace
+                    && isCompilerJsonFactoryNamespace(classNamespace)) {
+                if (member.member().equals("null")) {
+                    return compilerJsonValueType();
+                }
+                if (member.member().equals("of")
+                        || member.member().equals("array")
+                        || member.member().equals("object")
+                        || member.member().equals("stringify")) {
+                    throw new IllegalArgumentException(
+                            "Json." + member.member()
+                                    + " is direct-call-only; invoke it instead of extracting a callable value");
+                }
+                throw new IllegalArgumentException(
+                        "unknown compiler-owned Json member '" + member.member() + "'");
+            }
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
@@ -4002,6 +4048,16 @@ public final class TypeChecker {
                     "indexing requires a Map, array/list, tuple, record/struct, or class instance field");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (opaqueAllocJsonValueBindings.contains(
+                    created.type().name())) {
+                throw new IllegalArgumentException(
+                        "JsonValue is an opaque alloc/json value; construct it through Json.* APIs");
+            }
+            if (opaqueAllocJsonFactoryBindings.contains(
+                    created.type().name())) {
+                throw new IllegalArgumentException(
+                        "Json is a compiler-owned construction namespace and cannot be instantiated");
+            }
             if (created.type().name().equals("Map") && findClass("Map") == null) {
                 if (!created.arguments().isEmpty()) {
                     throw new IllegalArgumentException(
@@ -8773,7 +8829,7 @@ public final class TypeChecker {
                 Ast.TypeRef rawValue = ref.arguments().get(1);
                 if (!isDirectTypedMapKeyRef(rawKey) || !isDirectTypedMapValueRef(rawValue)) {
                     throw new IllegalArgumentException(
-                            "closed Map<K,V> v1 requires directly spelled reifiable key/value types; "
+                            "closed Map<K,V> requires directly spelled reifiable key/value types; "
                                     + "type aliases and generic wrappers are not accepted yet");
                 }
                 Type key = resolve(rawKey, generics, self);
@@ -8782,9 +8838,15 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Map<K,V> key type must be String, Symbol, or String | Symbol");
                 }
+                boolean jsonValue = isCompilerJsonValueType(value);
+                if (jsonValue && key != Primitive.STRING) {
+                    throw new IllegalArgumentException(
+                            "Map<String, JsonValue> requires a String-only key domain");
+                }
                 if (!isSupportedTypedMapValue(value)) {
                     throw new IllegalArgumentException(
-                            "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+                            "closed Map<K,V> values must be int, string, bool, Symbol, "
+                                    + "or compiler-owned alloc/json JsonValue");
                 }
                 yield new Named("Map", List.of(key, value));
             }
@@ -8957,6 +9019,114 @@ public final class TypeChecker {
         return new Named(qualifiedInterfaceName(iface), iface.genericParameters().stream().map(Generic::new).map(Type.class::cast).toList());
     }
 
+    private boolean isCompilerJsonFactoryNamespace(ClassNamespace namespace) {
+        return compilerJsonFactoryImported
+                && compilerJsonValueImported
+                && namespace.className().equals("Json");
+    }
+
+    private Type compilerJsonValueType() {
+        if (!compilerJsonValueImported) {
+            throw new IllegalArgumentException(
+                    "Json construction requires exact import class JsonValue from \"alloc/json\"");
+        }
+        return new Named("JsonValue", List.of());
+    }
+
+    private Type compilerJsonFactoryCallType(
+            Ast.CallExpr call,
+            Ast.MemberExpr member,
+            ClassNamespace namespace,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (!isCompilerJsonFactoryNamespace(namespace)) return null;
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "compiler-owned Json factories do not accept type arguments");
+        }
+
+        Type jsonValue = compilerJsonValueType();
+        return switch (member.member()) {
+            case "of" -> {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Json.of expects exactly one scalar argument");
+                }
+                Type actual = deref(typeOf(
+                        call.arguments().getFirst(), env, generics, self));
+                boolean admitted = actual == Primitive.INT
+                        || actual == Primitive.BOOL
+                        || actual == Primitive.STRING
+                        || actual instanceof StringLiteral;
+                if (!admitted) {
+                    if (actual == Primitive.FLOAT || actual == Primitive.DECIMAL) {
+                        throw new IllegalArgumentException(
+                                "Json.of floating/decimal input is fail-closed until the source runtime carries exact decimal values");
+                    }
+                    throw new IllegalArgumentException(
+                            "Json.of accepts bool, int, String, or an exact numeric carrier");
+                }
+                yield jsonValue;
+            }
+            case "array" -> {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Json.array expects exactly one List<JsonValue> argument");
+                }
+                Type actual = deref(typeOf(
+                        call.arguments().getFirst(), env, generics, self));
+                if (!(actual instanceof ListType list)) {
+                    throw new IllegalArgumentException(
+                            "Json.array requires List<JsonValue>");
+                }
+                boolean emptyLiteral = call.arguments().getFirst() instanceof Ast.ListExpr literal
+                        && literal.elements().isEmpty();
+                if (!emptyLiteral) {
+                    requireAssignable(
+                            list.element(), jsonValue,
+                            "Json.array element");
+                }
+                yield jsonValue;
+            }
+            case "object" -> {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Json.object expects exactly one Map<String, JsonValue> argument");
+                }
+                Type actual = deref(typeOf(
+                        call.arguments().getFirst(), env, generics, self));
+                if (!isTypedMapType(actual)
+                        || typedMapKeyType(actual) != Primitive.STRING
+                        || !isCompilerJsonValueType(typedMapValueType(actual))) {
+                    throw new IllegalArgumentException(
+                            "Json.object requires Map<String, JsonValue>");
+                }
+                yield jsonValue;
+            }
+            case "stringify" -> {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Json.stringify expects exactly one JsonValue or Map<String, JsonValue> argument");
+                }
+                Type actual = deref(typeOf(
+                        call.arguments().getFirst(), env, generics, self));
+                boolean jsonObjectMap = isTypedMapType(actual)
+                        && typedMapKeyType(actual) == Primitive.STRING
+                        && isCompilerJsonValueType(typedMapValueType(actual));
+                if (!isCompilerJsonValueType(actual) && !jsonObjectMap) {
+                    throw new IllegalArgumentException(
+                            "Json.stringify requires JsonValue or Map<String, JsonValue>");
+                }
+                yield Primitive.STRING;
+            }
+            case "null" -> throw new IllegalArgumentException(
+                    "Json.null is a value, not a function");
+            default -> throw new IllegalArgumentException(
+                    "unknown compiler-owned Json factory '" + member.member() + "'");
+        };
+    }
+
     private String qualifiedClassName(Ast.ClassDecl klass) {
         String owner = classOwners.get(klass);
         return owner == null || owner.equals("__root__") ? klass.name() : owner + "." + klass.name();
@@ -9039,8 +9209,11 @@ public final class TypeChecker {
                 || isDirectTypedMapSymbolRef(a) && isDirectTypedMapStringRef(b);
     }
 
-    private static boolean isDirectTypedMapValueRef(Ast.TypeRef ref) {
+    private boolean isDirectTypedMapValueRef(Ast.TypeRef ref) {
         if (ref.inferArguments() || !ref.arguments().isEmpty()) return false;
+        if (compilerJsonValueImported && ref.name().equals("JsonValue")) {
+            return true;
+        }
         return Set.of(
                 "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
                 "int", "uint", "bigint", "string", "String", "bool", "Bool",
@@ -9071,8 +9244,17 @@ public final class TypeChecker {
         if (concrete == Primitive.INT
                 || concrete == Primitive.STRING
                 || concrete == Primitive.BOOL) return true;
+        if (isCompilerJsonValueType(concrete)) return true;
         return concrete instanceof Named named
                 && named.name().equals("$builtin$Symbol")
+                && named.arguments().isEmpty();
+    }
+
+    private boolean isCompilerJsonValueType(Type value) {
+        Type concrete = deref(value);
+        return compilerJsonValueImported
+                && concrete instanceof Named named
+                && named.name().equals("JsonValue")
                 && named.arguments().isEmpty();
     }
 
