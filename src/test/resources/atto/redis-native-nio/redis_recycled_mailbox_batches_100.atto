@@ -1,0 +1,219 @@
+// Unbounded lifetime, at most 100 concurrently owned NIO2 TCP sessions. One Atto actor is
+// the sole mutable KV owner; a single broker consumes its output stream.
+// Exactly one finite actor-mail batch per client can be in flight.
+// CI replaces max_total_sessions=0 with 150 for deterministic recycle proof.
+// Bounded request Channel capacity 32; reply Channel capacity 1/client.
+// It does not implement a shared-memory arena or transfer raw pointers.
+// Native Atto: one mailbox message executes one finite 1..16-command batch.
+// Every Redis key/value stays inside this actor's Map<Bytes,Bytes>.
+// Guest TCP sockets remain affine to the owning session Task.
+define actor TaggedBatchKvActor implements StreamOperator<Tuple[int, int, List<Tuple[int, Bytes, Bytes]>], Tuple[int, int, List<Tuple[string, Bytes]>]> as
+  let Map<Bytes,Bytes> values;
+
+  on_start(): void {
+    self.values = ~map<Bytes,Bytes>();
+    return;
+  }
+
+  receive(ActorMail<Tuple[int, int, List<Tuple[int, Bytes, Bytes]>]> mail): void {
+    const Tuple[int, int, List<Tuple[int, Bytes, Bytes]>] request = mail.value;
+    const int client_id = request[0];
+    const int batch_id = request[1];
+    const List<Tuple[int, Bytes, Bytes]> commands = request[2];
+    let mut List<Tuple[string, Bytes]> results = [];
+    if client_id == 0 && batch_id == 0 && commands.size == 0; do
+      self.send((0, 0, results));
+      self.end();
+      return;
+    fi
+    let int i = 0;
+    loop {
+      if i == commands.size then break; fi
+      const Tuple[int, Bytes, Bytes] command = commands.get(i);
+      const int kind = command[0];
+      const Bytes key = command[1];
+      const Bytes value = command[2];
+      if kind == 1; do
+        results.add(("PONG", value));
+      elseif kind == 3; do
+        self.values.set(key, value);
+        results.add(("OK", value));
+      elseif kind == 2; do
+        val found = self.values.get_optional(key);
+        if found.is_none(); do
+          results.add(("NIL", value));
+        else
+          results.add(("VALUE", found.unwrap()));
+        fi
+      elseif kind == 4; do
+        if self.values.delete(key); do
+          results.add(("ONE", value));
+        else
+          results.add(("ZERO", value));
+        fi
+      else
+        results.add(("ERR", value));
+      fi
+      i = i + 1;
+    }
+    // A complete command batch is one serialized actor turn.
+    self.send((client_id, batch_id, results));
+    return;
+  }
+end
+
+// Only this task owns socket. It forwards a finite OWNED List through the
+// bounded Channel, then checks the matching per-client batch reply sequence.
+// No mutable borrow, socket pointer or raw address crosses any mailbox.
+// An accepted NioConnection moves exactly once into its session task.
+// The socket never traverses the actor mailbox or any shareable arena.
+pub async fnc serve_recycled_batch_session(
+    NioConnection socket,
+    int slot_id,
+    int generation,
+    Channel<Tuple[int, int, int, List<Tuple[int, Bytes, Bytes]>, Channel<Tuple[int, int, List<Tuple[string, Bytes]>]>]> requests,
+    Channel<Tuple[int, int, List<Tuple[string, Bytes]>]> replies,
+    Channel<Tuple[int, int]> available_slots
+): void {
+  let int next_batch_id = 0;
+  try {
+    loop {
+      let mut List<Tuple[int, string, Bytes, Bytes]> frames = [];
+      try {
+        frames = await socket.read_resp2_binary_batch_async(16);
+      } catch (read_error) {
+        return;
+      }
+      if frames.size == 0 then return; fi
+      let mut List<Tuple[int, Bytes, Bytes]> commands = [];
+      let int terminate = 0;
+      let int i = 0;
+      loop {
+        if i == frames.size then break; fi
+        const Tuple[int, string, Bytes, Bytes] frame = frames.get(i);
+        const int kind = frame[0];
+        if kind == 0; do
+          terminate = 1;
+          break;
+        fi
+        if kind == 5; do
+          terminate = 2;
+          break;
+        fi
+        commands.add((kind, frame[2], frame[3]));
+        i = i + 1;
+      }
+      if commands.size > 0; do
+        const int expected = commands.size;
+        next_batch_id = next_batch_id + 1;
+        // The finite, owned payload crosses one typed task channel. The
+        // eventual KV actor receives ONE mail for this whole batch.
+        writech requests, (slot_id, generation, next_batch_id, commands, replies);
+        const Tuple[int, int, List<Tuple[string, Bytes]>] answer = await (nb readch replies);
+        if answer[0] != generation || answer[1] != next_batch_id || answer[2].size != expected; do
+          return;
+        fi
+        await socket.write_resp2_binary_batch_async(answer[2]);
+      fi
+      if terminate != 0; do
+        if terminate == 2; do
+          const Tuple[int, string, Bytes, Bytes] quit_frame = frames.get(i);
+          await socket.write_resp2_binary_async("OK", quit_frame[3]);
+        fi
+        return;
+      fi
+    }
+  } finally {
+    // Fail closed on the I/O teardown, but still retire this generation.
+    try {
+      await socket.close_async();
+    } catch (close_error) {
+      // A second close failure must not strand its slot lease.
+    }
+    let mut List<Tuple[int, Bytes, Bytes]> retirement = [];
+    writech requests, (slot_id, generation, -1, retirement, replies);
+    // Request channel is FIFO: this retirement enters ahead of reuse.
+    writech available_slots, (slot_id, generation + 1);
+  }
+}
+
+// Forever-replenishing Atto NIO2 Redis server, fixed live capacity.
+// max_total_sessions == 0: production endless accept.
+// CI patches it to 150 to verify all 100 slots recycle and join cleanly.
+pub async routine main(): void {
+  val worker = spawn TaggedBatchKvActor();
+  await worker.get_ready();
+  val listener = await network.listen_async("127.0.0.1", 16399);
+  const int max_active_clients = 100;
+  const int max_total_sessions = 0;
+  val Channel<Tuple[int, int]> available_slots =
+      Channel.new<Tuple[int, int]>(max_active_clients);
+  let int slot = 0;
+  loop {
+    if slot == max_active_clients then break; fi
+    writech available_slots, (slot, 0);
+    slot = slot + 1;
+  }
+  val Channel<Tuple[int, int, int, List<Tuple[int, Bytes, Bytes]>, Channel<Tuple[int, int, List<Tuple[string, Bytes]>]>]> requests =
+      Channel.new<Tuple[int, int, int, List<Tuple[int, Bytes, Bytes]>, Channel<Tuple[int, int, List<Tuple[string, Bytes]>]>]>(32);
+  task scope {
+    // This is the *only* consumer of worker.outputs.next(); no session
+    // task can steal an unrelated client's batch reply.
+    let Future<void> broker = task {
+      let int retired = 0;
+      loop {
+        if max_total_sessions != 0 && retired == max_total_sessions; do
+          let mut List<Tuple[int, Bytes, Bytes]> shutdown_batch = [];
+          worker.send((0, 0, shutdown_batch));
+          val final_output = (await worker.outputs.next()).value.unwrap();
+          const Tuple[int, int, List<Tuple[string, Bytes]>] final_reply = final_output.value;
+          if final_reply[0] != 0 || final_reply[1] != 0; do
+            return;
+          fi
+          await worker.get_done();
+          return;
+        fi
+        const Tuple[int, int, int, List<Tuple[int, Bytes, Bytes]>, Channel<Tuple[int, int, List<Tuple[string, Bytes]>]>] request =
+            await (nb readch requests);
+        const int slot_id = request[0];
+        const int generation = request[1];
+        const int batch_id = request[2];
+        if batch_id == -1; do
+          retired = retired + 1;
+        else
+          // Serial actor-mail admission still executes 16 logical commands
+          // in one actor turn; bounded request channel provides backpressure.
+          worker.send((slot_id + 1, batch_id, request[3]));
+          val output = (await worker.outputs.next()).value.unwrap();
+          const Tuple[int, int, List<Tuple[string, Bytes]>] result = output.value;
+          const Channel<Tuple[int, int, List<Tuple[string, Bytes]>]> response_port = request[4];
+          if result[0] != slot_id + 1 || result[1] != batch_id; do
+            let mut List<Tuple[string, Bytes]> error_replies = [];
+            writech response_port, (-1, -1, error_replies);
+          else
+            writech response_port, (generation, batch_id, result[2]);
+          fi
+        fi
+      }
+    };
+    let int accepted = 0;
+    loop {
+      if max_total_sessions != 0 && accepted == max_total_sessions then break; fi
+      // Reserve a live lease *before* accept; 100 is a hard upper bound.
+      const Tuple[int, int] lease = await (nb readch available_slots);
+      const int slot_id = lease[0];
+      const int generation = lease[1];
+      val socket = await listener.accept_async();
+      accepted = accepted + 1;
+      val Channel<Tuple[int, int, List<Tuple[string, Bytes]>]> replies =
+          Channel.new<Tuple[int, int, List<Tuple[string, Bytes]>]>(1);
+      let Future<void> session = task {
+        await serve_recycled_batch_session(
+          socket, slot_id, generation, requests, replies, available_slots);
+        return;
+      };
+    }
+  }
+  await listener.close_async();
+  return;
+}
