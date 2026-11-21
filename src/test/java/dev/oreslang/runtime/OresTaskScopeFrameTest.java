@@ -370,4 +370,207 @@ final class OresTaskScopeFrameTest {
     }
 
 
+
+    @Test
+    void cancelledScopeReleasesRejectedFramePinOutsideScopeMonitor() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            java.lang.reflect.Field field = OresTaskScope.class.getDeclaredField("gate");
+            field.setAccessible(true);
+            Object monitor = field.get(scope);
+            AtomicInteger releases = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicBoolean lockHeld =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            assertTrue(scope.cancel());
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scope.startCompilerFrame(scheduler,
+                            resume -> new OresScheduler.Done<>(42), () -> {
+                                releases.incrementAndGet();
+                                lockHeld.set(Thread.holdsLock(monitor));
+                            }));
+            assertEquals(1, releases.get(), "rejected generation pin must be retired once");
+            assertFalse(lockHeld.get(), "release callback must not execute under TaskScope monitor");
+            assertDoesNotThrow(scope::close);
+            assertEquals(1, releases.get(), "scope close must not release a rejected pin again");
+        }
+    }
+
+    @Test
+    void schedulerRejectionReleasesFramePinOutsideScopeMonitor() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            java.lang.reflect.Field field = OresTaskScope.class.getDeclaredField("gate");
+            field.setAccessible(true);
+            Object monitor = field.get(scope);
+            OresScheduler scheduler = new OresScheduler(1);
+            scheduler.close();
+            AtomicInteger releases = new AtomicInteger();
+            java.util.concurrent.atomic.AtomicBoolean lockHeld =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> scope.startCompilerFrame(scheduler,
+                            resume -> new OresScheduler.Done<>(42), () -> {
+                                releases.incrementAndGet();
+                                lockHeld.set(Thread.holdsLock(monitor));
+                            }));
+            assertEquals(1, releases.get());
+            assertFalse(lockHeld.get(), "scheduler rejection cleanup must not hold scope monitor");
+            assertDoesNotThrow(scope::close);
+            assertEquals(1, releases.get());
+        }
+    }
+
+    @Test
+    void admittedCompilerFrameReleasesPinExactlyOnceAfterPhysicalExit() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch exitAllowed = new CountDownLatch(1);
+            CountDownLatch closed = new CountDownLatch(1);
+            AtomicInteger releases = new AtomicInteger();
+            AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+            OresTask<Integer> child = scope.startCompilerFrame(scheduler,
+                    resume -> {
+                        entered.countDown();
+                        assertTrue(exitAllowed.await(3, TimeUnit.SECONDS));
+                        return new OresScheduler.Done<>(81);
+                    }, releases::incrementAndGet);
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            Thread closer = Thread.ofVirtual().start(() -> {
+                try {
+                    scope.close();
+                } catch (Throwable failure) {
+                    closeFailure.set(failure);
+                } finally {
+                    closed.countDown();
+                }
+            });
+            try {
+                assertFalse(closed.await(75, TimeUnit.MILLISECONDS),
+                        "physical Task execution must prevent close completion");
+                assertEquals(0, releases.get(),
+                        "cancellation/result settlement cannot retire executing code");
+            } finally {
+                exitAllowed.countDown();
+            }
+            assertTrue(closed.await(3, TimeUnit.SECONDS));
+            closer.join();
+            assertNull(closeFailure.get());
+            assertEquals(1, releases.get());
+            assertTrue(child.isQuiescent());
+        }
+    }
+
+    @Test
+    void concurrentCompilerFrameAdmissionAndCloseNeverLoseCodePin() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(2)) {
+            for (int trial = 0; trial < 64; trial++) {
+                OresTaskScope scope = new OresTaskScope(runtime);
+                CountDownLatch begin = new CountDownLatch(1);
+                AtomicInteger releases = new AtomicInteger();
+                AtomicReference<Throwable> admissionFailure = new AtomicReference<>();
+                AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+                Thread starter = Thread.ofVirtual().start(() -> {
+                    try {
+                        assertTrue(begin.await(3, TimeUnit.SECONDS));
+                        scope.startCompilerFrame(scheduler,
+                                resume -> new OresScheduler.Done<>(21),
+                                releases::incrementAndGet);
+                    } catch (java.util.concurrent.RejectedExecutionException expected) {
+                        // close won admission; its unconsumed pin was released.
+                    } catch (Throwable unexpected) {
+                        admissionFailure.set(unexpected);
+                    }
+                });
+                Thread closer = Thread.ofVirtual().start(() -> {
+                    try {
+                        assertTrue(begin.await(3, TimeUnit.SECONDS));
+                        scope.close();
+                    } catch (Throwable unexpected) {
+                        closeFailure.set(unexpected);
+                    }
+                });
+                begin.countDown();
+                starter.join(4_000);
+                closer.join(4_000);
+                assertFalse(starter.isAlive(), "admission stuck on trial " + trial);
+                assertFalse(closer.isAlive(), "close stuck on trial " + trial);
+                assertNull(admissionFailure.get(), "admission failed on trial " + trial);
+                assertNull(closeFailure.get(), "close failed on trial " + trial);
+                assertEquals(1, releases.get(),
+                        "exactly one code lease retirement required on trial " + trial);
+            }
+        }
+    }
+
+    @Test
+    void sealedScopeRejectsCompilerFrameWithoutUnregisteredOwnerRemoval() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            assertTrue(scope.cancel());
+            var slotsField = OresTaskScope.class.getDeclaredField("tasks");
+            slotsField.setAccessible(true);
+            Object original = slotsField.get(scope);
+            AtomicInteger attemptedRemove = new AtomicInteger();
+            java.util.Set<Object> hostile = new java.util.HashSet<>() {
+                @Override public boolean remove(Object item) {
+                    attemptedRemove.incrementAndGet();
+                    throw new IllegalStateException("never-owned Task removed");
+                }
+            };
+            slotsField.set(scope, hostile);
+            try {
+                AtomicInteger pinReleases = new AtomicInteger();
+                var rejection = assertThrows(
+                        java.util.concurrent.RejectedExecutionException.class,
+                        () -> scope.startCompilerFrame(scheduler,
+                                resume -> new OresScheduler.Done<>(2),
+                                pinReleases::incrementAndGet));
+                assertEquals(0, rejection.getSuppressed().length);
+                assertEquals(0, attemptedRemove.get(),
+                        "rejected-before-insertion slot is not scope-owned");
+                assertEquals(1, pinReleases.get(),
+                        "unconsumed compiler code pin releases once");
+                assertTrue(scope.physicallyQuiescent());
+            } finally {
+                slotsField.set(scope, original);
+            }
+        }
+    }
+
+    @Test
+    void postInsertCompilerSlotFailureStillRetiresPinAndOwner() throws Exception {
+        try (AsyncRuntime runtime = new AsyncRuntime();
+             OresScheduler scheduler = new OresScheduler(1);
+             OresTaskScope scope = new OresTaskScope(runtime)) {
+            var slotsField = OresTaskScope.class.getDeclaredField("tasks");
+            slotsField.setAccessible(true);
+            Object original = slotsField.get(scope);
+            java.util.Set<Object> hostile = new java.util.HashSet<>() {
+                @Override public boolean add(Object item) {
+                    super.add(item);
+                    throw new IllegalStateException("after compiler owner insert");
+                }
+            };
+            slotsField.set(scope, hostile);
+            try {
+                AtomicInteger pinReleases = new AtomicInteger();
+                var failure = assertThrows(IllegalStateException.class,
+                        () -> scope.startCompilerFrame(scheduler,
+                                resume -> new OresScheduler.Done<>(3),
+                                pinReleases::incrementAndGet));
+                assertTrue(failure.getMessage().contains("after compiler owner insert"));
+                assertEquals(1, pinReleases.get());
+                assertTrue(scope.physicallyQuiescent(),
+                        "partial owner must be removed before rejecting admission");
+                assertEquals(0, hostile.size(), "no Task owner leaked after rollback");
+            } finally {
+                slotsField.set(scope, original);
+            }
+        }
+    }
 }

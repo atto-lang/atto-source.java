@@ -41,8 +41,8 @@ public final class OresTaskScope implements AutoCloseable {
      */
     private static final class OwnershipSlot {
         private OresTask<?> task;
-        // Protected by the owning scope gate. No additional allocation per
-        // Task is needed to distinguish an uninserted abort from retirement.
+        // Protected by the owning scope gate. A legitimate rejection before
+        // slot insertion must not report a fake cleanup failure.
         private boolean registered;
     }
 
@@ -91,17 +91,14 @@ public final class OresTaskScope implements AutoCloseable {
         AsyncRuntime.TaskAdmission<T> admission = runtime.prepareTaskAdmission();
         OwnershipSlot slot = new OwnershipSlot();
         slot.task = admission.owner;
-        // An already sealed scope may reject before ever inserting the slot.
-        // An adversarial owner set can instead insert then throw. Differentiate
-        // these cases so legitimate rejection doesn't invent a failed release.
+        // Only an inserted slot is eligible for later retirement.
+        // For adversarial insert-then-throw collections, contains() detects
+        // the partial registration even if registered was never set.
         // Hook registration happens before the owner becomes executable.
         // Generic Future listeners intentionally isolate thrown callbacks,
         // so slot retirement must run as part of TaskExit itself.
         admission.installRetirement(() -> {
             synchronized (gate) {
-                // If ensureAdmitting() rejected before insertion, there is
-                // nothing to retire from this scope. An insert-then-throw
-                // collection remains detectable through contains().
                 if (!slot.registered && !tasks.contains(slot)) return;
                 if (!tasks.remove(slot))
                     throw new IllegalStateException(
@@ -192,6 +189,7 @@ public final class OresTaskScope implements AutoCloseable {
                     ensureAdmitting();
                     if (!tasks.add(pendingSlot))
                         throw new IllegalStateException("duplicate Task ownership slot");
+                    pendingSlot.registered = true;
                 }
             }
         } catch (RuntimeException | Error preparationFailure) {
@@ -201,9 +199,15 @@ public final class OresTaskScope implements AutoCloseable {
             if (pendingSlot != null) {
                 try {
                     synchronized (gate) {
-                        if (!tasks.remove(pendingSlot))
-                            throw new IllegalStateException(
-                                    "provisional Task owner rollback did not remove reserved slot");
+                        // A sealed scope can reject before insertion. Do NOT
+                        // call a hostile removal hook for a never-owned slot.
+                        // An insert-then-throw collection is still detected
+                        // by contains() when registered is false.
+                        if (pendingSlot.registered || tasks.contains(pendingSlot)) {
+                            if (!tasks.remove(pendingSlot))
+                                throw new IllegalStateException(
+                                        "provisional Task owner rollback did not remove reserved slot");
+                        }
                     }
                 } catch (RuntimeException | Error failure) {
                     bookkeepingFailure = failure;
@@ -343,12 +347,41 @@ public final class OresTaskScope implements AutoCloseable {
         }
         OresCancellationToken.Registration registration =
                 token.onCancellationRequested(this::cancel);
-        synchronized (treeAdmissionGate) {
-            synchronized (gate) {
-                if (cancelled) registration.close();
-                else externalCancellation.add(registration);
+        final boolean detach;
+        try {
+            synchronized (treeAdmissionGate) {
+                synchronized (gate) {
+                    detach = cancelled;
+                    if (!detach) externalCancellation.add(registration);
+                }
             }
+        } catch (RuntimeException | Error admissionFailure) {
+            // The upstream registration was already installed. If owner-set
+            // growth / insertion fails, do not leak a live callback retaining
+            // this scope or let it unexpectedly cancel future descendants.
+            // Cleanup executes OUTSIDE both locks, including for injected
+            // insert-then-throw collections.
+            try {
+                synchronized (treeAdmissionGate) {
+                    synchronized (gate) {
+                        externalCancellation.remove(registration);
+                    }
+                }
+            } catch (RuntimeException | Error bookkeepingFailure) {
+                if (bookkeepingFailure != admissionFailure)
+                    admissionFailure.addSuppressed(bookkeepingFailure);
+            }
+            try {
+                registration.close();
+            } catch (RuntimeException | Error unsubscribeFailure) {
+                if (unsubscribeFailure != admissionFailure)
+                    admissionFailure.addSuppressed(unsubscribeFailure);
+            }
+            throw admissionFailure;
         }
+        // Host unregister may block or invoke callbacks: never execute it
+        // under the tree admission monitor or this scope's ownership lock.
+        if (detach) registration.close();
     }
 
 
@@ -477,20 +510,23 @@ public final class OresTaskScope implements AutoCloseable {
             }
         }
 
-        // No arbitrary callbacks execute under the admission gate.
+        // Revoke every Task producer before executing any potentially
+        // blocking or throwing external token-unregister callback. The
+        // tree was already atomically sealed and all Future subscriber
+        // notifications remain deferred until the caller drains them.
         Throwable firstFailure = null;
-        for (OresCancellationToken.Registration link : allLinks) {
+        for (OresTask<?> task : allTasks) {
             try {
-                link.close();
+                Runnable notification = task.cancelDeferredNotification();
+                if (notification != null) notifications.add(notification);
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
             }
         }
-        for (OresTask<?> task : allTasks) {
+        for (OresCancellationToken.Registration link : allLinks) {
             try {
-                Runnable notification = task.cancelDeferredNotification();
-                if (notification != null) notifications.add(notification);
+                link.close();
             } catch (RuntimeException | Error failure) {
                 if (firstFailure == null) firstFailure = failure;
                 else if (firstFailure != failure) firstFailure.addSuppressed(failure);
