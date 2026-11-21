@@ -101,8 +101,15 @@ public final class SupervisorLifecycleTrace {
                 throw new IllegalStateException("supervisor trace before-state mismatch at "
                         + entry.sequence());
             }
+            java.util.Set<Long> requestedChildren = null;
             if (entry.event() instanceof SupervisorLifecycleFsm.ShutdownRequested request) {
-                for (Long childId : request.children()) {
+                requestedChildren = request.children();
+            } else if (entry.event()
+                    instanceof SupervisorLifecycleFsm.ShutdownWithChildEpochs request) {
+                requestedChildren = request.children().keySet();
+            }
+            if (requestedChildren != null) {
+                for (Long childId : requestedChildren) {
                     if (childId.longValue() == entry.supervisorId()) {
                         throw new IllegalStateException("supervisor cannot be its own child");
                     }
@@ -130,21 +137,50 @@ public final class SupervisorLifecycleTrace {
             // retirement before that child's OWN lifecycle reached STOPPED.
             // The local reducer alone cannot check this ordering because it
             // only knows the parent's expected child identities.
+            Long finishedId = null;
+            Long finishedEpoch = null;
+            Boolean finishedFailed = null;
             if (entry.event() instanceof SupervisorLifecycleFsm.ChildFinished child) {
-                var childState = current.get(child.childId());
+                finishedId = child.childId();
+                finishedFailed = child.failed();
+            } else if (entry.event()
+                    instanceof SupervisorLifecycleFsm.ChildFinishedWithEpoch child) {
+                finishedId = child.childId();
+                finishedEpoch = child.childEpoch();
+                finishedFailed = child.failed();
+            }
+            if (finishedId != null) {
+                var childState = current.get(finishedId);
                 if (childState == null || !childState.logicallyStopped()
-                        || childState.failed() != child.failed()) {
+                        || childState.failed() != finishedFailed
+                        || (finishedEpoch != null
+                            && (childState.epoch() != finishedEpoch
+                                || !java.util.Objects.equals(
+                                    old.expectedChildEpochs().get(finishedId), finishedEpoch)))) {
                     throw new IllegalStateException(
-                            "child retirement preceded recorded child settlement at "
+                            "unverified child generation or logical retirement at "
                                     + entry.sequence());
                 }
             }
+            Long reclaimedId = null;
+            Long reclaimedEpoch = null;
             if (entry.event() instanceof SupervisorLifecycleFsm.ChildReclaimed child) {
-                var childState = current.get(child.childId());
+                reclaimedId = child.childId();
+            } else if (entry.event()
+                    instanceof SupervisorLifecycleFsm.ChildReclaimedWithEpoch child) {
+                reclaimedId = child.childId();
+                reclaimedEpoch = child.childEpoch();
+            }
+            if (reclaimedId != null) {
+                var childState = current.get(reclaimedId);
                 if (childState == null
-                        || childState.phase() != SupervisorLifecycleFsm.Phase.RECLAIMED) {
+                        || childState.phase() != SupervisorLifecycleFsm.Phase.RECLAIMED
+                        || (reclaimedEpoch != null
+                            && (childState.epoch() != reclaimedEpoch
+                                || !java.util.Objects.equals(
+                                    old.expectedChildEpochs().get(reclaimedId), reclaimedEpoch)))) {
                     throw new IllegalStateException(
-                            "child physical receipt without recorded reclamation at "
+                            "child physical receipt without matching generation and reclamation at "
                                     + entry.sequence());
                 }
             }

@@ -77,3 +77,7 @@ jobs:
             tlc2.TLC -workers 2 -config SupervisorTree.cfg SupervisorTree.tla
           java -XX:+UseParallelGC -Xmx1024m -cp /tmp/tla2tools.jar \
             tlc2.TLC -workers 2 -config SupervisorTreeDepth3.cfg SupervisorTree.tla
+          java -XX:+UseParallelGC -Xmx1024m -cp /tmp/tla2tools.jar \
+            tlc2.TLC -workers 2 -config SupervisorEpochReceipts.cfg SupervisorEpochReceipts.tla
+          java -XX:+UseParallelGC -Xmx1024m -cp /tmp/tla2tools.jar \
+            tlc2.TLC -workers 2 -config SupervisorEpochReceipts3.cfg SupervisorEpochReceipts.tla
