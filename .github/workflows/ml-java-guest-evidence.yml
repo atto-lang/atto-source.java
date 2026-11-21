@@ -1,0 +1,85 @@
+name: Java ML exact-head guest gate (review-only)
+on:
+  push:
+    branches: [ci/ml-java-exact-guest-evidence-20261018]
+  pull_request:
+    branches: [test/ml-actor-state-scalar-guest-20261018]
+permissions:
+  contents: read
+
+jobs:
+  no-checkout-capacity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Source-free runner admission canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c 'import hashlib,sys; assert sys.version_info.major==3; assert hashlib.sha256(b"runner-admitted").digest_size==32'
+          echo SOURCE_ORG_RUNNER_ALLOCATED_NO_SOURCE_CHECKOUT
+
+  actual-graal-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Exact-head private source checkout inside its original org
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: GraalVM 25 runtime and Maven
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: Run source-free receipt negative tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s src/test/python -p 'test_ml_guest_receipt.py' -v
+      - name: Compile real Oreslang compiler and run ML actor JUnit guest tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          java --version
+          mvn --version
+          mvn -B -ntp -Dtest=MlActorStateScalarGuestTest test
+      - name: Package compiler module and perform independent Java CLI smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DskipTests package
+          mvn -B -ntp -DskipTests dependency:build-classpath -Dmdep.outputFile=target/guest-runtime.classpath
+          jar_file=target/oreslang-source-0.1.0-SNAPSHOT.jar
+          test -s "$jar_file"
+          test -s target/guest-runtime.classpath
+          module_path="$jar_file:$(cat target/guest-runtime.classpath)"
+          java -p "$module_path" -m dev.oreslang/dev.oreslang.launcher.OresMain --build-info > "$RUNNER_TEMP/ml-build-info.json"
+          java -p "$module_path" -m dev.oreslang/dev.oreslang.launcher.OresMain --check tests/fixtures/ml-actor-state-scalar.ores
+          java -p "$module_path" -m dev.oreslang/dev.oreslang.launcher.OresMain tests/fixtures/ml-actor-state-scalar.ores > "$RUNNER_TEMP/ml-cli.out"
+          printf '%s\n' -6 20 -7 30 2 -4 -2 5 5 2 -1 10 > "$RUNNER_TEMP/ml-golden.out"
+          cmp "$RUNNER_TEMP/ml-golden.out" "$RUNNER_TEMP/ml-cli.out"
+      - name: Produce narrow exact-head guest evidence receipt
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ml_guest_receipt.py \
+            --expected-sha "$EXPECTED_SHA" \
+            --junit-xml target/surefire-reports/TEST-dev.oreslang.MlActorStateScalarGuestTest.xml \
+            --cli-stdout "$RUNNER_TEMP/ml-cli.out" \
+            --build-info "$RUNNER_TEMP/ml-build-info.json" \
+            --jar target/oreslang-source-0.1.0-SNAPSHOT.jar \
+            --output build/ml-java-guest-receipt.json
+          python3 -m json.tool build/ml-java-guest-receipt.json
+      - name: Upload metadata receipt only (no compiler or source)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: java-ml-guest-review-only
+          path: build/ml-java-guest-receipt.json
+          if-no-files-found: error
+          retention-days: 7
