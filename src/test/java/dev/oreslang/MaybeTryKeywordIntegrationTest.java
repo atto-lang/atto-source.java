@@ -127,6 +127,28 @@ final class MaybeTryKeywordIntegrationTest {
                 """));
     }
 
+    @Test
+    void failureArmDuplicatesShadowingAndVariantArityFailClosed() {
+        String[] invalidArms = {
+                "Err(reason) -> { return Err(reason); }; Err(other) -> { return Err(other); };",
+                "_ -> { return Err(\"fallback\"); }; Err(reason) -> { return Err(reason); };",
+                "Err() -> { return Err(\"no payload\"); };",
+                "None(value) -> { return Err(\"invalid None payload\"); };",
+                "Err(reason) -> { return Err(reason); }; None -> { return Err(\"none\"); }; None -> { return Err(\"again\"); };"
+        };
+        for (String arms : invalidArms) {
+            String guest = "fnc f(Result<int, String> input): Result<int, String> {\n"
+                    + "  return maybe\n"
+                    + "    Ok(n) ?= input;\n"
+                    + "    return Ok(n)\n"
+                    + "  else\n"
+                    + "    " + arms + "\n"
+                    + "  end;\n"
+                    + "}\n";
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(guest), arms);
+        }
+    }
+
     private static String run(String source) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source guest = Source.newBuilder(OresLanguage.ID, source, "maybe-try-integration.atto")
