@@ -30,9 +30,10 @@ final class ActorLexicalTaskCaptureFenceTest {
         constructor.setAccessible(true);
         Object env = constructor.newInstance(new Object[] { null });
         Method define = envType.getDeclaredMethod(
-                "define", String.class, Object.class, Ast.BindingKind.class);
+                "define", String.class, Object.class, Ast.BindingKind.class,
+                Ast.ClassDecl.class);
         define.setAccessible(true);
-        define.invoke(env, "counter", 17L, Ast.BindingKind.LET);
+        define.invoke(env, "counter", 17L, Ast.BindingKind.LET, null);
 
         Field slots = envType.getDeclaredField("slots");
         slots.setAccessible(true);

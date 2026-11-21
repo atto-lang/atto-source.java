@@ -24,6 +24,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.ExecutionContext;
 import dev.oreslang.runtime.TaskScope;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
@@ -10546,6 +10547,9 @@ public final class OresEvalRootNode extends RootNode {
                     && OresScheduler.bindCompilerScalarLocal(scopeEpoch, name, value)) {
                 slot.actorScalarBound = true;
                 slot.scalarScopeEpoch = scopeEpoch;
+                slot.scalarOwnerExecution = Objects.requireNonNull(
+                        OresScheduler.currentExecutionContext(),
+                        "actor scalar binding has no scheduler execution");
             }
             slots.put(name, slot);
         }
@@ -10556,10 +10560,14 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
             if (slot.actorScalarBound) {
+                slot.requireScalarOwner();
                 OresScheduler.writeCompilerScalarLocal(slot.scalarScopeEpoch, name, value);
             } else if (OresScheduler.bindCompilerScalarLocal(scopeEpoch, name, value)) {
                 slot.actorScalarBound = true;
                 slot.scalarScopeEpoch = scopeEpoch;
+                slot.scalarOwnerExecution = Objects.requireNonNull(
+                        OresScheduler.currentExecutionContext(),
+                        "actor scalar binding has no scheduler execution");
             }
             slot.value = value;
         }
@@ -10578,9 +10586,11 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "binding '" + name + "' was moved into an eager Task");
                 }
-                return slot.actorScalarBound
-                        ? OresScheduler.readCompilerScalarLocal(slot.scalarScopeEpoch, name)
-                        : slot.value;
+                if (slot.actorScalarBound) {
+                    slot.requireScalarOwner();
+                    return OresScheduler.readCompilerScalarLocal(slot.scalarScopeEpoch, name);
+                }
+                return slot.value;
             }
             return parent == null ? MISSING : parent.lookup(name);
         }
@@ -10589,10 +10599,14 @@ public final class OresEvalRootNode extends RootNode {
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
                 if (slot.actorScalarBound) {
+                    slot.requireScalarOwner();
                     OresScheduler.writeCompilerScalarLocal(slot.scalarScopeEpoch, name, value);
                 } else if (OresScheduler.bindCompilerScalarLocal(scopeEpoch, name, value)) {
                     slot.actorScalarBound = true;
                     slot.scalarScopeEpoch = scopeEpoch;
+                    slot.scalarOwnerExecution = Objects.requireNonNull(
+                            OresScheduler.currentExecutionContext(),
+                            "actor scalar binding has no scheduler execution");
                 }
                 slot.value = value;
                 return;
@@ -10601,6 +10615,13 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unknown binding " + name);
         }
         private Env snapshot() {
+            // A snapshot may be retained by a lambda or async completion.
+            // Validate every managed scalar before copying any Slot aliases:
+            // another SourceTask in this same actor must not clone the
+            // compatibility JVM shadow and later use its own actor frame.
+            for (Slot captured : slots.values()) {
+                captured.requireScalarOwner();
+            }
             Env cp = new Env(
                     parent == null ? null : parent.snapshot(),
                     descendantsNonLexical,
@@ -10957,6 +10978,20 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.ClassDecl staticClassView;
         private boolean actorScalarBound;
         private long scalarScopeEpoch;
+        private ExecutionContext scalarOwnerExecution;
+
+        private void requireScalarOwner() {
+            if (actorScalarBound
+                    && (scalarOwnerExecution == null
+                        || OresScheduler.currentExecutionContext() != scalarOwnerExecution)) {
+                // Rejected before reading/writing the CURRENT task frame,
+                // so a foreign task cannot poison a healthy sibling sharing
+                // this actor incarnation.
+                throw new SecurityException(
+                        "actor lexical scalar belongs to a different SourceTask");
+            }
+        }
+
         private Slot(
                 Object value,
                 Ast.BindingKind kind,
