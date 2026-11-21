@@ -156,4 +156,155 @@ final class OresFuturesTest {
 
         assertEquals(7, race.join());
     }
+    @Test
+    void raceDetachesLosingFutureWaiterAfterWinnerSettles() throws Exception {
+        OresFuture<Integer> slow = new OresFuture<>();
+        OresFuture<Integer> fast = new OresFuture<>();
+
+        OresFuture<Integer> race = OresFutures.race(List.of(slow, fast));
+        assertTrue(fast.completeFromRuntime(7));
+        assertEquals(7, race.join());
+
+        assertTrue(runtimeWaiters(slow).isEmpty(),
+                "race loser must not retain aggregate callback after winner settles");
+    }
+
+    @Test
+    void allDetachesPendingWaitersAfterEarlyFailure() throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        OresFuture<Integer> failed = new OresFuture<>();
+
+        OresFuture<List<Integer>> all = OresFutures.all(List.of(pending, failed));
+        assertTrue(failed.failFromRuntime(new IllegalStateException("boom")));
+        assertThrows(CompletionException.class, all::join);
+
+        assertTrue(runtimeWaiters(pending).isEmpty(),
+                "early aggregate failure must detach waiters from pending siblings");
+        assertFalse(pending.isCancelled(),
+                "ordinary child failure must not change sibling cancellation semantics");
+    }
+
+
+    @Test
+    void cancellingHostCompletionStageBridgeDetachesRuntimeWaiter() throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        java.util.concurrent.CompletableFuture<Integer> bridge =
+                source.asCompletionStage().toCompletableFuture();
+
+        assertFalse(runtimeWaiters(source).isEmpty());
+        assertTrue(bridge.cancel(true));
+        assertTrue(runtimeWaiters(source).isEmpty(),
+                "cancelled host bridge must not remain rooted by the Ores Future");
+        assertFalse(source.isCancelled(),
+                "host observation cancellation must not cancel the runtime-owned producer");
+    }
+
+
+    @Test
+    void allPreservesTrueChildCancellationWithoutCancellingSibling() {
+        OresFuture<Integer> cancelled = new OresFuture<>();
+        OresFuture<Integer> sibling = new OresFuture<>();
+
+        OresFuture<List<Integer>> all = OresFutures.all(List.of(cancelled, sibling));
+        assertTrue(cancelled.cancel(true));
+
+        assertTrue(all.isCancelled());
+        assertThrows(java.util.concurrent.CancellationException.class, all::join);
+        assertFalse(sibling.isCancelled(),
+                "child cancellation should terminate the aggregate without cancelling unrelated siblings");
+    }
+
+    @Test
+    void racePreservesTrueChildCancellation() {
+        OresFuture<Integer> cancelled = new OresFuture<>();
+        OresFuture<Integer> pending = new OresFuture<>();
+
+        OresFuture<Integer> race = OresFutures.race(List.of(cancelled, pending));
+        assertTrue(cancelled.cancel(true));
+
+        assertTrue(race.isCancelled());
+        assertThrows(java.util.concurrent.CancellationException.class, race::join);
+        assertFalse(pending.isCancelled());
+    }
+
+    @Test
+    void cancellationExceptionFailureIsStillFailureInAggregate() {
+        OresFuture<Integer> domainFailure =
+                OresFuture.failed(new java.util.concurrent.CancellationException("domain failure"));
+
+        OresFuture<List<Integer>> all = OresFutures.all(List.of(domainFailure));
+
+        assertFalse(all.isCancelled(),
+                "cancellation identity comes from Future state, not exception class");
+        CompletionException failure = assertThrows(CompletionException.class, all::join);
+        assertInstanceOf(java.util.concurrent.CancellationException.class, failure.getCause());
+    }
+
+
+    @Test
+    void hostFutureCancellationRemainsCancellationAfterInteropAdaptation() {
+        CompletableFuture<Integer> host = new CompletableFuture<>();
+        OresFuture<Integer> ores = OresFuture.from(host);
+
+        assertTrue(host.cancel(true));
+
+        assertTrue(ores.isCancelled());
+        assertThrows(java.util.concurrent.CancellationException.class, ores::join);
+    }
+
+    @Test
+    void hostCompletableFutureCancellationStateIsAuthoritative() {
+        CompletableFuture<Integer> host = new CompletableFuture<>();
+        OresFuture<Integer> ores = OresFuture.from(host);
+
+        host.completeExceptionally(
+                new java.util.concurrent.CancellationException("host cancellation"));
+
+        assertTrue(host.isCancelled(),
+                "CompletableFuture itself classifies CancellationException terminal state as cancelled");
+        assertTrue(ores.isCancelled(),
+                "interop must preserve the host Future's structured cancellation state");
+        assertThrows(java.util.concurrent.CancellationException.class, ores::join);
+    }
+
+    @Test
+    void allSettledPreservesCancellationIdentitySeparatelyFromFailureClass() {
+        OresFuture<Integer> cancelled = new OresFuture<>();
+        OresFuture<Integer> domainFailure =
+                OresFuture.failed(new java.util.concurrent.CancellationException("domain failure"));
+
+        OresFuture<List<OresFutures.Settled<Integer>>> settled =
+                OresFutures.allSettled(List.of(cancelled, domainFailure));
+
+        assertTrue(cancelled.cancel(true));
+        List<OresFutures.Settled<Integer>> values = settled.join();
+
+        assertTrue(values.get(0).cancelled());
+        assertFalse(values.get(0).ok());
+        assertInstanceOf(java.util.concurrent.CancellationException.class, values.get(0).error());
+
+        assertFalse(values.get(1).cancelled());
+        assertFalse(values.get(1).ok());
+        assertInstanceOf(java.util.concurrent.CancellationException.class, values.get(1).error());
+    }
+
+
+    @Test
+    void allAllowsNullSuccessPayloadsWithoutHanging() {
+        OresFuture<Integer> nullValue = OresFuture.completed(null);
+        OresFuture<Integer> one = OresFuture.completed(1);
+
+        OresFuture<List<Integer>> all = OresFutures.all(List.of(nullValue, one));
+
+        assertEquals(java.util.Arrays.asList(null, 1), all.join());
+    }
+
+    private static java.util.concurrent.ConcurrentLinkedQueue<?> runtimeWaiters(
+            OresFuture<?> future) throws Exception {
+        var field = OresFuture.class.getDeclaredField("waiters");
+        field.setAccessible(true);
+        return (java.util.concurrent.ConcurrentLinkedQueue<?>) field.get(future);
+    }
+
+
 }

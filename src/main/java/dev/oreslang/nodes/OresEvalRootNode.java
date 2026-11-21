@@ -12,6 +12,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresAwaitable;
 import dev.oreslang.runtime.ActorRuntime;
 
 import java.nio.file.Path;
@@ -101,12 +102,14 @@ public final class OresEvalRootNode extends RootNode {
         private final String codeUnitId;
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+        private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private final Set<String> ambiguousInterfaces = new LinkedHashSet<>();
         private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
         private boolean initialized;
 
@@ -134,6 +137,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                    else if (decl instanceof Ast.InterfaceDecl iface) index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
                     else if (decl instanceof Ast.TypeAliasDecl alias) index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
                 }
             }
@@ -158,6 +162,11 @@ public final class OresEvalRootNode extends RootNode {
             return classes.get(name);
         }
 
+        private Ast.InterfaceDecl findInterface(String name) {
+            if (ambiguousInterfaces.contains(name)) throw new IllegalArgumentException("ambiguous interface " + name + "; qualify it with its module");
+            return interfaces.get(name);
+        }
+
         private Ast.TypeAliasDecl findTypeAlias(String name) {
             if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias " + name + "; qualify it with its module");
             return typeAliases.get(name);
@@ -180,6 +189,14 @@ public final class OresEvalRootNode extends RootNode {
             Ast.FunctionDecl main = functions.get(Parser.ROOT_MODULE + ".main");
             if (main == null) main = findFunction("main");
             if (main == null) return null;
+
+            if (main.async() && ActorRuntime.inRootExecution()) {
+                throw new IllegalStateException(
+                        "async main requires structured launcher/CPS lifecycle lowering; "
+                                + "the current linked launcher must not close its Graal context "
+                                + "while main's Future is still running");
+            }
+
             return callFunction(main, List.of(arguments));
         }
 
@@ -189,6 +206,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException(
                         "actor callable '" + fn.name()
                                 + "' cannot be invoked directly; use spawn " + fn.name() + "(...)");
+            }
+            if (fn.async()) {
+                return context.submitAsyncTask(
+                        () -> callFunctionBody(fn, normalized));
             }
             return callFunctionBody(fn, normalized);
         }
@@ -261,6 +282,15 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
+            if (method.async()) {
+                List<?> captured = List.copyOf(args);
+                return context.submitAsyncTask(
+                        () -> callMethodBody(receiver, method, captured));
+            }
+            return callMethodBody(receiver, method, args);
+        }
+
+        private Object callMethodBody(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
@@ -270,7 +300,12 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(method.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name()); }
+            } catch (ReturnSignal signal) {
+                return shapeReturnedValue(
+                        method.returnType(),
+                        signal.value,
+                        "method " + method.name());
+            }
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
@@ -544,47 +579,28 @@ public final class OresEvalRootNode extends RootNode {
                 return spawnFunction(spawned.call(), env);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
-                Object value = eval(awaited.expression(), env);
-                if (value instanceof ActorRuntime.ActorSpawn<?, ?> spawn) {
-                    value = spawn.ready();
-                }
+                OresFuture<?> future = awaitFuture(eval(awaited.expression(), env));
 
-                if (value instanceof OresFuture<?> future) {
-                    // Source actor await must never resume inline, including for
-                    // an already-settled Future. The stackless source-frame
-                    // lowerer replaces this recursive-evaluator path with
-                    // ActorContext.suspendOn(...).
-                    if (ActorRuntime.inActorExecution()) {
-                        throw new IllegalStateException(
-                                "source await inside an actor requires continuation lowering; "
-                                        + "the recursive evaluator must not block or inline-resume an actor carrier");
-                    }
-                    if (ActorRuntime.currentRootIsAdversarial() && !future.isDone()) {
-                        throw new IllegalStateException(
-                                "await would block an adversarial serialized root context; "
-                                        + "continuation lowering must suspend/resume before awaiting readiness/result");
-                    }
-                    return future.join();
+                // Source actor/root await must never resume inline, including
+                // for an already-settled Future. The stackless source-frame
+                // lowerer replaces this recursive-evaluator path with the
+                // scheduler suspension ABI.
+                if (ActorRuntime.inActorExecution()) {
+                    throw new IllegalStateException(
+                            "source await inside an actor requires continuation lowering; "
+                                    + "the recursive evaluator must not block or inline-resume an actor carrier");
                 }
-
-                // Compatibility boundary for host/legacy async primitives such
-                // as the current mutex implementation. Normalize their
-                // completion policy before exposing them as an Ores Future.
-                if (value instanceof CompletionStage<?> stage) {
-                    OresFuture<?> future = OresFuture.from(stage);
-                    if (ActorRuntime.inActorExecution()) {
-                        throw new IllegalStateException(
-                                "source await inside an actor requires continuation lowering; "
-                                        + "host stages are normalized to OresFuture before suspension");
-                    }
-                    if (ActorRuntime.currentRootIsAdversarial() && !future.isDone()) {
-                        throw new IllegalStateException(
-                                "await would block an adversarial serialized root context; "
-                                        + "continuation lowering must suspend/resume before awaiting a host stage");
-                    }
-                    return future.join();
+                if (ActorRuntime.inRootExecution()) {
+                    throw new IllegalStateException(
+                            "source await inside a root/main task requires continuation lowering; "
+                                    + "the recursive evaluator must not join or park a ROOT_TASK carrier");
                 }
-                return value;
+                if (ActorRuntime.currentRootIsAdversarial() && !future.isDone()) {
+                    throw new IllegalStateException(
+                            "await would block an adversarial serialized root context; "
+                                    + "continuation lowering must suspend/resume before awaiting readiness/result");
+                }
+                return future.join();
             }
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
@@ -738,7 +754,32 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
-                return new BoundMethod(object.owner, object, name);
+
+                List<Ast.MethodDecl> methods =
+                        object.owner.findMethodsByName(
+                                object.klass,
+                                name,
+                                new LinkedHashSet<>());
+                if (!methods.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "instance method '" + object.klass.name() + "." + name
+                                    + "' is not a first-class callback value; "
+                                    + "invoke it directly or wrap the call in an explicit fnc/lambda");
+                }
+
+                List<Ast.MethodDecl> staticFunctions =
+                        object.owner.findStaticFunctionsByName(
+                                object.klass,
+                                name,
+                                new LinkedHashSet<>());
+                if (!staticFunctions.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "static function '" + object.klass.name() + "." + name
+                                    + "' must be referenced through the class namespace, not an instance");
+                }
+
+                throw new IllegalArgumentException(
+                        "unknown member " + object.klass.name() + "." + name);
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
@@ -871,6 +912,15 @@ public final class OresEvalRootNode extends RootNode {
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
             if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
+            if (fn.async()) {
+                List<?> captured = List.copyOf(args);
+                return context.submitAsyncTask(
+                        () -> callStaticFunctionBody(klass, fn, captured));
+            }
+            return callStaticFunctionBody(klass, fn, args);
+        }
+
+        private Object callStaticFunctionBody(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
@@ -879,28 +929,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name()); }
-        }
-
-        /**
-         * Go-style method value: one shared method definition per class plus a
-         * tiny (receiver, method-name) pair only when a method is extracted as
-         * a first-class callback. Direct receiver.method(...) calls allocate no
-         * bound-method object.
-         */
-        private static final class BoundMethod implements Invokable {
-            private final Evaluator owner;
-            private final OresObject receiver;
-            private final String methodName;
-
-            private BoundMethod(Evaluator owner, OresObject receiver, String methodName) {
-                this.owner = owner;
-                this.receiver = receiver;
-                this.methodName = methodName;
-            }
-
-            @Override public Object call(List<Object> arguments) {
-                return owner.invokeMethod(receiver, methodName, arguments);
+            } catch (ReturnSignal signal) {
+                return shapeReturnedValue(
+                        fn.returnType(),
+                        signal.value,
+                        "static function " + klass.name() + "." + fn.name());
             }
         }
 
@@ -1058,6 +1091,29 @@ public final class OresEvalRootNode extends RootNode {
             return null;
         }
 
+        private List<Ast.MethodDecl> findMethodsByName(
+                Ast.ClassDecl klass,
+                String name,
+                Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) return List.of();
+            LinkedHashMap<Integer, Ast.MethodDecl> result = new LinkedHashMap<>();
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.isStatic() && method.name().equals(name)) {
+                    result.put(method.parameters().size(), method);
+                }
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent == null) continue;
+                for (Ast.MethodDecl method : findMethodsByName(parent, name, seen)) {
+                    result.putIfAbsent(method.parameters().size(), method);
+                }
+            }
+            seen.remove(klass);
+            return List.copyOf(result.values());
+        }
+
         private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             for (Ast.MethodDecl fn : klass.methods()) {
@@ -1094,6 +1150,96 @@ public final class OresEvalRootNode extends RootNode {
             }
             seen.remove(klass);
             return List.copyOf(result.values());
+        }
+
+        private OresFuture<?> awaitFuture(Object value) {
+            if (value instanceof OresFuture<?> future) return future;
+
+            if (value instanceof OresAwaitable<?> awaitable) {
+                OresFuture<?> future = awaitable.getAwait();
+                if (future == null) {
+                    throw new IllegalStateException(
+                            "Awaitable.getAwait() returned null");
+                }
+                return future;
+            }
+
+            if (value instanceof OresObject object
+                    && classImplementsAwaitable(
+                            object.klass,
+                            new LinkedHashSet<>())) {
+                Ast.MethodDecl method = findMethod(
+                        object.klass,
+                        "getAwait",
+                        0,
+                        new LinkedHashSet<>());
+                if (method == null) {
+                    throw new IllegalStateException(
+                            "Awaitable class '" + object.klass.name()
+                                    + "' has no getAwait() method at runtime");
+                }
+                Object projected = callMethod(object, method, List.of());
+                if (projected instanceof OresFuture<?> future) return future;
+                if (projected instanceof CompletionStage<?> stage) {
+                    return OresFuture.from(stage);
+                }
+                throw new IllegalStateException(
+                        "Awaitable.getAwait() must return Future<T>, got "
+                                + (projected == null
+                                        ? "null"
+                                        : projected.getClass().getName()));
+            }
+
+            // Compatibility boundary for host/legacy async primitives such as
+            // the current mutex implementation. Source-level types should
+            // prefer Future<T> / Awaitable<T>.
+            if (value instanceof CompletionStage<?> stage) {
+                return OresFuture.from(stage);
+            }
+
+            throw new IllegalArgumentException(
+                    "await requires Future<T> or Awaitable<T>, got "
+                            + (value == null ? "null" : value.getClass().getName()));
+        }
+
+        private boolean classImplementsAwaitable(
+                Ast.ClassDecl klass,
+                Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) return false;
+            for (Ast.TypeRef interfaceRef : klass.interfaces()) {
+                if (interfaceExtendsAwaitable(
+                        interfaceRef.name(),
+                        new LinkedHashSet<>())) {
+                    return true;
+                }
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object")
+                        || parentRef.name().equals("List")) {
+                    continue;
+                }
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent != null
+                        && classImplementsAwaitable(parent, seen)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean interfaceExtendsAwaitable(
+                String interfaceName,
+                Set<String> seen) {
+            if (interfaceName.equals("Awaitable")) return true;
+            if (!seen.add(interfaceName)) return false;
+            Ast.InterfaceDecl iface = findInterface(interfaceName);
+            if (iface == null) return false;
+            for (Ast.TypeRef parent : iface.parents()) {
+                if (interfaceExtendsAwaitable(parent.name(), seen)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private List<?> iterableValues(Object value) {

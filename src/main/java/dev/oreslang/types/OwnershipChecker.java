@@ -35,8 +35,10 @@ public final class OwnershipChecker {
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousInterfaces = new HashSet<>();
     private int mutexCriticalSectionDepth;
 
     private OwnershipChecker(Ast.Program program) {
@@ -54,6 +56,7 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.InterfaceDecl iface) index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
             }
         }
     }
@@ -77,6 +80,9 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
+        if (fn.async()) {
+            validateAsyncParameters(fn.parameters(), "async " + fn.kind().name().toLowerCase() + " " + fn.name());
+        }
         Scope scope = new Scope(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
@@ -87,6 +93,12 @@ public final class OwnershipChecker {
 
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.MethodDecl method : klass.methods()) {
+            if (method.async()) {
+                validateAsyncParameters(
+                        method.parameters(),
+                        "async " + (method.isStatic() ? "static function " : "method ")
+                                + klass.name() + "." + method.name());
+            }
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -375,7 +387,7 @@ public final class OwnershipChecker {
                     }
                 }
             }
-            checkExpr(member.receiver(), scope, false);
+            ValueInfo receiverInfo = checkExpr(member.receiver(), scope, false);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
             if (concreteReceiver != null && concreteReceiver.name().equals("ActorSpawn")) {
                 return switch (member.member()) {
@@ -444,12 +456,14 @@ public final class OwnershipChecker {
                 throw error("cannot await while holding a MutexGuard; release the guard before suspension");
             }
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
-            if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
-                Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
-                return new ValueInfo(result, kindOfType(result), null);
-            }
             if (awaitedValue.type.name().equals("ActorSpawn")) {
                 return new ValueInfo(Ast.TypeRef.simple("ActorRef"), ValueKind.MOVE_ONLY, null);
+            }
+            Ast.TypeRef payload = awaitablePayloadType(
+                    awaitedValue.type,
+                    new LinkedHashSet<>());
+            if (payload != null) {
+                return new ValueInfo(payload, kindOfType(payload), null);
             }
             return awaitedValue;
         }
@@ -527,7 +541,8 @@ public final class OwnershipChecker {
                         fn.genericParameters(), fn.genericParameters(),
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef result = asyncResultType(fn.async(), signature.result());
+                return new ValueInfo(result, kindOfType(result), null);
             }
         }
 
@@ -543,7 +558,8 @@ public final class OwnershipChecker {
                         signature.parameters(),
                         scope,
                         "function " + namespace.name() + "." + qualified.member());
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef result = asyncResultType(fn.async(), signature.result());
+                return new ValueInfo(result, kindOfType(result), null);
             }
         }
 
@@ -569,7 +585,9 @@ public final class OwnershipChecker {
                             signature.parameters(),
                             scope,
                             "static function " + staticClass.name() + "." + staticFunction.name());
-                    return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                    Ast.TypeRef result =
+                            asyncResultType(staticFunction.async(), signature.result());
+                    return new ValueInfo(result, kindOfType(result), null);
                 }
             }
 
@@ -630,18 +648,29 @@ public final class OwnershipChecker {
                     }
                 }
             }
-            checkExpr(member.receiver(), scope, false);
+            ValueInfo receiverInfo = checkExpr(member.receiver(), scope, false);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
-            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            boolean protectedReceiver = false;
+            if (member.receiver() instanceof Ast.NameExpr receiverName) {
+                VarState receiverState = scope.lookup(receiverName.name());
+                protectedReceiver =
+                        receiverState != null && isScopedMutexReceiver(receiverState);
+            }
+            if (isMutexGuardType(concreteReceiver)) {
+                concreteReceiver = concreteReceiver.arguments().getFirst();
+            }
+            Ast.ClassDecl klass = concreteReceiver == null
+                    ? null
+                    : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
-                    : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                    : findMethodTarget(
+                            klass,
+                            concreteReceiver,
+                            member.member(),
+                            call.arguments().size(),
+                            new LinkedHashSet<>());
             if (target != null) {
                 Ast.MethodDecl method = target.method();
-                boolean protectedReceiver = false;
-                if (member.receiver() instanceof Ast.NameExpr receiverName) {
-                    VarState receiverState = scope.lookup(receiverName.name());
-                    protectedReceiver = receiverState != null && isScopedMutexReceiver(receiverState);
-                }
                 Map<String, Ast.TypeRef> ownerBindings = genericBindings(
                         target.owner().genericParameters(), target.ownerType().arguments());
                 List<String> allGenerics = new ArrayList<>(target.owner().genericParameters());
@@ -650,12 +679,24 @@ public final class OwnershipChecker {
                         allGenerics, method.genericParameters(),
                         method.parameters(), method.returnType(), call, scope, ownerBindings);
                 checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                if (method.async() && protectedReceiver) {
+                    throw error("async method '" + target.owner().name() + "." + method.name()
+                            + "' cannot escape protected mutex state across a scheduler boundary");
+                }
+                if (method.async()) {
+                    consumeAsyncReceiver(
+                            member.receiver(),
+                            receiverInfo,
+                            scope,
+                            target.owner().name() + "." + method.name());
+                }
                 if (protectedReceiver && !isCopyType(signature.result())
                         && !signature.result().name().equals("void")) {
                     throw error("method '" + target.owner().name() + "." + method.name()
                             + "' cannot return move-only state through a mutex guard/critical-section borrow");
                 }
-                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                Ast.TypeRef result = asyncResultType(method.async(), signature.result());
+                return new ValueInfo(result, kindOfType(result), null);
             }
         }
 
@@ -720,6 +761,54 @@ public final class OwnershipChecker {
             return new ValueInfo(receiverType, kindOfType(receiverType), null);
         }
         return new ValueInfo(okType, kindOfType(okType), null);
+    }
+
+    private void validateAsyncParameters(
+            List<Ast.Param> params,
+            String callable) {
+        for (Ast.Param param : params) {
+            if (param.type().isBorrow() || param.structural()) {
+                throw error(callable + " parameter '" + param.name()
+                        + "' cannot be borrowed/structural-by-reference; async tasks may outlive the caller stack");
+            }
+        }
+    }
+
+    private Ast.TypeRef asyncResultType(boolean async, Ast.TypeRef result) {
+        return async
+                ? new Ast.TypeRef("Future", List.of(result), false)
+                : result;
+    }
+
+    private void consumeAsyncReceiver(
+            Ast.Expr receiver,
+            ValueInfo receiverInfo,
+            Scope scope,
+            String callable) {
+        if (receiverInfo.kind == ValueKind.IMM_BORROW
+                || receiverInfo.kind == ValueKind.MUT_BORROW
+                || (receiverInfo.type != null && receiverInfo.type.isBorrow())) {
+            throw error("async method '" + callable
+                    + "' cannot escape a borrowed receiver across a scheduler boundary");
+        }
+
+        if (receiver instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            if (state == null) return;
+            requireUsable(state, name.name(), false);
+            if (state.kind == ValueKind.MOVE_ONLY) {
+                move(state, name.name());
+            }
+            return;
+        }
+
+        if (receiver instanceof Ast.MemberExpr || receiver instanceof Ast.IndexExpr) {
+            throw error("async method '" + callable
+                    + "' cannot implicitly move a projected receiver; bind/take it into an owned local first");
+        }
+
+        // New/call/await temporaries already have no reusable owner in this
+        // scope. Their producing expressions were ownership-checked above.
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
@@ -1262,6 +1351,59 @@ public final class OwnershipChecker {
     private Ast.FunctionDecl findFunction(String name) {
         if (ambiguousFunctions.contains(name)) return null;
         return functions.get(name);
+    }
+
+    private Ast.InterfaceDecl findInterface(String name) {
+        if (ambiguousInterfaces.contains(name)) return null;
+        return interfaces.get(name);
+    }
+
+    private Ast.TypeRef awaitablePayloadType(
+            Ast.TypeRef type,
+            Set<String> seen) {
+        if (type == null) return null;
+        if (type.isBorrow()) type = type.borrowedTarget();
+
+        if (type.name().equals("Future") && type.arguments().size() == 1) {
+            return type.arguments().getFirst();
+        }
+        if (type.name().equals("Awaitable") && type.arguments().size() == 1) {
+            return type.arguments().getFirst();
+        }
+
+        String key = type.name() + type.arguments();
+        if (!seen.add(key)) return null;
+
+        Ast.ClassDecl klass = findClass(type.name());
+        if (klass != null) {
+            Map<String, Ast.TypeRef> bindings =
+                    genericBindings(klass.genericParameters(), type.arguments());
+            for (Ast.TypeRef interfaceRef : klass.interfaces()) {
+                Ast.TypeRef concrete = substituteType(interfaceRef, bindings);
+                Ast.TypeRef payload = awaitablePayloadType(concrete, seen);
+                if (payload != null) return payload;
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent == null) continue;
+                Ast.TypeRef concrete = substituteType(parentRef, bindings);
+                Ast.TypeRef payload = awaitablePayloadType(concrete, seen);
+                if (payload != null) return payload;
+            }
+            return null;
+        }
+
+        Ast.InterfaceDecl iface = findInterface(type.name());
+        if (iface != null) {
+            Map<String, Ast.TypeRef> bindings =
+                    genericBindings(iface.genericParameters(), type.arguments());
+            for (Ast.TypeRef parentRef : iface.parents()) {
+                Ast.TypeRef concrete = substituteType(parentRef, bindings);
+                Ast.TypeRef payload = awaitablePayloadType(concrete, seen);
+                if (payload != null) return payload;
+            }
+        }
+        return null;
     }
 
     private Ast.ClassDecl findClass(String name) {
