@@ -46,12 +46,16 @@ public final class TypeChecker {
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private TaggedMessageContracts.Registry taggedMessages;
+    private Map<String, String> eligibleEnumOverloadSymbols = Map.of();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.TypeAliasDecl, String> typeAliasOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
+    /** Compiler-selected direct declarations, keyed by AST object identity. */
+    private final IdentityHashMap<Ast.CallExpr, Ast.FunctionDecl> boundDirectCalls =
+            new IdentityHashMap<>();
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -98,10 +102,25 @@ public final class TypeChecker {
         TaggedMessageContracts.Registry tagged = TaggedMessageContracts.forTypes(program);
         TypeChecker checker = new TypeChecker();
         checker.taggedMessages = tagged;
+        checker.eligibleEnumOverloadSymbols = NominalEnumOverloads.eligibleEnumSymbols(program);
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings);
+        // Publication happens only after full static admission succeeds.
+        // An AST identity key prevents equal-looking calls in separate
+        // modules from sharing another call site's resolved declaration.
+        Ast.Program bound = new Ast.Program(
+                program.namespace(), program.imports(), program.modules(),
+                checker.boundDirectCalls);
+        return new TypeCheckResult(bound, checker.warnings);
+    }
+
+    private void bindDirectCall(Ast.CallExpr call, Ast.FunctionDecl target) {
+        Ast.FunctionDecl previous = boundDirectCalls.putIfAbsent(call, target);
+        if (previous != null && previous != target) {
+            throw new IllegalArgumentException(
+                    "one call expression resolved to different function declarations");
+        }
     }
 
     private void validateImports(Ast.Program program) {
@@ -189,8 +208,8 @@ public final class TypeChecker {
         if (previous != null) {
             throw new IllegalArgumentException(
                     "callable '" + key + "' already has arity " + fn.parameters().size()
-                            + "; module/top-level overload identity is name + arity only; "
-                            + "parameter types and return types do not participate");
+                            + "; " + sameArityOverloadDiagnostic(fn.name(),
+                                    previous.parameters(), fn.parameters()));
         }
     }
 
@@ -609,16 +628,45 @@ public final class TypeChecker {
     }
 
     private void validateLocalClassOverloads(Ast.ClassDecl klass) {
-        Set<Ast.MethodArity> instanceMethodOverloads = new HashSet<>();
-        Set<Ast.MethodArity> staticFunctionOverloads = new HashSet<>();
+        Map<Ast.MethodArity, Ast.MethodDecl> instances = new HashMap<>();
+        Map<Ast.MethodArity, Ast.MethodDecl> statics = new HashMap<>();
         for (Ast.MethodDecl method : klass.methods()) {
-            Set<Ast.MethodArity> overloads = method.isStatic() ? staticFunctionOverloads : instanceMethodOverloads;
-            if (!overloads.add(method.overloadIdentity())) {
+            Map<Ast.MethodArity, Ast.MethodDecl> overloads = method.isStatic() ? statics : instances;
+            Ast.MethodDecl previous = overloads.putIfAbsent(method.overloadIdentity(), method);
+            if (previous != null) {
                 String label = method.isStatic() ? "static function" : "method";
-                throw new IllegalArgumentException(label + " '" + klass.name() + "." + method.name() + "' already has arity " + method.arity()
-                        + "; overload identity is name + arity only; parameter types and return types do not participate");
+                throw new IllegalArgumentException(label + " '" + klass.name() + "." + method.name()
+                        + "' already has arity " + method.arity() + "; "
+                        + sameArityOverloadDiagnostic(method.name(),
+                                previous.parameters(), method.parameters()));
             }
         }
+    }
+
+    private String sameArityOverloadDiagnostic(
+            String name, List<Ast.Param> previous, List<Ast.Param> next) {
+        // The policy can recognize a future legal pair, but Java and LLVM
+        // executors still use arity-only dispatch keys. Never admit an enum
+        // pair before compiler-prebound call targets and vtable slots exist.
+        try {
+            var first = NominalEnumOverloads.signature(
+                    name, previous, eligibleEnumOverloadSymbols);
+            var second = NominalEnumOverloads.signature(
+                    name, next, eligibleEnumOverloadSymbols);
+            if (NominalEnumOverloads.compare(first, second)
+                    == NominalEnumOverloads.PairStatus.DISTINCT_ENUMS) {
+                return "distinct primitive-payload nominal enum types are eligible in the new "
+                        + "overload design, but same-arity enum dispatch is not enabled until "
+                        + "compile-time call binding and runtime/LLVM slot parity are implemented; "
+                        + "no structural or runtime overload lookup is permitted";
+            }
+        } catch (IllegalArgumentException notEligible) {
+            // Existing same-arity rejection remains authoritative.
+        }
+        return "overload identity is name + arity only; parameter types and return types do not participate "
+                + "in current executable dispatch; future same-arity overloading is restricted to eligible "
+                + "distinct nominal enums, never primitive differences, structural fields, "
+                + "generic parameters or runtime type inspection";
     }
 
     private record MethodOrigin(Ast.ClassDecl owner, Named ownerType) { }
@@ -2102,6 +2150,7 @@ public final class TypeChecker {
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    bindDirectCall(call, target);
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
@@ -2140,6 +2189,7 @@ public final class TypeChecker {
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
+                    bindDirectCall(call, target);
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
