@@ -115,6 +115,7 @@ expected = {
     },
     "dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest": {
         "publishingActorCannotCommitWhileMembershipRevocationFenceIsHeld",
+        "revocationWinsAgainstInFlightPublishAtMembershipFence",
         "publisherScopedSubscriptionsShareTheCrossTopicActorQuota",
         "retiredPublisherRevokesItsScopedSubscriptionWithoutRevokingObserver",
         "zeroRecipientPublicationsAllocateSequenceButDoNotReplay",
