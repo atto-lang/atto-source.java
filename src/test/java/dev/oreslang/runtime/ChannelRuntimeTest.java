@@ -350,6 +350,46 @@ final class ChannelRuntimeTest {
     }
 
     @Test
+    void canonicalChannelSelectableIsDescriptorOnlyAndLosingArmPreservesData() {
+        var left = new ChannelRuntime.Channel<Integer>(1);
+        var right = new ChannelRuntime.Channel<Integer>(1);
+        assertTrue(left.tryWrite(11));
+        assertTrue(right.tryWrite(22));
+
+        var leftNext = ChannelRuntime.selectableRead(left);
+        var rightNext = ChannelRuntime.selectableRead(right);
+
+        // Merely describing next-event candidates cannot consume either source.
+        assertEquals(1, left.size());
+        assertEquals(1, right.size());
+        assertEquals(ChannelRuntime.SelectOperation.READ,
+                ChannelRuntime.SelectSet.fromSelectables(java.util.List.of(leftNext, rightNext))
+                        .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY)
+                        .join()
+                        .operation());
+
+        assertTrue(left.tryRead().isEmpty(), "winning selectable must consume exactly one item");
+        assertEquals(22, right.tryRead().orElseThrow(),
+                "losing selectable must preserve its item");
+    }
+
+    @Test
+    void selectableRejectsProducerAndControlOperations() {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        ChannelRuntime.Selectable<Integer> writeSource =
+                () -> ChannelRuntime.write(channel, 7);
+        ChannelRuntime.Selectable<Integer> defaultSource =
+                ChannelRuntime::defaultCase;
+
+        assertThrows(IllegalArgumentException.class, () ->
+                ChannelRuntime.SelectSet.fromSelectables(java.util.List.of(writeSource)));
+        assertThrows(IllegalArgumentException.class, () ->
+                ChannelRuntime.SelectSet.fromSelectables(java.util.List.of(defaultSource)));
+        assertTrue(channel.tryRead().isEmpty(),
+                "rejected Selectable descriptor may not perform producer I/O");
+    }
+
+    @Test
     void closeFailsPendingWaitersAndSelects() {
         ChannelRuntime.Channel<String> channel = new ChannelRuntime.Channel<>(0);
         OresFuture<String> read = channel.readAsync();

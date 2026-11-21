@@ -305,6 +305,27 @@ public final class ChannelRuntime {
         SelectCase selectNext();
     }
 
+    /**
+     * Canonical lossless one-event adapter for a Channel<T>. Construction and
+     * selectNext() are descriptor-only: neither registers a waiter nor consumes
+     * a value. Atomic SelectSet arbitration owns the eventual read commit.
+     */
+    public record ChannelReadSelectable<T>(Channel<T> channel)
+            implements Selectable<T> {
+        public ChannelReadSelectable {
+            Objects.requireNonNull(channel, "channel");
+        }
+
+        @Override
+        public SelectCase selectNext() {
+            return read(channel);
+        }
+    }
+
+    public static <T> ChannelReadSelectable<T> selectableRead(Channel<T> channel) {
+        return new ChannelReadSelectable<>(channel);
+    }
+
     public sealed interface SelectCase permits ReadCase, WriteCase, FutureCase, DefaultCase { }
 
     public record ReadCase<T>(Channel<T> channel) implements SelectCase {
@@ -422,9 +443,11 @@ public final class ChannelRuntime {
                 SelectCase operation = Objects.requireNonNull(
                         Objects.requireNonNull(selectable, "selectable source").selectNext(),
                         "selectNext must produce one operation");
-                if (operation instanceof DefaultCase) {
+                if (!(operation instanceof ReadCase<?>)
+                        && !(operation instanceof FutureCase<?>)) {
                     throw new IllegalArgumentException(
-                            "Selectable<T> cannot reduce to a default arm");
+                            "Selectable<T> next-event sources may reduce only to "
+                                    + "read or Future cases; write/default are control or producer operations");
                 }
                 cases.add(operation);
             }
