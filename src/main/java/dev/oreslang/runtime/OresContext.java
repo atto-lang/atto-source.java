@@ -6,6 +6,7 @@ import com.oracle.truffle.api.TruffleLanguage.ContextReference;
 import com.oracle.truffle.api.nodes.Node;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.types.TaskLoanAdmission;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -163,6 +164,23 @@ public final class OresContext implements AutoCloseable {
      * separate scalar-copy immediate-await lowering is admitted.
      */
     public <T> OresTask<T> startCompilerTaskFrame(OresScheduler.Task<T> frame) {
+        return startCompilerTaskFrameInternal(frame, null);
+    }
+
+    /**
+     * Compiler-only borrowed/scoped Task path. The concrete admission object
+     * can only be minted by the compiler loan verifier; arbitrary lifecycle
+     * callbacks cannot stand in for memory authority.
+     */
+    public <T> OresTask<T> startCompilerTaskFrame(
+            OresScheduler.Task<T> frame, TaskLoanAdmission loanAdmission) {
+        return startCompilerTaskFrameInternal(
+                frame, java.util.Objects.requireNonNull(
+                        loanAdmission, "loanAdmission"));
+    }
+
+    private <T> OresTask<T> startCompilerTaskFrameInternal(
+            OresScheduler.Task<T> frame, TaskLoanAdmission loanAdmission) {
         java.util.Objects.requireNonNull(frame, "frame");
         if (ActorRuntime.inActorExecution()) {
             throw new IllegalStateException(
@@ -183,7 +201,11 @@ public final class OresContext implements AutoCloseable {
         }
         // Structured lifetime is owned by the context, not by a caller-held
         // Future that might settle before the physical Task frame exits.
-        return compilerTaskScope.startCompilerFrame(vm.rootScheduler(), frame);
+        if (loanAdmission == null) {
+            return compilerTaskScope.startCompilerFrame(vm.rootScheduler(), frame);
+        }
+        return compilerTaskScope.startCompilerFrame(
+                vm.rootScheduler(), frame, () -> { }, loanAdmission);
     }
     /**
      * Narrow guest lowering target for `await task { return scalar; }`.

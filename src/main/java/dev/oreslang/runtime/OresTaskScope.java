@@ -30,6 +30,43 @@ public final class OresTaskScope implements AutoCloseable {
     private final AsyncRuntime runtime;
     private final OresTaskScope parent;
     private final Object gate = new Object();
+
+    /**
+     * Runtime-minted identity witness for one exact compiler TaskScope epoch.
+     * Its constructor is private: compiler code may compare/retain the witness
+     * it receives from this runtime, but cannot manufacture an attestation.
+     */
+    public static final class CompilerScopeEpoch {
+        private CompilerScopeEpoch() { }
+    }
+
+    private final CompilerScopeEpoch compilerScopeEpoch =
+            new CompilerScopeEpoch();
+
+    /**
+     * Compiler-issued memory-loan lifecycle. Implementations are expected to
+     * be opaque capabilities: ordinary guest/host code cannot manufacture the
+     * verifier ticket they retire or the runtime epoch that attests lifecycle.
+     */
+    public interface CompilerLoanRetirement {
+        void bindScope(CompilerScopeEpoch scopeEpoch);
+        void bindChild(CompilerScopeEpoch scopeEpoch, OresTask<?> child);
+        void retireNeverStarted(CompilerScopeEpoch scopeEpoch);
+        void retireAfterPhysicalQuiescence(
+                CompilerScopeEpoch scopeEpoch, OresTask<?> child);
+    }
+
+    private static final CompilerLoanRetirement NO_COMPILER_LOAN =
+            new CompilerLoanRetirement() {
+                @Override public void bindScope(CompilerScopeEpoch scopeEpoch) { }
+                @Override public void bindChild(
+                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
+                @Override public void retireNeverStarted(
+                        CompilerScopeEpoch scopeEpoch) { }
+                @Override public void retireAfterPhysicalQuiescence(
+                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
+            };
+
     // All members of one owned tree share a strict admission/plan monitor.
     // Lock order: treeAdmissionGate -> individual scope.gate.
     private final Object treeAdmissionGate;
@@ -152,7 +189,8 @@ public final class OresTaskScope implements AutoCloseable {
      */
     <T> OresTask<T> startCompilerFrame(
             OresScheduler scheduler, OresScheduler.Task<T> frame) {
-        return startCompilerFrame(scheduler, frame, () -> { });
+        return startCompilerFrame(
+                scheduler, frame, () -> { }, NO_COMPILER_LOAN);
     }
 
     /**
@@ -170,9 +208,24 @@ public final class OresTaskScope implements AutoCloseable {
     <T> OresTask<T> startCompilerFrame(
             OresScheduler scheduler, OresScheduler.Task<T> frame,
             Runnable onPhysicalExit) {
+        return startCompilerFrame(
+                scheduler, frame, onPhysicalExit, NO_COMPILER_LOAN);
+    }
+
+    /**
+     * Compiler-only scoped-memory admission. The loan capability binds first
+     * to this exact scope epoch and then to the exact provisional child owner.
+     * Scheduler rejection and physical exit are different retirement edges.
+     */
+    <T> OresTask<T> startCompilerFrame(
+            OresScheduler scheduler, OresScheduler.Task<T> frame,
+            Runnable onPhysicalExit,
+            CompilerLoanRetirement loanRetirement) {
         Objects.requireNonNull(scheduler, "scheduler");
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
+        Objects.requireNonNull(loanRetirement, "loanRetirement");
+        loanRetirement.bindScope(compilerScopeEpoch);
 
         // Reserve the owner before executable dispatch, but never run a
         // scheduler, guest turn or code-image release under admission locks.
@@ -182,6 +235,7 @@ public final class OresTaskScope implements AutoCloseable {
         try {
             pendingFence = new OresFuture<>();
             pendingOwner = OresTask.provisional(pendingFence);
+            loanRetirement.bindChild(compilerScopeEpoch, pendingOwner);
             pendingSlot = new OwnershipSlot();
             pendingSlot.task = pendingOwner;
             synchronized (treeAdmissionGate) {
@@ -215,6 +269,9 @@ public final class OresTaskScope implements AutoCloseable {
                         preparationFailure.addSuppressed(failure);
                 }
             }
+            // External/code cleanup must succeed before returning borrowed
+            // memory authority. If cleanup fails, keep the compiler loan live
+            // even though no executable child was admitted.
             Throwable releaseFailure = null;
             try {
                 onPhysicalExit.run();
@@ -222,6 +279,15 @@ public final class OresTaskScope implements AutoCloseable {
                 releaseFailure = failure;
                 if (failure != preparationFailure)
                     preparationFailure.addSuppressed(failure);
+            }
+            if (releaseFailure == null) {
+                try {
+                    loanRetirement.retireNeverStarted(compilerScopeEpoch);
+                } catch (RuntimeException | Error failure) {
+                    releaseFailure = failure;
+                    if (failure != preparationFailure)
+                        preparationFailure.addSuppressed(failure);
+                }
             }
             if (pendingFence != null) {
                 Throwable fenceFailure = releaseFailure != null
@@ -250,10 +316,21 @@ public final class OresTaskScope implements AutoCloseable {
                 // Do not discard a failed pin. Prune owner bookkeeping
                 // before completing the quiescence Future, because generic
                 // Future observers swallow callback exceptions.
+                // The memory loan is the LAST external authority returned
+                // after guest exit. Code/FFI/resource cleanup may still rely on
+                // the borrowed allocation, and a failed cleanup must preserve
+                // both the loan and the owner slot as reclamation pins.
                 try {
                     onPhysicalExit.run();
                 } catch (RuntimeException | Error releaseFailure) {
                     exitFence.failFromRuntime(releaseFailure);
+                    return;
+                }
+                try {
+                    loanRetirement.retireAfterPhysicalQuiescence(
+                            compilerScopeEpoch, ownedChild);
+                } catch (RuntimeException | Error loanFailure) {
+                    exitFence.failFromRuntime(loanFailure);
                     return;
                 }
                 try {
@@ -278,6 +355,15 @@ public final class OresTaskScope implements AutoCloseable {
                 releaseFailure = failure;
                 if (failure != rejectedBeforeDispatch)
                     rejectedBeforeDispatch.addSuppressed(failure);
+            }
+            if (releaseFailure == null) {
+                try {
+                    loanRetirement.retireNeverStarted(compilerScopeEpoch);
+                } catch (RuntimeException | Error failure) {
+                    releaseFailure = failure;
+                    if (failure != rejectedBeforeDispatch)
+                        rejectedBeforeDispatch.addSuppressed(failure);
+                }
             }
             Throwable bookkeepingFailure = null;
             if (releaseFailure == null) {

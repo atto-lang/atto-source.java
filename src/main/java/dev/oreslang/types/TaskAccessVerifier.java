@@ -256,8 +256,13 @@ final class TaskAccessVerifier {
 
     /** Opaque compiler-issued child identity. A cancelled Ticket is still live. */
     public static final class Ticket {
+        private final Object scopeEpoch;
         private final long id;
-        private Ticket(long id) { this.id = id; }
+
+        private Ticket(Object scopeEpoch, long id) {
+            this.scopeEpoch = Objects.requireNonNull(scopeEpoch, "scopeEpoch");
+            this.id = id;
+        }
     }
 
     private static final class Child {
@@ -275,6 +280,8 @@ final class TaskAccessVerifier {
     private static final int MAX_CLAIMS_PER_CHILD = 1024;
     private static final int MAX_TRACKED_ALLOCATIONS = 65536;
 
+    /** Identity-only epoch for this exact verifier lifetime. */
+    private final Object scopeEpoch = new Object();
     private final Map<Ticket, Child> live = new LinkedHashMap<>();
     private final Map<AllocationKey, Long> knownGenerations = new HashMap<>();
     /** Single trusted allocation/trust domain per scope, including READ-only claims. */
@@ -388,7 +395,7 @@ final class TaskAccessVerifier {
             throw new IllegalStateException("TaskScope allocation tracking capacity exceeded");
         }
         if (nextId == Long.MAX_VALUE) throw new IllegalStateException("Task ticket overflow");
-        Ticket ticket = new Ticket(nextId++);
+        Ticket ticket = new Ticket(scopeEpoch, nextId++);
         // Only now commit the scope domain, claims and allocation generations.
         scopeDomain = requestedDomain;
         live.put(ticket, new Child(claims));
@@ -398,6 +405,18 @@ final class TaskAccessVerifier {
                     new AllocationKey(root.domain(), root.ownerId(), root.allocationId()), root.generation());
         }
         return ticket;
+    }
+
+    /*
+     * Runtime-bound admissions intentionally have no raw Claim-only mint.
+     * Executable lowering must pass the coherent source/resolved type proof
+     * below in addition to alias and generation checks.
+     */
+    TaskLoanAdmission admitCoherentTypedRuntimeBound(
+            List<CoherentTypedClaim> requested, SendSyncTraits sourceProof,
+            ThreadSafetyTraits.NominalProof resolvedNominals) {
+        return new TaskLoanAdmission(
+                this, admitCoherentTyped(requested, sourceProof, resolvedNominals));
     }
 
     /** Cancellation is an intent; a still-running Task continues to own loans. */
@@ -426,12 +445,30 @@ final class TaskAccessVerifier {
     }
 
     /**
+     * Runtime attestation that scheduler admission failed before executable
+     * child registration. This is distinct from physical child retirement.
+     */
+    synchronized void retireNeverStarted(Ticket ticket) {
+        child(ticket);
+        live.remove(ticket);
+    }
+
+    /**
      * Called only after child execution, defers, FFI pins and cleanup are
      * physically quiescent. The ledger itself cannot prove runtime quiescence.
      */
-    public synchronized void quiescent(Ticket ticket) {
-        child(ticket); // validates this exact ticket belongs to this scope
+    synchronized void retireAfterPhysicalQuiescence(Ticket ticket) {
+        child(ticket);
         live.remove(ticket);
+    }
+
+    /**
+     * Compatibility shim for older compiler-only tests. New runtime lowering
+     * must use TaskLoanAdmission so a caller cannot choose the lifecycle edge.
+     */
+    @Deprecated
+    synchronized void quiescent(Ticket ticket) {
+        retireAfterPhysicalQuiescence(ticket);
     }
 
     /**
@@ -479,8 +516,12 @@ final class TaskAccessVerifier {
     public synchronized int activeChildren() { return live.size(); }
 
     private Child child(Ticket ticket) {
-        Child result = live.get(Objects.requireNonNull(ticket, "ticket"));
-        if (result == null) throw new IllegalArgumentException("stale or foreign Task ticket");
+        Objects.requireNonNull(ticket, "ticket");
+        if (ticket.scopeEpoch != scopeEpoch) {
+            throw new IllegalArgumentException("foreign Task verifier scope epoch");
+        }
+        Child result = live.get(ticket);
+        if (result == null) throw new IllegalArgumentException("stale Task ticket");
         return result;
     }
 }
