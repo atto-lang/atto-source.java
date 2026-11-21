@@ -2775,7 +2775,10 @@ public final class TypeChecker {
             }
             return;
         }
-        if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.ExprStmt expression) {
+            requireRuntimeValue(typeOf(expression.expression(), env, generics, self), "expression statement");
+            return;
+        }
         if (stmt instanceof Ast.DeferStmt defer) {
             if (defer.expression() instanceof Ast.LambdaExpr lambda && !lambda.parameters().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -3215,6 +3218,14 @@ public final class TypeChecker {
             if (moduleNamespace != null) {
                 rejectUnimportedModuleNamespace(name.name());
                 return moduleShape(moduleNamespace);
+            }
+            // A nominal declaration is available to type resolution, never to a
+            // value expression. ClassNamespace below is a compiler-only receiver
+            // for static member lookup; it must not escape as a runtime value.
+            if (findInterface(name.name()) != null || findTypeAlias(name.name()) != null) {
+                throw new IllegalArgumentException(
+                        "E_TYPE_NOT_VALUE: type declaration '" + name.name()
+                                + "' is not a runtime value");
             }
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) {
@@ -3769,7 +3780,7 @@ public final class TypeChecker {
                     if (argument instanceof Ast.SpreadExpr) {
                         throw new IllegalArgumentException("stdio console spread is unsupported; use stdio.stdout.log");
                     }
-                    typeOf(argument, env, generics, self);
+                    requireRuntimeValue(typeOf(argument, env, generics, self), "stdio console argument");
                 }
                 return Primitive.VOID;
             }
@@ -3781,7 +3792,7 @@ public final class TypeChecker {
                     if (argument instanceof Ast.SpreadExpr spread) {
                         requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log spread");
                     } else {
-                        typeOf(argument, env, generics, self);
+                        requireRuntimeValue(typeOf(argument, env, generics, self), "stdio log argument");
                     }
                 }
                 return Primitive.VOID;
@@ -13086,7 +13097,21 @@ public final class TypeChecker {
         return ref.inferArguments() || ref.arguments().stream().anyMatch(this::hasInferredArgs);
     }
 
+    private void requireRuntimeValue(Type actual, String where) {
+        if (actual instanceof ClassNamespace namespace) {
+            throw new IllegalArgumentException(
+                    "E_TYPE_NOT_VALUE: " + where + " cannot use class declaration '"
+                            + namespace.className() + "' as a runtime value; "
+                            + "construct an instance or access a static member");
+        }
+    }
+
     private void requireAssignable(Type actual, Type expected, String where) {
+        // Never allow the compiler-only static-class receiver to satisfy an
+        // inferred, generic or Unknown value slot (including return/argument
+        // positions). Static member lookup uses ClassNamespace directly and
+        // does not go through runtime value assignment.
+        requireRuntimeValue(actual, where);
         if (!assignable(actual, expected)) throw new IllegalArgumentException(where + " has type " + actual + " but expected " + expected);
     }
 
