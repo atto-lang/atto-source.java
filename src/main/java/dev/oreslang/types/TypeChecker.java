@@ -6454,6 +6454,16 @@ public final class TypeChecker {
         }
         Type receiver = receiverDispatchType(
                 unwrapMutexGuard(deref(rawReceiver)));
+        // Direct Topic.try_publish calls are handled and checked by the
+        // call-type rule. Do not reify an untyped method value: that could
+        // invoke the runtime Intrinsic without the explicit share! proof.
+        if (receiver instanceof Named topic
+                && topic.name().equals("Topic")
+                && member.member().equals("try_publish")) {
+            throw new IllegalArgumentException(
+                    "Topic.try_publish requires a direct checked share! call; "
+                            + "first-class extraction is unsupported");
+        }
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
                     "cannot mutate a readonly structural record value");

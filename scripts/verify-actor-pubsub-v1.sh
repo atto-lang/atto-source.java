@@ -93,6 +93,7 @@ expected = {
         "shareBangAttoGuestPublishesCheckedScalarOnExistingAsyncTopic",
         "shareBangTryPublishRejectsMismatchedPayloadType",
         "shareBangTypedTryPublishExecutesGuestWithUnsignedReceipt",
+        "typedTryPublishMethodValueCannotBypassCheckedShareProof",
         "directTryPublishCallWithoutShareProofCannotCompile",
         "typedTryPublishRefusesLossyPolicyInActualGuest",
         "attoMultiGroupGuestPreservesOtherGroupAfterLeave",

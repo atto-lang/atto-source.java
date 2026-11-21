@@ -195,6 +195,26 @@ final class SourceActorPubSubExecutionTest {
     }
 
     @Test
+    void typedTryPublishMethodValueCannotBypassCheckedShareProof() {
+        String source = """
+                pub suspends fnc main(): void {
+                  val group = actor.group("payments");
+                  val topic = group.topic<String>("events", "reliable", 1);
+                  val publish_unchecked = topic.try_publish;
+                  val event = publish_unchecked("unshared");
+                  return;
+                }
+                """;
+        Parser.parse(source);
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(denied.getMessage().contains(
+                "Topic.try_publish requires a direct checked share! call"),
+                denied.getMessage());
+    }
+
+    @Test
     void canonicalShareBangUsesSameOwnershipAstInsidePortableTryPublish() {
         // This uses the real compiler Parser, but is NOT a guest try_publish pass.
         String source = """
