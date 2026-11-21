@@ -229,6 +229,34 @@ final class LambdaParameterOrderTest {
 
 
     @Test
+    void twoDiscardedFormalsRetainPositionalArityAndHaveNoSourceBinding() throws Exception {
+        String source = """
+                pub routine main(): void {
+                  const fnc discard_pair = |int _, bool _| -> { return; };
+                  discard_pair(41, true);
+                  return;
+                }
+                """;
+        Ast.Program parsed = Parser.parse(source);
+        Ast.FunctionDecl main = (Ast.FunctionDecl)
+                parsed.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt binding = (Ast.BindingStmt) main.body().getFirst();
+        Ast.LambdaExpr lambda = assertInstanceOf(Ast.LambdaExpr.class, binding.initializer());
+        assertEquals(2, lambda.parameters().size(), "both '_' slots count toward arity");
+        assertNotEquals(lambda.parameters().get(0).name(),
+                lambda.parameters().get(1).name(), "ignored slots must not alias one binding");
+        assertTrue(lambda.parameters().stream().allMatch(
+                p -> p.name().startsWith("$ignored_lambda_")));
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+
+        Source executable = Source.newBuilder(OresLanguage.ID, source, "lambda-two-discarded.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertDoesNotThrow(() -> context.eval(executable));
+        }
+    }
+
+    @Test
     void versionedAttoLambdasRequirePipeDelimitersWithoutBreakingLegacyParser() {
         String[] invalid = {
                 "pub fnc main(): int { val v = fnc(int x) -> x + 1; return 0; }",
