@@ -62,6 +62,12 @@ CONTROL_PLANE_PATHS = (
     "scripts/publish-private-ci-source-v3.py",
 )
 MAX_CONTROL_PLANE_FILE = 512 * 1024
+# Bound each Git-tree write by serialized JSON size and entry count. Valid
+# UTF-8 source is sent as inline tree content so one authorized API write can
+# create many blobs atomically; non-UTF-8 or oversized entries fall back to
+# individually attested base64 blob writes.
+MAX_TREE_BATCH_JSON_BYTES = 1024 * 1024
+MAX_TREE_BATCH_ENTRIES = 128
 
 
 def valid_sha(value, label="invalid SHA"):
@@ -678,22 +684,94 @@ def manifest(files):
     return rows, hashlib.sha256(canonical_bytes(rows)).hexdigest()
 
 
-def authorize_write(root, repository, approved_policy, contract):
-    """Per-write fail-closed guard: incident closure, policy and carrier identity.
+def upload_source_tree(repository, files, expected_source_tree, auth):
+    """Create an exact source tree with a small number of authorized writes."""
+    expected_source_tree = valid_sha(
+        expected_source_tree, "expected source tree SHA invalid"
+    )
+    current_tree = None
+    pending = []
+    pending_json_bytes = 0
 
-    Protected-source main and the full immutable carrier contract are checked
-    before reading source bytes and again before refs are attached. Repeating
-    those multi-endpoint reads for every blob would multiply API traffic by
-    the file count without adding integrity: the reviewed source commit and
-    pinned destination base SHA are immutable. Privacy and repository identity
-    are the state that can change between individual writes, so those are
-    rechecked immediately before every write. P0 incident status can also
-    change after preflight, so recheck it before EVERY source-bearing write
-    rather than relying on a single initial closure observation.
+    def flush():
+        nonlocal current_tree, pending, pending_json_bytes
+        if not pending:
+            return
+        payload = {"tree": pending}
+        if current_tree is not None:
+            payload["base_tree"] = current_tree
+        auth()
+        created = legacy.gh_api(
+            f"repos/{repository}/git/trees", method="POST", payload=payload
+        )
+        current_tree = valid_sha(
+            created.get("sha"), "uploaded source tree SHA invalid"
+        )
+        pending = []
+        pending_json_bytes = 0
+
+    def uploaded_blob_entry(rel, data, mode):
+        auth()
+        blob = legacy.gh_api(
+            f"repos/{repository}/git/blobs", method="POST",
+            payload={
+                "content": base64.b64encode(data).decode("ascii"),
+                "encoding": "base64",
+            },
+        )
+        uploaded = valid_sha(blob.get("sha"), "uploaded blob SHA invalid")
+        if uploaded != git_blob_sha(data):
+            raise Denied("uploaded blob digest differs from exact source")
+        return {
+            "path": rel, "mode": mode, "type": "blob", "sha": uploaded
+        }
+
+    for rel, data, mode in files:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            entry = uploaded_blob_entry(rel, data, mode)
+        else:
+            inline = {
+                "path": rel, "mode": mode, "type": "blob", "content": text
+            }
+            inline_size = len(json.dumps(inline).encode("utf-8")) + 2
+            if inline_size > MAX_TREE_BATCH_JSON_BYTES:
+                entry = uploaded_blob_entry(rel, data, mode)
+            else:
+                entry = inline
+
+        entry_size = len(json.dumps(entry).encode("utf-8")) + 2
+        if pending and (
+                len(pending) >= MAX_TREE_BATCH_ENTRIES
+                or pending_json_bytes + entry_size > MAX_TREE_BATCH_JSON_BYTES):
+            flush()
+        pending.append(entry)
+        pending_json_bytes += entry_size
+
+    flush()
+    if current_tree is None:
+        raise Denied("source mirror contains no files")
+    if current_tree != expected_source_tree:
+        raise Denied("uploaded source tree differs from pinned PR tree")
+    return current_tree
+
+
+def authorize_write(
+        root, repository, approved_policy, contract,
+        authority_sha, source_pr, source_commit, source_repo_id):
+    """Revalidate every mutable authorization fence before a private Git write.
+
+    A successful preflight is not a lease. P0 state, independent source
+    governance, the exact source PR head, destination approval, repository
+    identity and the reviewed carrier base can all change while a multi-object
+    Git snapshot is being published. Recheck all of them before EVERY
+    source-bearing blob/tree/commit/ref write so revocation stops the transfer
+    before the next private object crosses the repository boundary.
     """
-    # The incidents may be reopened after initial preflight. Never upload
-    # another Git blob/tree/ref while either P0 remains unresolved.
+    # Incident closure is live authorization, not a one-time observation.
     legacy.require_resolved_blocking_incidents()
+
     current_policy, current_repository_id = legacy.checked_policy_approval(
         root, repository
     )
@@ -702,6 +780,7 @@ def authorize_write(root, repository, approved_policy, contract):
         raise Denied(
             "private CI destination approval or repository identity changed during transfer"
         )
+
     repo = legacy.checked_repo(repository, contract["repository_id"])
     if (repo.get("id") != contract["repository_id"]
             or repo.get("archived") is not False
@@ -709,6 +788,28 @@ def authorize_write(root, repository, approved_policy, contract):
             or repo.get("fork") is not False
             or repo.get("default_branch") != "main"):
         raise Denied("carrier identity/state changed during transfer")
+
+    # Re-attest the independent source-governance authority itself. This catches
+    # protection/review revocation even when the reviewed policy bytes and
+    # destination repository ID have not changed.
+    if authorized_main_sha(
+            repository, approved_policy, contract["repository_id"]) != authority_sha:
+        raise Denied("source governance authority changed during transfer")
+
+    # Exact-head qualification must stay exact for the entire export, not only
+    # at preflight and immediately before the executable authorization ref.
+    if verify_source_pr(source_pr, source_commit) != source_repo_id:
+        raise Denied("source PR head/repository changed during transfer")
+
+    # The workflow/test-plan bytes are pinned inside contract["base_sha"].
+    # Re-reading the carrier main ref is sufficient to reject destination-ledger
+    # advancement before the next private object is written.
+    base_ref = legacy.gh_api(f"repos/{repository}/git/ref/heads/main")
+    live_base = valid_sha(
+        base_ref.get("object", {}).get("sha"), "carrier main ref invalid"
+    )
+    if live_base != contract["base_sha"]:
+        raise Denied("carrier main advanced beyond reviewed protected base")
 
 
 def _gh_ref_request(repository, ref_name, method):
@@ -821,35 +922,14 @@ def publish(repository, source, source_commit, source_pr, test_plan, trusted_roo
     branch = "ci/oreslang-" + source_tree
 
     def auth():
-        authorize_write(trusted_root, repository, approved_policy, contract)
-
-    elements = []
-    for rel, data, mode in files:
-        auth()
-        blob = legacy.gh_api(
-            f"repos/{repository}/git/blobs", method="POST",
-            payload={
-                "content": base64.b64encode(data).decode("ascii"),
-                "encoding": "base64",
-            },
+        authorize_write(
+            trusted_root, repository, approved_policy, contract,
+            authority_sha, source_pr, source_commit, source_repo_id,
         )
-        uploaded = valid_sha(blob.get("sha"), "uploaded blob SHA invalid")
-        if uploaded != git_blob_sha(data):
-            raise Denied("uploaded blob digest differs from exact source")
-        elements.append({
-            "path": rel, "mode": mode, "type": "blob", "sha": uploaded
-        })
 
-    auth()
-    isolated = legacy.gh_api(
-        f"repos/{repository}/git/trees", method="POST",
-        payload={"tree": elements},
+    isolated_sha = upload_source_tree(
+        repository, files, source_tree, auth
     )
-    isolated_sha = valid_sha(
-        isolated.get("sha"), "uploaded source tree SHA invalid"
-    )
-    if isolated_sha != source_tree:
-        raise Denied("uploaded source tree differs from pinned PR tree")
 
     now = now or dt.datetime.now(dt.timezone.utc)
     if now.tzinfo is None or now.utcoffset() is None:

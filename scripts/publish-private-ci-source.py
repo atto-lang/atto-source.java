@@ -19,7 +19,9 @@ NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 APPROVAL = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]*)$")
 BRANCH = re.compile(r"^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$")
 SHA = re.compile(r"^[a-f0-9]{40}$")
-MAX_FILES = 1024
+# The current exact Java compiler tree is slightly above 1,000 tracked blobs.
+# Keep a finite traversal bound, but leave headroom for exact full-tree mirrors.
+MAX_FILES = 2048
 MAX_BYTES = 40 * 1024 * 1024
 MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096

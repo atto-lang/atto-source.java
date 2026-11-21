@@ -507,6 +507,112 @@ class PrivateCiV3Test(unittest.TestCase):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
                 v3.verify_source_pr(1482, "8" * 40)
 
+    def test_upload_source_tree_batches_utf8_content_in_one_authorized_write(self):
+        files = [
+            ("a.ores", b"one\n", "100644"),
+            ("bin/run.sh", b"#!/bin/sh\n", "100755"),
+        ]
+        auth = Mock()
+        with patch.object(
+                v3.legacy, "gh_api", return_value={"sha": SOURCE_TREE}) as api:
+            actual = v3.upload_source_tree(
+                "trusted/ci", files, SOURCE_TREE, auth
+            )
+
+        self.assertEqual(actual, SOURCE_TREE)
+        auth.assert_called_once_with()
+        api.assert_called_once()
+        route = api.call_args.args[0]
+        kwargs = api.call_args.kwargs
+        self.assertEqual(route, "repos/trusted/ci/git/trees")
+        self.assertEqual(kwargs["method"], "POST")
+        self.assertNotIn("base_tree", kwargs["payload"])
+        entries = kwargs["payload"]["tree"]
+        self.assertEqual(
+            [(e["path"], e["mode"], e["content"]) for e in entries],
+            [
+                ("a.ores", "100644", "one\n"),
+                ("bin/run.sh", "100755", "#!/bin/sh\n"),
+            ],
+        )
+        self.assertTrue(all("sha" not in e for e in entries))
+
+    def test_upload_source_tree_batches_under_one_auth_per_tree_write(self):
+        files = [
+            ("a.ores", b"one\n", "100644"),
+            ("b.ores", b"two\n", "100644"),
+        ]
+        auth = Mock()
+        first = "1" * 40
+        calls = []
+
+        def api(route, method="GET", payload=None):
+            calls.append((route, method, payload))
+            if len(calls) == 1:
+                return {"sha": first}
+            return {"sha": SOURCE_TREE}
+
+        with (
+            patch.object(v3, "MAX_TREE_BATCH_ENTRIES", 1),
+            patch.object(v3.legacy, "gh_api", side_effect=api),
+        ):
+            actual = v3.upload_source_tree(
+                "trusted/ci", files, SOURCE_TREE, auth
+            )
+
+        self.assertEqual(actual, SOURCE_TREE)
+        self.assertEqual(auth.call_count, 2)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("base_tree", calls[0][2])
+        self.assertEqual(calls[1][2]["base_tree"], first)
+
+    def test_upload_source_tree_binary_fallback_is_separately_authorized(self):
+        data = b"\xff\x00binary"
+        blob_sha = v3.git_blob_sha(data)
+        auth = Mock()
+        writes = []
+
+        def api(route, method="GET", payload=None):
+            writes.append((route, method, payload))
+            if route.endswith("/git/blobs"):
+                return {"sha": blob_sha}
+            if route.endswith("/git/trees"):
+                return {"sha": SOURCE_TREE}
+            raise AssertionError(route)
+
+        with patch.object(v3.legacy, "gh_api", side_effect=api):
+            actual = v3.upload_source_tree(
+                "trusted/ci",
+                [("fixture.bin", data, "100644")],
+                SOURCE_TREE,
+                auth,
+            )
+
+        self.assertEqual(actual, SOURCE_TREE)
+        self.assertEqual(auth.call_count, 2)
+        self.assertTrue(writes[0][0].endswith("/git/blobs"))
+        self.assertTrue(writes[1][0].endswith("/git/trees"))
+        entry = writes[1][2]["tree"][0]
+        self.assertEqual(entry["sha"], blob_sha)
+        self.assertNotIn("content", entry)
+
+    def test_upload_source_tree_rejects_nonidentical_final_tree(self):
+        auth = Mock()
+        with patch.object(
+                v3.legacy, "gh_api", return_value={"sha": "9" * 40}):
+            with self.assertRaisesRegex(
+                    v3.Denied, "differs from pinned PR tree"):
+                v3.upload_source_tree(
+                    "trusted/ci",
+                    [("a.ores", b"one\n", "100644")],
+                    SOURCE_TREE,
+                    auth,
+                )
+        auth.assert_called_once_with()
+
+    def test_full_tree_file_bound_exceeds_current_source_scale(self):
+        self.assertGreaterEqual(v3.legacy.MAX_FILES, 2048)
+
     def test_authorize_write_rechecks_carrier_eligibility(self):
         carrier = contract()
         ineligible = {
@@ -530,7 +636,8 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "identity/state"):
                 v3.authorize_write(
-                    Path("."), "trusted/ci", POLICY, carrier)
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
 
     def test_authorize_write_rejects_reviewed_repository_id_change(self):
         carrier = contract()
@@ -545,7 +652,8 @@ class PrivateCiV3Test(unittest.TestCase):
         ):
             with self.assertRaisesRegex(v3.Denied, "repository identity changed"):
                 v3.authorize_write(
-                    Path("."), "trusted/ci", POLICY, carrier)
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
             checked_repo.assert_not_called()
 
     def test_authorize_write_rejects_reopened_incident_before_api_or_blob(self):
@@ -560,7 +668,9 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo") as repo,
         ):
             with self.assertRaisesRegex(v3.Denied, "#77 remains unresolved"):
-                v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
             incident_gate.assert_called_once_with()
             policy.assert_not_called()
             repo.assert_not_called()
@@ -577,10 +687,158 @@ class PrivateCiV3Test(unittest.TestCase):
             patch.object(v3.legacy, "checked_repo") as repo,
         ):
             with self.assertRaisesRegex(v3.Denied, "#127 remains unresolved"):
-                v3.authorize_write(Path("."), "trusted/ci", POLICY, carrier)
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
             incident_gate.assert_called_once_with()
             policy.assert_not_called()
             repo.assert_not_called()
+
+    def test_authorize_write_rejects_source_governance_revocation(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(
+                v3, "authorized_main_sha", return_value="9" * 40
+            ) as source_authority,
+            patch.object(v3, "verify_source_pr") as source_pr,
+            patch.object(v3.legacy, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(
+                    v3.Denied, "source governance authority changed"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
+            source_authority.assert_called_once_with(
+                "trusted/ci", POLICY, carrier["repository_id"])
+            source_pr.assert_not_called()
+            api.assert_not_called()
+
+    def test_authorize_write_rejects_source_pr_head_move(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+            patch.object(
+                v3, "verify_source_pr",
+                return_value=v3.SOURCE_REPOSITORY_ID + 1,
+            ) as source_pr,
+            patch.object(v3.legacy, "gh_api") as api,
+        ):
+            with self.assertRaisesRegex(
+                    v3.Denied, "source PR head/repository changed"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
+            source_pr.assert_called_once_with(1482, "4" * 40)
+            api.assert_not_called()
+
+    def test_authorize_write_rejects_carrier_main_advance(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents"),
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ),
+            patch.object(v3.legacy, "checked_repo", return_value=eligible),
+            patch.object(v3, "authorized_main_sha", return_value=PROTECTED),
+            patch.object(
+                v3, "verify_source_pr",
+                return_value=v3.SOURCE_REPOSITORY_ID,
+            ),
+            patch.object(
+                v3.legacy, "gh_api",
+                return_value={"object": {"sha": "8" * 40}},
+            ) as api,
+        ):
+            with self.assertRaisesRegex(
+                    v3.Denied, "carrier main advanced"):
+                v3.authorize_write(
+                    Path("."), "trusted/ci", POLICY, carrier,
+                    PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
+            api.assert_called_once_with("repos/trusted/ci/git/ref/heads/main")
+
+    def test_authorize_write_accepts_only_all_live_fences(self):
+        carrier = contract()
+        eligible = {
+            "id": carrier["repository_id"],
+            "full_name": "trusted/ci",
+            "private": True,
+            "visibility": "private",
+            "archived": False,
+            "disabled": False,
+            "fork": False,
+            "default_branch": "main",
+        }
+        with (
+            patch.object(v3.legacy, "require_resolved_blocking_incidents") as incidents,
+            patch.object(
+                v3.legacy, "checked_policy_approval",
+                return_value=(POLICY, carrier["repository_id"]),
+            ) as policy,
+            patch.object(v3.legacy, "checked_repo", return_value=eligible) as repo,
+            patch.object(v3, "authorized_main_sha", return_value=PROTECTED) as authority,
+            patch.object(
+                v3, "verify_source_pr",
+                return_value=v3.SOURCE_REPOSITORY_ID,
+            ) as source_pr,
+            patch.object(
+                v3.legacy, "gh_api",
+                return_value={"object": {"sha": BASE}},
+            ) as api,
+        ):
+            v3.authorize_write(
+                Path("."), "trusted/ci", POLICY, carrier,
+                PROTECTED, 1482, "4" * 40, v3.SOURCE_REPOSITORY_ID)
+
+        incidents.assert_called_once_with()
+        policy.assert_called_once_with(Path("."), "trusted/ci")
+        repo.assert_called_once_with("trusted/ci", carrier["repository_id"])
+        authority.assert_called_once_with(
+            "trusted/ci", POLICY, carrier["repository_id"])
+        source_pr.assert_called_once_with(1482, "4" * 40)
+        api.assert_called_once_with("repos/trusted/ci/git/ref/heads/main")
 
     def test_publish_rejects_contract_repository_id_not_in_reviewed_allowlist(self):
         carrier = contract()
@@ -699,7 +957,7 @@ class PrivateCiV3Test(unittest.TestCase):
         self.assertEqual(checked_contract.call_count, 3)
         self.assertEqual(checked_destination.call_count, 3)
         self.assertEqual(verify_source_pr.call_count, 3)
-        self.assertEqual(authorize_write.call_count, 7)
+        self.assertEqual(authorize_write.call_count, 6)
 
         self.assertEqual(result["branch"], "ci/oreslang-" + SOURCE_TREE)
         self.assertEqual(
