@@ -11769,9 +11769,11 @@ public final class OresEvalRootNode extends RootNode {
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
                 case "^" -> integralLong(left) ^ integralLong(right);
-                case "<<" -> integralLong(left) << shiftDistance(right);
-                case ">>" -> integralLong(left) >> shiftDistance(right);
+                case "<<<" -> integralLong(left) << shiftDistance(right);
                 case ">>>" -> integralLong(left) >>> shiftDistance(right);
+                case "ashr" -> integralLong(left) >> shiftDistance(right);
+                // `<<` / `>>` are channel I/O statements, desugared by the parser
+                // and rejected anywhere else by the checker: never a shift.
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
             };
         }

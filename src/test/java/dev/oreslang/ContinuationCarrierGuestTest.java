@@ -10,7 +10,7 @@ import org.junit.jupiter.api.RepeatedTest;
 
 /**
  * Compiled guest programs that drive suspends/await, Task continuations,
- * actors, readch/writech and the {@code <<}/{@code >>} operators through the
+ * actors, readch/writech and the {@code <<<}/{@code >>>} shift operators through the
  * carrier pools (continuation locality, idle lane stealing). Each program
  * forces values across suspension points, so a lost, duplicated or misrouted
  * continuation changes the printed result. Repeated to shake out ordering.
@@ -28,13 +28,13 @@ final class ContinuationCarrierGuestTest {
         return output.toString(StandardCharsets.UTF_8);
     }
 
-    /** Producer and consumer Tasks rendezvous over writech/readch; values are packed with << and unpacked with >>. */
+    /** Producer and consumer Tasks rendezvous over writech/readch; values are packed with <<< and unpacked with >>>. */
     @RepeatedTest(5)
     void tasksRendezvousOverChannelsAcrossAwaitsAndShifts() throws Exception {
         String program = """
                 suspends fnc produce(Channel<int> ch, int count, int tag): int {
                   for (let i = 0; i < count; i = i + 1) {
-                    await (nb writech ch, (tag << 16) + i);
+                    await (nb writech ch, (tag <<< 16) + i);
                     rt cooperate;
                   }
                   return count;
@@ -44,7 +44,7 @@ final class ContinuationCarrierGuestTest {
                   let int sum = 0;
                   for (let i = 0; i < count; i = i + 1) {
                     val int packed = await (nb readch ch);
-                    sum = sum + (packed >> 16) + (packed & 65535);
+                    sum = sum + (packed >>> 16) + (packed & 65535);
                   }
                   return sum;
                 }
@@ -75,11 +75,11 @@ final class ContinuationCarrierGuestTest {
                     rt cooperate;
                     return 1;
                   fi
-                  val int mine = depth << 1;
+                  val int mine = depth <<< 1;
                   let Future<int> child = task { return level(depth - 1); };
                   rt cooperate;
                   val int below = await child;
-                  return below + (mine >> 1);
+                  return below + (mine >>> 1);
                 }
 
                 pub suspends fnc main(): void {
@@ -107,13 +107,13 @@ final class ContinuationCarrierGuestTest {
                   }
 
                   receive(ActorMail<int> mail): void {
-                    writech self.feed, mail.value << 1;
+                    writech self.feed, mail.value <<< 1;
                     val int doubled = await (nb readch self.feed);
                     // Actor state written after the suspension: the resumed turn
                     // still owns the actor, possibly on a different carrier.
                     self.seen = self.seen + 1;
                     val int turn = self.seen;
-                    self.send((doubled >> 1) + turn * 1000);
+                    self.send((doubled >>> 1) + turn * 1000);
                     if turn == 5 then
                       self.end();
                     fi
@@ -156,7 +156,7 @@ final class ContinuationCarrierGuestTest {
         String program = """
                 suspends fnc step(int i): int {
                   rt cooperate;
-                  val int shifted = (i << 4) >> 4;
+                  val int shifted = (i <<< 4) >>> 4;
                   rt cooperate;
                   return shifted * 2;
                 }
