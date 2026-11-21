@@ -1,0 +1,36 @@
+name: task-access-verifier-kernel
+
+on:
+  push:
+    branches: ["feat/task-provenance-quiescence-gate-*", "feat/task-scoped-loans-canonical-*"]
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/types/Types.java"
+      - "src/main/java/dev/oreslang/types/ThreadSafetyTraits.java"
+      - "src/main/java/dev/oreslang/types/TaskAccessVerifier.java"
+      - "src/test/java/dev/oreslang/types/TaskAccessVerifierQuiescenceTest.java"
+      - "src/test/java/dev/oreslang/types/TaskAccessVerifierSmoke.java"
+      - "scripts/test-task-access-verifier.sh"
+      - ".github/workflows/task-access-verifier-kernel.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-access-verifier-kernel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Strict scoped Task loan verifier smoke
+        run: bash scripts/test-task-access-verifier.sh
