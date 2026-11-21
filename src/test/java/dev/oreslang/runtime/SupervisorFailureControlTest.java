@@ -167,4 +167,109 @@ final class SupervisorFailureControlTest {
             group.close();
         }
     }
+    @Test
+    void terminalReceiptCarriesExactVirtualIdentityGenerationWithoutGuestDiagnostic() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            var identity = new SupervisorFailureControl.VirtualActorLogicalId(
+                    "tenant-a", "7:defaultCart", "42");
+            var actor = group.spawnWorker(
+                    ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(),
+                    factory -> (message, context) -> {
+                        throw new IllegalStateException("private guest payload must not cross CONTROL");
+                    });
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            group.bindVirtualActorIdentity(actor, identity.domain(), identity.declaration(), identity.key(), 41L);
+            actor.send("fail");
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> actor.getDone().get(5, TimeUnit.SECONDS));
+
+            var pending = group.pendingSupervisorFailures();
+            assertEquals(1, pending.size());
+            var receipt = pending.getFirst();
+            assertTrue(receipt.sequence() > 0);
+            var notice = receipt.notice();
+            assertEquals(actor.id(), notice.actorId());
+            assertEquals(group.id(), notice.groupId());
+            var virtual = notice.virtualActor().orElseThrow();
+            assertEquals(identity, virtual.identity());
+            assertEquals(41L, virtual.activationGeneration());
+            assertEquals(SupervisorFailureControl.Kind.TERMINAL_FAILURE, notice.kind());
+            assertEquals("java.lang.IllegalStateException", notice.failureType());
+            assertEquals("", notice.diagnostic(),
+                    "virtual guest exception messages must not be retained in terminal CONTROL");
+            group.close();
+        }
+    }
+
+    @Test
+    void onlyOnePhysicalWorkerMayOwnALogicalVirtualActorActivation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            var identity = new SupervisorFailureControl.VirtualActorLogicalId(
+                    "tenant-a", "7:defaultCart", "42");
+            var behavior = (ActorRuntime.BehaviorFactory<String>)
+                    factory -> (message, context) -> { };
+            var first = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(), behavior);
+            var second = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(), behavior);
+            first.getReady().get(5, TimeUnit.SECONDS);
+            second.getReady().get(5, TimeUnit.SECONDS);
+            group.bindVirtualActorIdentity(first, identity.domain(), identity.declaration(), identity.key(), 7L);
+            assertThrows(IllegalStateException.class,
+                    () -> group.bindVirtualActorIdentity(second, identity.domain(), identity.declaration(), identity.key(), 8L));
+            first.stop();
+            second.stop();
+            first.getDone().get(5, TimeUnit.SECONDS);
+            second.getDone().get(5, TimeUnit.SECONDS);
+            group.close();
+        }
+    }
+
+    @Test
+    void replacementReceiptUsesNewGenerationAndOldReceiptCannotBeRewritten() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            var identity = new SupervisorFailureControl.VirtualActorLogicalId(
+                    "tenant-a", "7:defaultCart", "same-key");
+            var failed = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(),
+                    factory -> (message, context) -> {
+                        throw new IllegalArgumentException("failure");
+                    });
+            failed.getReady().get(5, TimeUnit.SECONDS);
+            group.bindVirtualActorIdentity(failed, identity.domain(), identity.declaration(), identity.key(), 12L);
+            failed.send("fail");
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> failed.getDone().get(5, TimeUnit.SECONDS));
+            var oldReceipt = group.pendingSupervisorFailures().getFirst();
+
+            var replacement = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(),
+                    factory -> (message, context) -> { });
+            replacement.getReady().get(5, TimeUnit.SECONDS);
+            group.bindVirtualActorIdentity(replacement, identity.domain(), identity.declaration(), identity.key(), 13L);
+
+            var stillPending = group.pendingSupervisorFailures();
+            assertEquals(1, stillPending.size());
+            assertEquals(oldReceipt.sequence(), stillPending.getFirst().sequence());
+            assertEquals(12L, stillPending.getFirst().notice()
+                    .virtualActor().orElseThrow().activationGeneration());
+
+            replacement.stop();
+            replacement.getDone().get(5, TimeUnit.SECONDS);
+            var stale = group.spawnWorker(ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(),
+                    factory -> (message, context) -> { });
+            stale.getReady().get(5, TimeUnit.SECONDS);
+            assertThrows(IllegalStateException.class,
+                    () -> group.bindVirtualActorIdentity(stale, identity.domain(), identity.declaration(), identity.key(), 13L));
+            stale.stop();
+            stale.getDone().get(5, TimeUnit.SECONDS);
+            group.close();
+        }
+    }
+
 }

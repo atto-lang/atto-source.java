@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.List;
+import java.text.Normalizer;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -24,6 +25,47 @@ import java.util.function.Function;
 public final class SupervisorFailureControl {
     public enum Kind { TERMINAL_FAILURE, CANCELLED }
 
+    /** Version-neutral logical identity carried by supervisor terminal receipts. */
+    public record VirtualActorLogicalId(String domain, String declaration, String key) {
+        public VirtualActorLogicalId {
+            domain = identityPart(domain, "domain", 128);
+            declaration = identityPart(declaration, "declaration", 128);
+            key = identityPart(key, "key", 256);
+        }
+    }
+
+    /** Logical identity plus the exact activation generation that terminated. */
+    public record VirtualActorTerminalIdentity(
+            VirtualActorLogicalId identity,
+            long activationGeneration) {
+        public VirtualActorTerminalIdentity {
+            Objects.requireNonNull(identity, "identity");
+            if (activationGeneration <= 0)
+                throw new IllegalArgumentException("virtual activation generation must be positive");
+        }
+    }
+
+    private static String identityPart(String value, String field, int maxBytes) {
+        Objects.requireNonNull(value, field);
+        if (value.isBlank() || value.length() > maxBytes
+                || value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > maxBytes
+                || !Normalizer.isNormalized(value, Normalizer.Form.NFC))
+            throw new IllegalArgumentException("invalid virtual actor " + field);
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isISOControl(ch))
+                throw new IllegalArgumentException("control character in virtual actor " + field);
+            if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length() || !Character.isLowSurrogate(value.charAt(i + 1)))
+                    throw new IllegalArgumentException("unpaired surrogate in virtual actor " + field);
+                i++;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("unpaired surrogate in virtual actor " + field);
+            }
+        }
+        return value;
+    }
+
     public record Notice(
             ActorRuntime.SupervisorId supervisorId,
             ActorRuntime.ActorGroupId groupId,
@@ -31,7 +73,8 @@ public final class SupervisorFailureControl {
             Optional<ActorRuntime.ActorId> spawnedBy,
             Kind kind,
             String failureType,
-            String diagnostic) {
+            String diagnostic,
+            Optional<VirtualActorTerminalIdentity> virtualActor) {
         public Notice {
             Objects.requireNonNull(supervisorId);
             Objects.requireNonNull(groupId);
@@ -40,6 +83,17 @@ public final class SupervisorFailureControl {
             Objects.requireNonNull(kind);
             failureType = bounded(Objects.requireNonNull(failureType));
             diagnostic = bounded(Objects.requireNonNull(diagnostic));
+            virtualActor = Objects.requireNonNull(virtualActor);
+        }
+
+        /** Source-compatible constructor for ordinary non-virtual actors. */
+        public Notice(ActorRuntime.SupervisorId supervisorId,
+                      ActorRuntime.ActorGroupId groupId,
+                      ActorRuntime.ActorId actorId,
+                      Optional<ActorRuntime.ActorId> spawnedBy,
+                      Kind kind, String failureType, String diagnostic) {
+            this(supervisorId, groupId, actorId, spawnedBy, kind,
+                    failureType, diagnostic, Optional.empty());
         }
     }
 
