@@ -363,4 +363,65 @@ final class ActorScalarCallMachineTest {
         assertEquals(1, ticks.get());
     }
 
+    @Test void forgedOperandPointerFailsBeforeNextInstruction() throws Exception {
+        AtomicInteger checkpoints = new AtomicInteger();
+        Outcome result = run(tailCounter(), 0, List.of(1000L, 0L), () -> {
+            if (checkpoints.incrementAndGet() == 1) {
+                // Header: magic(0-3), PC(4-7), SP(8-11), callee ID(12-15).
+                // Changing the low SP byte cannot be treated as a valid
+                // operand-stack address even if the PC itself remains valid.
+                corruptTopActorFrameByte(11, (byte) 127);
+            }
+        });
+        assertInstanceOf(IllegalStateException.class, result.failure());
+        assertTrue(result.poisoned());
+        assertEquals(1, checkpoints.get());
+    }
+
+    @Test void integerArithmeticRejectsBooleanTagInsteadOfCoercing() throws Exception {
+        Outcome result = run(p(fn("bad-int", 0, 0,
+                new ActorScalarCallMachine.Instruction(
+                        ActorScalarCallMachine.Op.CONST_BOOL, 0, 1),
+                c(1), x(ActorScalarCallMachine.Op.ADD), x(RET))),
+                0, List.of(), () -> { });
+        assertInstanceOf(IllegalStateException.class, result.failure());
+        assertTrue(result.poisoned());
+    }
+
+    @Test void mixedScalarEqualityFailsClosedInsteadOfReturningJvmFalse()
+            throws Exception {
+        Outcome result = run(p(fn("mixed", 0, 0, c(1),
+                new ActorScalarCallMachine.Instruction(
+                        ActorScalarCallMachine.Op.CONST_BOOL, 0, 1),
+                x(ActorScalarCallMachine.Op.EQ), c(3), x(RET))),
+                0, List.of(), () -> { });
+        assertInstanceOf(IllegalStateException.class, result.failure());
+        assertTrue(result.poisoned());
+    }
+
+    @Test void booleanPassedToAnIntCalleeFailsClosed() throws Exception {
+        var program = p(
+                fn("root", 0, 0,
+                        new ActorScalarCallMachine.Instruction(
+                                ActorScalarCallMachine.Op.CONST_BOOL, 0, 1),
+                        x(ActorScalarCallMachine.Op.CALL, 1), x(RET)),
+                fn("callee", 1, 1, x(LOAD, 0), x(RET)));
+        Outcome result = run(program, 0, List.of(), () -> { });
+        assertInstanceOf(IllegalStateException.class, result.failure());
+        assertTrue(result.poisoned());
+    }
+
+    @Test void equalBooleanTagsUseTypedEqualityWithoutImplicitIntConversion()
+            throws Exception {
+        var program = p(fn("boolean-predicate", 0, 0,
+                new ActorScalarCallMachine.Instruction(
+                        ActorScalarCallMachine.Op.CONST_BOOL, 0, 1),
+                new ActorScalarCallMachine.Instruction(
+                        ActorScalarCallMachine.Op.CONST_BOOL, 0, 1),
+                x(ActorScalarCallMachine.Op.EQ),
+                x(ActorScalarCallMachine.Op.JUMP_IF_FALSE, 6),
+                c(9), x(RET), c(0), x(RET)));
+        assertEquals(9L, success(program));
+    }
+
 }

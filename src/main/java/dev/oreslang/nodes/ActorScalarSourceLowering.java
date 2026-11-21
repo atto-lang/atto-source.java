@@ -39,6 +39,9 @@ final class ActorScalarSourceLowering {
     private static final int MAX_NESTING = 40;
     private static final int MAX_OPERANDS = 24;
 
+    /** No implicit conversion between the two admitted primitive kinds. */
+    private enum ScalarType { INT, BOOL }
+
     private final FunctionResolver resolver;
     private final IdentityHashMap<Ast.FunctionDecl,Integer> indices = new IdentityHashMap<>();
     private final ArrayList<Ast.FunctionDecl> functions = new ArrayList<>();
@@ -130,6 +133,8 @@ final class ActorScalarSourceLowering {
 
     private final class Builder {
         private final LinkedHashMap<String,Integer> locals = new LinkedHashMap<>();
+        private final LinkedHashMap<String,Ast.BindingKind> bindingKinds =
+                new LinkedHashMap<>();
         private final ArrayList<ActorScalarCallMachine.Instruction> instructions = new ArrayList<>();
         private int operandDepth;
         private int operandPeak;
@@ -137,6 +142,9 @@ final class ActorScalarSourceLowering {
         private Builder(Ast.FunctionDecl fn) {
             for (Ast.Param p : fn.parameters()) {
                 if (locals.putIfAbsent(p.name(), locals.size()) != null) throw NO;
+                // Source parameters are immutable unless explicitly declared
+                // mutable; this narrow subset excludes mutable parameters.
+                bindingKinds.put(p.name(), Ast.BindingKind.CONST);
             }
         }
 
@@ -197,7 +205,8 @@ final class ActorScalarSourceLowering {
                     if (ret.value() instanceof Ast.CallExpr direct) {
                         call(direct, depth + 1, true);
                     } else {
-                        expression(ret.value(), depth + 1);
+                        if (expression(ret.value(), depth + 1) != ScalarType.INT)
+                            throw NO;
                         emit(ActorScalarCallMachine.Op.RET);
                     }
                 } else if (stmt instanceof Ast.BindingStmt binding) {
@@ -206,22 +215,28 @@ final class ActorScalarSourceLowering {
                             || binding.inferredTypeName() != null
                             || locals.containsKey(binding.name())
                             || locals.size() >= 32) throw NO;
-                    expression(binding.initializer(), depth + 1);
+                    if (expression(binding.initializer(), depth + 1) != ScalarType.INT)
+                        throw NO;
                     int index = locals.size();
                     locals.put(binding.name(), index);
+                    bindingKinds.put(binding.name(), binding.kind());
                     emit(ActorScalarCallMachine.Instruction.at(
                             ActorScalarCallMachine.Op.STORE, index));
                 } else if (stmt instanceof Ast.ExprStmt expression) {
                     if (!(expression.expression() instanceof Ast.AssignExpr assign)
                             || !(assign.target() instanceof Ast.NameExpr name)
-                            || !locals.containsKey(name.name())) throw NO;
-                    expression(assign.value(), depth + 1);
+                            || !locals.containsKey(name.name())
+                            || bindingKinds.get(name.name()) != Ast.BindingKind.LET)
+                        throw NO;
+                    if (expression(assign.value(), depth + 1) != ScalarType.INT)
+                        throw NO;
                     emit(ActorScalarCallMachine.Instruction.at(
                             ActorScalarCallMachine.Op.STORE, locals.get(name.name())));
                 } else if (stmt instanceof Ast.IfStmt conditional) {
                     ArrayList<Integer> endJumps = new ArrayList<>();
                     for (Ast.IfBranch arm : conditional.branches()) {
-                        expression(arm.condition(), depth + 1);
+                        if (expression(arm.condition(), depth + 1) != ScalarType.BOOL)
+                            throw NO;
                         int skip = branch(ActorScalarCallMachine.Op.JUMP_IF_FALSE);
                         body(arm.body(), depth + 1, false);
                         endJumps.add(branch(ActorScalarCallMachine.Op.JUMP));
@@ -236,43 +251,68 @@ final class ActorScalarSourceLowering {
             }
         }
 
-        private void expression(Ast.Expr e, int depth) {
+        private ScalarType expression(Ast.Expr e, int depth) {
             if (depth > MAX_NESTING) throw NO;
             if (e instanceof Ast.LiteralExpr literal) {
                 Object value = literal.value();
                 if (value instanceof Long x) {
                     emit(ActorScalarCallMachine.Instruction.constant(x));
-                } else if (value instanceof Integer x) {
-                    emit(ActorScalarCallMachine.Instruction.constant(x.longValue()));
+                    return ScalarType.INT;
                 } else if (value instanceof Boolean x) {
                     emit(new ActorScalarCallMachine.Instruction(
                             ActorScalarCallMachine.Op.CONST_BOOL, 0, x ? 1 : 0));
-                } else throw NO;
-            } else if (e instanceof Ast.NameExpr name) {
+                    return ScalarType.BOOL;
+                }
+                throw NO;
+            }
+            if (e instanceof Ast.NameExpr name) {
                 Integer local = locals.get(name.name());
                 if (local == null) throw NO;
                 emit(ActorScalarCallMachine.Instruction.at(
                         ActorScalarCallMachine.Op.LOAD, local));
-            } else if (e instanceof Ast.BinaryExpr binary) {
-                expression(binary.left(), depth + 1);
-                expression(binary.right(), depth + 1);
-                ActorScalarCallMachine.Op operation = switch (binary.operator()) {
-                    case "+" -> ActorScalarCallMachine.Op.ADD;
-                    case "-" -> ActorScalarCallMachine.Op.SUB;
-                    case "*" -> ActorScalarCallMachine.Op.MUL;
-                    case "<" -> ActorScalarCallMachine.Op.LT;
-                    case "<=" -> ActorScalarCallMachine.Op.LE;
-                    case "eq", "==" -> ActorScalarCallMachine.Op.EQ;
+                // M3.3b only admits int parameters and int local bindings.
+                return ScalarType.INT;
+            }
+            if (e instanceof Ast.BinaryExpr binary) {
+                ScalarType left = expression(binary.left(), depth + 1);
+                ScalarType right = expression(binary.right(), depth + 1);
+                if (left != right) throw NO; // no implicit int/bool conversion
+                switch (binary.operator()) {
+                    case "+", "-", "*", "<", "<=" -> {
+                        if (left != ScalarType.INT) throw NO;
+                        ActorScalarCallMachine.Op operation = switch (binary.operator()) {
+                            case "+" -> ActorScalarCallMachine.Op.ADD;
+                            case "-" -> ActorScalarCallMachine.Op.SUB;
+                            case "*" -> ActorScalarCallMachine.Op.MUL;
+                            case "<" -> ActorScalarCallMachine.Op.LT;
+                            default -> ActorScalarCallMachine.Op.LE;
+                        };
+                        emit(operation);
+                        return (operation == ActorScalarCallMachine.Op.LT
+                                || operation == ActorScalarCallMachine.Op.LE)
+                                ? ScalarType.BOOL : ScalarType.INT;
+                    }
+                    case "eq", "==" -> {
+                        emit(ActorScalarCallMachine.Op.EQ);
+                        return ScalarType.BOOL;
+                    }
                     default -> throw NO;
-                };
-                emit(operation);
-            } else if (e instanceof Ast.UnaryExpr unary && unary.operator().equals("-")) {
+                }
+            }
+            if (e instanceof Ast.UnaryExpr unary && unary.operator().equals("-")) {
+                // Preserve left-to-right and signed arithmetic semantics
+                // without implicit Boolean-to-integer coercion.
                 emit(ActorScalarCallMachine.Instruction.constant(0L));
-                expression(unary.operand(), depth + 1);
+                if (expression(unary.operand(), depth + 1) != ScalarType.INT)
+                    throw NO;
                 emit(ActorScalarCallMachine.Op.SUB);
-            } else if (e instanceof Ast.CallExpr call) {
+                return ScalarType.INT;
+            }
+            if (e instanceof Ast.CallExpr call) {
                 call(call, depth + 1, false);
-            } else throw NO;
+                return ScalarType.INT;
+            }
+            throw NO;
         }
 
         private void call(Ast.CallExpr call, int depth, boolean tail) {
@@ -283,9 +323,12 @@ final class ActorScalarSourceLowering {
             Ast.FunctionDecl callee = resolver.find(name.name(), call.arguments().size());
             if (callee == null) throw NO;
             // No partial lowering: all callee declarations are checked
-            // transitively before runtime actor-frame admission.
+            // transitively before runtime actor-frame admission. Each
+            // argument must independently be exactly int, never Boolean.
             int id = enroll(callee);
-            for (Ast.Expr arg : call.arguments()) expression(arg, depth + 1);
+            for (Ast.Expr arg : call.arguments()) {
+                if (expression(arg, depth + 1) != ScalarType.INT) throw NO;
+            }
             emit(ActorScalarCallMachine.Instruction.at(
                     tail ? ActorScalarCallMachine.Op.TAIL_CALL
                          : ActorScalarCallMachine.Op.CALL, id));
