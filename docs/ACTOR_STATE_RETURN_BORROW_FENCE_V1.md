@@ -95,3 +95,9 @@ canary [PR #31](https://github.com/sonus-auris-test/clients-api-contract/pull/31
 proved a separate organization runner executed real steps, **not**
 authorization to copy this private Java compiler tree. No private
 source is exported by this PR.
+
+## Stacked field-path admission refinement (follow-up to this PR)
+
+The subsequent actor-field admission slice rejects projected actor-rooted `rt borrow self.field` and `rt borrow self.items[i]` *before* their expressions reach `validateReturnedBorrow`. The negative returned-borrow fixture suite therefore accepts either a specific actor-field physical-loan admission error or the returned-borrow lifetime error **for projected field cases only**. The whole-`self` return fixture remains required to fail specifically at the returned-borrow lifetime fence.
+
+Consequently the intentional negative mutation in this stacked follow-up targets `wholeActorSelfCannotEscapeViaBorrowedReturn` (not the earlier direct projected field test). The mutated deletion must allow an actor whole-self returned-borrow to pass, causing that one JUnit assertion to fail. Projected-path early rejections cannot mask a missing returned-borrow fence. The full combined gate is **27 + 32 + 12 + 7 + 8 = 86 authored Java tests**, **NOT_EXECUTED** until real source-org or independently authorized exact-source CI starts. No private compiler source was transferred.

@@ -860,6 +860,7 @@ public final class OwnershipChecker {
             if (runtime.arguments().size() != 1) {
                 throw error("rt borrow expects exactly one argument");
             }
+            rejectUnloweredActorFieldBorrow(runtime.arguments().getFirst(), scope);
             BorrowPlace place = borrowPlace(runtime.arguments().getFirst(), scope);
             beginPersistentBorrow(place.owner(), false);
             value = new ValueInfo(
@@ -870,6 +871,7 @@ public final class OwnershipChecker {
         } else if (binding.initializer() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
             // Legacy compatibility only. Canonical source uses rt borrow.
             boolean mutableBorrow = unary.operator().equals("&mut");
+            rejectUnloweredActorFieldBorrow(unary.operand(), scope);
             BorrowPlace place = borrowPlace(unary.operand(), scope);
             if (mutableBorrow && !(unary.operand() instanceof Ast.NameExpr)) {
                 throw error("mutable projected borrows need path-exclusive loan tracking");
@@ -1045,6 +1047,7 @@ public final class OwnershipChecker {
                     throw error("constructor cannot borrow partially initialized self");
                 }
                 boolean mutable = unary.operator().equals("&mut");
+                rejectUnloweredActorFieldBorrow(unary.operand(), scope);
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
                 if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
                     throw error("mutable projected borrows need path-exclusive loan tracking");
@@ -1096,6 +1099,7 @@ public final class OwnershipChecker {
             }
             return switch (runtime.operation()) {
                 case "borrow" -> {
+                    rejectUnloweredActorFieldBorrow(argument, scope);
                     BorrowPlace place = borrowPlace(argument, scope);
                     validateBorrow(place.owner(), false);
                     yield new ValueInfo(
@@ -3956,6 +3960,22 @@ public final class OwnershipChecker {
             if (!entry.getValue() && entry.getKey().moved && entry.getKey().kind != ValueKind.COPY) {
                 throw error("cannot move outer value '" + entry.getKey().debugName + "' from a repeating loop; borrow it or move it before entering the loop");
             }
+        }
+    }
+
+    /**
+     * Fail closed until nested actor state field paths are lowered to
+     * authenticated actor-owned RW regions and physical lexical loans.
+     * This does not replace the independent returned-actor-borrow fence:
+     * whole-self borrow returns are still checked by validateReturnedBorrow.
+     */
+    private void rejectUnloweredActorFieldBorrow(Ast.Expr operand, Scope scope) {
+        if ((operand instanceof Ast.MemberExpr
+                || operand instanceof Ast.IndexExpr)
+                && isRootedAtActorSelf(operand, scope)) {
+            throw error("actor state field/index borrow requires compiler-lowered "
+                    + "region-scoped physical loan; use a Copy snapshot until "
+                    + "actor field projection lowering is available");
         }
     }
 

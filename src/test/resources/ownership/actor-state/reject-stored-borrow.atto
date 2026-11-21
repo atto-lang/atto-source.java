@@ -1,0 +1,11 @@
+// A stored actor-state field borrow lacks a physical scoped region loan.
+define actor Ledger as
+  state {
+    let List<int> entries;
+  }
+  receive(ActorMail<String> mail): void {
+    val borrow List<int> view = rt borrow self.entries;
+    self.end();
+    return;
+  }
+end

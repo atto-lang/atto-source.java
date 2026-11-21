@@ -1,0 +1,11 @@
+// Even a temporary actor-state borrow must be backed by a real region loan.
+define actor Ledger as
+  state {
+    let List<int> entries;
+  }
+  receive(ActorMail<String> mail): void {
+    rt borrow self.entries;
+    self.end();
+    return;
+  }
+end

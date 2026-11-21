@@ -1,0 +1,28 @@
+// A primitive Copy read from actor state is a value, not a borrowed field.
+define actor Counter as
+  state {
+    let int count;
+  }
+
+  on_start(): void {
+    self.count = 5;
+    return;
+  }
+
+  receive(ActorMail<String> mail): void {
+    val int snapshot = self.count;
+    self.send(snapshot);
+    self.end();
+    return;
+  }
+end
+
+pub async routine main(): void {
+  val actor = spawn Counter();
+  await actor.get_ready();
+  actor.send("read");
+  val output = (await actor.outputs.next()).value.unwrap();
+  stdio.stdout.write(output.value);
+  await actor.get_done();
+  return;
+}

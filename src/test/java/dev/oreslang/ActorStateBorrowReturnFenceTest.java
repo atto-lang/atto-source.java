@@ -27,10 +27,21 @@ final class ActorStateBorrowReturnFenceTest {
                 IllegalArgumentException.class,
                 () -> OwnershipChecker.check(Parser.parse(source)),
                 "the ownership checker must itself reject this actor-state escape");
-        assertTrue(failure.getMessage().contains(
-                        "actor-owned state borrow cannot escape its mailbox turn"),
-                "rejection must come from the actor-owner lifetime fence: "
-                        + failure.getMessage());
+        // Projected borrows are rejected at the earlier field-path admission
+        // gate. Whole-self has no projection and MUST still rely on the
+        // independent return-lifetime fence; preserve mutation sensitivity.
+        String message = failure.getMessage();
+        if (fixtureName.equals("reject-return-self-borrow.atto")) {
+            assertTrue(message.contains(
+                            "actor-owned state borrow cannot escape its mailbox turn"),
+                    "whole actor self must fail the returned-borrow fence: " + message);
+        } else {
+            assertTrue(message.contains(
+                            "actor-owned state borrow cannot escape its mailbox turn")
+                            || message.contains(
+                                    "actor state field/index borrow requires compiler-lowered"),
+                    "projected actor state must fail before return escape: " + message);
+        }
 
         // End-to-end compiler admission must independently reject the same
         // source, even if the type checker rejects earlier on another rule.
