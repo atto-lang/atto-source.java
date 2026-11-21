@@ -16,7 +16,7 @@ import java.util.function.BooleanSupplier;
  * entrypoint. A real Truffle embedder must provide its context-owned root
  * guest entry predicate and must drive disposal through the owning context.
  */
-final class HostGeneratorSession implements AutoCloseable {
+public final class HostGeneratorSession implements AutoCloseable {
     private final OresScheduler root;
     private final HostGeneratorTurnPump pump;
     private final GeneratorRuntime.SchedulerBacked<Object> frame;
@@ -70,7 +70,18 @@ final class HostGeneratorSession implements AutoCloseable {
                 GeneratorRuntime.schedulerBacked(root, pump.token(), lowered), lowered);
     }
 
-    OresFuture<GeneratorRuntime.Step<Object>> nextStep() {
+    static HostGeneratorSession fromTypecheckedProgram(
+            OresScheduler root, HostGeneratorTurnPump contextPump,
+            dev.oreslang.ast.Ast.Program program,
+            String function, Map<String, ?> arguments) {
+        var lowered = GeneratorRuntime.SourceLowering.compile(
+                program, function, arguments);
+        return new HostGeneratorSession(root, contextPump,
+                GeneratorRuntime.schedulerBacked(root, contextPump.token(), lowered),
+                lowered);
+    }
+
+    public OresFuture<GeneratorRuntime.Step<Object>> nextStep() {
         if (sealed.get()) {
             throw new java.util.concurrent.RejectedExecutionException(
                     "generator session admission is sealed");
@@ -78,12 +89,12 @@ final class HostGeneratorSession implements AutoCloseable {
         return pump.requestCertified(pump.token(), frame.nextTurn());
     }
 
-    void seal() {
+    public void seal() {
         sealed.set(true);
         pump.seal();
     }
 
-    boolean isQuiescent() { return pump.isQuiescent(); }
+    public boolean isQuiescent() { return pump.isQuiescent(); }
 
     // Internal verification probes; not guest or public Polyglot capabilities.
     boolean awaitingSourceFuture() { return lowered.awaitingSourceFuture(); }

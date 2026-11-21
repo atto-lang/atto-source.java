@@ -194,7 +194,11 @@ public final class GeneratorRuntime {
         }
 
         static SourceLowering compile(String source, String function, Map<String, ?> args) {
-            Ast.Program program = OresCompiler.parseAndTypeCheck(source);
+            return compile(OresCompiler.parseAndTypeCheck(source), function, args);
+        }
+
+        static SourceLowering compile(Ast.Program program, String function, Map<String, ?> args) {
+            Objects.requireNonNull(program, "program");
             Ast.FunctionDecl target = null;
             for (Ast.ModuleDecl module : program.modules()) {
                 for (Ast.Decl decl : module.declarations()) {

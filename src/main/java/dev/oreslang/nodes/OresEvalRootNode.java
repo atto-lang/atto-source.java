@@ -54,6 +54,8 @@ public final class OresEvalRootNode extends RootNode {
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String INVOKE_PUBLIC_FUTURE_BRIDGE_COMMAND =
             "__ores_internal_invoke_public_future_bridge__";
+    public static final String OPEN_PUBLIC_GENERATOR_BRIDGE_COMMAND =
+            "__ores_internal_open_public_generator_bridge__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
 
     private final Ast.Program program;
@@ -118,6 +120,24 @@ public final class OresEvalRootNode extends RootNode {
             OresHostFutureBridge.requireActiveScope(functionName, nonce, context, this);
         }
 
+        boolean generatorBridgeCommand = arguments.length > 0
+                && OPEN_PUBLIC_GENERATOR_BRIDGE_COMMAND.equals(arguments[0]);
+        if (generatorBridgeCommand) {
+            if (context.isolatePolicy().adversarial()) {
+                throw new SecurityException(
+                        "scoped host generator unavailable in adversarial contexts");
+            }
+            if (arguments.length != 3
+                    || !(arguments[1] instanceof String functionName)
+                    || !(arguments[2] instanceof String nonce)) {
+                throw new SecurityException("invalid scoped host generator command");
+            }
+            // Consume a one-use ticket before linking or preparing any source
+            // continuation. Raw internal command strings cannot mint sessions.
+            OresHostGeneratorBridge.requireActiveScope(
+                    functionName, nonce, context, this);
+        }
+
         // A malformed reserved host command must not fall through to guest
         // main or trigger evaluator initialization as a side effect.
         if (arguments.length > 0
@@ -137,6 +157,10 @@ public final class OresEvalRootNode extends RootNode {
                     || (futureBridgeCommand
                         && arguments.length >= 3
                         && arguments[1] instanceof String
+                        && arguments[2] instanceof String)
+                    || (generatorBridgeCommand
+                        && arguments.length == 3
+                        && arguments[1] instanceof String
                         && arguments[2] instanceof String);
             if (!wellFormed) {
                 throw new SecurityException(
@@ -145,6 +169,19 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         Evaluator current = evaluator(context);
+        if (generatorBridgeCommand) {
+            String function = (String) arguments[1];
+            String nonce = (String) arguments[2];
+            current.link();
+            // Ast.Program is already parsed and typechecked by the language
+            // parser. No unsafe Future is sent as a guest callable argument.
+            var dependencies = OresHostGeneratorBridge.dependencies(
+                    function, nonce, context, this);
+            var session = context.openHostGeneratorSession(program, function, dependencies);
+            OresHostGeneratorBridge.publish(function, nonce, context, this, session);
+            // Never return a mutable guest handle via a Polyglot Value.
+            return 0;
+        }
         if (isControl(arguments, LINK_ONLY_COMMAND)) {
             current.link();
             return null;

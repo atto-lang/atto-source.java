@@ -144,7 +144,8 @@ public final class OresScheduler implements AutoCloseable {
             // be mistaken for successful physical DONE evidence.
             if (runner.physicalExitUnproven.get()) {
                 physicalDone.failFromRuntime(new IllegalStateException(
-                        "guest turn executor failed: physical context exit not proven"));
+                        "guest turn executor failed: physical context exit not proven",
+                        runner.physicalExitFailure.get()));
             } else {
                 physicalDone.completeFromRuntime(null);
             }
@@ -643,6 +644,8 @@ public final class OresScheduler implements AutoCloseable {
         // Permanent negative evidence for this task, including guest leave
         // failure; no later cancellation or retry may turn it into DONE.
         private final AtomicBoolean physicalExitUnproven = new AtomicBoolean();
+        private final AtomicReference<Throwable> physicalExitFailure =
+                new AtomicReference<>();
         // Reserved before QUEUED publication; released after VM carrier exit.
         private final AtomicInteger outstandingCarrierTurns = new AtomicInteger();
         private final AtomicReference<CarrierLease> queuedCarrierLease =
@@ -806,7 +809,10 @@ public final class OresScheduler implements AutoCloseable {
                         runTurn();
                     }
                 }, normalExit -> afterCarrierTurn(lease::release, normalExit),
-                        this::failTerminal, lease::enterContext);
+                        failure -> {
+                            physicalExitFailure.compareAndSet(null, failure);
+                            failTerminal(failure);
+                        }, lease::enterContext);
             } catch (RuntimeException | Error rejected) {
                 lease.release();
                 failTerminal(rejected);

@@ -19,6 +19,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
 public final class OresContext implements AutoCloseable {
@@ -33,10 +36,16 @@ public final class OresContext implements AutoCloseable {
     // real VM root turn may dispatch them; the current virtual-thread generator
     // producer is not yet allowed through this admission boundary.
     private final HostGeneratorTurnPump hostGeneratorTurns;
+    private final AtomicBoolean hostGeneratorSessionOpened = new AtomicBoolean();
     // A scheduler-current ThreadLocal by itself cannot prove a physical
     // Truffle guest entry. Scope this marker inside executeGuestTurn after
     // TruffleContext.enter succeeds and always clear it on leave.
     private final ThreadLocal<Boolean> rootGuestEntryScope = new ThreadLocal<>();
+    // A Truffle access check may be performed by a DIFFERENT caller than
+    // the requested already-entering runtime CONTROL/actor carrier. Only
+    // physical entry wrappers publish these short-lived thread permits.
+    private final ConcurrentHashMap<Thread, AtomicInteger> physicalGuestEntryPermits =
+            new ConcurrentHashMap<>();
     private final ArrayBlockingQueue<Runnable> isolatedRootTurns;
     private final ActorRuntime actors;
     private final AsyncRuntime asyncRuntime;
@@ -133,11 +142,29 @@ public final class OresContext implements AutoCloseable {
             this.actors = actors;
             this.asyncRuntime = async;
             this.garbageCollector = gc;
+            var generatorPumpRegistration =
+                    new java.util.concurrent.atomic.AtomicReference<HostGeneratorTurnPump>();
             this.hostGeneratorTurns = new HostGeneratorTurnPump(
                     contextId, () -> generatorRootTurnAuthorized(
                             vm.isRootSchedulerCurrent(),
                             Boolean.TRUE.equals(rootGuestEntryScope.get())),
-                    vm.rootScheduler());
+                    () -> {
+                        HostGeneratorTurnPump registered = generatorPumpRegistration.get();
+                        if (registered == null) {
+                            throw new IllegalStateException("generator pump not initialized");
+                        }
+                        // Host threads only enqueue. The prestarted root
+                        // carrier must enter Truffle before certified dispatch.
+                        OresFuture<Void> wake = vm.rootScheduler().startSync(() -> {
+                            registered.dispatchOne();
+                            return null;
+                        });
+                        wake.whenCompleteRuntime((ignored, failure) -> {
+                            if (failure != null) registered.seal();
+                        });
+                    },
+                    256, vm.rootScheduler());
+            generatorPumpRegistration.set(this.hostGeneratorTurns);
         } catch (RuntimeException | Error failure) {
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
@@ -394,6 +421,32 @@ public final class OresContext implements AutoCloseable {
         return hostGeneratorTurns;
     }
 
+    /**
+     * Create a single host-owned, typechecked generator session for this
+     * context. The capture ticket is verified by OresEvalRootNode before
+     * invoking this method; it never crosses the guest argument boundary.
+     * Parallel sessions are denied until generator-specific pump isolation
+     * and context-wide admission have been formally refined.
+     */
+    public HostGeneratorSession openHostGeneratorSession(
+            Ast.Program program, String function, Map<String, ?> dependencies) {
+        if (isolatePolicy.adversarial()) {
+            throw new SecurityException(
+                    "host generator session not supported under adversarial isolation");
+        }
+        if (hostGeneratorSessionOpened.get()) {
+            throw new RejectedExecutionException(
+                    "this context already owns a host generator session");
+        }
+        HostGeneratorSession session = HostGeneratorSession.fromTypecheckedProgram(
+                vm.rootScheduler(), hostGeneratorTurns, program, function, dependencies);
+        if (!hostGeneratorSessionOpened.compareAndSet(false, true)) {
+            throw new RejectedExecutionException(
+                    "concurrent generator session publication rejected");
+        }
+        return session;
+    }
+
     /** Neither a scheduler binding nor a guest-entry lease alone suffices. */
     static boolean generatorRootTurnAuthorized(
             boolean rootSchedulerBound, boolean rootGuestPhysicallyEntered) {
@@ -432,8 +485,41 @@ public final class OresContext implements AutoCloseable {
         executeGuestTurn(turn, false);
     }
 
+    public boolean hasRegisteredPhysicalGuestEntry(Thread requested) {
+        AtomicInteger registered = physicalGuestEntryPermits.get(requested);
+        return registered != null && registered.get() > 0;
+    }
+
+    private void acquirePhysicalGuestEntryPermit() {
+        if (!OresScheduler.isSchedulerCarrierThread()
+                && !ActorRuntime.isActorCarrierThread()
+                && !AsyncRuntime.isAsyncCarrierThread()) {
+            throw new SecurityException(
+                    "physical guest entry requires a runtime-owned carrier");
+        }
+        physicalGuestEntryPermits.compute(Thread.currentThread(), (thread, old) -> {
+            if (old == null) return new AtomicInteger(1);
+            old.incrementAndGet();
+            return old;
+        });
+    }
+
+    private void releasePhysicalGuestEntryPermit() {
+        Thread current = Thread.currentThread();
+        physicalGuestEntryPermits.compute(current, (thread, counter) -> {
+            if (counter == null || counter.decrementAndGet() < 0) {
+                throw new IllegalStateException("physical guest entry permit underflow");
+            }
+            return counter.get() == 0 ? null : counter;
+        });
+    }
+
     private void executeGuestTurn(Runnable turn, boolean serialize) {
         if (serialize) adversarialActorTurnLock.lock();
+        // The permit is published immediately before TruffleContext.enter,
+        // never when a Future is merely queued. Failed entry and failed leave
+        // both revoke it; physical DONE proof remains a separate barrier.
+        acquirePhysicalGuestEntryPermit();
         TruffleContext truffleContext = env.getContext();
         Object previous = null;
         boolean entered = false;
@@ -442,8 +528,12 @@ public final class OresContext implements AutoCloseable {
             entered = true;
             turn.run();
         } finally {
-            if (entered) truffleContext.leave(null, previous);
-            if (serialize) adversarialActorTurnLock.unlock();
+            try {
+                if (entered) truffleContext.leave(null, previous);
+            } finally {
+                releasePhysicalGuestEntryPermit();
+                if (serialize) adversarialActorTurnLock.unlock();
+            }
         }
     }
 
