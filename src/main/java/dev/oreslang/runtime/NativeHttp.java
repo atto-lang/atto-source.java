@@ -31,10 +31,22 @@ public final class NativeHttp implements AutoCloseable {
         timers.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
     }
 
+    /** Supervisor-only service creation. Actor-derived I/O workers are NOT supervisors. */
+    static void requireSupervisorListenerAdmission() {
+        if (ActorRuntime.inActorExecution()
+                || ActorRuntime.currentNativeIoAuthority() != null
+                || ActorRuntime.inActorGroupMailmanExecution()) {
+            // Native I/O workers carry actor-scoped permission checks, NOT
+            // supervisor rights to create a new listening service. Likewise
+            // Mailman callbacks must not use the ambient host context.
+            throw new SecurityException("HTTP listeners belong to the supervisor");
+        }
+    }
+
     public synchronized Server listen(String host, int port, int capacity, int bodyLimit, int deadlineMillis) {
         long perf = CorePerf.start();
         if (closed) throw new IllegalStateException("HTTP runtime closed");
-        if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP listeners belong to the supervisor");
+        requireSupervisorListenerAdmission();
         if (host == null || host.isBlank() || port < 0 || port > 65535
                 || capacity < 1 || capacity > 65536 || bodyLimit < 1 || bodyLimit > 64 * 1024 * 1024
                 || deadlineMillis < 1) throw new IllegalArgumentException("invalid HTTP listener limits");

@@ -315,6 +315,12 @@ public final class AsyncNativeIo implements AutoCloseable {
                 if (admittedActor != null) currentOperationActor.set(admittedActor);
                 ActorRuntime.enterNativeIoAuthority(ioAuthority);
                 authorityEntered = ioAuthority != null;
+                // A queued operation may start long after its actor's
+                // delegation was revoked. Captured authority is not a lease
+                // exempt from revocation: fail before executing work.call().
+                // An OS syscall that has already started still requires
+                // separate physical retirement/fencing semantics.
+                if (ioAuthority != null) ioAuthority.requireActive(operation);
                 value = work.call();
             } catch (Throwable caught) {
                 failure = caught;
