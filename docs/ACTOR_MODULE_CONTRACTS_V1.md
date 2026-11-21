@@ -197,3 +197,25 @@ emulation may be reported as guest parity.
 
 The source repository remains `oreslang-source.java`; AttoLang naming
 and `.atto` examples are canonical while legacy `.ores` remains supported.
+
+## Stage 3 (draft): mailbox hook conformance is actor-local
+
+The compiler's existing actor `receive` entry point is a scheduler-owned hook,
+not an ordinary public receiver method. Module contracts may require its
+existence with the precise hook shape, but **may not export it as public**:
+
+```atto
+define contract WorkerMailbox as
+  actor Worker;
+  mtd receive(Worker worker)(ActorMail<int> mail): void;
+end
+```
+
+The requirement is checked against the actor's existing instance method. The
+contract does not create mailbox delivery logic, another receive overload,
+actor-state authority, or a runtime witness. The checker rejects `pub receive`,
+zero/multiple arguments, non-`ActorMail<T>` arguments, and non-`void` returns.
+This is a syntax/typechecking hardening only; **no execution evidence exists**
+for this stage. Future typed-message dispatch must introduce a separate,
+explicitly versioned contract and must not inherit this legacy hook ABI by
+accident.
