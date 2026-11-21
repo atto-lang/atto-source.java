@@ -839,6 +839,43 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
+            // M3: a closed, pure-int fnc graph can run from compiled typed
+            // actor frame slots instead of recursively calling executeRaw.
+            // Admission is all-or-nothing BEFORE guest evaluation. The legacy
+            // evaluator handles every unsupported callable or expression.
+            if (initial.owner() == this && initial.kind() == InvocationKind.FUNCTION
+                    && initial.target() instanceof Ast.FunctionDecl scalar
+                    && scalar.parameters().size() == initial.arguments().size()
+                    && ActorRuntime.currentActorKind() != ActorRuntime.ActorKind.UNTRUSTED
+                    && initial.arguments().stream().allMatch(v ->
+                            v instanceof Byte || v instanceof Short
+                                    || v instanceof Integer || v instanceof Long)) {
+                // Only resolve direct functions from the current source
+                // module. Named imports, host symbols and ambiguous overloads
+                // retain the original dynamic evaluator's selection rules.
+                String scalarModule = declarationModules.get(scalar);
+                ScalarFrameMachine.Plan plan = scalarModule == null ? null :
+                        ScalarFrameMachine.compile(scalar, (name, arity) -> {
+                            if (namedImports.containsKey(name)
+                                    || namespaceImports.containsKey(name)
+                                    || hostFunctions.containsKey(name)
+                                    || ambiguousFunctions.contains(name)) return null;
+                            Ast.FunctionDecl target = findFunction(name, arity);
+                            if (target == null || !scalarModule.equals(
+                                    declarationModules.get(target))) return null;
+                            return target;
+                        });
+                if (plan != null) {
+                    try {
+                        return ScalarFrameMachine.execute(
+                                plan, initial.arguments(), this::binary,
+                                context::schedulerSafepoint);
+                    } catch (RuntimeException failure) {
+                        throw dev.oreslang.runtime.SourceBoundaryTrace.record(
+                                failure, codeUnitId, scalar.name(), "function");
+                    }
+                }
+            }
             // Shared compiler/interpreter call entry for functions, methods,
             // static methods and invokables. A source actor charges one
             // generation-fenced 16-byte frame descriptor to its own arena
