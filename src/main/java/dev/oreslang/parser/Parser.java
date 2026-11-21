@@ -7116,6 +7116,16 @@ public final class Parser {
         return parsePostfixSuffix(parsePrimary());
     }
 
+    /** True when this source declares a top-level fnc/routine with that name. */
+    private boolean declaredRootCallable(String name) {
+        for (int i = 0; i + 1 < tokens.size(); i++) {
+            Token.Type kind = tokens.get(i).type();
+            if ((kind == FNC || kind == ROUTINE) && tokens.get(i + 1).type() == IDENT
+                    && tokens.get(i + 1).lexeme().equals(name)) return true;
+        }
+        return false;
+    }
+
     private static final java.util.Set<String> CANONICAL_OF_FACTORIES =
             java.util.Set.of("List", "Array", "Tuple", "Pair", "Entry", "Map", "Record");
 
@@ -7214,11 +7224,26 @@ public final class Parser {
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, typeArguments, args);
+            } else if (check(QUESTION) && adjacent(previous(), peek()) && current + 1 < tokens.size()
+                    && java.util.Set.of(SEMICOLON, RPAREN, COMMA, RBRACKET, RBRACE)
+                            .contains(tokens.get(current + 1).type())) {
+                // Postfix `e?`: unwrap Ok/Some or return Err/None from the callable.
+                advance();
+                expr = new Ast.RuntimeCallExpr("propagate", List.of(expr));
             } else if (canonicalOfFactory(expr) != null && check(LPAREN)) {
                 advance(); // '('
                 expr = parseCanonicalOf(canonicalOfFactory(expr));
             } else if (match(LPAREN)) {
                 rejectUnsupportedActorFactory(expr);
+                if (expr instanceof Ast.NameExpr sleeperName && sleeperName.name().equals("sleeper")
+                        && !declaredRootCallable("sleeper")) {
+                    // `sleeper(d)`: the non-blocking timer process.sleep_async(d)
+                    // (a Future<void>; only awaitable from a suspending scope).
+                    List<Ast.Expr> delay = parseCallArgumentsUntil(RPAREN);
+                    consume(RPAREN, "expected ')' after sleeper duration");
+                    expr = new Ast.CallExpr(new Ast.MemberExpr(new Ast.NameExpr("process"), "sleep_async"), delay);
+                    continue;
+                }
                 if (expr instanceof Ast.NameExpr calleeName) {
                     directCallSites.add(java.util.Map.entry(calleeName.name(), previous()));
                     if (PRELUDE_PRODUCTS.containsKey(calleeName.name())) {
@@ -7468,7 +7493,24 @@ public final class Parser {
         if (match(MATCH)) return parseValueMatch();
         // Typed value `switch<T> subject over ... end` is the same checked value match.
         if (check(SWITCH) && checkNext(LT)) { advance(); return parseValueMatch(); }
-        if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
+        if (match(INT)) {
+            Token number = previous();
+            long value = parseSignedI64(number);
+            // Duration literal `100ms` / `2s` / `1min`: integer milliseconds.
+            if (check(IDENT) && adjacent(number, peek())) {
+                String unit = peek().lexeme();
+                long scale = switch (unit) { case "ms" -> 1L; case "s" -> 1000L; case "min" -> 60_000L; default -> 0L; };
+                if (scale != 0) {
+                    advance();
+                    try {
+                        return new Ast.LiteralExpr(Math.multiplyExact(value, scale));
+                    } catch (ArithmeticException overflow) {
+                        throw error(previous(), "duration literal overflows signed 64-bit milliseconds");
+                    }
+                }
+            }
+            return new Ast.LiteralExpr(value);
+        }
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
             String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
@@ -7615,6 +7657,12 @@ public final class Parser {
         if (check(FNC) && checkNext(LPAREN)) {
             advance(); // explicit anonymous fnc expression, not a declaration
             return parseLambda(false);
+        }
+        if (check(SUSPENDS) && checkNext(PIPE)) {
+            // `susp |x| -> e`: the marker is admitted, but lambda bodies are still
+            // checked as non-suspending, so an awaiting body fails closed.
+            advance();
+            return parsePipeLambda(false);
         }
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);

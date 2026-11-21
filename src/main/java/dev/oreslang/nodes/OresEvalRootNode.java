@@ -8494,6 +8494,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("int")) return IntNamespace.INSTANCE;
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
@@ -8801,6 +8802,17 @@ public final class OresEvalRootNode extends RootNode {
                     return null;
                 }
                 if (runtime.operation().equals("typeof")) return typeInfoOf(value);
+                if (runtime.operation().equals("propagate")) {
+                    if (value instanceof ResultValue result) {
+                        if (result.ok()) return result.value();
+                        throw new ReturnSignal(result);
+                    }
+                    if (value instanceof OptionValue option) {
+                        if (option.present()) return option.value();
+                        throw new ReturnSignal(option);
+                    }
+                    throw new IllegalStateException("'?' reached a value that is not a Result or Option");
+                }
                 if (runtime.operation().equals("detach")) {
                     // `do task`: the root program joins detached tasks before shutdown.
                     context.registerDetachedTask(value);
@@ -9881,6 +9893,20 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     default -> throw new IllegalArgumentException("unknown http member " + name);
                 };
+            }
+            if (receiver instanceof IntNamespace) {
+                if (name.equals("parse")) return (Invokable) args -> {
+                    requireOne(args, "int.parse");
+                    String text = requireString(args.getFirst(), "int.parse text");
+                    if (!text.matches("-?[0-9]{1,19}")) {
+                        return new ResultValue(false, new TrapError("ParseError", TrapError.bounded("not a decimal int: " + text)));
+                    }
+                    try { return new ResultValue(true, Long.parseLong(text)); }
+                    catch (NumberFormatException overflow) {
+                        return new ResultValue(false, new TrapError("ParseError", "int out of range"));
+                    }
+                };
+                throw new IllegalArgumentException("unknown int member " + name);
             }
             if (receiver instanceof EnvFacade environment) {
                 return switch (name) {
@@ -13665,6 +13691,7 @@ public final class OresEvalRootNode extends RootNode {
         if (failure instanceof GuestThrow thrown) return new ResultValue(false, thrown.payload);
         return new ResultValue(false, TrapError.of(failure));
     }
+    private enum IntNamespace { INSTANCE }
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
     }

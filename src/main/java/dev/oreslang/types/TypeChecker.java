@@ -131,6 +131,8 @@ public final class TypeChecker {
     private String currentLexicalModule;
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
+    /** Expected return type of the innermost enclosing callable body (for postfix `?`). */
+    private Type currentReturnScope;
     private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
@@ -2441,6 +2443,8 @@ public final class TypeChecker {
         Env env = new Env(parent);
         Env previousTypeScope = currentTypeScope;
         currentTypeScope = env;
+        Type previousReturnScope = currentReturnScope;
+        currentReturnScope = expectedReturn;
         try {
             // Reserve names before checking any initializer, so a use before the
             // declaration cannot silently resolve as an unrelated nominal type.
@@ -2467,6 +2471,7 @@ public final class TypeChecker {
                 checkStatement(stmt, env, generics, expectedReturn, self);
             }
         } finally {
+            currentReturnScope = previousReturnScope;
             currentTypeScope = previousTypeScope;
         }
     }
@@ -3799,6 +3804,27 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
+            if (runtime.operation().equals("propagate")) {
+                // `e?`: unwrap Ok/Some, or return the Err/None from the enclosing
+                // callable, which must itself return a compatible Result/Option.
+                Type operand = runtime.arguments().size() == 1
+                        ? deref(typeOf(runtime.arguments().getFirst(), env, generics, self)) : null;
+                Type enclosing = currentReturnScope == null ? null : deref(currentReturnScope);
+                if (operand instanceof Named result && result.name().equals("Result") && result.arguments().size() == 2) {
+                    if (!(enclosing instanceof Named outer && outer.name().equals("Result") && outer.arguments().size() == 2)) {
+                        throw new IllegalArgumentException("'?' on a Result needs an enclosing callable that returns Result");
+                    }
+                    requireAssignable(result.arguments().get(1), outer.arguments().get(1), "'?' propagated error");
+                    return result.arguments().get(0);
+                }
+                if (operand instanceof Named option && option.name().equals("Option") && option.arguments().size() == 1) {
+                    if (!(enclosing instanceof Named outer && outer.name().equals("Option"))) {
+                        throw new IllegalArgumentException("'?' on an Option needs an enclosing callable that returns Option");
+                    }
+                    return option.arguments().getFirst();
+                }
+                throw new IllegalArgumentException("'?' applies only to Result or Option values; got " + operand);
+            }
             if (runtime.operation().equals("detach")) {
                 Type detached = runtime.arguments().size() == 1
                         ? typeOf(runtime.arguments().getFirst(), env, generics, self) : null;
@@ -3865,6 +3891,15 @@ public final class TypeChecker {
                     && nominalEnums.enums().containsKey(shadowOwner.name())) {
                 throw new IllegalArgumentException("local binding '" + shadowOwner.name()
                         + "' shadows nominal enum namespace; enum cases cannot be reached through it");
+            }
+            if (call.callee() instanceof Ast.MemberExpr parseMember
+                    && parseMember.receiver() instanceof Ast.NameExpr intOwner
+                    && intOwner.name().equals("int") && parseMember.member().equals("parse")
+                    && env.lookup("int") == null) {
+                // int.parse(text): Ok(value) for a canonical decimal int, else Err(Error).
+                if (call.arguments().size() != 1) throw new IllegalArgumentException("int.parse expects one string");
+                requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self), Primitive.STRING, "int.parse text");
+                return new Named("Result", List.of(Primitive.INT, new Named("Error", List.of())));
             }
             if (call.callee() instanceof Ast.MemberExpr enumMember
                     && enumMember.receiver() instanceof Ast.NameExpr enumOwner

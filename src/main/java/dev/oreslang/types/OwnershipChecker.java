@@ -1862,6 +1862,13 @@ public final class OwnershipChecker {
                     checkExpr(argument, scope, true);
                     yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
                 }
+                case "propagate" -> {
+                    // The Result/Option is consumed: its payload moves out, or it is returned.
+                    ValueInfo source = checkExpr(argument, scope, true);
+                    Ast.TypeRef payload = source.type != null && !source.type.arguments().isEmpty()
+                            ? source.type.arguments().getFirst() : Ast.TypeRef.inferred();
+                    yield new ValueInfo(payload, isCopyType(payload) ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+                }
                 case "detach" -> {
                     // The detached task owns its captures exactly like any task.
                     checkExpr(argument, scope, true);
