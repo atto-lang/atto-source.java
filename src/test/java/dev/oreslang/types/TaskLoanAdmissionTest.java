@@ -15,8 +15,10 @@ final class TaskLoanAdmissionTest {
     private static final TaskAccessVerifier.Root ROOT =
             new TaskAccessVerifier.Root("PROCESS", 901, 1, true);
 
+    private static final Ast.Program PROGRAM =
+            new Ast.Program(List.of());
     private static final SendSyncTraits SOURCE_PROOF =
-            new SendSyncTraits(new Ast.Program(List.of()), Set.of());
+            new SendSyncTraits(PROGRAM, Set.of());
     private static final ThreadSafetyTraits.NominalProof RESOLVED_PROOF =
             (type, trait) -> false;
 
@@ -27,8 +29,10 @@ final class TaskLoanAdmissionTest {
         var typed = new TaskAccessVerifier.CoherentTypedClaim(
                 claim, new Ast.TypeRef("int", List.of(), false),
                 Types.Primitive.INT);
-        return verifier.admitCoherentTypedRuntimeBound(
-                List.of(typed), SOURCE_PROOF, RESOLVED_PROOF);
+        TaskAccessVerifier.CoherentAccessProof proof =
+                TaskAccessVerifier.proveCoherentTyped(
+                        List.of(typed), SOURCE_PROOF, RESOLVED_PROOF);
+        return verifier.admitProvenRuntimeBound(proof, PROGRAM);
     }
 
     private static OresTaskScope.CompilerScopeEpoch epochForTest() {

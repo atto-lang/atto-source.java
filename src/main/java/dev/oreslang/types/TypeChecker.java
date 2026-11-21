@@ -108,10 +108,31 @@ public final class TypeChecker {
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
+    /** Exact executable Task proofs minted only while validating compiler execution. */
+    private TaskBoundaryAdmissions taskBoundaryAdmissions;
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
     public record TypeCheckResult(Ast.Program program, List<String> warnings) {
         public TypeCheckResult { warnings = List.copyOf(warnings); }
+    }
+
+    /** Type result plus sealed, non-executable exact-boundary Task proofs. */
+    public record TaskTypeCheckResult(
+            Ast.Program program,
+            List<String> warnings,
+            TaskBoundaryAdmissions taskAdmissions) {
+        public TaskTypeCheckResult {
+            warnings = List.copyOf(warnings);
+            java.util.Objects.requireNonNull(taskAdmissions, "taskAdmissions");
+            if (!taskAdmissions.sealed()) {
+                throw new IllegalArgumentException(
+                        "Task boundary admissions must be sealed");
+            }
+            if (taskAdmissions.executable()) {
+                throw new IllegalArgumentException(
+                        "type analysis cannot mint executable Task authority");
+            }
+        }
     }
     /** The one explicit struct literal currently permitted to omit declared fields. */
     private Ast.ObjectExpr permittedPartialStructInitializer;
@@ -135,6 +156,26 @@ public final class TypeChecker {
         checker.collect(program);
         checker.validate(program);
         return new TypeCheckResult(program, checker.warnings);
+    }
+
+    /**
+     * Full type validation while collecting exact-identity Task proofs.
+     * The returned ledger is sealed against mutation but deliberately lacks
+     * executable authority until OwnershipChecker validates the same Program.
+     */
+    public static TaskTypeCheckResult checkTypesWithTaskAdmissions(
+            Ast.Program program) {
+        program = AnnotationExpander.expand(program);
+        ReturnCleanupChecker.check(program);
+        TypeChecker checker = new TypeChecker();
+        checker.taskBoundaryAdmissions = new TaskBoundaryAdmissions(program);
+        checker.validateImports(program);
+        checker.collect(program);
+        checker.validate(program);
+        return new TaskTypeCheckResult(
+                program,
+                checker.warnings,
+                checker.taskBoundaryAdmissions.seal());
     }
 
     /**
@@ -3779,6 +3820,10 @@ public final class TypeChecker {
                             (named, trait) -> false)) {
                         throw new IllegalArgumentException(
                                 "guest scalar Task capture failed resolved Send proof");
+                    }
+                    if (taskBoundaryAdmissions != null) {
+                        taskBoundaryAdmissions.recordScalar(
+                                scalarTask, returned, ownedCopy);
                     }
                     return ownedCopy;
                 }

@@ -33,6 +33,7 @@ public final class SendSyncTraits {
     private final Set<String> ambiguous = new HashSet<>();
     private final Set<String> shadowedTypeNames = new HashSet<>();
     private final Set<String> trustedIntrinsicNames;
+    private final Ast.Program programIdentity;
 
     /**
      * Default guest-facing mode: unlowered synchronization and region constructors
@@ -48,13 +49,13 @@ public final class SendSyncTraits {
      * Never populate this set from source annotations or type spelling alone.
      */
     public SendSyncTraits(Ast.Program program, Set<String> trustedIntrinsicNames) {
+        this.programIdentity = Objects.requireNonNull(program, "program");
         this.trustedIntrinsicNames = Set.copyOf(
                 Objects.requireNonNull(trustedIntrinsicNames, "trustedIntrinsicNames"));
         if (!Set.of("Arc", "Weak", "Shared", "Mutex", "RwLock",
                     "Array", "List", "InvertedArray", "Option", "Result").containsAll(this.trustedIntrinsicNames)) {
             throw new IllegalArgumentException("unrecognized trusted intrinsic");
         }
-        Objects.requireNonNull(program, "program");
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.ClassDecl klass) {
@@ -69,6 +70,10 @@ public final class SendSyncTraits {
             }
         }
     }
+    Ast.Program programIdentity() {
+        return programIdentity;
+    }
+
     public Traits derive(Ast.TypeRef type) {
         return derive(type, Map.of(), new HashSet<>());
     }

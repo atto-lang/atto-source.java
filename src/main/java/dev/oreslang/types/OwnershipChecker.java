@@ -69,6 +69,35 @@ public final class OwnershipChecker {
         return program;
     }
 
+    /**
+     * Unforgeable proof that ownership/borrow validation completed for one
+     * exact post-typecheck Program instance. The constructor is private so an
+     * executable Task admission cannot be upgraded from type analysis alone.
+     */
+    public static final class TaskAdmissionSeal {
+        private final Ast.Program programIdentity;
+
+        private TaskAdmissionSeal(Ast.Program programIdentity) {
+            this.programIdentity =
+                    java.util.Objects.requireNonNull(
+                            programIdentity, "programIdentity");
+        }
+
+        Ast.Program programIdentity() {
+            return programIdentity;
+        }
+    }
+
+    /**
+     * Run the complete ownership pass and mint execution authority for the
+     * same exact Program object only after validation succeeds.
+     */
+    public static TaskAdmissionSeal checkForTaskAdmission(
+            Ast.Program program) {
+        check(program);
+        return new TaskAdmissionSeal(program);
+    }
+
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {

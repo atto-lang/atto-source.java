@@ -180,6 +180,25 @@ final class TaskAccessVerifier {
     }
 
     /**
+     * Immutable result of coherent source/resolved type validation. The live
+     * trait authorities are consumed while this proof is minted; runtime-bound
+     * admission later receives only the exact program identity and frozen
+     * ordered claims.
+     */
+    static final class CoherentAccessProof {
+        private final Ast.Program programIdentity;
+        private final List<Claim> claims;
+
+        private CoherentAccessProof(
+                Ast.Program programIdentity,
+                List<Claim> claims) {
+            this.programIdentity =
+                    Objects.requireNonNull(programIdentity, "programIdentity");
+            this.claims = List.copyOf(Objects.requireNonNull(claims, "claims"));
+        }
+    }
+
+    /**
      * Atomic, dual-representation admission for supported source Task
      * captures and future scoped region loans. A passing type proof is still
      * NOT physical quiescence, actor authorization or executable nb lowering.
@@ -188,6 +207,20 @@ final class TaskAccessVerifier {
      */
     public synchronized Ticket admitCoherentTyped(
             List<CoherentTypedClaim> requested, SendSyncTraits sourceProof,
+            ThreadSafetyTraits.NominalProof resolvedNominals) {
+        CoherentAccessProof proof =
+                proveCoherentTyped(requested, sourceProof, resolvedNominals);
+        // Reuses the SAME ledger and all-or-nothing alias/generation rules.
+        return admit(proof.claims);
+    }
+
+    /**
+     * Freeze coherent type authority at compiler-analysis time. No live
+     * nominal/source proof callback crosses into runtime-bound loan minting.
+     */
+    static CoherentAccessProof proveCoherentTyped(
+            List<CoherentTypedClaim> requested,
+            SendSyncTraits sourceProof,
             ThreadSafetyTraits.NominalProof resolvedNominals) {
         Objects.requireNonNull(sourceProof, "sourceProof");
         Objects.requireNonNull(resolvedNominals, "resolvedNominals");
@@ -215,8 +248,9 @@ final class TaskAccessVerifier {
                         "Task access lacks matching source/resolved " + needed + " proof");
             }
         }
-        // Reuses the SAME ledger and all-or-nothing alias/generation rules.
-        return admit(typed.stream().map(CoherentTypedClaim::claim).toList());
+        return new CoherentAccessProof(
+                sourceProof.programIdentity(),
+                typed.stream().map(CoherentTypedClaim::claim).toList());
     }
 
     /** Intentionally small trusted ABI subset; no nominal name guessing. */
@@ -408,15 +442,20 @@ final class TaskAccessVerifier {
     }
 
     /*
-     * Runtime-bound admissions intentionally have no raw Claim-only mint.
-     * Executable lowering must pass the coherent source/resolved type proof
-     * below in addition to alias and generation checks.
+     * Runtime-bound admissions intentionally accept only a frozen compiler
+     * proof. The source/resolved trait callbacks are not re-run at launch.
      */
-    TaskLoanAdmission admitCoherentTypedRuntimeBound(
-            List<CoherentTypedClaim> requested, SendSyncTraits sourceProof,
-            ThreadSafetyTraits.NominalProof resolvedNominals) {
+    TaskLoanAdmission admitProvenRuntimeBound(
+            CoherentAccessProof proof, Ast.Program exactProgram) {
+        Objects.requireNonNull(proof, "proof");
+        Objects.requireNonNull(exactProgram, "exactProgram");
+        if (proof.programIdentity != exactProgram) {
+            throw new IllegalArgumentException(
+                    "coherent Task access proof belongs to a different exact program");
+        }
         return new TaskLoanAdmission(
-                this, admitCoherentTyped(requested, sourceProof, resolvedNominals));
+                this,
+                admit(proof.claims));
     }
 
     /** Cancellation is an intent; a still-running Task continues to own loans. */
