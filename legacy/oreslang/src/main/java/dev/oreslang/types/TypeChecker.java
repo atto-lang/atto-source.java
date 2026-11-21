@@ -242,23 +242,32 @@ public final class TypeChecker {
                                     + "scheduling, supervision and physical kernel lowering; "
                                     + "no implicit CPU fallback");
                 }
-                if (declaration instanceof Ast.ClassDecl klass) {
-                    rejectUnloweredCheckedClassEffects(klass);
-                }
-                if (declaration instanceof Ast.InterfaceDecl iface) {
-                    rejectUnloweredCheckedInterfaceEffects(iface);
-                }
             }
         }
     }
 
+    /** Linked (imported) classes: effect metadata cannot be verified in this unit. */
     private static void rejectUnloweredCheckedClassEffects(Ast.ClassDecl klass) {
-        // Method throws/raises/panics clauses are admitted as declarations (v1),
-        // like function clauses; the statements carry the semantics.
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.effects().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "checked exceptional effect on method '" + klass.name() + "."
+                                + method.name()
+                                + "' is parsed but not yet enabled for type checking");
+            }
+        }
     }
 
+    /** Linked (imported) contracts: effect metadata cannot be verified in this unit. */
     private static void rejectUnloweredCheckedInterfaceEffects(Ast.InterfaceDecl iface) {
-        // Interface method effect clauses are admitted as declarations (v1).
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (member instanceof Ast.InterfaceFunctionDecl fn && !fn.effects().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "checked exceptional effect on interface method '" + iface.name()
+                                + "." + fn.name()
+                                + "' is parsed but not yet enabled for type checking");
+            }
+        }
     }
 
     /**
@@ -324,6 +333,8 @@ public final class TypeChecker {
         checker.nominalEnums = NominalEnumRegistry.forProgram(program);
         checker.validateImports(program);
         checker.collect(program);
+        checker.validateSealedHierarchies();
+        checker.validateDeclaredEffects(program);
         checker.validate(program);
         CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
@@ -488,6 +499,8 @@ public final class TypeChecker {
         if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
+        checker.validateSealedHierarchies();
+        checker.validateDeclaredEffects(program);
         checker.validate(program);
         CheckedDispatchPlansV1.publish(program, checker.checkedDispatchPlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
@@ -11354,6 +11367,112 @@ public final class TypeChecker {
         effective.putAll(local);
         stack.remove(klass);
         return effective;
+    }
+
+    /** Compiler-reserved class markers recorded by the parser as annotations. */
+    static boolean hasClassMarker(Ast.ClassDecl klass, String marker) {
+        return klass.annotations().stream().anyMatch(annotation -> annotation.name().equals(marker));
+    }
+
+    /**
+     * Sealed class hierarchies (ported from oreslang-source.java #1023): a
+     * sealed class is closed inside its compilation unit and module, every
+     * direct subclass must itself be sealed, non-sealed or final, a final
+     * class cannot be extended, and a sealed class needs at least one direct
+     * subclass. Imported subclasses can never extend a sealed parent.
+     */
+    /**
+     * throws(...)/raises(...)/panics(...) clauses in this unit must name the
+     * built-in Error or a declared Error subclass; an unknown effect type would
+     * otherwise be erased unchecked (defer-recover-unwind-v1).
+     */
+    private void validateDeclaredEffects(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    requireErrorEffects(fn.effects(), "function '" + fn.name() + "'");
+                } else if (declaration instanceof Ast.ClassDecl klass) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        requireErrorEffects(method.effects(), "method '" + klass.name() + "." + method.name() + "'");
+                    }
+                } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                    for (Ast.InterfaceMember member : iface.members()) {
+                        if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                            requireErrorEffects(fn.effects(), "interface method '" + iface.name() + "." + fn.name() + "'");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void requireErrorEffects(Ast.EffectSpec effects, String owner) {
+        if (effects == null || effects.isEmpty()) return;
+        List<Ast.TypeRef> declared = new ArrayList<>();
+        declared.addAll(effects.throwsTypes());
+        declared.addAll(effects.raisesTypes());
+        declared.addAll(effects.panicsTypes());
+        for (Ast.TypeRef effect : declared) {
+            boolean known = effect.arguments().isEmpty()
+                    && (effect.name().equals("Error") || isErrorType(new Named(effect.name(), List.of())));
+            if (!known) {
+                throw new IllegalArgumentException("checked exceptional effect '" + effect.name()
+                        + "' on " + owner + " must name Error or a declared Error subclass");
+            }
+        }
+    }
+
+    private void validateSealedHierarchies() {
+        Map<Ast.ClassDecl, Set<String>> classChildren = new IdentityHashMap<>();
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            boolean sealed = hasClassMarker(klass, "$Sealed");
+            boolean isFinal = hasClassMarker(klass, "$Final");
+            boolean nonSealed = hasClassMarker(klass, "$NonSealed");
+            if ((sealed ? 1 : 0) + (isFinal ? 1 : 0) + (nonSealed ? 1 : 0) > 1) {
+                throw new IllegalArgumentException("class '" + klass.name()
+                        + "' may be only one of sealed, non-sealed or final");
+            }
+            if (isFinal && klass.isAbstract()) {
+                throw new IllegalArgumentException("class '" + klass.name() + "' cannot be both abstract and final");
+            }
+            if (klass.actorKind() != Ast.ActorKind.NONE && (sealed || isFinal || nonSealed)) {
+                throw new IllegalArgumentException("sealed/final actor class hierarchies are not enabled");
+            }
+            boolean sealedParent = false;
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue; // Object/List builtin marker
+                if (hasClassMarker(parent, "$Final")) {
+                    throw new IllegalArgumentException("final class '" + parent.name()
+                            + "' cannot be extended by '" + klass.name() + "'");
+                }
+                if (hasClassMarker(parent, "$Sealed")) {
+                    sealedParent = true;
+                    String parentModule = classOwners.get(parent);
+                    String childModule = classOwners.get(klass);
+                    if (parentModule == null || childModule == null || !parentModule.equals(childModule)) {
+                        throw new IllegalArgumentException("sealed class '" + parent.name()
+                                + "' permits only same-module direct subclasses");
+                    }
+                    if (!sealed && !isFinal && !nonSealed) {
+                        throw new IllegalArgumentException("direct subclass '" + klass.name()
+                                + "' of sealed class '" + parent.name()
+                                + "' must be declared sealed, non-sealed or final");
+                    }
+                    classChildren.computeIfAbsent(parent, ignored -> new LinkedHashSet<>()).add(klass.name());
+                }
+            }
+            if (nonSealed && !sealedParent) {
+                throw new IllegalArgumentException("non-sealed class '" + klass.name()
+                        + "' must directly extend a sealed class");
+            }
+        }
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            if (hasClassMarker(klass, "$Sealed") && classChildren.getOrDefault(klass, Set.of()).isEmpty()) {
+                throw new IllegalArgumentException("sealed class '" + klass.name()
+                        + "' must have at least one direct subclass in the same module");
+            }
+        }
     }
 
     private Ast.ClassDecl resolveClassParent(Ast.TypeRef parentRef, Ast.ClassDecl child) {

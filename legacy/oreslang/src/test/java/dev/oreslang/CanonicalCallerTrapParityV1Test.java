@@ -119,13 +119,11 @@ final class CanonicalCallerTrapParityV1Test {
     }
 
     @Test
-    void javaGuestOrdinaryThrowEffectMustRemainExplicitlyUnimplemented() throws Exception {
-        // This MUST become a positive guest test once typed ordinary
-        // Error(message) propagation is implemented. It is NOT a parity pass.
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse(source("05-ordinary-throw.atto")));
-        assertTrue(failure.getMessage().contains("exceptional effect") ||
-                   failure.getMessage().contains("exception and supervision"),
-                "source ordinary throw must be a deliberate effect-admission denial");
+    void javaGuestOrdinaryThrowIsTrappedAsErrAcrossACall() throws Exception {
+        // Typed ordinary Error(message) propagation is implemented: the throw
+        // crosses via_call() and the caller-side trap yields Err(Error) (exit 9).
+        Guest actual = execute("05-ordinary-throw.atto");
+        assertEquals(9L, actual.value());
+        assertEquals("", actual.stdout());
     }
 }

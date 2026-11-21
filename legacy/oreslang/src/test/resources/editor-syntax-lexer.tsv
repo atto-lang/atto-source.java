@@ -45,7 +45,7 @@ template-opaque	606966207265636f76657260	TEMPLATE_LITERAL	S	template opaque
 unicode-identifier	636f6e737420636166c3a9203d2031	CONST,IDENT,EQUAL,INT	S	Unicode identifier
 unicode-string	636f6e73742073203d2022f09f998222	CONST,IDENT,EQUAL,STRING	S	emoji inside string
 numeric-separators	3132335f343536	INT	S	digit separators token
-numeric-hex-gap	30783241	INT,IDENT	S	current lexer lacks hex literal tokenization
+numeric-hex-literal	30783241	INT	S	0x hex literal tokenizes as a single INT
 numeric-scientific	312e326533	FLOAT	S	floating scientific token
 arrow	61202d3e2062	IDENT,ARROW,IDENT	S	arrow
 pipe	61207c3e2062	IDENT,PIPE_FORWARD,IDENT	S	pipeline

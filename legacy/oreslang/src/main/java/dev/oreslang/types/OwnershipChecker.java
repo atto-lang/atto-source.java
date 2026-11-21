@@ -444,7 +444,9 @@ public final class OwnershipChecker {
                         // body (implicit-argument-borrow-v1): a method that
                         // assigns self.field holds an exclusive self loan.
                         ValueKind receiverKind = AnnotationExpander.isGeneratedFromJsonSetter(method)
-                                        || assignsSelfField(method.body())
+                                        || (explicitReceiver == null
+                                                && method.annotations().stream().noneMatch(a -> a.name().equals("$ReadonlySelf"))
+                                                && assignsSelfField(method.body()))
                                 ? ValueKind.MUT_BORROW
                                 : ValueKind.IMM_BORROW;
                         scope.define(
@@ -3126,8 +3128,9 @@ public final class OwnershipChecker {
                             scope,
                             "mutable method receiver '" + method.name() + "'");
                 }
-                if ((method.explicitReceiverType() == null || !method.explicitReceiverType().isBorrow())
+                if (method.explicitReceiverType() == null
                         && target.owner().actorKind() == Ast.ActorKind.NONE
+                        && method.annotations().stream().noneMatch(a -> a.name().equals("$ReadonlySelf"))
                         && assignsSelfField(method.body())) {
                     // A method that writes self.field holds an inferred exclusive
                     // self loan, so its receiver must be writable at the call site.

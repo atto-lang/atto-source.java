@@ -49,7 +49,7 @@ final class ProjectedBorrowOwnershipTest {
     void storedProjectionGuardsEntireOwnerAgainstMove() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(TYPES + """
-                        fnc consume(Holder h): void { return; }
+                        fnc consume(take! Holder h): void { return; }
                         fnc bad(Holder holder): void {
                           val borrow Item view = rt borrow holder.items[0];
                           consume(holder);

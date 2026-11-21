@@ -132,6 +132,7 @@ public final class Parser {
             boolean head = t.type() == DEFINE && i + 2 < in.size()
                     && in.get(i + 1).type() == IDENT && in.get(i + 1).lexeme().equals("state")
                     && in.get(i + 2).type() == IDENT && in.get(i + 2).lexeme().equals("container");
+            if (head && !canonicalStateContainerAt(in, i)) head = false;
             if (!head) {
                 out.add(t);
                 i++;
@@ -164,6 +165,36 @@ public final class Parser {
             ranges.add(new int[] {start, out.size()});
         }
         return out;
+    }
+
+    /**
+     * The canonical container surface has brace-bodied methods (`pub m(): T { }`)
+     * and no protected `-> T :: ... end` bodies. Containers in the protected
+     * MIR surface, or with state only, keep the existing fail-closed
+     * StateContainerDecl path.
+     */
+    private static boolean canonicalStateContainerAt(List<Token> in, int defineIndex) {
+        boolean braceMethod = false;
+        int depth = 0;
+        for (int i = defineIndex + 3; i < in.size(); i++) {
+            Token t = in.get(i);
+            if (t.type() == DOUBLE_COLON) return false;
+            if (t.type() == LBRACE) {
+                if (depth == 1 && i > 0 && in.get(i - 1).type() != IDENT) braceMethod = true;
+                depth++;
+            } else if (t.type() == RBRACE) {
+                depth--;
+            } else if (t.type() == END && t.column() == 1) {
+                return braceMethod;
+            } else if (t.type() == EOF) {
+                return false;
+            }
+            if (depth == 0 && t.type() == RPAREN && i + 1 < in.size()
+                    && (in.get(i + 1).type() == COLON || in.get(i + 1).type() == LBRACE)) {
+                braceMethod = true;
+            }
+        }
+        return false;
     }
 
     private boolean insideStateContainer() {
@@ -655,14 +686,42 @@ public final class Parser {
                     rootDeclarations.add(parseContract(modifiers.visibility));
                     continue;
                 }
+                // Class hierarchy markers: sealed / non-sealed / final (checked by
+                // TypeChecker.validateSealedHierarchies, ported from #1023).
+                String classMarker = null;
+                if (isContextualIdentifier("sealed") && checkNext(CLASS)) {
+                    advance();
+                    classMarker = "$Sealed";
+                } else if (isContextualIdentifier("final") && checkNext(CLASS)) {
+                    advance();
+                    classMarker = "$Final";
+                } else if (isContextualIdentifier("non") && checkNext(MINUS) && current + 3 < tokens.size()
+                        && tokens.get(current + 2).type() == IDENT
+                        && tokens.get(current + 2).lexeme().equals("sealed")
+                        && tokens.get(current + 3).type() == CLASS) {
+                    advance();
+                    advance();
+                    advance();
+                    classMarker = "$NonSealed";
+                }
                 if (match(CLASS)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
                     validateCopyPolicyClassAnnotations(annotations);
                     validateClassModifiers(modifiers);
-                    rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
+                    Ast.ClassDecl klass = parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, annotations);
+                    if (classMarker != null) {
+                        List<Ast.Annotation> marked = new ArrayList<>(klass.annotations());
+                        marked.add(new Ast.Annotation(classMarker, List.of()));
+                        klass = new Ast.ClassDecl(klass.name(), klass.visibility(), klass.isAbstract(),
+                                klass.actorKind(), klass.genericParameters(), klass.parents(), klass.interfaces(),
+                                klass.fields(), klass.constructor(), klass.methods(), klass.actorConcurrency(),
+                                klass.sealedStateFields(), marked);
+                    }
+                    rootDeclarations.add(klass);
                     continue;
                 }
+                if (classMarker != null) throw error(peek(), "expected class after " + classMarker.substring(1).toLowerCase());
                 if (match(INTERFACE, TRAIT)) {
                     Token.Type declarationKind = previous().type();
                     modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -2832,6 +2891,11 @@ public final class Parser {
             body = parseUntil(END);
             consume(END, "expected 'end' after v2 statement method body");
         } else body = parseBlock();
+        if (inlineReceiver && !mutableReceiver) {
+            // Explicit read-only `self` receiver: field-mutation inference must not upgrade it.
+            annotations = new ArrayList<>(annotations);
+            annotations.add(new Ast.Annotation("$ReadonlySelf", List.of()));
+        }
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract || implicitAbstract, mods.async, mods.suspends, structural.enabled(),
                 receiverType, generics, params, returnType, annotations, body, effects);
     }

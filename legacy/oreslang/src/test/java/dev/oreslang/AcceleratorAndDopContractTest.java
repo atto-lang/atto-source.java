@@ -41,11 +41,12 @@ final class AcceleratorAndDopContractTest {
         assertEquals(Token.Type.PANIC, new Lexer("panic").scan().getFirst().type());
         assertEquals(Token.Type.RECOVER, new Lexer("recover").scan().getFirst().type());
         for (String effect : new String[]{"throw", "raise", "panic", "recover"}) {
+            // Effects now execute; an ill-typed operand is still rejected (checker).
             var program = "pub fnc main(): void { " + effect + " 1; }";
             RuntimeException rejected = assertThrows(RuntimeException.class,
-                    () -> Parser.parse(program));
-            assertTrue(rejected.getMessage().contains("checked exception and supervision lowering")
-                    || rejected.getMessage().contains("exception"), rejected.getMessage());
+                    () -> dev.oreslang.types.TypeChecker.check(Parser.parse(program)));
+            assertTrue(rejected.getMessage().contains("Error value")
+                    || rejected.getMessage().contains("|err, cursor|"), rejected.getMessage());
         }
     }
 

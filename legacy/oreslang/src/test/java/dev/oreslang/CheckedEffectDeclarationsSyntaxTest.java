@@ -96,7 +96,7 @@ final class CheckedEffectDeclarationsSyntaxTest {
                 "define interface Service as fnc f(): int throws ParseError; end")) {
             var err = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.checkTypes(Parser.parse(source)), source);
-            assertTrue(err.getMessage().contains("parsed but not yet enabled"), source);
+            assertTrue(err.getMessage().contains("must name Error or a declared Error subclass"), source);
         }
     }
 
@@ -135,9 +135,10 @@ final class CheckedEffectDeclarationsSyntaxTest {
     }
 
     @Test
-    void sourcePanicStatementRemainsDisabledEvenIfDeclared() {
+    void sourcePanicWithUndeclaredErrorTypeIsRejected() {
+        // panic is executable; its declared effect and operand must be a real Error.
         var error = assertThrows(IllegalArgumentException.class, () ->
-                Parser.parse("fnc f(): int panics FatalError { panic FatalError; }"));
-        assertTrue(error.getMessage().contains("source effect is not yet enabled"));
+                TypeChecker.checkTypes(Parser.parse("fnc f(): int panics FatalError { panic FatalError; }")));
+        assertTrue(error.getMessage().contains("FatalError"), error::getMessage);
     }
 }

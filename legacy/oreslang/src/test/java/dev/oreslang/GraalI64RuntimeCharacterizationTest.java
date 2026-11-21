@@ -14,10 +14,9 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Characterizes the ACTUAL Graal/Truffle guest numeric evaluator.
  *
- * This is deliberately NOT a language specification or a Java/JS parity claim.
- * Java's current OresEvalRootNode integral arithmetic uses unchecked long
- * operators; JS Program IR uses checked signed-i64 operations. Do not silently
- * promote these expected wrapping values to a canonical Oreslang policy.
+ * int is signed 64-bit with checked arithmetic (site + spec contract): an
+ * overflowing +, -, * or unary - panics with E_PANIC: integer overflow and
+ * never wraps. Non-overflowing boundary values are still exact.
  *
  * Each fixture calls parameterized Oreslang functions so a constant-fold-only
  * oracle cannot substitute for executing numeric operators in the guest.
@@ -32,12 +31,6 @@ final class GraalI64RuntimeCharacterizationTest {
     private static final List<Probe> OBSERVED_LONG_MODEL = List.of(
             new Probe("max", "identity(" + MAX + ")", Long.MAX_VALUE),
             new Probe("min", "identity(" + MIN + ")", Long.MIN_VALUE),
-            new Probe("max-plus-one-wraps", "sum(" + MAX + ", 1)", Long.MIN_VALUE),
-            new Probe("min-minus-one-wraps", "subtract(" + MIN + ", 1)", Long.MAX_VALUE),
-            new Probe("max-times-two-wraps", "multiply(" + MAX + ", 2)", -2L),
-            new Probe("negate-min-wraps", "negate(" + MIN + ")", Long.MIN_VALUE),
-            new Probe("min-times-negative-one-wraps", "multiply(" + MIN + ", -1)", Long.MIN_VALUE),
-            new Probe("overflow-then-cancel", "subtract(sum(" + MAX + ", 1), 1)", Long.MAX_VALUE),
             new Probe("negative-remainder", "remainder(-5, 3)", -2L),
             new Probe("min-remainder-negative-one", "remainder(" + MIN + ", -1)", 0L),
             new Probe("max-minus-one", "subtract(" + MAX + ", 1)", Long.MAX_VALUE - 1),
@@ -63,6 +56,25 @@ final class GraalI64RuntimeCharacterizationTest {
                 Value value = context.eval("ores", source(probe.expression()));
                 assertTrue(value.fitsInLong(), probe.id() + " must produce a typed i64 value");
                 assertEquals(probe.expected(), value.asLong(), probe.id());
+            }
+        }));
+    }
+
+    private static final List<String> OVERFLOWING = List.of(
+            "sum(" + MAX + ", 1)",
+            "subtract(" + MIN + ", 1)",
+            "multiply(" + MAX + ", 2)",
+            "negate(" + MIN + ")",
+            "multiply(" + MIN + ", -1)",
+            "subtract(sum(" + MAX + ", 1), 1)");
+
+    @TestFactory
+    Stream<DynamicTest> overflowPanicsInsteadOfWrapping() {
+        return OVERFLOWING.stream().map(expression -> DynamicTest.dynamicTest(expression, () -> {
+            try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+                PolyglotException failure = assertThrows(PolyglotException.class,
+                        () -> context.eval("ores", source(expression)));
+                assertTrue(failure.getMessage().contains("integer overflow"), failure::getMessage);
             }
         }));
     }
