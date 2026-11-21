@@ -4057,6 +4057,23 @@ public final class ActorRuntime implements AutoCloseable {
             return !groupClosed.get() && members.contains(actorId);
         }
 
+        /*
+         * Trusted EventBus admission only. Group leave/retirement takes
+         * groupMembershipLock and then per-topic deliveryLock to reclaim
+         * subscription edges. Publication MUST take those same locks in that
+         * order, and hold both through commit/fanout. A membership check under
+         * only deliveryLock permits leave to revoke the publisher between the
+         * check and publication commit.
+         *
+         * No lock/capability escapes to source guests or host callers.
+         */
+        <T> T withEventAdmissionMembershipFence(Supplier<T> publication) {
+            Objects.requireNonNull(publication, "publication");
+            synchronized (groupMembershipLock) {
+                return publication.get();
+            }
+        }
+
         ActorId requireCurrentMember(String operation) {
             requireCallerRuntimeAffinity(operation);
             ActorId actorId = currentActorId().orElseThrow(() ->
