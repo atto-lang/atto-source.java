@@ -3116,18 +3116,36 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void leaveId(ActorId actorId) {
+        /**
+         * Logical membership revocation is serialized with join admission.
+         * This is also used by the runtime-owned pg facade while its registry
+         * lock is held: returning a cleanup instead of running it allows pg to
+         * revoke the handle epoch and member together before another join.
+         *
+         * The returned action may settle Channel/Future callbacks. The caller
+         * MUST run it only after dropping all registry and membership locks.
+         */
+        Runnable runtimeDetachCurrentMembership() {
+            ActorId actorId = requireCurrentMember("leave an ActorGroup");
+            return detachMemberWithoutFinalizing(actorId);
+        }
+
+        private Runnable detachMemberWithoutFinalizing(ActorId actorId) {
             synchronized (groupMembershipLock) {
-                if (!members.remove(actorId)) return;
+                if (!members.remove(actorId)) return () -> { };
                 Set<ActorGroupId> joined = groupMemberships.get(actorId);
                 if (joined != null) {
                     joined.remove(id);
                     if (joined.isEmpty()) groupMemberships.remove(actorId);
                 }
-                // Rejoin must not overtake subscription draining for the old
-                // membership and inadvertently inherit a previous channel.
-                eventBus.removeActor(actorId);
+                // Logical close must precede a racing rejoin. Physical
+                // channel close/drain must follow the membership lock.
+                return eventBus.detachActorSubscriptions(actorId);
             }
+        }
+
+        private void leaveId(ActorId actorId) {
+            detachMemberWithoutFinalizing(actorId).run();
         }
 
         private void actorTerminated(ActorId actorId) {
