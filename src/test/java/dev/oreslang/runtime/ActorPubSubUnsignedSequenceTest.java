@@ -161,6 +161,21 @@ final class ActorPubSubUnsignedSequenceTest {
             assertEquals(1L, events.topics().getFirst().published(),
                     "Full must not count as a committed event");
 
+            // Match native uint64_t behavior when BOTH the queue is full
+            // and the topic is permanently exhausted. This is not a
+            // transient Full/Err(Full): the sequence can never advance.
+            counter.set(-1L);
+            assertThrows(ArithmeticException.class,
+                    () -> events.tryPublishReliableSystem(
+                            "unsigned-full", "exhausted-while-full"),
+                    "u64 exhaustion takes precedence over transient mailbox Full");
+            assertEquals(-1L, counter.get(),
+                    "saturated counter cannot wrap or claim phantom admission");
+            assertEquals(1L, events.topics().getFirst().published(),
+                    "saturated queue and sequence must not commit any event");
+            // Test-only seed restores the first unsigned sequence.
+            counter.set(Long.MIN_VALUE);
+
             actor.send("read");
             assertTrue(readComplete.await(5, TimeUnit.SECONDS));
             assertNull(actorError.get());
