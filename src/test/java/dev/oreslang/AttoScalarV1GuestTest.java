@@ -1,10 +1,13 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.LinkedProgramRunner;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -99,6 +102,42 @@ final class AttoScalarV1GuestTest {
                     var compiled=LinkedProgramRunner.validate(entry,Map.of());
                     assertNotNull(compiled);
                     assertEquals(1,compiled.units().size(),"linked source units: "+c.id());
+                }));
+    }
+
+
+    /**
+     * Eight results fit the linked runner's 0..255 host exit-status ABI.
+     * This is actual .atto -> linked Truffle guest execution, not a host
+     * arithmetic reference. Full signed-i64 extremes require a typed guest
+     * return/stdio witness and must NOT be reported from process exit codes.
+     */
+    @TestFactory
+    Stream<DynamicTest> executeEightCanonicalAttoGuestsAndObserveReturnStatus() {
+        Map<String, Integer> expected = Map.of(
+                "canonical-add", 42,
+                "precedence", 14,
+                "parentheses", 20,
+                "type-first-readonly", 42,
+                "typed-const-readonly", 42,
+                "inferred-const-readonly", 42,
+                "pure-call", 42,
+                "type-first-parameter", 42);
+        assertEquals(8, expected.size(), "bounded Java guest witness scope");
+        return Stream.of(CASES).filter(c -> expected.containsKey(c.id()))
+                .map(c -> DynamicTest.dynamicTest("java-atto-exec-" + c.id(), () -> {
+                    Path entry = source(c); // verified byte-for-byte before execution
+                    ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+                    ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+                    LinkedProgramRunner.RunResult actual = LinkedProgramRunner.runWithExitStatus(
+                            entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                            stdout, stderr);
+                    assertNotNull(actual.build(), "missing linked guest build: " + c.id());
+                    assertEquals(1, actual.build().units().size(), "unexpected source closure");
+                    assertEquals(expected.get(c.id()).intValue(), actual.exitStatus(),
+                            "actual Truffle guest return value: " + c.id());
+                    assertEquals("", stdout.toString(StandardCharsets.UTF_8),
+                            "unexpected guest stdout: " + c.id());
                 }));
     }
 
