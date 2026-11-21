@@ -20,8 +20,8 @@ final class ActorRuntimeNativeControlCountersTest {
             long before = runtime.sharedMemoryBytes();
             assertEquals(0, runtime.nativeControlReservedBytes());
             assertThrows(IllegalStateException.class, runtime::nativeControlActorReservations);
-        assertThrows(IllegalStateException.class, runtime::nativeControlCompletedMessages);
-        assertThrows(IllegalStateException.class, () -> runtime.nativeControlSnapshot(new long[2]));
+            assertThrows(IllegalStateException.class, runtime::nativeControlCompletedMessages);
+            assertThrows(IllegalStateException.class, () -> runtime.nativeControlSnapshot(new long[2]));
             runtime.enableNativeControlCounters();
             assertEquals(44L, runtime.nativeControlReservedBytes());
             assertEquals(before + 44L, runtime.sharedMemoryBytes(),
@@ -64,12 +64,39 @@ final class ActorRuntimeNativeControlCountersTest {
             runtime.nativeControlSnapshot(snapshot);
             assertArrayEquals(new long[] {0L, 1L}, snapshot,
                     "STOP clears actor count without losing committed message completion");
+            // A warmed, caller-owned two-limb snapshot proves no per-read
+            // Java object allocation; it does not certify the actor scheduler.
+            var bean = java.lang.management.ManagementFactory.getThreadMXBean();
+            assertInstanceOf(com.sun.management.ThreadMXBean.class, bean,
+                    "JDK25 allocation counter is required for strict host-path evidence");
+            var measured = (com.sun.management.ThreadMXBean) bean;
+            assertTrue(measured.isThreadAllocatedMemorySupported());
+            if (!measured.isThreadAllocatedMemoryEnabled())
+                measured.setThreadAllocatedMemoryEnabled(true);
+            for (int i = 0; i < 8192; i++) {
+                runtime.nativeControlSnapshot(snapshot);
+                if (snapshot[0] != 0L || snapshot[1] != 1L)
+                    throw new AssertionError("native snapshot warmup mismatch");
+            }
+            long allocatedBefore = measured.getThreadAllocatedBytes(Thread.currentThread().threadId());
+            for (int i = 0; i < 8192; i++) {
+                runtime.nativeControlSnapshot(snapshot);
+                if (snapshot[0] != 0L || snapshot[1] != 1L)
+                    throw new AssertionError("native snapshot mismatch");
+            }
+            long allocatedAfter = measured.getThreadAllocatedBytes(Thread.currentThread().threadId());
+            assertTrue(allocatedBefore >= 0 && allocatedAfter >= allocatedBefore);
+            assertEquals(allocatedBefore, allocatedAfter,
+                    "warmed actor-runtime native CONTROL snapshot must allocate zero JVM bytes");
+            System.out.println("PASS java actor-runtime native control snapshot managed-byte delta=0 (HOST ONLY)");
         } finally {
             runtime.close();
         }
         assertEquals(0, runtime.nativeControlReservedBytes(),
                 "control backing is invalidated after carrier quiescence");
         assertThrows(IllegalStateException.class, runtime::nativeControlActorReservations);
+        assertThrows(IllegalStateException.class, runtime::nativeControlCompletedMessages);
+        assertThrows(IllegalStateException.class, () -> runtime.nativeControlSnapshot(new long[2]));
         System.out.println("PASS java actor-native CONTROL registration and STOP (HOST only, not Atto guest)");
     }
 }
