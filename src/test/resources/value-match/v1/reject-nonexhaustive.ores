@@ -1,0 +1,5 @@
+fnc compute(Option<int> input): int {
+  return match input over {
+    on Some(n) { return n + 1; }
+  };
+}

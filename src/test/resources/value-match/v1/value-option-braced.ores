@@ -1,0 +1,12 @@
+fnc compute(Option<int> value): int {
+  return match value over {
+    on Some(n) { return n + 1; }
+    on None { return 0; }
+  };
+}
+pub fnc main(): void {
+  stdio.stdout.write(compute(Some(41)));
+  stdio.stdout.write(":");
+  stdio.stdout.write(compute(None));
+  return;
+}
