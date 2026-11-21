@@ -2403,6 +2403,12 @@ public final class TypeChecker {
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.LambdaExpr loan
+                && loan.criticalLoanMode() != Ast.CriticalLoanMode.NONE) {
+            throw new IllegalArgumentException(
+                    "critical state loan requires compiler-enforced handle_state "
+                            + "ownership, effects, and runtime isolation; not yet enabled");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");

@@ -4115,11 +4115,11 @@ public final class Parser {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                List<Ast.Expr> args = parseCriticalActorArgumentsOrOrdinary(expr);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                List<Ast.Expr> args = parseCriticalActorArgumentsOrOrdinary(expr);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT, DOUBLE_COLON)) {
@@ -4522,6 +4522,57 @@ public final class Parser {
             }
         }
         return false;
+    }
+
+    /**
+     * Only self.handle_state(...) owns the critical state-loan syntax.
+     * Do not rewrite ordinary subtraction, indexing, or userland calls.
+     * The resulting AST mode is normalized but NOT executable: the
+     * TypeChecker and OwnershipChecker reject it before loan lowering.
+     */
+    private List<Ast.Expr> parseCriticalActorArgumentsOrOrdinary(Ast.Expr callee) {
+        if (!(callee instanceof Ast.MemberExpr member)
+                || !member.member().equals("handle_state")
+                || !(member.receiver() instanceof Ast.NameExpr receiver)
+                || !receiver.name().equals("self")
+                || !isContextualIdentifier("critical")) {
+            return parseCallArgumentsUntil(RPAREN);
+        }
+        Token keyword = advance(); // contextual 'critical'
+        Ast.CriticalLoanMode mode = Ast.CriticalLoanMode.WRITE;
+        if (match(LBRACKET)) {
+            Token selector = consume(IDENT, "critical[...] expects read or write");
+            mode = switch (selector.lexeme()) {
+                case "read" -> Ast.CriticalLoanMode.READ;
+                case "write" -> Ast.CriticalLoanMode.WRITE;
+                default -> throw error(selector,
+                        "critical[...] accepts only read or write");
+            };
+            consume(RBRACKET, "critical[...] requires exactly one read/write mode");
+        } else if (check(MINUS)) {
+            Token hyphen = advance();
+            if (!adjacent(keyword, hyphen))
+                throw error(hyphen, "critical-read/write requires an adjacent ASCII '-'");
+            Token selector = consume(IDENT, "critical-read/write expects read or write");
+            if (!adjacent(hyphen, selector))
+                throw error(selector, "critical-read/write requires an adjacent ASCII '-'");
+            mode = switch (selector.lexeme()) {
+                case "read" -> Ast.CriticalLoanMode.READ;
+                case "write" -> Ast.CriticalLoanMode.WRITE;
+                default -> throw error(selector,
+                        "critical-read/write accepts only read or write");
+            };
+        }
+        if (!check(PIPE))
+            throw error(peek(), "critical state mode must prefix an inline |state| -> lambda");
+        Ast.LambdaExpr callback = parsePipeLambda(false);
+        if (callback.parameters().size() != 1)
+            throw error(previous(), "critical state loan requires exactly one named state parameter");
+        if (match(COMMA))
+            throw error(previous(), "critical state loan requires exactly one callback argument");
+        return List.of(new Ast.LambdaExpr(
+                callback.parameters(), callback.expressionBody(), callback.blockBody(),
+                callback.nonLexical(), mode));
     }
 
     private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {

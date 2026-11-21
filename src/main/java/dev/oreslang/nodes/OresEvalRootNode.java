@@ -7677,6 +7677,15 @@ public final class OresEvalRootNode extends RootNode {
                         : new MutableStructValue(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
+                // The parser can normalize actor state-loan modes before
+                // compiler/arena lowering exists. Never interpret a tagged
+                // lambda as an ordinary callable through an unchecked
+                // embedding or direct AST execution path.
+                if (lambda.criticalLoanMode() != Ast.CriticalLoanMode.NONE) {
+                    throw new IllegalStateException(
+                            "critical state loan requires compiler-verified "
+                                    + "handle_state ownership and arena lowering");
+                }
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.

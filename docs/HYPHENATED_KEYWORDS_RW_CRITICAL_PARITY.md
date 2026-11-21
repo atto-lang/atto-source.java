@@ -312,3 +312,33 @@ unrelated static gate. It did **not** execute full real
 `ActorRuntime` / GraalVM actor STOP tests; those JUnit cases are newly
 added to Java PR #780 but remain unverified, as does native LLVM
 finalization parity.
+
+
+## Actor state loan mode syntax (October 29, 2026)
+
+This section specifies `self.handle_state(...)` **callback mode prefixes**,
+not the separate `critical` callable-declaration modifier.
+
+| Canonical callback prefix | Equivalent accepted shorthand | Normalized mode |
+| --- | --- | --- |
+| `critical[write]` | `critical-write`, `critical` | `WRITE` |
+| `critical[read]` | `critical-read` | `READ` |
+
+Examples: `self.handle_state(critical[write] |s| -> { ... })` and
+`self.handle_state(critical-write |s| -> { ... })` produce the same
+compiler AST mode. `critical[read]` and `critical-read` likewise produce
+the same read mode. Brackets here are **compiler-recognized syntax only in
+the actor state-loan callback position**, not user-defined `[]` indexing.
+The lexer must retain ordinary arithmetic: the hyphenated shorthand
+requires both neighbors adjacent and exactly `read` or `write`.
+`critical - write` is not a loan-mode prefix.
+
+**Important implementation boundary:** Java/Graal can represent these
+modes in a syntax-only lambda AST on the stacked state-schema frontend
+PR, but TypeChecker and OwnershipChecker explicitly **reject execution**
+until effect-checked, nonescaping, nonreentrant runtime loans and physical
+isolated arenas are implemented. Mode normalization is not concurrency,
+read parallelism, memory safety, or permission to execute guest code.
+No source shape check replaces the 18 native Graal guest tests or the
+LLVM/.NET/Wasm backend parity gates.
+
