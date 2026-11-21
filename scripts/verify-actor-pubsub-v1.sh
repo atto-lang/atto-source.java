@@ -39,10 +39,11 @@ suites=(
   dev.oreslang.runtime.ActorPubSubV1ContractTest
   dev.oreslang.runtime.ActorPubSubConcurrencyTest
   dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest
+  dev.oreslang.runtime.ActorPubSubUnsignedSequenceTest
   dev.oreslang.runtime.SourceActorPubSubTest
 )
 # Maven's selection is explicit, while reports are checked by full class name.
-selection="SourceActorPubSubExecutionTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
+selection="SourceActorPubSubExecutionTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,ActorPubSubUnsignedSequenceTest,SourceActorPubSubTest"
 mvn -B -ntp -Dores.runtime.carriers=native \
   "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true test
 
@@ -103,6 +104,11 @@ expected = {
         "acceptedPublicationInvokesReductionCommitExactlyOncePerPolicy",
         "failedReliableAdmissionCannotCommitReductionOrConsumeSequence",
         "admissionReceiptPreservesLegacyConstructorAndUnsignedSequenceText",
+    },
+    "dev.oreslang.runtime.ActorPubSubUnsignedSequenceTest": {
+        "signedStorageCrossesUnsignedU64BoundaryWithoutReusingZero",
+        "guestReceiptSerializesUnsignedValueRatherThanSignedJavaLong",
+        "actualReliablePublicationPreservesUnsignedSequenceAfterFullAndExhaustion",
     },
     "dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest": {
         "publisherScopedSubscriptionsShareTheCrossTopicActorQuota",
