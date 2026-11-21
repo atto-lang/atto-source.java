@@ -3683,6 +3683,10 @@ public final class Parser {
         // Procedural dispatch returns from its enclosing callable. Keep this
         // distinction in the AST instead of relying on source spelling later.
         if (match(DO)) {
+            // Explicit procedural conditional: keep the same checked IfStmt
+            // lowering as its undelimited statement form. Only the first
+            // condition of ifnot/unless is negated; elif stays unchanged.
+            if (match(IF, IFNOT, UNLESS)) return parseIf(previous().type());
             if (match(MATCH)) return parseMatch(true);
             if (match(SWITCH)) return parseSwitch();
             // Explicitly discard a channel read result (or write's unit result)
