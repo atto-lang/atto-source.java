@@ -18,6 +18,14 @@ final class ActorGuestStack {
     private int liveFrames;
     private int highWaterFrames;
     private boolean poisoned;
+    /**
+     * One bounded logical continuation root per live source Task. These roots
+     * survive Await/Cooperate independently of carrier Java stack frames.
+     * Actual compiler-lowered lexical frame bytes are a separate M2 gate.
+     */
+    static final int MAX_TASK_ROOTS = 64;
+    private int liveTaskRoots;
+    private int highWaterTaskRoots;
 
     synchronized int reserveFrame() {
         if (poisoned || liveFrames >= GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS) {
@@ -52,5 +60,76 @@ final class ActorGuestStack {
 
     synchronized boolean isPoisoned() {
         return poisoned;
+    }
+
+    synchronized TaskRoot reserveTaskRoot(long actorGeneration) {
+        if (actorGeneration <= 0) {
+            throw new IllegalArgumentException("actor generation must be positive");
+        }
+        if (poisoned) {
+            throw new GuestCallDepthExceededException(
+                    GuestCallDepthGuard.MAX_SYNCHRONOUS_GUEST_CALLS);
+        }
+        if (liveTaskRoots >= MAX_TASK_ROOTS) {
+            throw new java.util.concurrent.RejectedExecutionException(
+                    "actor logical source-task stack root capacity exhausted");
+        }
+        liveTaskRoots++;
+        highWaterTaskRoots = Math.max(highWaterTaskRoots, liveTaskRoots);
+        return new TaskRoot(this, actorGeneration);
+    }
+
+    private synchronized void releaseTaskRoot() {
+        if (liveTaskRoots <= 0) {
+            poisoned = true;
+            throw new IllegalStateException("actor source-task root underflow");
+        }
+        liveTaskRoots--;
+    }
+
+    synchronized int activeTaskRoots() {
+        return liveTaskRoots;
+    }
+
+    synchronized int highWaterTaskRoots() {
+        return highWaterTaskRoots;
+    }
+
+    /** Unforgeable runtime-side handle rooted in one ActorCell incarnation. */
+    static final class TaskRoot {
+        private final ActorGuestStack owner;
+        private final long actorGeneration;
+        private final java.util.concurrent.atomic.AtomicBoolean retired =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        private TaskRoot(ActorGuestStack owner, long actorGeneration) {
+            this.owner = owner;
+            this.actorGeneration = actorGeneration;
+        }
+
+        void requireCurrentOwner() {
+            if (retired.get() || owner.isPoisoned()
+                    || ActorRuntime.currentActorGuestStack() != owner
+                    || ActorRuntime.currentActorGeneration() != actorGeneration) {
+                throw new SecurityException(
+                        "source-task continuation has no current actor-stack authority");
+            }
+        }
+
+        <T> OresScheduler.Step<T> resume(
+                OresScheduler.Task<T> task, OresScheduler.Resume value)
+                throws Exception {
+            requireCurrentOwner();
+            return task.resume(value);
+        }
+
+        /** Only physical scheduler quiescence, never Future settlement, retires. */
+        void retire() {
+            if (retired.compareAndSet(false, true)) owner.releaseTaskRoot();
+        }
+
+        boolean isRetired() {
+            return retired.get();
+        }
     }
 }

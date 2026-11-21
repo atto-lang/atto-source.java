@@ -90,6 +90,7 @@ public final class ActorRuntime implements AutoCloseable {
     private record ActorExecutionContext(
             ActorRuntime runtime,
             ActorId actorId,
+            long actorGeneration,
             ActorKind kind,
             IsolatePolicy policy,
             Object executionDomain,
@@ -214,6 +215,11 @@ public final class ActorRuntime implements AutoCloseable {
     static ActorGuestStack currentActorGuestStack() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.guestStack();
+    }
+
+    static long currentActorGeneration() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? 0L : current.actorGeneration();
     }
 
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
@@ -2186,7 +2192,19 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        ActorGuestStack.TaskRoot stackRoot =
+                cell.guestStack.reserveTaskRoot(cell.ref.generation());
+        try {
+            OresScheduler.Task<T> authenticatedResume =
+                    resume -> stackRoot.resume(task, resume);
+            OresScheduler.Task<T> actorBoundTask =
+                    task instanceof OresScheduler.CleanupAwareTask<?>
+                            ? (OresScheduler.CleanupAwareTask<T>) authenticatedResume::resume
+                            : authenticatedResume;
+            if (cell.kind != ActorKind.UNTRUSTED) {
+                return cell.sourceScheduler().startActorBound(
+                        actorBoundTask, stackRoot::retire, cell.ref.generation());
+            }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -2288,7 +2306,7 @@ public final class ActorRuntime implements AutoCloseable {
                     quota.enter();
                     entered = true;
                     quota.check();
-                    OresScheduler.Step<T> result = task.resume(resume);
+                    OresScheduler.Step<T> result = actorBoundTask.resume(resume);
                     quota.check();
                     return result;
                 } finally {
@@ -2306,12 +2324,18 @@ public final class ActorRuntime implements AutoCloseable {
                         : quotaTurn;
         OresFuture<T> future;
         try {
-            future = cell.sourceScheduler().startWithWallDeadline(
-                    quotaChecked, retireOnce, quota.remainingWallNanos(),
+            future = cell.sourceScheduler().startActorBoundWithWallDeadline(
+                    quotaChecked, () -> {
+                        try {
+                            retireOnce.run();
+                        } finally {
+                            stackRoot.retire();
+                        }
+                    }, quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                             "untrusted logical task exceeded wall-time budget while suspended"),
-                    notificationsDrained);
+                    notificationsDrained, cell.ref.generation());
         } catch (RuntimeException | Error failure) {
             // No task was admitted. Release the pre-reserved quota slot.
             // The scheduler's own retirement callback also claims this
@@ -2327,6 +2351,12 @@ public final class ActorRuntime implements AutoCloseable {
         // executing. The scheduler invokes retireOnce ONLY after guest
         // carrier quiescence, not merely when the Future settles.
         return future;
+        } catch (RuntimeException | Error admissionFailure) {
+            // Failed admission (including a closed source scheduler) cannot
+            // leave an orphan actor-owned task root behind.
+            stackRoot.retire();
+            throw admissionFailure;
+        }
     }
 
     private void releaseUntrustedSourceTask(
@@ -8182,6 +8212,9 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
                 return;
             }
+            // Root handles must be retired before any actor-owned storage
+            // becomes reclaimable. Future completion is insufficient.
+            if (guestStack.activeTaskRoots() != 0) return;
             if (scheduler != null && (!scheduler.actorStopPhysicallyQuiescent()
                     || activeUntrustedSourceTaskCount != 0
                     || activeUntrustedTimedAdmissions != 0)) return;
@@ -8603,8 +8636,8 @@ public final class ActorRuntime implements AutoCloseable {
             }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain,
-                    guestStack));
+                    ActorRuntime.this, ref.id(), ref.generation(), kind, policy,
+                    executionDomain, guestStack));
             boolean turnActive = false;
             ActorContext<M> teardownContext = null;
             try {

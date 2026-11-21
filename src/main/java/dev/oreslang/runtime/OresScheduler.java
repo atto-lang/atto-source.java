@@ -499,7 +499,7 @@ public final class OresScheduler implements AutoCloseable {
      * Never use Future settlement alone to reclaim guest-owned resources.
      */
     <T> OresFuture<T> start(Task<T> task, Runnable onQuiescent) {
-        return startAdmitted(task, onQuiescent, null, 0L, () -> { });
+        return startAdmitted(task, onQuiescent, null, 0L, () -> { }, 0L);
     }
 
     /**
@@ -578,13 +578,40 @@ public final class OresScheduler implements AutoCloseable {
         Objects.requireNonNull(deadlineFailure, "deadlineFailure");
         Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
         return startAdmitted(task, onQuiescent, deadlineFailure,
-                Math.max(0L, remainingNanos), onNotificationDrained);
+                Math.max(0L, remainingNanos), onNotificationDrained, 0L);
+    }
+
+    /**
+     * Trusted actor-only admission; the generation is minted by ActorCell.
+     * This logical context is not a physical stack or heap pointer.
+     * ActorRuntime's TaskRoot checks actual actor-stack authority on resume.
+     */
+    <T> OresFuture<T> startActorBound(
+            Task<T> task, Runnable onQuiescent, long actorGeneration) {
+        if (actorGeneration <= 0) {
+            throw new IllegalArgumentException("actor generation must be positive");
+        }
+        return startAdmitted(task, onQuiescent, null, 0L, () -> { },
+                actorGeneration);
+    }
+
+    <T> OresFuture<T> startActorBoundWithWallDeadline(
+            Task<T> task, Runnable onQuiescent, long remainingNanos,
+            Throwable deadlineFailure, Runnable onNotificationDrained,
+            long actorGeneration) {
+        if (actorGeneration <= 0) {
+            throw new IllegalArgumentException("actor generation must be positive");
+        }
+        Objects.requireNonNull(deadlineFailure, "deadlineFailure");
+        return startAdmitted(task, onQuiescent, deadlineFailure,
+                Math.max(0L, remainingNanos), onNotificationDrained,
+                actorGeneration);
     }
 
     private <T> OresFuture<T> startAdmitted(
             Task<T> task, Runnable onQuiescent,
             Throwable deadlineFailure, long remainingNanos,
-            Runnable onNotificationDrained) {
+            Runnable onNotificationDrained, long actorGeneration) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(onQuiescent, "onQuiescent");
         Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
@@ -592,7 +619,7 @@ public final class OresScheduler implements AutoCloseable {
         // NOT hold the lock while handing work to an arbitrary executor.
         // Shutdown must still cancel this task if enqueue blocks or rejects.
         TaskRunner<T> runner = new TaskRunner<>(task, onQuiescent,
-                deadlineFailure != null, onNotificationDrained);
+                deadlineFailure != null, onNotificationDrained, actorGeneration);
         synchronized (taskAdmissionLock) {
             ensureTaskAdmissionOpen();
             if (deadlineFailure != null) {
@@ -815,10 +842,15 @@ public final class OresScheduler implements AutoCloseable {
         private volatile ActorTurnWatchdog.Lease watchdogLease;
 
         private TaskRunner(Task<T> task, Runnable onQuiescent,
-                boolean timedAdmission, Runnable onNotificationDrained) {
+                boolean timedAdmission, Runnable onNotificationDrained,
+                long actorGeneration) {
             this.task = task;
             long execution = allocatePositiveId(nextExecution, "execution");
-            this.executionContext = ExecutionContext.task(schedulerDomain, execution);
+            this.executionContext = actorGeneration == 0L
+                    ? ExecutionContext.task(schedulerDomain, execution)
+                    : ExecutionContext.actor(
+                            schedulerDomain, execution, schedulerDomain,
+                            actorGeneration, actorGeneration, 0L, 0L);
             this.onQuiescent = onQuiescent;
             this.timedAdmission = timedAdmission;
             this.onNotificationDrained = onNotificationDrained;
