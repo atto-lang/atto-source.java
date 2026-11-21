@@ -22,10 +22,13 @@ import java.nio.file.Path;
         version = "0.1.0",
         defaultMimeType = OresLanguage.MIME_TYPE,
         characterMimeTypes = OresLanguage.MIME_TYPE,
-        contextPolicy = TruffleLanguage.ContextPolicy.EXCLUSIVE,
+        contextPolicy = TruffleLanguage.ContextPolicy.SHARED,
         sandbox = SandboxPolicy.UNTRUSTED,
         website = "https://github.com/ores-truffle-oreslang/oreslang-source.java")
 public final class OresLanguage extends TruffleLanguage<OresContext> {
+    // A shared Engine may cache immutable parsed code across Contexts.
+    // Every mutable Evaluator is obtained from its own OresContext, and
+    // trusted/untrusted Engines remain physically separate.
     public static final String ID = "ores";
     public static final String MIME_TYPE = "application/x-oreslang";
 

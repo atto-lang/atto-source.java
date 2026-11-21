@@ -4,10 +4,13 @@ import dev.oreslang.OresLanguage;
 
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
+import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.SandboxPolicy;
 
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -24,15 +27,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class SharedUntrustedIsolatePool implements AutoCloseable {
     private static final long MIN_ISOLATE_BYTES = 64L * 1024 * 1024;
+    private static final int MAX_CODE_UNITS_PER_CONTEXT = 128;
     // Process-local admission guard: a second pool would silently create an
     // additional native-image isolate and violate the two-domain deployment.
     // Do not release the slot until the engine has actually closed.
     private static final AtomicBoolean ISOLATE_SLOT = new AtomicBoolean();
     private final Engine engine;
+    // Separate from the trusted process image store; scoped to this one physical isolate.
+    private final UntrustedSourceImageCache codeImages = new UntrustedSourceImageCache();
     private final long isolateHeapBytes;
     private final int maxGroups;
     private final Set<Group> groups = new HashSet<>();
-    private boolean closed;
+    // Host admission must observe a pool-wide close request without taking
+    // the guest's execution monitor or waiting for Context.close(true).
+    private volatile boolean closed;
 
     /**
      * Opens one native-image polyglot isolate. If Oreslang's language-isolate
@@ -122,8 +130,12 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         return result;
     }
 
+    // Host-only observation for deterministic close/admission race tests.
+    boolean shutdownRequestedForSupervisor() { return closed; }
+
     public synchronized int activeGroups() { return groups.size(); }
     public long isolateHeapBytes() { return isolateHeapBytes; }
+    int liveCodeImagesForSupervisor() { return codeImages.liveImages(); }
 
     /**
      * A supervisor-only lifetime lease. Never expose the raw Context or
@@ -131,6 +143,14 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
      */
     public final class Group implements AutoCloseable {
         private final Context context;
+        // Image admission must not use the guest execution monitor (this):
+        // forceCancel/close must be able to fence new acquisitions even when
+        // malicious guest execution owns the group monitor indefinitely.
+        private final Object imageAdmissionLock = new Object();
+        // Exactly one code-image lease per logical module in this Context.
+        // Reimported code is compared against the immutable Source contents,
+        // not retained as an extra per-actor source-string copy.
+        private final Map<String, UntrustedSourceImageCache.Lease> codeUnits = new HashMap<>();
         private volatile boolean groupClosed;
         // Exactly-once close task: contenders cannot return a false success
         // while another thread still executes Context.close(true).
@@ -140,20 +160,71 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
             this.closeFence = new VerifiedCloseFence(() -> {
                 try {
                     this.context.close(true);
+                    // Keep code pinned through confirmed Context.close, not merely
+                    // until the supervisor has issued a cancellation request.
+                    synchronized (imageAdmissionLock) {
+                        for (UntrustedSourceImageCache.Lease lease : codeUnits.values()) lease.close();
+                        codeUnits.clear();
+                    }
                     // Only a verified Context.close may release group capacity.
                     synchronized (SharedUntrustedIsolatePool.this) {
                         groups.remove(this);
                     }
                 } catch (RuntimeException | Error error) {
-                    // No guest exception or native cause chain reaches the host.
+                    // Preserve fatal host VM identity, but never expose guest
+                    // exceptions, polyglot causes or private source details.
+                    if (VerifiedCloseFence.isVmFatal(error)) throw error;
                     throw new IllegalStateException("untrusted group retirement failed");
                 }
             });
         }
 
+        /**
+         * The code image is shared only by Contexts in this ONE untrusted Engine.
+         * Leases belong to the Context; no caller can release source while it
+         * may still be executing, even during failed retirement or hot reload.
+         * This does not expose an AST, JVM object, or function pointer to guests.
+         */
+        public Source sourceImageForSupervisor(String codeUnitId, String sourceText) {
+            Objects.requireNonNull(codeUnitId, "codeUnitId");
+            Objects.requireNonNull(sourceText, "sourceText");
+            synchronized (imageAdmissionLock) {
+                if (groupClosed || SharedUntrustedIsolatePool.this.closed)
+                    throw new IllegalStateException("untrusted group/pool is closed");
+                UntrustedSourceImageCache.Lease existing = codeUnits.get(codeUnitId);
+                if (existing != null) {
+                    if (!existing.source().getCharacters().toString().equals(sourceText)) {
+                        throw new IllegalStateException(
+                                "a code unit cannot be replaced within one guest Context; "
+                                + "open a new hot-reload generation");
+                    }
+                    return existing.source();
+                }
+                if (codeUnits.size() >= MAX_CODE_UNITS_PER_CONTEXT) {
+                    throw new IllegalStateException("untrusted Context code-unit quota exceeded");
+                }
+                UntrustedSourceImageCache.Lease lease = codeImages.acquire(codeUnitId, sourceText);
+                // Every new image admission is atomic with the close fence.
+                // Exceptions cannot leave an untracked lease after shutdown.
+                try {
+                    Source image = lease.source();
+                    codeUnits.put(codeUnitId, lease);
+                    return image;
+                } catch (RuntimeException | Error failure) {
+                    lease.close();
+                    throw failure;
+                }
+            }
+        }
+
+        int distinctCodeUnitsForSupervisor() {
+            synchronized (imageAdmissionLock) { return codeUnits.size(); }
+        }
+
         /** Host adapter entrypoint; actual actor routing must be supplied separately. */
         public synchronized Context contextForSupervisor() {
-            if (groupClosed) throw new IllegalStateException("untrusted group is closed");
+            if (groupClosed || SharedUntrustedIsolatePool.this.closed)
+                throw new IllegalStateException("untrusted group/pool is closed");
             return context;
         }
 
@@ -162,7 +233,9 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
             // Fence admission immediately, without acquiring the execution
             // monitor held by a possibly stuck guest. FutureTask serializes
             // closing; every concurrent caller awaits the same completion.
-            groupClosed = true;
+            synchronized (imageAdmissionLock) {
+                groupClosed = true;
+            }
             closeFence.awaitConfirmedClose("untrusted Context");
         }
     }
@@ -181,28 +254,28 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
     private void retirePhysicalIsolate() {
         Set<Group> snapshot;
         synchronized (this) { snapshot = Set.copyOf(groups); }
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (Group group : snapshot) {
             try {
                 group.close();
-            } catch (RuntimeException error) {
-                if (failure == null) failure = error;
-                else failure.addSuppressed(error);
+            } catch (RuntimeException | Error error) {
+                // Always attempt every sibling even when a close fails.
+                failure = VerifiedCloseFence.mergeRetirementFailure(failure, error);
             }
         }
         try {
             engine.close(true);
         } catch (RuntimeException | Error error) {
-            if (failure == null) {
-                failure = new IllegalStateException(
-                        "untrusted Engine close could not be confirmed");
-            }
+            // Engine close is always attempted. A VM-fatal failure must remain
+            // primary even if one group failed with an ordinary exception.
+            Throwable report = VerifiedCloseFence.isVmFatal(error)
+                    ? error
+                    : new IllegalStateException("untrusted Engine close could not be confirmed");
+            failure = VerifiedCloseFence.mergeRetirementFailure(failure, report);
         }
-        // A successful Engine.close alone is not sufficient: one failed
-        // Context close leaves its native/guest lifetime unproven. The
-        // process-global slot must remain denied until ALL close fences
-        // were confirmed, otherwise a second isolate can be admitted.
-        if (failure != null) throw failure;
+        // An Engine close alone cannot prove failed Contexts are retired;
+        // retain the singleton isolate admission slot after ANY close failure.
+        VerifiedCloseFence.rethrowRetirementFailure(failure);
         ISOLATE_SLOT.set(false);
     }
 }

@@ -24,7 +24,7 @@ context limits, and the guest can pause other untrusted actors during GC.
 
 ```java
 try (var actors = new SharedUntrustedActorSupervisor(256L << 20, 16);
-     var a = actors.spawn(source, "worker-a", "UntrustedWorker");
+     var a = actors.spawn(source, "workers.ores", "UntrustedWorker");
      var b = actors.spawn(source, "worker-b", "UntrustedWorker")) {
     a.send("work");  // copied and UTF-8 bounded scalar transport only
     b.send("work");
@@ -60,6 +60,72 @@ collected Java heaps. It is intentionally *not* satisfied merely by running
 several actors in the single shared UNTRUSTED Engine. The
 `--ores-actor-heaps=independent` CLI guard records this explicit requirement
 and rejects unsupported placement instead of silently downgrading it.
+
+## Pooled, content-addressed immutable code images (follow-up draft)
+
+`SharedUntrustedIsolatePool` owns an `UntrustedSourceImageCache`, distinct
+from the trusted process code store. Both `UntrustedJitCodeUnit` and untrusted
+`HotReloadManager.Generation` acquire their `Source` through the same pool.
+
+- Source cache identity is the exact pair (logical code-unit ID, SHA-256 of
+  UTF-8 source). Equality is rechecked against the original bytes/text on hits.
+  The `sourceId` argument denotes the **module/code unit**, not an actor name:
+  the two `workers.ores` actors in the example reuse this code unit, while
+  actor IDs and their mutable states are allocated independently. Different
+  source IDs must not be merged solely on matching bytes because their import
+  and diagnostic contexts can differ.
+  Random actor UUIDs are still minted for invocation/revocation fencing, but
+  are **not** part of the Source name or code cache key.
+- All matching live code units in one pooled untrusted Engine receive the
+  same immutable host-side `Source`. Different source versions and import
+  identities never alias. Different pools do not share Source references.
+- Each actor/hot-reload generation still has an independent Context and
+  mutable interpreter/module state. Nothing here promotes actor-private data
+  or pointers to cross-actor memory, or authorizes FFI/host capabilities.
+- Each Context pins the Source through a lease until **confirmed**
+  `Context.close(true)`. Failed close retains the lease and capacity;
+  successful last release evicts the Source for reclamation. Code admission
+  and the close fence serialize through a **separate image-admission lock**,
+  not the monitor used for guest execution. An uncooperative guest cannot
+  prevent the supervisor from fencing new source-image admissions.
+- Reimporting the identical module in one Context reuses **one** lease,
+  rather than retaining source text or a new lease per import. Mixing a
+  different version of the same module within one Context is rejected:
+  hot reload creates a new Context/generation. Each Context permits at most
+  128 distinct module images.
+- The trusted host preflights both actor-spawn and hot-reload inputs against
+  strict UTF-8 encoding and the exact byte budget **before allocating the
+  untrusted native Engine**. Malformed UTF-16 and control-character module
+  identities fail closed; source parsing/type checking stays inside the guest.
+- This prototype caps simultaneously live distinct source images at 512
+  and total pinned source text at 16 MiB (each text <= 1 MiB UTF-8).
+  Quotas are enforced before insertion. Source images do not allocate a
+  new Graal Engine, isolate, JIT, or heap for each actor.
+
+**Scope and unverified claims:** This draft shares immutable
+`org.graalvm.polyglot.Source` identities inside the untrusted pool, switches
+`OresLanguage` to `ContextPolicy.SHARED`, and moves the mutable
+`OresEvalRootNode.Evaluator` from a root field into per-`OresContext`
+identity-keyed storage. This permits the Engine to reuse parsed call targets
+without reusing another actor's mutable evaluator, but actual parse counts,
+JIT code residency, concurrency safety and physical RX-page sharing still
+require exact-head executed tests. Code-page deduplication is **not yet
+proven**. The shared cache must never be exposed to the trusted
+Engine/compiled-code domain.
+
+This first integration covers explicit guest-source actors and untrusted
+hot-reload staging. Compiler-owned import closure resolution and
+`core/alloc/actor/std` preloading still must route individual approved
+library units through a domain-local immutable image/cache. A freestanding
+build must never pull in hosted stdlib by default. Merely sharing these
+host-side Source objects is not evidence that every stdlib function is loaded
+once as native machine code.
+
+The one untrusted Engine remains one physical trust/failure/GC domain. It is
+not hard isolation between hostile tenants. Stronger tenant or supervisor
+separation requires a policy decision; never import the process-global
+`SharedCodeRegistry` approval allowlist from historical Java #416
+(issue #493 documents its cross-tenant approval-scoping gap).
 
 ## Isolation guarantees and limits
 
@@ -114,6 +180,71 @@ process boundary. A shared isolated Engine also does not provide hard
 fault independence between arbitrary untrusted tenants. Per-actor
 logical arenas, Contexts, and watchdogs do not imply a separate native
 collector or isolated system-call authority per actor.
+
+## Teardown fatal-error and sibling-completion audit (2026-10-18)
+
+On this stacked draft, the #1306 exhaustive-retirement rule is integrated
+with the context-owned code-image leases:
+
+- The group fences new code admissions independently from guest execution;
+  the code-image leases remain pinned until physical Context close returns.
+- Pool and supervisor attempt all sibling Context closures **and** Engine
+  closure after an earlier ordinary or VM-fatal error. A failed closure must
+  leave the process-wide native isolate admission slot reserved.
+- `VerifiedCloseFence` propagates genuine host-VM fatal errors
+  (`VirtualMachineError`, `ThreadDeath`, `LinkageError`) through the
+  `FutureTask` close fence and prefers a later VM-fatal Engine failure over
+  an earlier ordinary Context failure. Ordinary/guest exceptions stay
+  sanitized with no guest source, cause or suppressed object exposed.
+- The host-only `VerifiedCloseFenceTest` covers fatal identity, repeat
+  closers, sibling-error precedence and sanitization. The exact production
+  close fence also passes strict JDK 21 compilation with
+  `-Xlint:all -Werror` and 14,400 deterministic standalone assertions.
+  **This does not certify Graal Native Image execution or physical code-page
+  sharing.**
+
+Integration with standalone #1306 must be reviewed before merging this
+stack: avoid re-applying its older pool implementation without restoring
+the code-image lease admission and retirement invariants from this branch.
+
+## Atomic publication and pool shutdown audit (2026-10-18)
+
+**Publication:** `HotReloadManager.loadAndStart()` now stages a candidate
+without making it visible through `active()` or `active(codeUnitId)`.
+Only after the guest successfully completes parse, link, init, and the
+admission deadline is its generation published. A failed candidate is
+retired independently, so the previous live module and its Context/code
+lease remain published and available. Explicit `load()` retains its
+existing staging/activation behavior for callers that deliberately manage
+`Generation.start()`; **that API is not a transactional reload**.
+
+The trusted JVM regression in `IsolationHotReloadTest` and the native-gated
+regression in `SharedUntrustedIsolatePoolTest` cover failed replacement,
+previous-generation preservation, and later successful replacement.
+This does **not** implement state migration, running-handler transfer,
+immutable compiler-produced code-executor rebinding, or cross-context
+actor upgrades; those belong to the separate #1270 audit and require
+their own isolation and ABI proof.
+
+**Acquisition rollback:** the group/context creation window is now inside
+the rollback handler; failed acquisition closes any successfully created
+Context before returning. Ordinary guest cleanup failures stay sanitized;
+host-VM fatal teardown errors retain priority. Manager shutdown attempts
+all Contexts and the owned Engine even when an earlier generation fails.
+
+**Shutdown linearization:** when `SharedUntrustedIsolatePool.close()`
+publishes its pool-wide close intent, existing group supervisor adapters
+must immediately deny new Source admissions and Context access, even if
+the group-specific admission monitor is occupied. A native-gated race
+test holds that monitor while another thread starts pool retirement,
+then checks both denials before allowing teardown to complete.
+
+**Evidence boundary:** these tests are authored in the draft stack but
+have not received a successful full Maven/GraalVM Native Image run on the
+current head. Do not treat local host checks, model testing, mergeability,
+or CI workflows that report zero executed steps as physical isolation
+or safe hot-upgrade certification. The private-CI export policy remains
+deny-by-default until reviewed approvals actually land on protected main.
 
 ## Tests and remaining release gates
 

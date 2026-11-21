@@ -114,4 +114,92 @@ final class VerifiedCloseFenceTest {
         assertFalse(physical.isAlive());
         fence.awaitConfirmedClose("Context");
     }
+
+    @Test
+    void vmFatalFromRetireSurvivesFutureTaskAndAllSubsequentCloseCalls() {
+        AtomicInteger physicalCalls = new AtomicInteger();
+        LinkageError fatal = new LinkageError("host VM linker failure");
+        VerifiedCloseFence fence = new VerifiedCloseFence(() -> {
+            physicalCalls.incrementAndGet();
+            throw fatal;
+        });
+        for (int i = 0; i < 3; i++) {
+            assertSame(fatal, assertThrows(LinkageError.class,
+                    () -> fence.awaitConfirmedClose("untrusted Engine")),
+                    "VM-fatal identity must not be hidden by the close fence");
+        }
+        assertEquals(1, physicalCalls.get(), "retirement remains exactly once");
+    }
+
+    @Test
+    void nonFatalErrorCannotLeakGuestDetailsAcrossHostFence() {
+        VerifiedCloseFence fence = new VerifiedCloseFence(() -> {
+            throw new AssertionError("private guest contents");
+        });
+        IllegalStateException report = assertThrows(IllegalStateException.class,
+                () -> fence.awaitConfirmedClose("untrusted Context"));
+        assertTrue(report.getMessage().contains("capacity remains reserved"));
+        assertFalse(report.getMessage().contains("guest"));
+        assertNull(report.getCause(), "nonfatal guest errors must be sanitized");
+        assertEquals(0, report.getSuppressed().length);
+    }
+
+    @Test
+    void fatalRetirementFailureBeatsOrdinarySiblingFailureWithoutLosingEvidence() {
+        IllegalStateException ordinary = new IllegalStateException("sanitized context failure");
+        LinkageError vmFatal = new LinkageError("vm fatal");
+        Throwable failure = VerifiedCloseFence.mergeRetirementFailure(null, ordinary);
+        failure = VerifiedCloseFence.mergeRetirementFailure(failure, vmFatal);
+        assertSame(vmFatal, failure);
+        assertArrayEquals(new Throwable[]{ordinary}, vmFatal.getSuppressed());
+        RuntimeException sibling = new IllegalStateException("other closed context failed");
+        failure = VerifiedCloseFence.mergeRetirementFailure(failure, sibling);
+        assertSame(vmFatal, failure);
+        assertEquals(2, vmFatal.getSuppressed().length);
+        assertSame(sibling, vmFatal.getSuppressed()[1]);
+        Throwable finalFailure = failure;
+        assertSame(vmFatal, assertThrows(LinkageError.class,
+                () -> VerifiedCloseFence.rethrowRetirementFailure(finalFailure)));
+        assertSame(vmFatal, VerifiedCloseFence.mergeRetirementFailure(vmFatal, vmFatal),
+                "self merge must not create a throwable suppression cycle");
+        assertFalse(VerifiedCloseFence.isVmFatal(new AssertionError("ordinary nonfatal")));
+        assertTrue(VerifiedCloseFence.isVmFatal(vmFatal));
+    }
+    @Test
+    void fatalFailedSpawnTeardownTakesPrecedenceWithoutGuestExceptionLeakage() {
+        var guest = new IllegalStateException("guest source: private tenant implementation");
+        var fatal = new LinkageError("host native isolate close failed");
+        Throwable chosen = VerifiedCloseFence.preferFatalSpawnCleanup(guest, fatal);
+        assertSame(fatal, chosen, "fatal Engine/Context retirement must stay VM-fatal");
+        assertEquals(1, chosen.getSuppressed().length);
+        assertNotSame(guest, chosen.getSuppressed()[0],
+                "do not attach raw guest throwable to host fatal error");
+        assertFalse(chosen.getSuppressed()[0].getMessage().contains("private tenant"));
+        assertNull(chosen.getSuppressed()[0].getCause());
+        assertSame(fatal, assertThrows(LinkageError.class,
+                () -> VerifiedCloseFence.rethrowRetirementFailure(chosen)));
+    }
+
+    @Test
+    void ordinaryFailedSpawnTeardownStaysSanitizedAndReservesSlot() {
+        var rejectedGuest = new IllegalArgumentException("untrusted guest data");
+        var cleanup = new IllegalStateException("guest leaked cleanup details");
+        Throwable chosen = VerifiedCloseFence.preferFatalSpawnCleanup(rejectedGuest, cleanup);
+        assertSame(rejectedGuest, chosen, "original admission failure remains primary");
+        assertEquals(1, chosen.getSuppressed().length);
+        assertNotSame(cleanup, chosen.getSuppressed()[0]);
+        assertTrue(chosen.getSuppressed()[0].getMessage().contains("reservation retained"));
+        assertNull(chosen.getSuppressed()[0].getCause());
+    }
+
+    @Test
+    void alreadyFatalSpawnFailureCannotBeDemotedByCleanup() {
+        var admission = new OutOfMemoryError("VM failure during admission");
+        var later = new LinkageError("VM failure during close");
+        assertSame(admission,
+                VerifiedCloseFence.preferFatalSpawnCleanup(admission, later));
+        assertEquals(1, admission.getSuppressed().length);
+        assertNotSame(later, admission.getSuppressed()[0]);
+    }
+
 }

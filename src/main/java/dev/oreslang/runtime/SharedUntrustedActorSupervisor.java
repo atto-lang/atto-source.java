@@ -110,6 +110,9 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
                 || !actorType.matches("[a-zA-Z_][a-zA-Z0-9_]*")) {
             throw new IllegalArgumentException("invalid untrusted actor type");
         }
+        // Cheap input-only check: fail before native isolate construction,
+        // never interpret or validate hostile source in the trusted JVM.
+        UntrustedSourceImageCache.validateCandidate(sourceId, source);
 
         synchronized (lifecycle) {
             if (closed) throw new IllegalStateException("untrusted supervisor is closed");
@@ -144,17 +147,19 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
                 return actor;
             }
         } catch (RuntimeException | Error failure) {
+            Throwable report = failure;
             if (group != null) {
                 try { group.close(); }
                 catch (RuntimeException | Error cleanup) {
-                    // The pool retains the failed Group; supervisor capacity
-                    // must also remain reserved even though spawn failed.
+                    // The pool retains the failed Group and supervisor slot.
+                    // A VM-fatal cleanup must supersede an ordinary spawn
+                    // exception, but must not suppress raw guest source/cause.
                     synchronized (lifecycle) { failedRetirements++; }
-                    failure.addSuppressed(new IllegalStateException(
-                            "untrusted spawn teardown incomplete; reservation retained"));
+                    report = VerifiedCloseFence.preferFatalSpawnCleanup(failure, cleanup);
                 }
             }
             if (code != null) code.fenceAfterContextClose();
+            if (report != failure) throw (Error) report;
             throw failure;
         } finally {
             if (admission != null) admission.close();
@@ -307,21 +312,21 @@ public final class SharedUntrustedActorSupervisor implements AutoCloseable {
             snapshot = new ArrayList<>(active);
             owned = ownsPool ? pool : null;
         }
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (Actor actor : snapshot) {
             try { actor.close(); }
-            catch (RuntimeException e) {
-                if (failure == null) failure = e;
-                else failure.addSuppressed(e);
+            catch (RuntimeException | Error error) {
+                // One failing Context must not prevent other actor retirement.
+                failure = VerifiedCloseFence.mergeRetirementFailure(failure, error);
             }
         }
         if (owned != null) {
             try { owned.close(); }
-            catch (RuntimeException e) {
-                if (failure == null) failure = e;
-                else failure.addSuppressed(e);
+            catch (RuntimeException | Error error) {
+                // Always attempt physical Engine teardown after every actor.
+                failure = VerifiedCloseFence.mergeRetirementFailure(failure, error);
             }
         }
-        if (failure != null) throw failure;
+        VerifiedCloseFence.rethrowRetirementFailure(failure);
     }
 }

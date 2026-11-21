@@ -107,7 +107,7 @@ public final class HotReloadManager implements AutoCloseable {
         if (!guestPolicy.adversarial()) {
             OresCompiler.validateForIsolate(sourceText, guestPolicy);
         }
-        return stage(name, digest(sourceText), sourceText);
+        return stage(name, digest(sourceText), sourceText, true);
     }
 
     /**
@@ -123,10 +123,10 @@ public final class HotReloadManager implements AutoCloseable {
             // A trusted compiler cache/AST is NOT an untrusted isolate proof.
             // Restage the original bounded source and verify its digest here;
             // isolated parsing and type checking occur on guest evaluation.
-            return stage(unit.unitId(), digest(unit.sourceText()), unit.sourceText());
+            return stage(unit.unitId(), digest(unit.sourceText()), unit.sourceText(), true);
         }
         CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), true);
     }
 
     private void validateAdmissionInputs(
@@ -148,9 +148,14 @@ public final class HotReloadManager implements AutoCloseable {
                     "adversarial hot-load source exceeds maximum character count "
                             + MAX_ADVERSARIAL_SOURCE_CHARS);
         }
+        // Reject invalid Unicode, oversized UTF-8 or control-character unit
+        // names before allocating the only untrusted native Engine/Context.
+        // Static Oreslang parsing remains exclusively in the guest isolate.
+        UntrustedSourceImageCache.validateCandidate(codeUnitId, sourceText);
     }
 
-    private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+    private Generation stage(String codeUnitId, String sourceDigest,
+                             String sourceText, boolean publish) {
         if (guestPolicy.adversarial()
                 && generations.size() >= MAX_ADVERSARIAL_LIVE_GENERATIONS) {
             throw new IllegalStateException(
@@ -159,47 +164,70 @@ public final class HotReloadManager implements AutoCloseable {
         }
         long id = sequence.incrementAndGet();
         SharedUntrustedIsolatePool.Group group = null;
-        Context context;
-        if (guestPolicy.adversarial()) {
-            // The isolated Engine must outlive all hot-loaded code generations.
-            // Per-generation contexts share ONE physical isolate heap/GC/JIT.
-            // No standalone restrictedContextBuilder() fallback is permitted.
-            if (untrustedPool == null) {
-                untrustedPool = new SharedUntrustedIsolatePool(
-                        256L * 1024 * 1024, MAX_ADVERSARIAL_LIVE_GENERATIONS);
-            }
-            group = untrustedPool.createGroup();
-            context = group.contextForSupervisor();
-        } else {
-            context = guestPolicy.restrictedContextBuilder(executionProfile).build();
-        }
+        Context context = null;
         try {
-            Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
-                    .mimeType(OresLanguage.MIME_TYPE)
-                    .buildLiteral();
+            // Include group acquisition in rollback scope: context entry can
+            // fail after createGroup succeeds (e.g. during concurrent pool
+            // retirement), and must not strand an untracked Context/slot.
+            if (guestPolicy.adversarial()) {
+                // All generations remain in ONE physical untrusted Engine.
+                if (untrustedPool == null) {
+                    untrustedPool = new SharedUntrustedIsolatePool(
+                            256L * 1024 * 1024, MAX_ADVERSARIAL_LIVE_GENERATIONS);
+                }
+                group = untrustedPool.createGroup();
+                context = group.contextForSupervisor();
+            } else {
+                context = guestPolicy.restrictedContextBuilder(executionProfile).build();
+            }
+            // Trusted code stays in its own execution domain. Adversarial
+            // code is interned ONLY in the separate shared untrusted Engine,
+            // with leases pinned through confirmed guest Context retirement.
+            Source source = group == null
+                    ? Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
+                        .mimeType(OresLanguage.MIME_TYPE)
+                        .buildLiteral()
+                    : group.sourceImageForSupervisor(codeUnitId, sourceText);
             Generation generation = new Generation(
                     id, codeUnitId, sourceDigest, context, source,
                     group == null ? executionProfile : ExecutionProfile.serverHybrid(),
                     group);
             generations.put(id, generation);
-            activeByCodeUnit.put(codeUnitId, generation);
-            active.set(generation);
+            if (publish) {
+                activeByCodeUnit.put(codeUnitId, generation);
+                active.set(generation);
+            }
             return generation;
         } catch (RuntimeException | Error failure) {
+            Throwable report = failure;
             try {
                 if (group != null) group.close();
-                else context.close(true);
-            } catch (RuntimeException cleanup) {
-                failure.addSuppressed(cleanup);
+                else if (context != null) context.close(true);
+            } catch (RuntimeException | Error cleanup) {
+                // A fatal Context cleanup cannot be masked by an ordinary
+                // acquisition error. Never attach raw guest exceptions.
+                report = VerifiedCloseFence.preferFatalSpawnCleanup(failure, cleanup);
             }
+            if (report != failure) throw (Error) report;
             throw failure;
         }
     }
 
     public synchronized Generation loadAndStart(String name, String sourceText) {
-        Generation generation = load(name, sourceText);
+        if (closed) throw new IllegalStateException("hot loader is closed");
+        validateAdmissionInputs(name, sourceText);
+        if (!guestPolicy.adversarial()) {
+            OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        }
+        // A new version must remain invisible until guest parse, LINK, INIT,
+        // deadline admission, and actor capabilities all succeed. In
+        // particular, a failed candidate must not erase the prior live
+        // generation of the same module or become visible through active().
+        Generation generation = stage(name, digest(sourceText), sourceText, false);
         try {
             generation.start();
+            activeByCodeUnit.put(name, generation);
+            active.set(generation);
             return generation;
         } catch (RuntimeException | Error failure) {
             // Do not let rejected user source accumulate generations after
@@ -246,16 +274,16 @@ public final class HotReloadManager implements AutoCloseable {
     @Override
     public synchronized void close() {
         closed = true;
-        RuntimeException failure = null;
+        Throwable failure = null;
         for (var entry : new java.util.ArrayList<>(generations.entrySet())) {
             try {
                 entry.getValue().close();
                 generations.remove(entry.getKey(), entry.getValue());
-            } catch (RuntimeException error) {
-                // An unsuccessful close stays reserved, even if guest code
-                // was already fenced from all supervisor APIs.
-                if (failure == null) failure = error;
-                else failure.addSuppressed(error);
+            } catch (RuntimeException | Error error) {
+                // Attempt every sibling even if an earlier guest Context
+                // could not retire. Keep failed generations reserved and
+                // prioritize a later fatal VM/Engine teardown error.
+                failure = VerifiedCloseFence.mergeRetirementFailure(failure, error);
             }
         }
         activeByCodeUnit.clear();
@@ -264,15 +292,13 @@ public final class HotReloadManager implements AutoCloseable {
             try {
                 untrustedPool.close();
                 untrustedPool = null;
-            } catch (RuntimeException error) {
+            } catch (RuntimeException | Error error) {
                 // An unsuccessful isolate close must not be marked as fully
-                // released. SharedUntrustedIsolatePool keeps its admission
-                // slot fenced until the underlying Engine really closes.
-                if (failure == null) failure = error;
-                else failure.addSuppressed(error);
+                // released. The pool holds its process-wide admission slot.
+                failure = VerifiedCloseFence.mergeRetirementFailure(failure, error);
             }
         }
-        if (failure != null) throw failure;
+        VerifiedCloseFence.rethrowRetirementFailure(failure);
     }
 
     private static String digest(String text) {
@@ -344,11 +370,17 @@ public final class HotReloadManager implements AutoCloseable {
                         throw new IllegalStateException("untrusted hot-load admission deadline expired");
                     }
                     return null;
-                } catch (RuntimeException guestFailure) {
-                    try { close(); } catch (RuntimeException ignored) {
-                        // Keep the original guest error and its host-reachable
-                        // cause chain out of the supervisor API entirely.
+                } catch (RuntimeException | Error guestFailure) {
+                    Throwable report = guestFailure;
+                    try { close(); }
+                    catch (RuntimeException | Error cleanup) {
+                        report = VerifiedCloseFence.preferFatalSpawnCleanup(
+                                guestFailure, cleanup);
                     }
+                    // A real host-VM fatal error must not be demoted to an
+                    // ordinary parse failure. All other guest errors remain
+                    // sanitized, with no guest objects in the cause chain.
+                    if (VerifiedCloseFence.isVmFatal(report)) throw (Error) report;
                     throw new IllegalStateException(
                             "untrusted generation failed or isolated Context was revoked");
                 }

@@ -77,6 +77,14 @@ final class SharedUntrustedIsolatePoolTest {
                 IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
             assertThrows(IllegalArgumentException.class, () ->
                     loader.load("oversized.ores", "x".repeat(1_048_577)));
+            assertThrows(IllegalArgumentException.class, () ->
+                    loader.load("utf8.ores", "€".repeat(400_000)),
+                    "oversized UTF-8 bytes must be rejected before isolate allocation");
+            assertThrows(IllegalArgumentException.class, () ->
+                    loader.load("bad\nunit.ores", "valid"),
+                    "malformed module identity is rejected before isolate allocation");
+            assertThrows(IllegalArgumentException.class, () ->
+                    loader.load("invalid.ores", String.valueOf((char) 0xD800)));
             assertEquals(0, loader.liveGenerations());
         }
     }
@@ -115,6 +123,79 @@ final class SharedUntrustedIsolatePoolTest {
                     """);
             assertNull(dangerousMain.start(),
                     "untrusted hot load must only link/init, not invoke main");
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void failedHotReloadPreservesPriorActiveVersionAndItsPinnedContext() {
+        try (HotReloadManager loader = HotReloadManager.forUntrustedActors(
+                IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            HotReloadManager.Generation previous = loader.loadAndStart(
+                    "worker.ores", "pub routine main(): void { return; }");
+            assertTrue(previous.started());
+            assertSame(previous, loader.active("worker.ores"));
+            assertSame(previous, loader.active());
+            assertEquals(1, loader.liveGenerations());
+
+            // The candidate must fail inside the guest isolate, after host
+            // source preflight but before its code can become active.
+            assertThrows(IllegalStateException.class, () -> loader.loadAndStart(
+                    "worker.ores", "pub routine main(): void {"));
+            assertSame(previous, loader.active("worker.ores"),
+                    "failed candidate must never replace the old module");
+            assertSame(previous, loader.active(),
+                    "failed candidate must never erase the last live generation");
+            assertFalse(previous.closed(),
+                    "old Context and code-image lease must survive rollback");
+            assertEquals(1, loader.liveGenerations(),
+                    "failed candidate must retire only its own Context");
+
+            HotReloadManager.Generation replacement = loader.loadAndStart(
+                    "worker.ores", "pub routine main(): void { val x = 2; return; }");
+            assertSame(replacement, loader.active("worker.ores"));
+            assertTrue(replacement.started());
+            assertNotSame(previous.context(), replacement.context());
+            assertSame(previous.context().getEngine(), replacement.context().getEngine(),
+                    "generation replacement must not allocate another isolate");
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void poolCloseFencesExistingGroupAccessBeforeContextRetirement() throws Exception {
+        // Hold the separate admission monitor while shutdown starts. The pool
+        // has set its global close flag but Group.close() cannot yet take the
+        // monitor to fence/release the specific Context's images.
+        try (SharedUntrustedIsolatePool pool = new SharedUntrustedIsolatePool(
+                256L * 1024 * 1024, 1);
+             SharedUntrustedIsolatePool.Group group = pool.createGroup();
+             var workers = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var field = SharedUntrustedIsolatePool.Group.class
+                    .getDeclaredField("imageAdmissionLock");
+            field.setAccessible(true);
+            Object admissionLock = field.get(group);
+            java.util.concurrent.Future<?> retiring;
+            synchronized (admissionLock) {
+                retiring = workers.submit(pool::close);
+                long until = System.nanoTime()
+                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+                while (!pool.shutdownRequestedForSupervisor()
+                        && System.nanoTime() < until) {
+                    Thread.sleep(1);
+                }
+                assertTrue(pool.shutdownRequestedForSupervisor(),
+                        "pool close request must become visible before group teardown");
+                assertThrows(IllegalStateException.class, group::contextForSupervisor,
+                        "pool close must fence stale guest Context adapters");
+                assertThrows(IllegalStateException.class,
+                        () -> group.sourceImageForSupervisor("late.ores",
+                                "pub routine main(): void { return; }"),
+                        "pool close must fence any late source-image admission");
+            }
+            retiring.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(0, pool.activeGroups());
+            assertEquals(0, pool.liveCodeImagesForSupervisor());
         }
     }
 
@@ -172,6 +253,92 @@ final class SharedUntrustedIsolatePoolTest {
                 assertEquals(2, pool.activeGroups());
                 assertSame(groupB.contextForSupervisor().getEngine(),
                         replacement.contextForSupervisor().getEngine());
+            }
+        }
+    }
+    @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void repeatedImportsPinOneImagePerContextAndRejectMixedGenerations() {
+        try (SharedUntrustedIsolatePool pool = new SharedUntrustedIsolatePool(
+                256L * 1024 * 1024, 2);
+             SharedUntrustedIsolatePool.Group first = pool.createGroup();
+             SharedUntrustedIsolatePool.Group second = pool.createGroup()) {
+            org.graalvm.polyglot.Source canonical =
+                    first.sourceImageForSupervisor("std/core.ores", "shared-core-v1");
+            for (int i = 0; i < 1_000; i++) {
+                assertSame(canonical,
+                        first.sourceImageForSupervisor("std/core.ores", "shared-core-v1"));
+            }
+            assertEquals(1, first.distinctCodeUnitsForSupervisor());
+            assertEquals(1, pool.liveCodeImagesForSupervisor());
+            assertSame(canonical,
+                    second.sourceImageForSupervisor("std/core.ores", "shared-core-v1"));
+            assertThrows(IllegalStateException.class,
+                    () -> first.sourceImageForSupervisor("std/core.ores", "shared-core-v2"),
+                    "a live Context cannot silently replace an imported module");
+            assertEquals(1, pool.liveCodeImagesForSupervisor());
+            first.close();
+            assertEquals(1, pool.liveCodeImagesForSupervisor(),
+                    "second Context pins its own lease");
+            second.close();
+            assertEquals(0, pool.liveCodeImagesForSupervisor());
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void contextHasBoundedDistinctModuleImages() {
+        try (SharedUntrustedIsolatePool pool = new SharedUntrustedIsolatePool(
+                256L * 1024 * 1024, 1);
+             SharedUntrustedIsolatePool.Group group = pool.createGroup()) {
+            for (int i = 0; i < 128; i++) {
+                group.sourceImageForSupervisor("unit-" + i, "code-" + i);
+            }
+            assertEquals(128, group.distinctCodeUnitsForSupervisor());
+            assertThrows(IllegalStateException.class,
+                    () -> group.sourceImageForSupervisor("unit-over-limit", "another"));
+            assertEquals(128, pool.liveCodeImagesForSupervisor());
+        }
+    }
+
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "ORES_TEST_SHARED_UNTRUSTED_ISOLATE", matches = "true")
+    void imageAdmissionIsFencedWithoutEnteringGuestExecutionMonitor() throws Exception {
+        try (SharedUntrustedIsolatePool pool = new SharedUntrustedIsolatePool(
+                256L * 1024 * 1024, 1);
+             SharedUntrustedIsolatePool.Group group = pool.createGroup();
+             var workers = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            group.sourceImageForSupervisor("worker.ores", "shared-code-v1");
+            java.util.concurrent.CountDownLatch monitorHeld =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch releaseMonitor =
+                    new java.util.concurrent.CountDownLatch(1);
+            var holder = workers.submit(() -> {
+                synchronized (group) {
+                    monitorHeld.countDown();
+                    try {
+                        assertTrue(releaseMonitor.await(30, java.util.concurrent.TimeUnit.SECONDS));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("test interrupted", e);
+                    }
+                }
+            });
+            try {
+                assertTrue(monitorHeld.await(10, java.util.concurrent.TimeUnit.SECONDS));
+                // Host-issued Context.close(true) must not need group monitor,
+                // even when an untrusted guest turn is blocked inside it.
+                var retired = workers.submit(group::close);
+                retired.get(20, java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals(0, pool.liveCodeImagesForSupervisor(),
+                        "all code-image leases must be released after confirmed close");
+                assertThrows(IllegalStateException.class, () ->
+                        group.sourceImageForSupervisor("worker.ores", "shared-code-v1"));
+                assertEquals(0, pool.liveCodeImagesForSupervisor());
+            } finally {
+                releaseMonitor.countDown();
+                holder.get(10, java.util.concurrent.TimeUnit.SECONDS);
             }
         }
     }

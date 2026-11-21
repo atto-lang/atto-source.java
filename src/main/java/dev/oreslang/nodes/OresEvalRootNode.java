@@ -59,7 +59,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
-    private volatile Evaluator evaluator;
+    // Mutable Evaluator state is owned by OresContext, never a shared RootNode.
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
         this(language, program, "<anonymous>");
@@ -151,13 +151,12 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private Evaluator evaluator(OresContext context) {
-        Evaluator current = evaluator;
-        if (current != null) return current;
-        synchronized (this) {
-            current = evaluator;
-            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId);
-            return current;
-        }
+        // One immutable parsed RootNode/call target can be reused by Contexts
+        // belonging to the same Graal Engine. Guest state/capabilities NEVER
+        // live on that RootNode: they are keyed by its identity inside each
+        // owning OresContext and retired with the Context.
+        return context.codeExecutionState(
+                this, () -> new Evaluator(program, context, codeUnitId));
     }
 
     private static boolean isControl(Object[] arguments, String command) {

@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import dev.oreslang.OresLanguage;
 import dev.oreslang.nodes.OresEvalRootNode;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
@@ -51,10 +50,10 @@ public final class UntrustedJitCodeUnit implements AutoCloseable {
         // group monitor. An untrusted guest cannot obtain Context or Value.
         synchronized (group) {
             Context context = group.contextForSupervisor();
-            Source guestSource = Source.newBuilder(
-                    OresLanguage.ID, source, "untrusted-" + generation + "-" + sourceId)
-                    .mimeType(OresLanguage.MIME_TYPE)
-                    .buildLiteral();
+            // The source image is interned once per code unit/version in the
+            // untrusted isolate pool, never in the trusted host code cache.
+            // Actor UUID generation fencing remains independent of this image.
+            Source guestSource = group.sourceImageForSupervisor(sourceId, source);
             try {
                 Value candidate = context.parse(guestSource);
                 candidate.execute(OresEvalRootNode.LINK_ONLY_COMMAND);
