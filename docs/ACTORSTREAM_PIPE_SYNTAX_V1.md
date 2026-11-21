@@ -46,3 +46,38 @@ as sufficient evidence. Cancelling an observation cannot cancel the actors.
 The pipeline remains a single-flow construct: only one root DATA ingress
 may complete. Replaying a root message or sending directly to a middle
 actor is not equivalent to `ActorStream.send`.
+
+## Symbolic `|` actor route (stacked experimental change)
+
+A direct `spawn A() | spawn B() | spawn C()` chain is parsed into the **same**
+`pipe` actor-graph AST as `spawn A() pipe spawn B() pipe spawn C()`.
+This is a narrowly scoped syntax alias for *spawn-rooted* chains only;
+`ActorRef` identifiers separated by `|` are not admitted as actor routes yet.
+Ordinary integer bitwise `|`, lambda delimiters, and `|>` value piping retain
+their existing behavior. An actor chain with a scalar stage is rejected by
+type checking before graph ingress. The JUnit guest execution regression
+reuses the same 15-actor forward/backward fixture and expected 32 receipt for
+both spellings. Tests are **authored, not yet executed on this new head**;
+source-guest parity with `emit`, bounded one-way actor pipelines and other
+backends remains separate work. Do not treat the playground preview as proof.
+
+
+## Named ActorRef symbolic-pipe follow-up (stacked, verification pending)
+
+`|` must work on a statically typed `ActorRef<T>` binding as well as inline
+`spawn` expressions. The type checker detects an actor pipe by the leftmost
+stage's static `ActorRef<T>` type, then validates all 2..16 stages using the
+same closed nominal ActorMail contract as keyword `pipe`. Mixed
+`refA | refB pipe refC` chains form **one** atomic graph binding; no
+intermediate two-stage pipeline is created. Numeric `5 | 2`, including
+numeric local variables, remains bitwise OR; `||`, `|>`, and lambda
+delimiters are separate constructs.
+
+The three-actor Java guest regression uses real `self.forward` and
+`self.backward` round-trip completion (not unimplemented `emit`). It sends
+41 through the symbolic route and 42 through the keyword route; the Sink
+prints 42 and 43 respectively. Each route awaits `ActorStream.get_done()`
+so success requires physical completion. The source fixture is authored,
+but **not proven by CI** until the exact-head jobs execute nonzero steps.
+This implementation retains the runtime's single-flow, forward/backward
+phase contract; general one-way broadcast/emit semantics are out of scope.
