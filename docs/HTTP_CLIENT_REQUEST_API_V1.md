@@ -141,3 +141,17 @@ JDK25 steps and require at least:
 
 A zero-step GitHub Actions runner-allocation failure is infrastructure evidence,
 not a passing or failing code test.
+
+
+## Current physical transport hardening
+
+On the pinned-transport stack, the still-loopback-only guest request is backed
+by `PinnedHttpTransport` rather than the JDK HttpClient loopback proof.
+
+This changes the physical implementation, not the guest ABI or target policy.
+The socket connects to a policy-authorized `InetAddress` directly and the
+existing actor-owned lifetime/physical AsyncNativeIo receipt remains in force.
+
+Arbitrary hostname egress is still disabled until production DNS itself has a
+bounded, physically tracked retirement path. See
+`docs/PINNED_HTTP_TRANSPORT_V1.md`.
