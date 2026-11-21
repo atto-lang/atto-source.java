@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.runtime.accel.DopKernelIR;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -35,13 +36,31 @@ public final class DopRegionSchedule {
     public static final class Root {
         private final long rows;
         private final int fields;
-        private Root(long rows, int fields) {
+        private final DopKernelIR.HostBuffer.RegionToken backing;
+        private Root(long rows, int fields, DopKernelIR.HostBuffer.RegionToken backing) {
             if (rows < 0 || fields <= 0) throw new IllegalArgumentException("invalid region shape");
             this.rows = rows;
             this.fields = fields;
+            this.backing = backing;
         }
-        // Package-private: never expose minting or a Root token to guest code.
-        static Root trustedCreate(long rows, int fields) { return new Root(rows, fields); }
+        // Logical-only roots are for planning/tests and carry NO access authority.
+        static Root trustedCreate(long rows, int fields) { return new Root(rows, fields, null); }
+
+        /** Trusted host call: bind root identity to a real owned allocation. */
+        public static Root fromHostBuffer(DopKernelIR.HostBuffer buffer) {
+            Objects.requireNonNull(buffer, "buffer");
+            // The token carries the immutable shape of one owned allocation.
+            // Capture token and liveness together, not via two owner calls.
+            var backing = buffer.regionToken();
+            return new Root(backing.rows(), backing.fields(), backing);
+        }
+        public boolean sameRoot(Root other) {
+            Objects.requireNonNull(other, "other");
+            return this == other || (backing != null && backing == other.backing);
+        }
+        public boolean isLiveOwned() {
+            return backing != null && backing.isLive();
+        }
         public long rows() { return rows; }
         public int fields() { return fields; }
     }
@@ -87,7 +106,7 @@ public final class DopRegionSchedule {
     public static boolean independent(Access a, Access b) {
         Objects.requireNonNull(a, "left");
         Objects.requireNonNull(b, "right");
-        if (a.root() != b.root() || a.field() != b.field()
+        if (!a.root().sameRoot(b.root()) || a.field() != b.field()
                 || a.begin() == a.end() || b.begin() == b.end()
                 || a.end() <= b.begin() || b.end() <= a.begin()) return true;
         // Even same-op reductions serialize without a certified reduction tree.
@@ -103,6 +122,19 @@ public final class DopRegionSchedule {
             }
         }
         return true;
+    }
+
+    /**
+     * Physical preflight only; NOT an execution lease. Callers must acquire
+     * and retain actual HostBuffer ReadLoan/WriteLoan through the operation.
+     */
+    public static void requireLiveOwned(Task task) {
+        Objects.requireNonNull(task, "task");
+        for (var access : task.accesses()) {
+            if (!access.root().isLiveOwned()) {
+                throw new IllegalStateException("DOP region has no live owned allocation");
+            }
+        }
     }
 
     /** Stable batch order: each conflicting task follows all its predecessors. */
