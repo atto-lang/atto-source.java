@@ -132,7 +132,13 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, interface, or trait after 'define'");
+                if (match(ENUM)) {
+                    validateNoModifiers(modifiers, "enums");
+                    rejectCallableStructuralAnnotation(annotations, "enum declarations");
+                    rootDeclarations.add(parseTaggedEnum());
+                    continue;
+                }
+                throw error(previous(), "expected module, class, interface, trait, or enum after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -928,6 +934,62 @@ public final class Parser {
         List<Ast.TypeRef> refs = new ArrayList<>();
         do refs.add(parseTypeRef()); while (match(COMMA));
         return refs;
+    }
+
+    /**
+     * Minimal nominal enum declaration used by the typed ML error path.
+     * Cases are closed, unique, and carry monotonically increasing positive tags.
+     */
+    private Ast.EnumDecl parseTaggedEnum() {
+        String name = consume(IDENT, "expected enum name").lexeme();
+        consume(AS, "expected 'as' after enum name");
+        List<Ast.EnumCase> cases = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        java.util.Set<Integer> tags = new java.util.HashSet<>();
+        int nextTag = 1;
+        while (!check(END) && !check(EOF)) {
+            Token start = consume(IDENT, "expected enum case name");
+            if (!names.add(start.lexeme())) {
+                throw error(start, "duplicate enum case " + start.lexeme());
+            }
+            Ast.TypeRef payload = match(COLON) ? parseTypeRef() : null;
+            int tag;
+            if (match(EQUAL)) {
+                Token raw = consume(INT, "expected positive enum tag");
+                long parsed = Long.parseLong(raw.lexeme().replace("_", ""));
+                if (parsed < 1 || parsed > Integer.MAX_VALUE) {
+                    throw error(raw, "enum tags must be positive 32-bit integers");
+                }
+                tag = (int) parsed;
+            } else {
+                tag = nextTag;
+            }
+            if (tag < nextTag || !tags.add(tag)) {
+                throw error(start, "enum tags must be unique and monotonically increasing");
+            }
+            cases.add(new Ast.EnumCase(start.lexeme(), payload, tag));
+            boolean separator = match(COMMA, SEMICOLON);
+            if (tag == Integer.MAX_VALUE) {
+                // A trailing separator is legal. Reject only when another
+                // variant follows the maximum explicit tag.
+                if (!check(END)) {
+                    throw error(start, "cannot implicitly increment enum tag after INT32_MAX");
+                }
+            } else {
+                nextTag = tag + 1;
+            }
+            if (!separator && !check(END) && peek().line() <= previous().line()) {
+                throw error(peek(), "enum cases require separate lines, commas, or semicolons");
+            }
+        }
+        consume(END, "expected 'end' after enum " + name);
+        if (cases.isEmpty()) {
+            throw error(previous(), "enum must declare at least one case");
+        }
+        if (cases.size() > 4096) {
+            throw error(previous(), "enum exceeds 4096 cases");
+        }
+        return new Ast.EnumDecl(name, cases);
     }
 
     private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
@@ -2607,6 +2669,9 @@ public final class Parser {
 
         if (check(IDENT)) {
             String name = advance().lexeme();
+            if (match(DOT)) {
+                name += "." + consume(IDENT, "expected enum case after '.' in match pattern").lexeme();
+            }
             if (match(LPAREN)) {
                 List<Ast.Pattern> args = new ArrayList<>();
                 if (!check(RPAREN)) {

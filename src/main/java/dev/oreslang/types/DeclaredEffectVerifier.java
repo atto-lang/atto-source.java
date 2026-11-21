@@ -23,9 +23,14 @@ public final class DeclaredEffectVerifier {
             "prepare_scalar_publication",
             "publish_scalar_publication");
 
+    private static final ThreadLocal<NominalEnumRegistry.Registry> ACTIVE_ENUMS =
+            new ThreadLocal<>();
+
     private DeclaredEffectVerifier() { }
 
     public static void verify(Ast.Program program) {
+        ACTIVE_ENUMS.set(NominalEnumRegistry.build(program));
+        try {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
@@ -55,6 +60,9 @@ public final class DeclaredEffectVerifier {
                     }
                 }
             }
+        }
+        } finally {
+            ACTIVE_ENUMS.remove();
         }
     }
 
@@ -188,6 +196,23 @@ public final class DeclaredEffectVerifier {
                                 String stateAccess, String callableName, boolean serial) {
         if (node == null) return;
         if (node instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr enumConstructor
+                    && enumConstructor.receiver() instanceof Ast.NameExpr enumName) {
+                NominalEnumRegistry.Registry registry = ACTIVE_ENUMS.get();
+                NominalEnumRegistry.Variant variant = registry == null
+                        ? null
+                        : registry.variant(
+                                enumName.name() + "." + enumConstructor.member());
+                if (variant != null) {
+                    collect(
+                            call.arguments(),
+                            effects,
+                            stateAccess,
+                            callableName,
+                            serial);
+                    return;
+                }
+            }
             if (call.callee() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr self
                     && self.name().equals("self")
