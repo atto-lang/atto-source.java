@@ -35,12 +35,41 @@ A compiler binds a call against its *statically resolved callable declaration*:
 
 1. Select the callable by existing namespace/owner, name and arity rules. Class method overload selectors are **(kind, name, arity)** and must **not** incorporate labels or argument runtime types.
 2. Evaluate the callee/receiver (as applicable), then each argument expression **exactly once in lexical source order** into independently tracked temporaries. Preserve existing ownership, move/borrow, effect, suspension, cancellation and cleanup semantics in that order.
-3. Bind positional arguments to the leading unclaimed parameter slots. After the first named argument, all remaining arguments must be named.
+3. Bind positional arguments to the leading unclaimed parameter slots. After the first named argument, all remaining arguments must be named **except** for the narrowly defined final anonymous trailing-closure rule below.
 4. Bind each `name: expression` by exact, case-sensitive declared parameter name to one unclaimed slot.
 5. Reject unknown names, duplicates, any slot filled twice (whether positionally or by name), missing required slots, excess arguments and wrong argument types at compile time.
 6. After checking, pass the evaluated temporaries to the existing ABI in **declaration parameter order**. No runtime dictionary/hash map lookup, runtime label reflection, or parameter-name overload dispatch.
 
 An implementation MUST NOT re-sort the original expressions before evaluation: `foo(a: effect1(), bar: effect2())` evaluates `effect1` before `effect2`, even though `bar` is the first formal parameter. Ownership checking is performed on that same lexical evaluation order, with each argument's applicable formal parameter mode known from binding.
+
+## Final anonymous trailing-closure exception
+
+A call may contain **exactly one** unlabeled final anonymous closure after named value arguments:
+
+```oreslang
+compute(
+    region: motion,
+    writes: [Motion.x, Motion.y],
+    fnc(chunk) { update(chunk); }
+)
+```
+
+The accepted syntactic closure forms are `fnc(...) { ... }`, `|...| -> { ... }`,
+and their `nlex` variants. This exception is not general positional-after-named
+support. Before execution, static binding MUST prove that:
+
+- the closure is the final source call item;
+- exactly one formal slot remains unclaimed;
+- that slot is the declaration's final formal;
+- the final formal has a statically known callable type compatible with the closure;
+- there is no spread, omission, second trailing closure, dynamic/opaque callable,
+  label-only overload distinction, or runtime label lookup involved.
+
+The AST retains an explicit trailing-closure origin bit so later lowering cannot
+mistake this item for an ordinary positional argument. Its expression is still
+evaluated exactly once in lexical source order. If any proof is unavailable the
+call is rejected; callers can always use an explicit label such as
+`body: fnc(chunk) { ... }`.
 
 ## Scope and compatibility
 

@@ -1577,6 +1577,36 @@ public final class OresEvalRootNode extends RootNode {
                 return runtime.arguments().stream()
                         .anyMatch(argument -> expressionContainsPotentialSuspension(argument, seen));
             }
+            if (expr instanceof Ast.StagedCallExpr call) {
+                for (Ast.CallArgument argument : call.arguments()) {
+                    if (expressionContainsPotentialSuspension(argument.value(), seen)) return true;
+                }
+                if (call.callee() instanceof Ast.NameExpr name
+                        && !functionNameBoundLocally(name.name())) {
+                    Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
+                    if (target != null) {
+                        if (target.generator()) return false;
+                        return target.async() || target.suspends()
+                                || target.actorKind() != Ast.ActorKind.NONE
+                                || (!target.async()
+                                        && functionContainsPotentialSuspension(target, seen));
+                    }
+                }
+                if (call.callee() instanceof Ast.MemberExpr qualified
+                        && qualified.receiver() instanceof Ast.NameExpr namespace) {
+                    Ast.FunctionDecl target = findQualifiedFunction(
+                            namespace.name() + "." + qualified.member(),
+                            call.arguments().size());
+                    if (target != null) {
+                        if (target.generator()) return false;
+                        return target.async() || target.suspends()
+                                || target.actorKind() != Ast.ActorKind.NONE
+                                || (!target.async()
+                                        && functionContainsPotentialSuspension(target, seen));
+                    }
+                }
+                return true;
+            }
             if (expr instanceof Ast.CallExpr call) {
                 for (Ast.Expr argument : call.arguments()) {
                     if (expressionContainsPotentialSuspension(argument, seen)) return true;
@@ -3529,6 +3559,15 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
+                if (expr instanceof Ast.StagedCallExpr staged) {
+                    evalSuspendableStagedRequiredCall(
+                            task,
+                            staged,
+                            env,
+                            continuation);
+                    return;
+                }
+
                 if (expr instanceof Ast.CallExpr call) {
                     evalSuspendableCall(
                             task,
@@ -4159,6 +4198,64 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, ownershipFailure);
                         }
                     });
+        }
+
+        private void evalSuspendableStagedRequiredCall(
+                SourceTask task,
+                Ast.StagedCallExpr call,
+                Env env,
+                SourceValueCont continuation) {
+            try {
+                Ast.CheckedNamedCallPlan.require(call);
+                Ast.FunctionDecl target = null;
+                if (call.callee() instanceof Ast.NameExpr name
+                        && env.lookup(name.name()) == Env.MISSING) {
+                    target = findFunction(name.name(), call.arguments().size());
+                    if (target != null) requireExplicitClassCallableImport(env, name.name());
+                } else if (call.callee() instanceof Ast.MemberExpr qualified
+                        && qualified.receiver() instanceof Ast.NameExpr namespace) {
+                    target = findQualifiedFunction(
+                            namespace.name() + "." + qualified.member(),
+                            call.arguments().size());
+                    if (target != null) {
+                        requireLexicalNamespaceAccess(env, namespace.name(), "module");
+                    }
+                }
+                if (target == null) {
+                    continuation.accept(
+                            task, null,
+                            new IllegalStateException(
+                                    "type-checked named call no longer resolves to its direct function slot"));
+                    return;
+                }
+
+                Ast.FunctionDecl resolved = target;
+                evalSuspendableArguments(
+                        task,
+                        stagedArgumentExpressions(call),
+                        env,
+                        (t, sourceValues, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                Invocation invocation = functionInvocation(
+                                        resolved,
+                                        reorderNamedValues(call, sourceValues));
+                                completeSourceInvocation(
+                                        t,
+                                        invocation,
+                                        invocationDeclaresAsync(invocation),
+                                        env,
+                                        continuation);
+                            } catch (RuntimeException | Error failure2) {
+                                continuation.accept(t, null, failure2);
+                            }
+                        });
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+            }
         }
 
         private void evalSuspendableCall(
@@ -5794,6 +5891,69 @@ public final class OresEvalRootNode extends RootNode {
             return Parser.ROOT_MODULE;
         }
 
+        private List<Ast.Expr> stagedArgumentExpressions(Ast.StagedCallExpr call) {
+            ArrayList<Ast.Expr> expressions = new ArrayList<>(call.arguments().size());
+            for (Ast.CallArgument argument : call.arguments()) {
+                if (argument.value() == null || argument.omitted() || argument.spread()) {
+                    throw new IllegalStateException(
+                            "checked required named call contains a non-evaluable argument");
+                }
+                expressions.add(argument.value());
+            }
+            return List.copyOf(expressions);
+        }
+
+        private List<Object> reorderNamedValues(
+                Ast.StagedCallExpr call,
+                List<Object> sourceValues) {
+            List<Integer> sourceByFormal = Ast.CheckedNamedCallPlan.require(call);
+            if (sourceByFormal.size() != sourceValues.size()) {
+                throw new IllegalStateException("checked named-call runtime arity mismatch");
+            }
+            ArrayList<Object> formalValues = new ArrayList<>(sourceValues.size());
+            for (int formalIndex = 0; formalIndex < sourceByFormal.size(); formalIndex++) {
+                formalValues.add(sourceValues.get(sourceByFormal.get(formalIndex)));
+            }
+            return List.copyOf(formalValues);
+        }
+
+        private Invocation prepareStagedRequiredInvocation(
+                Ast.StagedCallExpr call,
+                Env env) {
+            Ast.CheckedNamedCallPlan.require(call);
+            List<Ast.Expr> sourceExpressions = stagedArgumentExpressions(call);
+
+            if (call.callee() instanceof Ast.NameExpr directName
+                    && env.lookup(directName.name()) == Env.MISSING) {
+                Ast.FunctionDecl direct = findFunction(
+                        directName.name(), call.arguments().size());
+                if (direct != null) {
+                    requireExplicitClassCallableImport(env, directName.name());
+                    List<Object> sourceValues =
+                            evaluateArguments(sourceExpressions, env);
+                    return functionInvocation(
+                            direct, reorderNamedValues(call, sourceValues));
+                }
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr qualified
+                    && qualified.receiver() instanceof Ast.NameExpr namespace) {
+                Ast.FunctionDecl direct = findQualifiedFunction(
+                        namespace.name() + "." + qualified.member(),
+                        call.arguments().size());
+                if (direct != null) {
+                    requireLexicalNamespaceAccess(env, namespace.name(), "module");
+                    List<Object> sourceValues =
+                            evaluateArguments(sourceExpressions, env);
+                    return functionInvocation(
+                            direct, reorderNamedValues(call, sourceValues));
+                }
+            }
+
+            throw new IllegalStateException(
+                    "type-checked named call no longer resolves to its direct function slot");
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
@@ -6108,6 +6268,21 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.StagedCallExpr staged) {
+                return invoke(prepareStagedRequiredInvocation(staged, env));
+            }
+            if (expr instanceof Ast.StagedNewExpr) {
+                throw new IllegalArgumentException(
+                        "named constructor/actor calls have no runtime lowering");
+            }
+            if (expr instanceof Ast.TypeExpr) {
+                throw new IllegalArgumentException(
+                        "generic type qualifier has no standalone runtime value");
+            }
+            if (expr instanceof Ast.CompoundAssignExpr) {
+                throw new IllegalArgumentException(
+                        "compound-place assignment has no checked runtime lowering");
+            }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {

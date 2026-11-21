@@ -21,6 +21,8 @@ public final class CapabilityChecker {
     private final Map<String, Ast.TypeAliasDecl> aliases = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
+    private final Map<String, Map<Integer, Ast.FunctionDecl>> functionFamilies = new HashMap<>();
+    private final Set<String> ambiguousFunctionSlots = new HashSet<>();
     private final Set<String> ambiguousAliases = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
@@ -58,6 +60,7 @@ public final class CapabilityChecker {
                     index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                 } else if (declaration instanceof Ast.FunctionDecl fn) {
                     index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                    indexFunctionSlot(module.name(), fn);
                 }
             }
         }
@@ -96,8 +99,33 @@ public final class CapabilityChecker {
         return ambiguousClasses.contains(name) ? null : classes.get(name);
     }
 
+    private void indexFunctionSlot(String module, Ast.FunctionDecl fn) {
+        putFunctionSlot(module + "." + fn.name(), fn.arity(), fn, false);
+        putFunctionSlot(fn.name(), fn.arity(), fn, true);
+    }
+
+    private void putFunctionSlot(
+            String name,
+            int arity,
+            Ast.FunctionDecl fn,
+            boolean trackAmbiguity) {
+        Map<Integer, Ast.FunctionDecl> family =
+                functionFamilies.computeIfAbsent(name, ignored -> new HashMap<>());
+        Ast.FunctionDecl previous = family.putIfAbsent(arity, fn);
+        if (trackAmbiguity && previous != null && previous != fn) {
+            family.remove(arity);
+            ambiguousFunctionSlots.add(name + "#" + arity);
+        }
+    }
+
     private Ast.FunctionDecl findFunction(String name) {
         return ambiguousFunctions.contains(name) ? null : functions.get(name);
+    }
+
+    private Ast.FunctionDecl findFunction(String name, int arity) {
+        if (ambiguousFunctionSlots.contains(name + "#" + arity)) return null;
+        Map<Integer, Ast.FunctionDecl> family = functionFamilies.get(name);
+        return family == null ? null : family.get(arity);
     }
 
     private void checkReferencedFunction(Ast.FunctionDecl fn, IsolatePolicy policy) {
@@ -359,6 +387,44 @@ public final class CapabilityChecker {
     }
 
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
+        if (expr instanceof Ast.StagedCallExpr staged) {
+            String target = memberPath(staged.callee());
+            if (isZeroAuthorityAdversarial(policy) && target != null) {
+                String root = target.contains(".")
+                        ? target.substring(0, target.indexOf('.'))
+                        : target;
+                if (importedRoots.contains(root)) {
+                    throw new SecurityException(
+                            "untrusted actor cannot call imported code without explicit effect metadata: "
+                                    + target);
+                }
+            }
+            if (target != null) {
+                Ast.FunctionDecl fn = findFunction(target, staged.arguments().size());
+                if (fn != null) checkReferencedFunction(fn, policy);
+            }
+            checkExpr(staged.callee(), policy);
+            for (Ast.CallArgument argument : staged.arguments()) {
+                checkExpr(argument.value(), policy);
+            }
+            // Capability discovery must not skip staged children even before
+            // type checking, but execution authority still requires the exact
+            // identity-bound source-to-formal proof.
+            Ast.CheckedNamedCallPlan.require(staged);
+            return;
+        }
+        if (expr instanceof Ast.StagedNewExpr) {
+            throw new SecurityException(
+                    "named constructor/actor calls require checked lowering before capability admission");
+        }
+        if (expr instanceof Ast.TypeExpr) {
+            throw new SecurityException(
+                    "generic type-qualified expressions require checked lowering before capability admission");
+        }
+        if (expr instanceof Ast.CompoundAssignExpr) {
+            throw new SecurityException(
+                    "compound-place assignments require checked lowering before capability admission");
+        }
         if (expr instanceof Ast.NameExpr javaName) {
             String javaClass = javaImports.get(javaName.name());
             if (javaClass != null) {
@@ -426,7 +492,7 @@ public final class CapabilityChecker {
                 }
             }
             if (target != null) {
-                Ast.FunctionDecl fn = findFunction(target);
+                Ast.FunctionDecl fn = findFunction(target, c.arguments().size());
                 if (fn != null) checkReferencedFunction(fn, policy);
             }
             Ast.MethodDecl staticMethod = findStaticMethod(c.callee(), c.arguments().size());

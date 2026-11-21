@@ -857,6 +857,18 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.StagedCallExpr staged) {
+            return checkStagedRequiredCall(staged, scope);
+        }
+        if (expr instanceof Ast.StagedNewExpr) {
+            throw error("named constructor/actor lowering is not yet enabled");
+        }
+        if (expr instanceof Ast.TypeExpr) {
+            throw error("generic type-qualified expression is not a runtime ownership value");
+        }
+        if (expr instanceof Ast.CompoundAssignExpr) {
+            throw error("compound-place assignment ownership lowering is not yet enabled");
+        }
         if (expr instanceof Ast.MatchExpr match) {
             ValueInfo subject = checkExpr(match.subject(), scope, false);
             VarState source = match.subject() instanceof Ast.NameExpr name
@@ -1333,6 +1345,117 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private ValueInfo checkStagedRequiredCall(
+            Ast.StagedCallExpr call,
+            Scope scope) {
+        if (initializingClass != null) {
+            throw error(
+                    "named calls are not enabled inside constructors until partial-self call effects are proven");
+        }
+        if (call.typeArgumentsPresent()) {
+            throw error("named-call generic specialization is not enabled yet");
+        }
+
+        Ast.FunctionDecl fn = null;
+        String label = null;
+        if (call.callee() instanceof Ast.NameExpr name
+                && scope.lookup(name.name()) == null) {
+            fn = findFunction(name.name(), call.arguments().size());
+            if (fn != null) label = "function " + fn.name();
+        } else if (call.callee() instanceof Ast.MemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace) {
+            fn = findFunction(
+                    namespace.name() + "." + qualified.member(),
+                    call.arguments().size());
+            if (fn != null) {
+                label = "function " + namespace.name() + "." + qualified.member();
+            }
+        }
+
+        if (fn == null) {
+            throw error(
+                    "named calls currently require a statically resolved direct or module function");
+        }
+        if (!fn.genericParameters().isEmpty()) {
+            throw error(label + " is generic; named-call generic specialization is not enabled yet");
+        }
+
+        NamedCallBindingPlan.Plan rebound =
+                NamedCallBindingPlan.bindRequired(fn.parameters(), call.arguments());
+        List<Integer> checked = Ast.CheckedNamedCallPlan.require(call);
+        if (!checked.equals(rebound.sourceItemIndexByFormal())) {
+            throw new IllegalStateException(
+                    "named-call ownership plan diverged from type-checked source/formal snapshot");
+        }
+
+        if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
+        checkStagedArguments(
+                call.arguments(),
+                fn.parameters(),
+                rebound,
+                scope,
+                label);
+        Ast.TypeRef callResult =
+                callableResultType(fn.returnType(), fn.async(), fn.generator());
+        return new ValueInfo(callResult, kindOfType(callResult), null);
+    }
+
+    private void checkStagedArguments(
+            List<Ast.CallArgument> arguments,
+            List<Ast.Param> params,
+            NamedCallBindingPlan.Plan plan,
+            Scope scope,
+            String callable) {
+        Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
+        List<CallArgumentLoan> activeLoans = new ArrayList<>();
+        try {
+            for (int sourceIndex = 0; sourceIndex < arguments.size(); sourceIndex++) {
+                Ast.Expr argument = arguments.get(sourceIndex).value();
+                int parameterIndex = plan.formalIndexBySourceItem().get(sourceIndex);
+                Ast.Param param = params.get(parameterIndex);
+                VarState loanOwner = param.type().isBorrow()
+                        ? invocationLoanRoot(argument, scope) : null;
+                boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
+                if (loanOwner != null) {
+                    Boolean previous = invocationLoans.get(loanOwner);
+                    if (previous != null && (previous || mutable)) {
+                        throw error(callable
+                                + " has overlapping mutable borrow arguments for parameter '"
+                                + param.name() + "'");
+                    }
+                }
+                checkArgument(argument, param, scope, callable, parameterIndex + 1);
+                if (loanOwner != null) {
+                    boolean explicit = argument instanceof Ast.UnaryExpr unary
+                            && (unary.operator().equals("&") || unary.operator().equals("&mut"));
+                    explicit |= argument instanceof Ast.RuntimeCallExpr runtime
+                            && runtime.operation().equals("borrow")
+                            && runtime.arguments().size() == 1;
+                    boolean forwarded = argument instanceof Ast.NameExpr name
+                            && isIncomingBorrow(scope.lookup(name.name()));
+                    if (explicit || forwarded) {
+                        beginPersistentBorrow(loanOwner, mutable);
+                        activeLoans.add(new CallArgumentLoan(ownershipRoot(loanOwner), mutable));
+                    }
+                    invocationLoans.put(loanOwner, mutable);
+                }
+            }
+        } finally {
+            for (int i = activeLoans.size() - 1; i >= 0; i--) {
+                CallArgumentLoan loan = activeLoans.get(i);
+                if (loan.mutable()) {
+                    if (!loan.root().mutableBorrowed)
+                        throw new IllegalStateException("missing exclusive named-call argument loan");
+                    loan.root().mutableBorrowed = false;
+                } else {
+                    if (loan.root().immutableBorrows <= 0)
+                        throw new IllegalStateException("missing shared named-call argument loan");
+                    loan.root().immutableBorrows--;
+                }
+            }
+        }
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {

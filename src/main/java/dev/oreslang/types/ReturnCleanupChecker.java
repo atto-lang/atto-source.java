@@ -272,6 +272,25 @@ public final class ReturnCleanupChecker {
 
     private static void expression(Ast.Expr expr, Scope scope, boolean inDefer, State state) {
         if (expr == null) return;
+        if (expr instanceof Ast.StagedCallExpr staged) {
+            expression(staged.callee(), scope, inDefer, state);
+            for (Ast.CallArgument argument : staged.arguments()) {
+                expression(argument.value(), scope, inDefer, state);
+            }
+            return;
+        }
+        if (expr instanceof Ast.StagedNewExpr) {
+            throw new IllegalArgumentException(
+                    "named constructor/actor calls must be lowered before return/cleanup analysis");
+        }
+        if (expr instanceof Ast.TypeExpr) {
+            throw new IllegalArgumentException(
+                    "generic type-qualified expressions must be lowered before return/cleanup analysis");
+        }
+        if (expr instanceof Ast.CompoundAssignExpr) {
+            throw new IllegalArgumentException(
+                    "compound-place assignments must be lowered before return/cleanup analysis");
+        }
         if (expr instanceof Ast.AssignExpr assignment) {
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Binding target = scope.resolve(name.name());

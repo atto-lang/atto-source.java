@@ -60,9 +60,11 @@ subset of tokens as ordinary expressions is **not** evidence of working code.
    The list elements are evaluated in source order. A typed consumer must
    decide whether a particular array is a borrowed slice, owned list or
    fixed-size configuration. `[#aos, #soa]` is *not* a special enum syntax.
-3. **Runtime named arguments:** `name: expression` in calls is proposed by
-   `docs/NAMED_ARGUMENTS_CONTRACT.md` and staged in separate Java PR #1335;
-   **not currently executable**. AST must preserve label, source position,
+3. **Runtime named arguments:** this stacked branch now parses `name: expression`
+   into a first-class staged call-item AST and preserves lexical source order.
+   Type/ownership/runtime paths deliberately reject the staged node, so named
+   calls are **not yet executable**. The broader optional/default/rest binder
+   work remains in Java PR #1335. AST must preserve label, source position,
    omission and spread; binding is case-sensitive, statically checked and
    lowered to formal positional ABI slots. Evaluate each actual exactly once
    in lexical source order, then permute temporary values, never expressions.
@@ -75,8 +77,9 @@ subset of tokens as ordinary expressions is **not** evidence of working code.
    Policy APIs must validate an exhaustively enumerated set of Symbol values
    with typed rejection for misspellings; `#unsafe_setting` cannot be silently
    accepted, and an untrusted caller cannot thereby acquire scheduler authority.
-5. **Named + final anonymous callback:** The existing named-argument contract
-   rejects *any* positional argument after a named argument. The target
+5. **Named + final anonymous callback:** this stacked branch recognizes one
+   source-marked final anonymous `fnc`/pipe closure after named arguments, but
+   keeps it fail-closed until signature binding proves the final callable formal. The target
    `compute(..., writes: [...], fnc(chunk) {...})` needs an explicit,
    narrowly-scoped **trailing-closure** rule: allow exactly one final,
    syntactically anonymous callable (`fnc(...) {...}` or `|...| -> {...}`)
@@ -87,12 +90,12 @@ subset of tokens as ordinary expressions is **not** evidence of working code.
    rather than silently treating all unlabeled arguments as legal. A completely
    explicit alternative remains `body: fnc(chunk) {...}` with a declared
    `body` callback formal, which **does not** need this exception.
-6. **Static generic factories:** Ordinary `Scheduler.new(...)` has a member
-   parser path (reserved `new` is accepted after `.`) but still needs a
-   statically resolved type/export and callable. `Region<Motion>.new(...)`
-   currently lacks general generic-type-qualified expression lowering; do not
-   confuse `Region<Motion>` with `Region<Motion>(...)` generic method
-   instantiation. A safe first executable spelling is
+6. **Static generic factories:** this stacked parser branch recognizes
+   `Region<Motion>.new(...)` as a `TypeExpr(TypeRef)` receiver followed by
+   ordinary member access. The qualifier is not a runtime class object and all
+   semantic/runtime consumers currently reject it until static type-member
+   resolution is implemented. Do not confuse `Region<Motion>` with
+   `Region<Motion>(...)` generic method instantiation. A safe first executable spelling is
    `new Region<Motion>(...)` *after* a concrete constructor API exists.
    Any future `.new` on `Type<T>` must resolve to a factory with checked
    generic arguments, not parse as angle-bracket comparisons.
@@ -103,9 +106,10 @@ subset of tokens as ordinary expressions is **not** evidence of working code.
    shared static value. Resolve it via an explicit compile-time schema
    descriptor namespace or a context-checked projection, never broad dynamic
    member lookup or forged field names.
-8. **Compound writes:** Java main does not lex/parse `+=` for ordinary
-   expressions (it tokenizes `+` and `=`). Lower it only after verified
-   compound-place semantics: evaluate the lvalue receiver/index once, acquire
+8. **Compound writes:** this stacked parser branch now tokenizes and preserves
+   `+= -= *= /= %=` as `CompoundAssignExpr` without desugaring. Type,
+   ownership and runtime paths reject the node until verified compound-place
+   semantics exist: evaluate the lvalue receiver/index once, acquire
    one scoped mutable loan, read the old value, evaluate RHS once, checked
    operation, then write; never synthesize `a().x = a().x + rhs`. Region
    chunk fields are lane views and may require SIMD masked operations, not a

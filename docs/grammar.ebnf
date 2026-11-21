@@ -273,7 +273,8 @@ for_of_destructure_item
 for_of_rest_item= [ for_of_binding ] "..." IDENT ;
 loop_body       = block | "do" { statement } "done" ;
 expression      = assignment ;
-assignment      = conditional [ "=" assignment ] ;
+assignment      = conditional [ assignment_operator assignment ] ;
+assignment_operator = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
 logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
@@ -297,7 +298,12 @@ channel_wait_mode
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ call_argument_list ] ")" ;
 call_argument_list = call_argument { "," call_argument } ;
-call_argument   = [ "..." ] expression ;
+call_argument   = spread_argument | named_value_argument | expression ;
+spread_argument = "..." expression ;
+named_value_argument = IDENT ":" expression ;
+(* Once a named item has appeared, later positional items are rejected except
+   for one final syntactically anonymous fnc/pipe closure. That exception is
+   semantic and must be validated against the unique final callable formal. *)
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "eq" | "neq" | "is" | "when"
@@ -307,9 +313,10 @@ index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
 primary         = literal
+                | generic_type_qualifier
                 | callable_name
                 | "self"
-                | "new" type_ref "(" [ argument_list ] ")"
+                | "new" type_ref "(" [ call_argument_list ] ")"
                 | lambda
                 | tuple_literal
                 | array_literal
@@ -326,6 +333,12 @@ lambda_param    = IDENT | type_ref IDENT ;
 typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" lambda_body ;
 lambda_body     = block | expression ;
+
+generic_type_qualifier
+                = IDENT "<" type_ref { "," type_ref } ">" ;
+(* A generic_type_qualifier is expression syntax only when immediately followed
+   by '.' or '::' member qualification, e.g. Region<Motion>.new. It has no
+   standalone runtime value and must not be inferred from spaced comparisons. *)
 
 tuple_literal   = "tuple" "(" [ argument_list ] ")"
                 | "(" expression "," expression { "," expression } ")" ;

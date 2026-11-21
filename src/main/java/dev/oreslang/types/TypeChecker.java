@@ -2052,7 +2052,112 @@ public final class TypeChecker {
         return java.util.Collections.unmodifiableSet(declared);
     }
 
+    private Type typeStagedRequiredCall(
+            Ast.StagedCallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    "named calls with explicit/inferred call-site generic arguments are not enabled yet");
+        }
+
+        Ast.FunctionDecl target = null;
+        String label = null;
+        if (call.callee() instanceof Ast.NameExpr name && env.lookup(name.name()) == null) {
+            if (name.name().equals("init")) {
+                throw new IllegalArgumentException(
+                        "init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
+            }
+            target = findFunction(name.name(), call.arguments().size());
+            if (target != null) {
+                rejectImplicitClassCallable(name.name());
+                label = "function " + name.name();
+            }
+        } else if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr namespace
+                && env.lookup(namespace.name()) == null
+                && modules.containsKey(namespace.name())) {
+            if (member.member().equals("init")) {
+                throw new IllegalArgumentException(
+                        "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
+            }
+            rejectUnimportedModuleNamespace(namespace.name());
+            target = findQualifiedFunction(
+                    namespace.name() + "." + member.member(),
+                    call.arguments().size());
+            if (target != null) {
+                label = "function " + namespace.name() + "." + member.member();
+            }
+        }
+
+        if (target == null) {
+            throw new IllegalArgumentException(
+                    "named calls currently require a statically resolved direct or module function; "
+                            + "instance/static methods and first-class callable values remain fail-closed");
+        }
+        if (!target.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    label + " is generic; named-call generic specialization is not enabled yet");
+        }
+        if (target.actorKind() != Ast.ActorKind.NONE
+                && currentActorKind != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "actor callable '" + target.name()
+                            + "' cannot be synchronously invoked from another actor turn; "
+                            + "use mailbox-oriented actor composition");
+        }
+
+        NamedCallBindingPlan.Plan plan =
+                NamedCallBindingPlan.bindRequired(target.parameters(), call.arguments());
+        List<Type> expectedByFormal = target.parameters().stream()
+                .map(param -> resolveParam(param, Set.of(), null))
+                .toList();
+
+        for (int sourceIndex = 0; sourceIndex < call.arguments().size(); sourceIndex++) {
+            Ast.CallArgument item = call.arguments().get(sourceIndex);
+            int formalIndex = plan.formalIndexBySourceItem().get(sourceIndex);
+            Ast.Param param = target.parameters().get(formalIndex);
+            Type expected = expectedByFormal.get(formalIndex);
+            Type actual = typeOfAgainstExpected(
+                    item.value(), expected, env, generics, self);
+            if (!param.structural()) {
+                requireReadonlyCapabilityPreserved(
+                        actual, expected,
+                        "argument '" + param.name() + "' to " + label);
+            }
+            requireMutableReferentCompatible(
+                    actual, param.mutable(),
+                    "argument '" + param.name() + "' to mutable parameter");
+            requireAssignable(
+                    actual, expected,
+                    "argument '" + param.name() + "' to " + label);
+        }
+
+        Ast.CheckedNamedCallPlan.record(call, plan.sourceItemIndexByFormal());
+        requireSuspendableCall(target.suspends(), label);
+        Type result = resolve(target.returnType(), Set.of(), null);
+        return trapResult(
+                target.trapped(),
+                callableResult(target.async(), target.generator(), result));
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.StagedCallExpr staged) {
+            return typeStagedRequiredCall(staged, env, generics, self);
+        }
+        if (expr instanceof Ast.StagedNewExpr) {
+            throw new IllegalArgumentException(
+                    "named constructor/actor lowering is not yet enabled");
+        }
+        if (expr instanceof Ast.TypeExpr) {
+            throw new IllegalArgumentException(
+                    "generic type-qualified expression requires statically resolved type-member lowering");
+        }
+        if (expr instanceof Ast.CompoundAssignExpr) {
+            throw new IllegalArgumentException(
+                    "compound-place assignment requires checked single-evaluation ownership lowering");
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");

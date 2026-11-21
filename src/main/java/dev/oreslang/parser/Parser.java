@@ -3085,12 +3085,29 @@ public final class Parser {
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parseConditional();
         if (match(EQUAL)) {
-            if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
-                throw error(previous(), "assignment target must be a local, field, or index");
-            }
+            requireAssignablePlace(expr, "assignment");
             return new Ast.AssignExpr(expr, parseAssignment());
         }
+
+        String compound = null;
+        if (match(PLUS_EQUAL)) compound = "+";
+        else if (match(MINUS_EQUAL)) compound = "-";
+        else if (match(STAR_EQUAL)) compound = "*";
+        else if (match(SLASH_EQUAL)) compound = "/";
+        else if (match(PERCENT_EQUAL)) compound = "%";
+        if (compound != null) {
+            requireAssignablePlace(expr, "compound assignment");
+            return new Ast.CompoundAssignExpr(expr, compound, parseAssignment());
+        }
         return expr;
+    }
+
+    private void requireAssignablePlace(Ast.Expr expr, String operation) {
+        if (!(expr instanceof Ast.NameExpr)
+                && !(expr instanceof Ast.MemberExpr)
+                && !(expr instanceof Ast.IndexExpr)) {
+            throw error(previous(), operation + " target must be a local, field, or index");
+        }
     }
 
     private Ast.Expr parseConditional() {
@@ -3385,13 +3402,17 @@ public final class Parser {
             if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                List<Ast.CallArgument> args = parseCheckedCallArgumentsUntil(RPAREN, true, true);
                 consume(RPAREN, "expected ')' after arguments");
-                expr = new Ast.CallExpr(expr, typeArguments, args);
+                expr = hasStagedCallItems(args)
+                        ? new Ast.StagedCallExpr(expr, typeArguments, true, args)
+                        : new Ast.CallExpr(expr, typeArguments, legacyCallArguments(args));
             } else if (match(LPAREN)) {
-                List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+                List<Ast.CallArgument> args = parseCheckedCallArgumentsUntil(RPAREN, true, true);
                 consume(RPAREN, "expected ')' after arguments");
-                expr = new Ast.CallExpr(expr, args);
+                expr = hasStagedCallItems(args)
+                        ? new Ast.StagedCallExpr(expr, List.of(), false, args)
+                        : new Ast.CallExpr(expr, legacyCallArguments(args));
             } else if (match(DOT, DOUBLE_COLON)) {
                 // Two explicit qualified-member spellings, one binding and
                 // evaluation path; no dynamic symbol lookup or macro rewrite.
@@ -3427,6 +3448,39 @@ public final class Parser {
         }
         consume(GT, "expected '>' after call type arguments");
         return List.copyOf(arguments);
+    }
+
+    /**
+     * Distinguish a generic type namespace receiver such as
+     * Region<Motion>.new from comparison operators and foo<T>(...) generic
+     * callable instantiation. Requiring lexical adjacency at both outer
+     * boundaries keeps `a < b > .member` out of this syntax.
+     */
+    private boolean looksLikeGenericTypeQualifiedMember() {
+        if (!check(IDENT) || current + 1 >= tokens.size()
+                || tokens.get(current + 1).type() != LT
+                || !adjacent(tokens.get(current), tokens.get(current + 1))) {
+            return false;
+        }
+        int depth = 0;
+        for (int i = current + 1; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LT) {
+                depth++;
+            } else if (type == GT) {
+                depth--;
+                if (depth == 0) {
+                    if (i + 1 >= tokens.size()) return false;
+                    Token.Type next = tokens.get(i + 1).type();
+                    return (next == DOT || next == DOUBLE_COLON)
+                            && adjacent(tokens.get(i), tokens.get(i + 1));
+                }
+                if (depth < 0) return false;
+            } else if (type == SEMICOLON || type == EOF) {
+                return false;
+            }
+        }
+        return false;
     }
 
     private boolean looksLikeTypeArgumentCall() {
@@ -3581,25 +3635,32 @@ public final class Parser {
             consume(RPAREN, "expected ')' after explicit tuple");
             return new Ast.TupleExpr(items);
         }
+        if (looksLikeGenericTypeQualifiedMember()) {
+            return new Ast.TypeExpr(parseTypeRef());
+        }
         if (match(IDENT, SHARED, UNTRUSTED)) {
             return new Ast.NameExpr(previous().lexeme());
         }
         if (match(SPAWN)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after actor type");
-            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+            List<Ast.CallArgument> args = parseCheckedCallArgumentsUntil(RPAREN, false, false);
             consume(RPAREN, "expected ')' after actor spawn arguments");
             // Keep actor creation semantically distinct from ordinary class construction.
             // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only
             // `spawn ActorType(...)`, never `rt spawn` or `new ActorType(...)`.
-            return new Ast.RuntimeCallExpr("spawn", List.of(new Ast.NewExpr(type, args)));
+            return hasStagedCallItems(args)
+                    ? new Ast.StagedNewExpr(type, args, true)
+                    : new Ast.RuntimeCallExpr("spawn", List.of(new Ast.NewExpr(type, legacyCallArguments(args))));
         }
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
-            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+            List<Ast.CallArgument> args = parseCheckedCallArgumentsUntil(RPAREN, false, false);
             consume(RPAREN, "expected ')' after constructor arguments");
-            return new Ast.NewExpr(type, args);
+            return hasStagedCallItems(args)
+                    ? new Ast.StagedNewExpr(type, args, false)
+                    : new Ast.NewExpr(type, legacyCallArguments(args));
         }
         if (match(OBJ)) {
             throw error(previous(),
@@ -3791,15 +3852,79 @@ public final class Parser {
         return false;
     }
 
-    private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
+    private static boolean hasStagedCallItems(List<Ast.CallArgument> arguments) {
+        return arguments.stream().anyMatch(item ->
+                item.label() != null || item.omitted() || item.trailingClosure());
+    }
+
+    private static List<Ast.Expr> legacyCallArguments(List<Ast.CallArgument> arguments) {
+        List<Ast.Expr> values = new ArrayList<>(arguments.size());
+        for (Ast.CallArgument argument : arguments) {
+            if (argument.label() != null || argument.omitted() || argument.trailingClosure()) {
+                throw new IllegalArgumentException(
+                        "named, omitted, or trailing-closure call items cannot enter an ordinary CallExpr");
+            }
+            values.add(argument.spread()
+                    ? new Ast.SpreadExpr(argument.value()) : argument.value());
+        }
+        return List.copyOf(values);
+    }
+
+    private boolean startsAnonymousTrailingClosure() {
+        if (check(FNC) || check(PIPE)) return true;
+        return check(NLEX) && current + 1 < tokens.size()
+                && (tokens.get(current + 1).type() == FNC
+                    || tokens.get(current + 1).type() == PIPE);
+    }
+
+    /**
+     * Preserve lexical source order while separating call labels from values.
+     * The only positional item admitted after a named argument is one final
+     * syntactically anonymous closure. It remains staged until a later binder
+     * proves that the unique final unclaimed formal is a callable.
+     */
+    private List<Ast.CallArgument> parseCheckedCallArgumentsUntil(
+            Token.Type terminator, boolean allowSpread, boolean allowTrailingClosure) {
         if (check(terminator)) return List.of();
-        List<Ast.Expr> args = new ArrayList<>();
+        List<Ast.CallArgument> items = new ArrayList<>();
+        boolean seenNamed = false;
         do {
-            boolean spread = match(ELLIPSIS);
-            Ast.Expr argument = parseExpression();
-            args.add(spread ? new Ast.SpreadExpr(argument) : argument);
+            String label = null;
+            if (check(IDENT) && checkNext(COLON)) {
+                label = advance().lexeme();
+                consume(COLON, "expected ':' after named call argument");
+                seenNamed = true;
+            } else if (seenNamed) {
+                if (!allowTrailingClosure || !startsAnonymousTrailingClosure()) {
+                    throw error(peek(),
+                            "only one final anonymous closure may follow named call arguments");
+                }
+                Ast.Expr closure = parseExpression();
+                if (!(closure instanceof Ast.LambdaExpr)) {
+                    throw error(previous(), "trailing call item must be an anonymous closure");
+                }
+                if (!check(terminator)) {
+                    throw error(peek(), "trailing closure must be the final call item");
+                }
+                items.add(Ast.CallArgument.trailingClosure(closure));
+                break;
+            }
+
+            boolean spread = allowSpread && match(ELLIPSIS);
+            if (!allowSpread && check(ELLIPSIS)) {
+                throw error(peek(), "constructor and actor arguments do not admit spread");
+            }
+            if (spread && label != null) {
+                throw error(peek(), "named spread requires separately checked typed lowering");
+            }
+
+            Ast.Expr value = parseExpression();
+            items.add(spread
+                    ? Ast.CallArgument.spread(value)
+                    : label == null ? Ast.CallArgument.value(value)
+                    : Ast.CallArgument.named(label, value));
         } while (match(COMMA));
-        return args;
+        return List.copyOf(items);
     }
 
     private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
