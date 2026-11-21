@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -39,4 +41,58 @@ final class ActorPubSubUnsignedSequenceTest {
                 0, 0, 0, 0, done).sequence(),
                 "zero still means no committed publication in legacy receipts");
     }
+
+    @Test
+    void actualReliablePublicationPreservesUnsignedSequenceAfterFullAndExhaustion()
+            throws Exception {
+        // A private test fixture seeds the hidden topic-local counter. This
+        // exercises the real atomic RELIABLE publication/receipt path without
+        // publishing 2^63 events, and does NOT expose a production setter.
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorEventBus events = group.events();
+            events.topic("unsigned-boundary", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+
+            var topicsField = ActorEventBus.class.getDeclaredField("topics");
+            topicsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            Map<String, ?> topics = (Map<String, ?>) topicsField.get(events);
+            Object topicState = topics.get("unsigned-boundary");
+            var sequenceField = topicState.getClass().getDeclaredField("sequence");
+            sequenceField.setAccessible(true);
+            AtomicLong counter = (AtomicLong) sequenceField.get(topicState);
+
+            counter.set(Long.MAX_VALUE - 1L);
+            ActorEventBus.PublishReceipt signedLast =
+                    events.tryPublishReliableSystem("unsigned-boundary", "last-signed")
+                            .orElseThrow();
+            assertEquals("9223372036854775807",
+                    signedLast.sequenceUnsignedString());
+            ActorEventBus.PublishReceipt unsignedFirst =
+                    events.tryPublishReliableSystem("unsigned-boundary", "first-unsigned")
+                            .orElseThrow();
+            assertEquals(Long.MIN_VALUE, unsignedFirst.sequence());
+            assertEquals("9223372036854775808",
+                    unsignedFirst.sequenceUnsignedString(),
+                    "real topic admission must not reject at 2^63");
+
+            // Exhaustion is denied without admitting an event, consuming
+            // sequence zero, or incrementing the topic's publication count.
+            counter.set(-2L);
+            ActorEventBus.PublishReceipt unsignedLast =
+                    events.tryPublishReliableSystem("unsigned-boundary", "last-unsigned")
+                            .orElseThrow();
+            assertEquals("18446744073709551615",
+                    unsignedLast.sequenceUnsignedString());
+            long acceptedBeforeExhaustion = events.topics().getFirst().published();
+            assertThrows(ArithmeticException.class,
+                    () -> events.tryPublishReliableSystem("unsigned-boundary", "wrapped"));
+            assertEquals(-1L, counter.get(),
+                    "exhaustion must preserve committed last sequence");
+            assertEquals(acceptedBeforeExhaustion,
+                    events.topics().getFirst().published(),
+                    "exhaustion must not commit an event or issue a phantom receipt");
+        }
+    }
+
 }
