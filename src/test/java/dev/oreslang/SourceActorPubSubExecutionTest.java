@@ -120,7 +120,16 @@ final class SourceActorPubSubExecutionTest {
         // A receipt confirms atomic admission, not processing completion.
         assertEquals("subscribed|p-1|1",
                 run(pinnedFixture("actor-pubsub-try-publish-v1.atto",
-                        "6f16558653cc3accb1df6825cfafa6b5f6ae79eb"), "actor-pubsub-try-publish-v1.atto"));
+                        "ed35171946748eed4f970442d5cdb2c61c96029d"), "actor-pubsub-try-publish-v1.atto"));
+    }
+
+    @Test
+    void typedTryPublishRefusesLossyPolicyInActualGuest() throws Exception {
+        PolyglotException denied = assertThrows(PolyglotException.class,
+                () -> run(pinnedFixture("actor-pubsub-try-publish-policy-denied.atto",
+                        "5f3d79ba763a98ff6a1daf5b85d9d6ae0cec6a41"), "actor-pubsub-policy-denied.atto"));
+        assertTrue(denied.getMessage().contains("requires a RELIABLE ActorGroup topic"),
+                denied.getMessage());
     }
 
     @Test
@@ -193,7 +202,7 @@ final class SourceActorPubSubExecutionTest {
                   val String event = "ready";
                   val group = actor.group("payments");
                   val topic = group.topic<String>("events", "reliable", 1);
-                  val receipt = topic.try_publish(%s);
+                  val Result<PublishReceipt, PublishError> receipt = topic.try_publish(%s);
                   return;
                 }
                 """;

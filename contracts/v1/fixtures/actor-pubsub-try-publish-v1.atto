@@ -33,7 +33,7 @@ pub suspends fnc main(): void {
   stdio.stdout.write("|");
 
   val String event = "p-1";
-  val receipt = topic.try_publish(share! event);
+  val Result<PublishReceipt, PublishError> receipt = topic.try_publish(share! event);
 
   val received = (await subscriber.outputs.next()).value.unwrap();
   stdio.stdout.write(received.value);

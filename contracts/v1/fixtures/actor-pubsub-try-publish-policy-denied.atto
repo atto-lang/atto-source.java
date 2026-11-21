@@ -1,0 +1,11 @@
+// Source typed admission must fail closed on a non-RELIABLE topic.
+// This is not Err(Full): policy errors are hard rejections until the complete
+// guest PublishError ABI proves their recoverable effect semantics.
+pub suspends fnc main(): void {
+  val group = actor.group("policy-denied");
+  val topic = group.topic<String>("events", "lossy", 1);
+  val String event = "never-admit";
+  val Result<PublishReceipt, PublishError> receipt =
+      topic.try_publish(share! event);
+  return;
+}
