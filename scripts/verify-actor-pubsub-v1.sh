@@ -28,6 +28,8 @@ test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-reject-u
 test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-v1.atto)" = "41fda4efc19823807b56545a31230b6182de0ee1"
 test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-policy-denied.atto)" = "5f3d79ba763a98ff6a1daf5b85d9d6ae0cec6a41"
 
+# Clean before execution: a stale Surefire report from an earlier PR head must
+# never satisfy exact-method admission for this commit.
 # Must execute the Channel<T> recursive Sendable/callable negatives,
 # Must execute the guest-positive fixtures and all guest compile negatives,
 # including direct/nested callable topic payloads, not only host facade tests. Surefire's -Dtest does not permit matching
@@ -45,7 +47,7 @@ suites=(
 # Maven's selection is explicit, while reports are checked by full class name.
 selection="SourceActorPubSubExecutionTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,ActorPubSubUnsignedSequenceTest,SourceActorPubSubTest"
 mvn -B -ntp -Dores.runtime.carriers=native \
-  "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true test
+  "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true clean test
 
 total=0
 for suite in "${suites[@]}"; do
