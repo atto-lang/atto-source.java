@@ -317,7 +317,7 @@ public final class Parser {
             declarations.add(new Ast.ClassDecl(klass.name(), klass.visibility(), klass.isAbstract(),
                     klass.actorKind(), klass.genericParameters(), klass.parents(), klass.interfaces(),
                     klass.fields(), klass.constructor(), methods, klass.actorConcurrency(),
-                    klass.sealedStateFields(), klass.annotations()));
+                    klass.sealedStateFields(), klass.annotations(), klass.actorMessageContract()));
         }
         return changed
                 ? new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations)
@@ -716,7 +716,7 @@ public final class Parser {
                         klass = new Ast.ClassDecl(klass.name(), klass.visibility(), klass.isAbstract(),
                                 klass.actorKind(), klass.genericParameters(), klass.parents(), klass.interfaces(),
                                 klass.fields(), klass.constructor(), klass.methods(), klass.actorConcurrency(),
-                                klass.sealedStateFields(), marked);
+                                klass.sealedStateFields(), marked, klass.actorMessageContract());
                     }
                     rootDeclarations.add(klass);
                     continue;
@@ -849,7 +849,22 @@ public final class Parser {
                             || (d instanceof Ast.TypeAliasDecl a && a.name().equals(product)));
             if (!declared) {
                 Ast.Program prelude = new Parser(new Lexer(PRELUDE_PRODUCTS.get(product)).scan()).parseProgram();
-                for (Ast.ModuleDecl module : prelude.modules()) rootDeclarations.addAll(module.declarations());
+                for (Ast.ModuleDecl module : prelude.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.ClassDecl klass) {
+                            // Mark compiler-provided prelude products so actor
+                            // dependency rules treat them as builtins, not siblings.
+                            List<Ast.Annotation> marked = new ArrayList<>(klass.annotations());
+                            marked.add(new Ast.Annotation("$Prelude", List.of()));
+                            declaration = new Ast.ClassDecl(klass.name(), klass.visibility(), klass.isAbstract(),
+                                    klass.actorKind(), klass.genericParameters(), klass.parents(),
+                                    klass.interfaces(), klass.fields(), klass.constructor(), klass.methods(),
+                                    klass.actorConcurrency(), klass.sealedStateFields(), marked,
+                                    klass.actorMessageContract());
+                        }
+                        rootDeclarations.add(declaration);
+                    }
+                }
             }
         }
         validateForwardTypes(rootForwards, rootDeclarations, "file root");
@@ -2154,6 +2169,22 @@ public final class Parser {
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
         String name = consumeTypeDeclarationName("expected actor name");
         List<String> generics = parseGenericParameters();
+        // 'receives' and 'sends' are contextual actor-header keywords. Do
+        // not steal existing method, local or field identifiers in unrelated
+        // syntax; declaration order is arbitrary but duplicates are errors.
+        Ast.TypeRef receives = null;
+        Ast.TypeRef sends = null;
+        while (isContextualIdentifier("receives") || isContextualIdentifier("sends")) {
+            Token clause = advance();
+            Ast.TypeRef declared = parseTypeRef();
+            if (clause.lexeme().equals("receives")) {
+                if (receives != null) throw error(clause, "duplicate actor receives clause");
+                receives = declared;
+            } else {
+                if (sends != null) throw error(clause, "duplicate actor sends clause");
+                sends = declared;
+            }
+        }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
@@ -2445,7 +2476,7 @@ public final class Parser {
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
                 new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency),
-                sealedStateFields);
+                sealedStateFields, List.of(), new Ast.ActorMessageContract(receives, sends));
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {

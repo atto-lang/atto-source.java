@@ -7800,7 +7800,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private void requireLexicalClassAccess(Env env, Ast.ClassDecl target) {
             Ast.ClassDecl lexicalClass = env.lexicalContainerClass();
-            if (!isActorLexicalBoundary(lexicalClass) || lexicalClass == target) return;
+            if (!isActorLexicalBoundary(lexicalClass) || lexicalClass == target
+                    || target.actorKind() != Ast.ActorKind.NONE // sibling actors: isolated mailboxes
+                    || dev.oreslang.types.TypeChecker.isPreludeClass(target)) return;
             throw new IllegalArgumentException(
                     "actor '" + lexicalClass.name()
                             + "' cannot implicitly access sibling "

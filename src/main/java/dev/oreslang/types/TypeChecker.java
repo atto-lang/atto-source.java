@@ -1537,6 +1537,48 @@ public final class TypeChecker {
             stack.remove(klass);
         }
     }
+    /**
+     * Conservative proof that an actor emits no outbound message: no
+     * send/tell/reply member call, no channel write, no spawn, no inherited
+     * parent, and no call to a free function or non-stdio method that could
+     * send transitively. Any unknown call fails the proof (fail closed).
+     */
+    private static boolean provablySendsNothing(Ast.ClassDecl klass) {
+        if (!klass.parents().isEmpty()) return false;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!sendsNothing(method.body())) return false;
+        }
+        return true;
+    }
+
+    private static boolean sendsNothing(Object node) {
+        if (node instanceof Ast.ChannelOpExpr || node instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("spawn")) return false;
+        if (node instanceof Ast.CallExpr call) {
+            if (!(call.callee() instanceof Ast.MemberExpr member)) return false;
+            boolean stdio = member.receiver() instanceof Ast.NameExpr owner && owner.name().equals("stdio")
+                    || member.receiver() instanceof Ast.MemberExpr stream
+                        && stream.receiver() instanceof Ast.NameExpr root && root.name().equals("stdio");
+            if (!stdio) return false;
+        }
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (!sendsNothing(item)) return false;
+            return true;
+        }
+        if (node instanceof Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (!sendsNothing(component.getAccessor().invoke(record))) return false;
+                } catch (ReflectiveOperationException ignored) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     private void checkClass(String module, Ast.ClassDecl klass) {
         // State metadata must NEVER be typechecked as ordinary actor fields.
         // Only a compiler-issued, turn/incarnation-bound physical state region
@@ -1546,6 +1588,35 @@ public final class TypeChecker {
                     "ACTOR_SEALED_STATE_LOWERING_UNSUPPORTED: actor '"
                     + klass.name() + "' requires compiler-sealed state ownership "
                     + "and handle_state lowering; not yet enabled");
+        Ast.ActorMessageContract protocol = klass.actorMessageContract();
+        if (protocol.sends() != null && !provablySendsNothing(klass)) {
+            // Direct calls are already checked against the receiver's
+            // ActorRef<ActorClass>, but a complete sends effect must also
+            // account for helper calls, callbacks, inherited methods and
+            // dynamic dispatch. Do not claim an enforced outbound bound until
+            // transitive effect summaries and CONTROL separation are proven.
+            // (An actor that provably sends nothing satisfies any bound.)
+            throw new IllegalArgumentException(
+                    "ACTOR_SENDS_EFFECT_UNSUPPORTED: actor '" + klass.name()
+                    + "' requires transitive outbound message effect checking");
+        }
+        if (protocol.receives() != null) {
+            if (protocol.receives().name().equals("never"))
+                throw new IllegalArgumentException(
+                        "ACTOR_RECEIVES_NEVER_UNSUPPORTED: actor '" + klass.name()
+                        + "' requires a verified CONTROL-only mailbox path");
+            Type declared = resolve(protocol.receives(),
+                    Set.copyOf(klass.genericParameters()), nominalClassType(klass));
+            Type handler = actorMailboxPayloadType(
+                    new Named("ActorRef", List.of(nominalClassType(klass))));
+            // The existing typed ActorMail<T> handler and outbound ActorRef
+            // checks already enforce the receiving boundary. Require exact
+            // equivalence, not a widening that could hide another payload.
+            requireAssignable(handler, declared,
+                    "receives contract of actor '" + klass.name() + "'");
+            requireAssignable(declared, handler,
+                    "receive(ActorMail<T>) of actor '" + klass.name() + "'");
+        }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
@@ -2253,8 +2324,17 @@ public final class TypeChecker {
                         + "'; same-file placement does not grant actor dependency authority");
     }
 
+    /** Compiler-injected prelude products (Error, Pair, Entry) are not user siblings. */
+    public static boolean isPreludeClass(Ast.ClassDecl klass) {
+        return hasClassMarker(klass, "$Prelude");
+    }
+
     private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
-        if (!insideActorLexicalBoundary() || lexicalClassOrigin == target) return;
+        if (!insideActorLexicalBoundary() || lexicalClassOrigin == target
+                // A same-file sibling ACTOR may be spawned/messaged: spawning creates an
+                // isolated mailbox and shares no state (ACTOR_SPAWN still gates it).
+                // Sibling classes, callables and modules still need explicit imports.
+                || target.actorKind() != Ast.ActorKind.NONE || isPreludeClass(target)) return;
         throw new IllegalArgumentException(
                 "actor '" + lexicalClassOrigin.name()
                         + "' cannot implicitly access sibling "
@@ -2268,7 +2348,8 @@ public final class TypeChecker {
 
         Ast.ClassDecl localClass = findClass(name);
         if (localClass != null) {
-            if (localClass == lexicalClassOrigin || isExplicitActorParent(localClass)) return;
+            if (localClass == lexicalClassOrigin || isExplicitActorParent(localClass)
+                    || localClass.actorKind() != Ast.ActorKind.NONE || isPreludeClass(localClass)) return;
             throw new IllegalArgumentException(
                     "actor '" + lexicalClassOrigin.name()
                             + "' cannot use same-file type '" + name
@@ -11389,7 +11470,7 @@ public final class TypeChecker {
     }
 
     /** Compiler-reserved class markers recorded by the parser as annotations. */
-    static boolean hasClassMarker(Ast.ClassDecl klass, String marker) {
+    public static boolean hasClassMarker(Ast.ClassDecl klass, String marker) {
         return klass.annotations().stream().anyMatch(annotation -> annotation.name().equals(marker));
     }
 

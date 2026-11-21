@@ -690,7 +690,12 @@ public final class TreeShaker {
                         fields,
                         constructor,
                         methods,
-                        klass.actorConcurrency());
+                        klass.actorConcurrency(),
+                        // Keep sealed actor state, class markers and the receives/sends
+                        // contract: shaking only prunes unreachable members.
+                        klass.sealedStateFields(),
+                        klass.annotations(),
+                        klass.actorMessageContract());
             }
             return declaration;
         }
