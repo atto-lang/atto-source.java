@@ -10,8 +10,8 @@ stdlib I/O profile.
 | --- | --- |
 | `fs.read_text_async(path)` | Linux: `io_uring` completion provider; other/unsupported kernels: fail closed |
 | `fs.exists_async(path)` | Linux: `io_uring` completion provider; other/unsupported kernels: fail closed |
-| `fs.write_text_async` | fail closed until a completion provider exists |
-| `fs.append_text_async` | fail closed until a completion provider exists |
+| `fs.write_text_async(path, text)` | Linux: `io_uring` create/truncate + write completion; fail closed if unavailable |
+| `fs.append_text_async(path, text)` | Linux: `io_uring` create/append + write completion; fail closed if unavailable |
 | `fs.remove_async` | fail closed until a completion provider exists |
 | `fs.mkdir_all_async` | fail closed until a completion provider exists |
 | legacy synchronous filesystem calls | still compatibility-only; **not strict** |
@@ -33,6 +33,7 @@ The native bridge uses:
 
 - `IORING_OP_OPENAT2` for path admission,
 - `IORING_OP_READ` for file contents,
+- `IORING_OP_WRITE` for text writes and appends,
 - `IORING_OP_CLOSE` for descriptors,
 - `IORING_OP_ASYNC_CANCEL` for cancellation.
 
@@ -43,15 +44,15 @@ Admission is bounded to 128 pending operations on a 512-entry submission ring.
 The extra SQ capacity is deliberate headroom for cancellation, close and reactor
 wake operations rather than additional guest admission.
 
-Read-buffer growth has a separate conservative 64 MiB per-context reservation
+Read/write buffering has a shared conservative 64 MiB per-context reservation
 budget. Each admitted text read reserves its full 16 MiB growth ceiling before
-native submission, so at most four maximum-size reads can be physically live at
-once even though lightweight existence probes can still use the broader
-operation-count budget. Reservations are released only when submission is
-rejected, physical completion arrives, or provider shutdown removes the pending
-owner. Native read buffers themselves still start at 64 KiB and grow
-geometrically only as data arrives; the reservation is an admission accounting
-bound, not eager native allocation.
+native submission; strict writes reserve their actual encoded UTF-8 payload
+bytes. This prevents concurrent reads and writes from bypassing each other's
+memory bound. Reservations are released only when submission is rejected,
+physical completion arrives, or provider shutdown removes the pending owner.
+Native read buffers themselves still start at 64 KiB and grow geometrically
+only as data arrives; the reservation is admission accounting, not eager native
+allocation.
 
 Provider construction includes a JVM-attach startup barrier: a native handle is
 not returned to Java until the reactor can deliver JNI callbacks. The callback
@@ -89,6 +90,18 @@ the just-published entry was not submitted, the provider retracts that SQ tail
 entry before its owner can be freed, preventing stale `user_data` from becoming
 reachable through a later submit.
 
+Write/append futures deliberately decline guest `Future.cancel`. Once a
+mutation has begun, some bytes may already have reached the file and the runtime
+cannot promise rollback. Context shutdown can still request native cancellation
+to bound physical lifetime, but callers must treat a failed/aborted write as
+potentially partial. Normal write completion loops over partial
+`IORING_OP_WRITE` results until all UTF-8 bytes have been accepted, then closes
+the descriptor through the ring.
+
+Create/truncate opens use `O_CREAT|O_TRUNC`; append opens use
+`O_CREAT|O_APPEND`. Both use mode `0666` subject to the process umask and the
+same no-symlink/no-escape `openat2` resolution contract as reads.
+
 Context/provider shutdown:
 
 1. prevents new native submissions,
@@ -103,8 +116,8 @@ race a ring handle after close.
 
 There is no worker fallback. If Linux `io_uring`, JNI loading, or provider
 initialization is unavailable, strict reads/exists return failed futures through
-the unsupported provider. Mutation operations also return failed futures until
-their native completion implementations land.
+the unsupported provider. `remove_async` and `mkdir_all_async` still return failed futures until
+their secure parent-handle completion implementations land.
 
 Invalid UTF-8 is an error; bytes are not replacement-decoded.
 
@@ -112,15 +125,15 @@ Invalid UTF-8 is an error; bytes are not replacement-decoded.
 
 `LinuxUringFileIoProviderTest` covers bounded admission, rejected submission,
 cancellation, late/duplicate completion, close races, invalid UTF-8,
-fail-closed mutations, and real read/exists/symlink behavior when the kernel
-permits `io_uring`.
+write/append cancellation policy, and real read/exists/write/append/symlink/FIFO
+cancellation behavior when the kernel permits `io_uring`.
 
 `RuntimePermissionsTest#strictFilesystemAdmissionIsLexicalScopedAndDenyFirst`
 covers the nonblocking scope boundary.
 
-`AsyncNativeIoTest#strictFilesystemReadAndExistsCompleteWithoutMutationWorkerFallback`
-executes the Oreslang async surface while asserting unfinished mutation APIs do
-not fall back to the worker adapter.
+`AsyncNativeIoTest#strictFilesystemReadWriteAppendAndExistsCompleteWithoutWorkerFallback`
+executes the Oreslang async surface across write → append → read while asserting
+unfinished remove/mkdir operations do not fall back to the worker adapter.
 
 `tools/strict-filesystem-io-audit.py` statically rejects worker fallback from
 the strict filesystem path and verifies the native primitives, build linkage,

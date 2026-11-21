@@ -12,8 +12,8 @@ for the exact strict-provider contract.
 | --- | --- | --- |
 | `fs.read_text_async(path)` | `String` (UTF-8) | strict Linux `io_uring`; fail closed if unavailable |
 | `fs.exists_async(path)` | `bool` | strict Linux `io_uring`; fail closed if unavailable |
-| `fs.write_text_async(path, text)` | `void` | fail closed; completion provider pending |
-| `fs.append_text_async(path, text)` | `void` | fail closed; completion provider pending |
+| `fs.write_text_async(path, text)` | `void` | strict Linux `io_uring`; fail closed if unavailable |
+| `fs.append_text_async(path, text)` | `void` | strict Linux `io_uring`; fail closed if unavailable |
 | `fs.remove_async(path)` | `void` | fail closed; completion provider pending |
 | `fs.mkdir_all_async(path)` | `void` | fail closed; completion provider pending |
 | `network.connect_async(host, port)` | `TcpConnection` | legacy worker adapter |
@@ -43,9 +43,10 @@ pub async routine main(): void {
 
 ### Strict filesystem execution
 
-`fs.read_text_async` and `fs.exists_async` do not delegate to
-`AsyncNativeIo`. On Linux, one lazy bounded `io_uring` reactor per Oreslang
-context multiplexes open/read/close/cancel completion. Unsupported kernels or
+`fs.read_text_async`, `fs.exists_async`, `fs.write_text_async` and
+`fs.append_text_async` do not delegate to `AsyncNativeIo`. On Linux, one
+lazy bounded `io_uring` reactor per Oreslang context multiplexes
+open/read/write/close/cancel completion. Unsupported kernels or
 platforms fail closed rather than falling back to blocking workers.
 
 Runtime path permission checks for these operations are lexical and
@@ -59,8 +60,11 @@ completion so a late callback cannot resurrect or double-settle a cancelled
 future. Context shutdown prevents new admission, cancels pending native
 operations, and closes the ring after native work drains.
 
-Async filesystem mutation methods currently return failed futures because no
-strict completion provider is implemented for them yet.
+`remove_async` and `mkdir_all_async` currently return failed futures because
+their secure parent-directory completion providers are not implemented yet.
+Write and append are strict completion operations, but their futures deliberately
+decline guest cancellation because partial filesystem mutation cannot be rolled
+back.
 
 ### Remaining portable worker adapter
 
@@ -84,7 +88,7 @@ The strict filesystem gate runs:
 - the native bridge build under strict compiler warnings,
 - `LinuxUringFileIoProviderTest`,
 - the strict path-permission regression,
-- the Oreslang async read/exists integration regression,
+- the Oreslang async write/append/read/exists integration regression,
 - Native Image packaging for JNI reachability validation.
 
 The broader `AsyncNativeIoTest` continues to cover the legacy TCP/HTTP adapter
