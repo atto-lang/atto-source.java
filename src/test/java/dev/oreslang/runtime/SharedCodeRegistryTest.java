@@ -122,34 +122,126 @@ final class SharedCodeRegistryTest {
         String root = "pub routine main(): void { return; }";
         String changed = "pub routine main(): void { val n = 2; return; }";
 
-        assertFalse(registry.approvedForAdversarialSharing("root.ores", root));
-        registry.approveForAdversarialSharing(supervisor, "root.ores", root);
-        assertTrue(registry.approvedForAdversarialSharing("root.ores", root));
+        try (var authority = registry.newSupervisorScope(supervisor)) {
+            assertFalse(registry.approvedForAdversarialSharing(authority, "root.ores", root));
+            registry.approveForAdversarialSharing(authority, supervisor, "root.ores", root);
+            assertTrue(registry.approvedForAdversarialSharing(authority, "root.ores", root));
 
-        assertFalse(registry.approvedForAdversarialSharing("root.ores", changed),
-                "approval is bound to the exact content hash");
-        assertFalse(registry.approvedForAdversarialSharing("dependency.ores", root),
-                "imports/dependencies require independent approval");
-        assertFalse(registry.approvedForAdversarialSharing("other-name.ores", root),
-                "approval is also bound to the code-unit identity");
+            assertFalse(registry.approvedForAdversarialSharing(authority, "root.ores", changed),
+                    "approval must not survive a code hash change");
+            assertFalse(registry.approvedForAdversarialSharing(authority, "dependency.ores", root),
+                    "every imported module requires independent approval");
+            assertFalse(registry.approvedForAdversarialSharing(authority, "other-name.ores", root),
+                    "a code-unit name is part of the exact grant");
 
-        registry.revokeForAdversarialSharing(supervisor, "root.ores", root);
-        assertFalse(registry.approvedForAdversarialSharing("root.ores", root));
-
+            registry.revokeForAdversarialSharing(authority, supervisor, "root.ores", root);
+            assertFalse(registry.approvedForAdversarialSharing(authority, "root.ores", root));
+            assertThrows(SecurityException.class, () ->
+                    registry.approveForAdversarialSharing(
+                            authority, IsolatePolicy.untrustedActor(), "root.ores", root));
+        }
+        assertThrows(SecurityException.class, () ->
+                registry.newSupervisorScope(IsolatePolicy.untrustedActor()));
         assertThrows(SecurityException.class, () ->
                 registry.approveForAdversarialSharing(
-                        IsolatePolicy.untrustedActor(), "root.ores", root));
+                        supervisor, "root.ores", root),
+                "legacy unscoped approval must never reenable global authority");
     }
 
     @Test
     void adversarialAllowlistCannotApproveCodeItsGuestPolicyRejects() {
         SharedCodeRegistry registry = new SharedCodeRegistry();
+        IsolatePolicy supervisor = IsolatePolicy.developer();
         String privileged = "pub routine main(): void { print(1); return; }";
-        assertThrows(SecurityException.class, () ->
-                registry.approveForAdversarialSharing(
-                        IsolatePolicy.developer(), "privileged.ores", privileged));
-        assertFalse(registry.approvedForAdversarialSharing(
-                "privileged.ores", privileged));
+        try (var authority = registry.newSupervisorScope(supervisor)) {
+            assertThrows(SecurityException.class, () ->
+                    registry.approveForAdversarialSharing(
+                            authority, supervisor, "privileged.ores", privileged));
+            assertFalse(registry.approvedForAdversarialSharing(
+                    authority, "privileged.ores", privileged));
+        }
+    }
+
+    @Test
+    void twoSupervisorsWithIdenticalPolicyAndSourceNeverShareAdversarialAuthority() {
+        SharedCodeRegistry registry = new SharedCodeRegistry();
+        IsolatePolicy firstPolicy = IsolatePolicy.developer();
+        IsolatePolicy secondPolicy = IsolatePolicy.developer();
+        String code = "pub routine main(): void { return; }";
+        try (var first = registry.newSupervisorScope(firstPolicy);
+             var second = registry.newSupervisorScope(secondPolicy)) {
+            registry.approveForAdversarialSharing(first, firstPolicy, "same.ores", code);
+            assertTrue(registry.approvedForAdversarialSharing(first, "same.ores", code));
+            assertFalse(registry.approvedForAdversarialSharing(second, "same.ores", code),
+                    "equal policies and source bytes cannot mint a shared approval");
+            assertThrows(SecurityException.class, () ->
+                    registry.revokeForAdversarialSharing(first, secondPolicy, "same.ores", code));
+            registry.revokeForAdversarialSharing(second, secondPolicy, "same.ores", code);
+            assertTrue(registry.approvedForAdversarialSharing(first, "same.ores", code),
+                    "cross-supervisor revocation must not affect the owner");
+            assertThrows(SecurityException.class, () ->
+                    SharedCodeRegistry.process().approvedForAdversarialSharing(
+                            first, "same.ores", code), "authority is bound to its registry");
+        }
+
+        try (var retired = registry.newSupervisorScope(firstPolicy)) {
+            registry.approveForAdversarialSharing(retired, firstPolicy, "same.ores", code);
+            retired.close();
+            assertThrows(SecurityException.class, () ->
+                    registry.approvedForAdversarialSharing(retired, "same.ores", code));
+        }
+    }
+
+    @Test
+    void revokingOrClosingScopeForbidsNewImageAcquisitionsButPreservesPinnedLeases() {
+        SharedCodeRegistry registry = new SharedCodeRegistry();
+        IsolatePolicy policy = IsolatePolicy.developer();
+        String code = "pub routine main(): void { return; }";
+        try (var scope = registry.newSupervisorScope(policy)) {
+            registry.approveForAdversarialSharing(scope, policy, "worker.ores", code);
+            SharedCodeRegistry.Lease old =
+                    registry.acquireApprovedForAdversarialSharing(scope, "worker.ores", code);
+            try {
+                registry.revokeForAdversarialSharing(scope, policy, "worker.ores", code);
+                assertThrows(SecurityException.class, () ->
+                        registry.acquireApprovedForAdversarialSharing(
+                                scope, "worker.ores", code));
+                assertEquals(1, registry.liveImages(),
+                        "revocation must not invalidate an already-running image lease");
+                assertNotNull(old.source());
+
+                registry.approveForAdversarialSharing(scope, policy, "worker.ores", code);
+                scope.close();
+                assertThrows(SecurityException.class, () ->
+                        registry.acquireApprovedForAdversarialSharing(
+                                scope, "worker.ores", code));
+                assertEquals(1, registry.liveImages());
+            } finally {
+                old.close();
+            }
+        }
+        assertEquals(0, registry.liveImages());
+    }
+
+    @Test
+    void hotLoaderCannotBorrowForeignSupervisorOrRegistryAuthority() {
+        IsolatePolicy owner = IsolatePolicy.developer();
+        IsolatePolicy other = IsolatePolicy.developer();
+        try (var scope = SharedCodeRegistry.process().newSupervisorScope(owner);
+             var wrongRegistry = new SharedCodeRegistry().newSupervisorScope(owner)) {
+            assertThrows(SecurityException.class, () ->
+                    HotReloadManager.forUntrustedActors(
+                            other, ExecutionProfile.serverJit(), scope),
+                    "a manager with equal-looking policy must not borrow foreign authority");
+            assertThrows(SecurityException.class, () ->
+                    HotReloadManager.forUntrustedActors(
+                            owner, ExecutionProfile.serverJit(), wrongRegistry),
+                    "only scopes minted by the owning process code registry are valid");
+            try (var allowed = HotReloadManager.forUntrustedActors(
+                    owner, ExecutionProfile.serverJit(), scope)) {
+                assertEquals(0, allowed.liveGenerations());
+            }
+        }
     }
 
     @Test
@@ -162,12 +254,13 @@ final class SharedCodeRegistryTest {
         String changed =
                 "pub routine main(): void { val changed = 1; return; }";
 
-        try (HotReloadManager first =
+        try (var sharingScope = SharedCodeRegistry.process().newSupervisorScope(supervisor);
+             HotReloadManager first =
                      HotReloadManager.forUntrustedActors(
-                             supervisor, ExecutionProfile.serverJit());
+                             supervisor, ExecutionProfile.serverJit(), sharingScope);
              HotReloadManager second =
                      HotReloadManager.forUntrustedActors(
-                             supervisor, ExecutionProfile.serverJit())) {
+                             supervisor, ExecutionProfile.serverJit(), sharingScope)) {
 
             var privateA = first.load(codeUnitId, MINIMAL_PROGRAM);
             var privateB = second.load(codeUnitId, MINIMAL_PROGRAM);

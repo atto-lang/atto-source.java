@@ -33,6 +33,8 @@ public final class HotReloadManager implements AutoCloseable {
     private final IsolatePolicy supervisorPolicy;
     private final IsolatePolicy guestPolicy;
     private final ExecutionProfile executionProfile;
+    private final SharedCodeRegistry.SharingScope sharingScope;
+    private final boolean ownsSharingScope;
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
@@ -48,12 +50,38 @@ public final class HotReloadManager implements AutoCloseable {
             IsolatePolicy supervisorPolicy,
             IsolatePolicy guestPolicy,
             ExecutionProfile executionProfile) {
+        this(supervisorPolicy, guestPolicy, executionProfile,
+                SharedCodeRegistry.process().newSupervisorScope(supervisorPolicy), true);
+    }
+
+    /**
+     * Sharing across different supervisors requires the SAME explicit scope
+     * minted by the trusted owner. Policy equality or identical source bytes
+     * can never silently carry an adversarial sharing approval.
+     */
+    public HotReloadManager(
+            IsolatePolicy supervisorPolicy,
+            IsolatePolicy guestPolicy,
+            ExecutionProfile executionProfile,
+            SharedCodeRegistry.SharingScope scope) {
+        this(supervisorPolicy, guestPolicy, executionProfile, scope, false);
+    }
+
+    private HotReloadManager(
+            IsolatePolicy supervisorPolicy,
+            IsolatePolicy guestPolicy,
+            ExecutionProfile executionProfile,
+            SharedCodeRegistry.SharingScope scope,
+            boolean ownsScope) {
+        this.sharingScope = java.util.Objects.requireNonNull(scope, "scope");
+        this.ownsSharingScope = ownsScope;
         this.supervisorPolicy = java.util.Objects.requireNonNull(supervisorPolicy);
         this.guestPolicy = java.util.Objects.requireNonNull(guestPolicy);
         this.executionProfile = java.util.Objects.requireNonNull(executionProfile);
         this.supervisorPolicy.require(
                 IsolatePolicy.Capability.HOT_CODE_LOAD,
                 "HotReloadManager");
+        SharedCodeRegistry.process().requireOwnedScope(sharingScope, supervisorPolicy);
     }
 
     public static HotReloadManager forUntrustedActors(
@@ -63,6 +91,14 @@ public final class HotReloadManager implements AutoCloseable {
                 supervisorPolicy,
                 IsolatePolicy.untrustedActor(),
                 executionProfile);
+    }
+
+    public static HotReloadManager forUntrustedActors(
+            IsolatePolicy supervisorPolicy,
+            ExecutionProfile executionProfile,
+            SharedCodeRegistry.SharingScope scope) {
+        return new HotReloadManager(supervisorPolicy, IsolatePolicy.untrustedActor(),
+                executionProfile, scope);
     }
 
     public IsolatePolicy supervisorPolicy() { return supervisorPolicy; }
@@ -114,7 +150,7 @@ public final class HotReloadManager implements AutoCloseable {
     private boolean canShare(String codeUnitId, String sourceText) {
         return !guestPolicy.adversarial()
                 || SharedCodeRegistry.process()
-                        .approvedForAdversarialSharing(codeUnitId, sourceText);
+                        .approvedForAdversarialSharing(sharingScope, codeUnitId, sourceText);
     }
 
     private void validateAdmissionInputs(String codeUnitId, String sourceText) {
@@ -146,7 +182,7 @@ public final class HotReloadManager implements AutoCloseable {
                     "guest code-sharing approval is only required for adversarial guests");
         }
         SharedCodeRegistry.process().approveForAdversarialSharing(
-                supervisorPolicy, codeUnitId, sourceText);
+                sharingScope, supervisorPolicy, codeUnitId, sourceText);
     }
 
     public void revokeGuestCodeSharing(String codeUnitId, String sourceText) {
@@ -155,7 +191,7 @@ public final class HotReloadManager implements AutoCloseable {
                     "guest code-sharing revocation is only required for adversarial guests");
         }
         SharedCodeRegistry.process().revokeForAdversarialSharing(
-                supervisorPolicy, codeUnitId, sourceText);
+                sharingScope, supervisorPolicy, codeUnitId, sourceText);
     }
 
     private Generation stage(
@@ -177,7 +213,10 @@ public final class HotReloadManager implements AutoCloseable {
         try {
             Source source;
             if (shareCodeImage) {
-                codeImage = SharedCodeRegistry.process().acquire(codeUnitId, sourceText);
+                codeImage = guestPolicy.adversarial()
+                        ? SharedCodeRegistry.process().acquireApprovedForAdversarialSharing(
+                                sharingScope, codeUnitId, sourceText)
+                        : SharedCodeRegistry.process().acquire(codeUnitId, sourceText);
                 if (!codeImage.sha256().equals(sourceDigest)) {
                     throw new IllegalArgumentException(
                             "compiled code-unit source digest mismatch");
@@ -257,10 +296,16 @@ public final class HotReloadManager implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-        for (Generation generation : generations.values()) generation.close();
-        generations.clear();
-        activeByCodeUnit.clear();
-        active.set(null);
+        try {
+            for (Generation generation : generations.values()) generation.close();
+            generations.clear();
+            activeByCodeUnit.clear();
+            active.set(null);
+        } finally {
+            // Auto-created authority is owned by this manager; explicitly
+            // shared scopes are retired only by their owning supervisor.
+            if (ownsSharingScope) sharingScope.close();
+        }
     }
 
     private static String digest(String text) {
