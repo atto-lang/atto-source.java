@@ -37,6 +37,38 @@ def raw_digest(fd: int, size: int) -> bytes:
     return digest.hexdigest().encode('ascii')
 
 
+def secure_parent_dir(path: bytes) -> tuple[int, bytes]:
+    """Open every parent component beneath cwd without following symlinks."""
+    nofollow = getattr(os, 'O_NOFOLLOW', 0)
+    directory = getattr(os, 'O_DIRECTORY', 0)
+    cloexec = getattr(os, 'O_CLOEXEC', 0)
+    if not nofollow or not directory:
+        raise ValueError('platform lacks O_NOFOLLOW/O_DIRECTORY exact-tree safety')
+    if (os.open not in os.supports_dir_fd
+            or os.stat not in os.supports_dir_fd
+            or os.readlink not in os.supports_dir_fd):
+        raise ValueError('platform lacks dir_fd exact-tree safety')
+    parts = path.split(b'/')
+    if not parts or any(part in (b'', b'.', b'..') for part in parts):
+        raise ValueError('noncanonical tracked path: ' + repr(path[:120]))
+    flags = os.O_RDONLY | directory | nofollow | cloexec
+    fd = os.open(b'.', flags)
+    try:
+        for part in parts[:-1]:
+            try:
+                next_fd = os.open(part, flags, dir_fd=fd)
+            except OSError as exc:
+                raise ValueError(
+                    'tracked path has symlinked/non-directory ancestor: '
+                    + repr(path[:120])) from exc
+            os.close(fd)
+            fd = next_fd
+        return fd, parts[-1]
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def verify(commit: str, tree: str) -> int:
     if not SHA1.fullmatch(commit) or not SHA1.fullmatch(tree):
         raise ValueError('expected commit/tree must be canonical SHA-1')
@@ -76,25 +108,45 @@ def verify(commit: str, tree: str) -> int:
         if head_entries.pop(path, None) != (mode, expected_blob):
             raise ValueError('staged index differs from HEAD tree: ' + repr(path[:120]))
         if mode in (b'100644', b'100755'):
-            # Open actual worktree bytes without following the final symlink.
-            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+            parent_fd, leaf = secure_parent_dir(path)
             try:
-                st = os.fstat(fd)
-                if not stat.S_ISREG(st.st_mode):
-                    raise ValueError('tracked input is not regular: ' + repr(path[:120]))
-                if bool(st.st_mode & 0o111) != (mode == b'100755'):
-                    raise ValueError('tracked mode differs: ' + repr(path[:120]))
-                actual_blob = raw_digest(fd, st.st_size)
-                after = os.fstat(fd)
-                if (st.st_size, st.st_mtime_ns, st.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-                    raise ValueError('tracked source changed during hashing: ' + repr(path[:120]))
+                fd = os.open(
+                    leaf,
+                    os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0),
+                    dir_fd=parent_fd,
+                )
+                try:
+                    st = os.fstat(fd)
+                    if not stat.S_ISREG(st.st_mode):
+                        raise ValueError('tracked input is not regular: ' + repr(path[:120]))
+                    # A tracked file hard-linked to a path outside this checkout
+                    # can be mutated after identity verification without touching
+                    # the admitted pathname. Exact-tree qualification therefore
+                    # accepts only a single-link regular inode.
+                    if st.st_nlink != 1:
+                        raise ValueError(
+                            'tracked input has multiple hard links: ' + repr(path[:120]))
+                    if bool(st.st_mode & 0o111) != (mode == b'100755'):
+                        raise ValueError('tracked mode differs: ' + repr(path[:120]))
+                    actual_blob = raw_digest(fd, st.st_size)
+                    after = os.fstat(fd)
+                    if (st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_nlink) != (
+                            after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_nlink):
+                        raise ValueError(
+                            'tracked source changed during hashing: ' + repr(path[:120]))
+                finally:
+                    os.close(fd)
             finally:
-                os.close(fd)
+                os.close(parent_fd)
         elif mode == b'120000':
-            st = os.lstat(path)
-            if not stat.S_ISLNK(st.st_mode):
-                raise ValueError('tracked symbolic link changed type: ' + repr(path[:120]))
-            target = os.readlink(path)
+            parent_fd, leaf = secure_parent_dir(path)
+            try:
+                st = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                if not stat.S_ISLNK(st.st_mode):
+                    raise ValueError('tracked symbolic link changed type: ' + repr(path[:120]))
+                target = os.readlink(leaf, dir_fd=parent_fd)
+            finally:
+                os.close(parent_fd)
             if isinstance(target, str):
                 target = os.fsencode(target)
             actual_blob = hashlib.sha1(b'blob ' + str(len(target)).encode('ascii')

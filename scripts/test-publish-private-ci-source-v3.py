@@ -137,7 +137,7 @@ class PrivateCiV3Test(unittest.TestCase):
             },
         }
 
-    def test_unprotected_main_accepts_exact_independent_review_attestation(self):
+    def test_review_attestation_helper_can_audit_exact_independent_review(self):
         policy = b"trusted/ci 246810\n"
         blobs, tree = self.review_governance_fixture(policy)
         api = self.review_authority_api()
@@ -258,6 +258,22 @@ class PrivateCiV3Test(unittest.TestCase):
             )
             protected.assert_called_once_with("trusted/ci", POLICY, 246810)
             fallback.assert_not_called()
+
+    def test_authorized_main_rejects_unprotected_source_even_with_review_attestation(self):
+        branch = {
+            "name": v3.legacy.SOURCE_PROTECTED_BRANCH,
+            "protected": False,
+            "commit": {"sha": PROTECTED},
+        }
+        with (
+            patch.object(v3.legacy, "gh_api", return_value=branch),
+            patch.object(v3, "review_attested_main_sha") as fallback,
+            patch.object(v3.legacy, "verify_protected_origin") as protected,
+        ):
+            with self.assertRaisesRegex(v3.Denied, "source main is not protected"):
+                v3.authorized_main_sha("trusted/ci", POLICY, 246810)
+            fallback.assert_not_called()
+            protected.assert_not_called()
 
     def test_maven_plan_requires_offline_mode_and_exact_pom_blob(self):
         base = {
