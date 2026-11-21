@@ -109,6 +109,7 @@ expected = {
         "signedStorageCrossesUnsignedU64BoundaryWithoutReusingZero",
         "guestReceiptSerializesUnsignedValueRatherThanSignedJavaLong",
         "actualReliablePublicationPreservesUnsignedSequenceAfterFullAndExhaustion",
+        "fullAtSignedBoundaryDoesNotBurnUnsignedSequenceOrAdmitPartialDelivery",
     },
     "dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest": {
         "publisherScopedSubscriptionsShareTheCrossTopicActorQuota",
