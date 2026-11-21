@@ -151,6 +151,43 @@ final class AttoCheckedI64ProfileTest {
     }
 
     @Test
+    void checkedCanonicalAttoKeepsIntegerDivisionFloatingAndChecksItsOperands() throws Exception {
+        // int / int is float in canonical AttoLang, never truncating i64.
+        String sourceText = """
+                fnc half(int numerator, int denominator): float {
+                    return numerator / denominator;
+                }
+                pub fnc main(): float { return half(5, 2); }
+                """;
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            Source source = Source.newBuilder("ores", sourceText, "float-division.atto").build();
+            Value result = context.eval(source);
+            assertTrue(result.fitsInDouble(), "int / int should produce a numeric float");
+            assertEquals(2.5d, result.asDouble(), 0.0d,
+                    "int / int must not truncate like signed CIL div");
+        }
+
+        // Checked arithmetic must remain checked even when its value is used
+        // as an operand of an otherwise floating-point division.
+        String overflowText = """
+                fnc half_after_increment(int numerator, int denominator): float {
+                    return (numerator + 1) / denominator;
+                }
+                pub fnc main(): float {
+                    return half_after_increment(9223372036854775807, 2);
+                }
+                """;
+        try (Context context = Context.newBuilder("ores").allowAllAccess(false).build()) {
+            Source source = Source.newBuilder("ores", overflowText, "overflow-before-float-division.atto").build();
+            PolyglotException failure = assertThrows(PolyglotException.class,
+                    () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("ORES_I64_OVERFLOW"),
+                    () -> "integer operand overflow must not be hidden by float result: "
+                            + failure.getMessage());
+        }
+    }
+
+    @Test
     void canonicalAttoImportGraphFailsClosedBeforeGuestEvaluation() throws Exception {
         String source = "import * as imported from \"./unchecked\";\n"
                 + FUNCTIONS + "pub fnc main(): int {return 42;}\n";
