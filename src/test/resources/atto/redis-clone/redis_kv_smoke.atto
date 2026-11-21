@@ -1,0 +1,15 @@
+// First executable AttoLang-owned KV operations via scalar typed Map.
+// Compile+run with the Java/GraalVM Map mutation candidate.
+// Not persistent, actor-concurrent, or a TCP server yet.
+pub fnc main(): int {
+    let Map<string,int> db = ~map<string,int>();
+    db.set("answer", 41);
+    val int value = db["answer"];
+    val bool removed = db.delete("answer");
+    if removed then
+        if db.size eq 0 then
+            return value + 1;
+        fi
+    fi
+    return 0;
+}
