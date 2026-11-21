@@ -83,6 +83,9 @@ final class SupervisorFailureEscrowV1 {
         Cell cell = requireNode(id);
         if (id == rootId) throw new IllegalStateException("guardian failure requires external supervisor");
         if (cell.terminal != null) return cell.terminal; // terminal replay is inert
+        if (!cell.alive) {
+            throw new IllegalStateException("cannot convert a clean STOP into a later failure");
+        }
         cell.alive = false;
         cell.fenced = true;
         cell.terminal = new Notice(id, cell.generation, cell.reservation);
@@ -91,6 +94,23 @@ final class SupervisorFailureEscrowV1 {
             if (isDescendantOf(descendant, id)) descendant.fenced = true;
         }
         return cell.terminal;
+    }
+
+    /** Normal/cancelled finalization never manufactures a failure notice.
+     * A supervisor exiting normally still fences descendants; the caller
+     * must arrange structured child cleanup outside this pure ledger. */
+    synchronized void completeNormally(long id) {
+        Cell cell = requireNode(id);
+        if (id == rootId) throw new IllegalStateException("guardian requires external supervisor");
+        if (cell.pending || cell.terminal != null) {
+            // A real failure may not be laundered into a clean termination.
+            throw new IllegalStateException("cannot erase a failed terminal notice");
+        }
+        cell.alive = false;
+        cell.fenced = true;
+        for (Cell descendant : nodes.values()) {
+            if (isDescendantOf(descendant, id)) descendant.fenced = true;
+        }
     }
 
     /** Returns the nearest healthy ancestor's CONTROL delivery, never guest DATA. */
@@ -106,16 +126,23 @@ final class SupervisorFailureEscrowV1 {
         return cell.delivery;
     }
 
-    /** A stale delivery cannot be acknowledged even before it is redelivered. */
-    synchronized boolean acknowledge(Delivery delivery) {
+    /** Validate a delivery before invoking a potentially external decision sink.
+     * This check MUST be repeated after that sink completes. */
+    synchronized boolean currentDelivery(Delivery delivery) {
         Objects.requireNonNull(delivery, "delivery");
         Cell cell = nodes.get(delivery.notice.failedId());
         if (cell == null || !cell.pending || cell.delivery != delivery
                 || cell.terminal != delivery.notice
                 || cell.generation != delivery.notice.failedGeneration()) return false;
         Cell currentAuthority = nearestLiveAncestor(cell);
-        if (currentAuthority == null || currentAuthority.id != delivery.controllerId
-                || currentAuthority.generation != delivery.controllerGeneration) return false;
+        return currentAuthority != null && currentAuthority.id == delivery.controllerId
+                && currentAuthority.generation == delivery.controllerGeneration;
+    }
+
+    /** A stale delivery cannot be acknowledged even before it is redelivered. */
+    synchronized boolean acknowledge(Delivery delivery) {
+        if (!currentDelivery(delivery)) return false;
+        Cell cell = nodes.get(delivery.notice.failedId());
         cell.pending = false;
         cell.delivery = null;
         return true;

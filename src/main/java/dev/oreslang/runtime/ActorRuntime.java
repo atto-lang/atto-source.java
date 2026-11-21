@@ -445,6 +445,11 @@ public final class ActorRuntime implements AutoCloseable {
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    /** Opt-in, trusted CONTROL bindings. No guest or actor code can register one. */
+    private record SupervisorEscrowBinding(
+            SupervisorFailureEscrowRuntimeBridgeV1 bridge, long nodeId, long generation) {}
+    private final Map<ActorId, SupervisorEscrowBinding> supervisorEscrowBindings =
+            new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     /**
      * Reverse cooperation-membership index. All mutations to this map AND an
@@ -2282,7 +2287,13 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> ready() {
             ActorCell<?> cell = actors.get(id);
-            if (cell != null && !cell.stopped.get()) cell.schedule();
+            if (cell != null && !cell.stopped.get()) {
+                synchronized (cell.lifecycleLock) {
+                    requireSupervisorEscrowAdmission(this);
+                    cell.activationRequested = true;
+                }
+                cell.schedule();
+            }
             return readyFuture;
         }
 
@@ -4068,6 +4079,52 @@ public final class ActorRuntime implements AutoCloseable {
         requireSupervisorContext(operation);
     }
 
+    /**
+     * Bind a runtime-minted physical ActorRef and generation to one host CONTROL
+     * escrow before its first ready/send/turn. The bridge's parent hierarchy is
+     * not an ActorGroup ownership transfer or a guest supervisor capability.
+     * Lock order: runtimeLifecycleLock -> cell.lifecycleLock -> escrow ledger.
+     */
+    void attachSupervisorEscrowActor(
+            ActorRef<?> ref, SupervisorFailureEscrowRuntimeBridgeV1 bridge,
+            long nodeId, long parentId) {
+        requireSupervisorShutdownAuthority("register actor failure escrow");
+        Objects.requireNonNull(ref, "ref");
+        Objects.requireNonNull(bridge, "bridge");
+        if (!ref.ownedBy(this)) throw new SecurityException("foreign ActorRef");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("runtime is closed");
+            ActorCell<?> cell = actors.get(ref.id());
+            if (cell == null || cell.ref != ref) {
+                throw new IllegalStateException("actor is not live in this runtime");
+            }
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() || cell.finalized || cell.sealing
+                        || cell.activationRequested || cell.scheduled.get()
+                        || cell.carrierActive || cell.activeTurns != 0
+                        || ref.readyFuture.isDone() || cell.nextUserMessageSequence != 0) {
+                    throw new IllegalStateException(
+                            "CONTROL binding requires a fresh unscheduled actor");
+                }
+                if (supervisorEscrowBindings.containsKey(ref.id())) {
+                    throw new IllegalStateException("actor already has CONTROL authority");
+                }
+                bridge.registerFromRuntime(ref, nodeId, parentId);
+                supervisorEscrowBindings.put(
+                        ref.id(), new SupervisorEscrowBinding(bridge, nodeId, ref.generation()));
+            }
+        }
+    }
+
+    /** Revalidate at the actual DATA mailbox linearization point. */
+    private void requireSupervisorEscrowAdmission(ActorRef<?> ref) {
+        SupervisorEscrowBinding binding = supervisorEscrowBindings.get(ref.id());
+        if (binding != null
+                && !binding.bridge().mayAdmitFromRuntime(binding.nodeId(), binding.generation())) {
+            throw new ActorSealedException(ref.id());
+        }
+    }
+
     private void requireBlockingHostContext(String operation) {
         if (inActorExecution()
                 || inActorGroupMailmanExecution()
@@ -4681,6 +4738,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     "cannot spawn a child from a stopping or force-fenced actor "
                                             + parent.ref.id());
                         }
+                        requireSupervisorEscrowAdmission(parent.ref);
                         // A nested spawn inherits its parent's structured
                         // lifecycle group. The spawn lineage is not a new
                         // supervisor or a new group. Event-bus membership
@@ -5443,6 +5501,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
+            requireSupervisorEscrowAdmission(ref);
+            cell.activationRequested = true;
             if (cell.sealing) throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
                 throw new ActorMailboxFullException(ref.id());
@@ -5521,6 +5581,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.stopped.get() || cell.finalized) {
                         throw terminated(ref);
                     }
+                    requireSupervisorEscrowAdmission(ref);
                     if (cell.sealing) {
                         throw new ActorSealedException(ref.id());
                     }
@@ -7168,6 +7229,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean stopped = new AtomicBoolean();
         /** Set under lifecycleLock by gracefulStop; no further user admissions. */
         private boolean sealing;
+        /** Set before first guest ready/send, preventing late CONTROL attach. */
+        private boolean activationRequested;
         // Lifetime-affine structured owner: never transferred before physical
         // finalization, even if the original group closes during cancellation.
         private final AtomicReference<ActorGroupId> managedByGroup = new AtomicReference<>();
@@ -7531,6 +7594,17 @@ public final class ActorRuntime implements AutoCloseable {
             }
             shardSnapshotLeases.clear();
             if (memorySlice != null) memorySlice.close();
+            // The physical actor finalization barrier has passed. Do not
+            // conflate this with all external FFI/arena leases being released.
+            SupervisorEscrowBinding escrowBinding =
+                    supervisorEscrowBindings.remove(ref.id());
+            if (escrowBinding != null) {
+                Throwable terminalCause = ref.terminationCause.get();
+                escrowBinding.bridge().finalizedFromRuntime(
+                        escrowBinding.nodeId(),
+                        terminalCause != null
+                                && !(terminalCause instanceof CancellationException));
+            }
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
@@ -8114,6 +8188,15 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 stopped.set(true);
                 sealing = true;
+                // This is the first authoritative terminal-failure fence.
+                // Do not invoke policy guest callbacks or runtime/group locks.
+                Throwable terminalCause = ref.terminationCause.get();
+                SupervisorEscrowBinding escrowBinding =
+                        supervisorEscrowBindings.get(ref.id());
+                if (escrowBinding != null && terminalCause != null
+                        && !(terminalCause instanceof CancellationException)) {
+                    escrowBinding.bridge().failedFromRuntime(escrowBinding.nodeId());
+                }
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.

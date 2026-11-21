@@ -1,9 +1,13 @@
-name: Supervisor failure escrow host-only exact-blob test
+name: Supervisor failure escrow and real ActorRuntime integration
 on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowV1.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowV1Standalone.java'
+      - 'src/main/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeBridgeV1.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/test/java/dev/oreslang/runtime/SupervisorFailureEscrowRuntimeIntegrationTest.java'
+      - 'scripts/verify-supervisor-escrow-runtime-bridge-v1.sh'
       - 'scripts/verify-supervisor-failure-escrow-v1.sh'
       - '.github/workflows/supervisor-failure-escrow-host-v1.yml'
   workflow_dispatch:
@@ -20,7 +24,7 @@ jobs:
       - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
         with:
           distribution: temurin
-          java-version: '21'
-      - name: Verify source blob and execute 554 host assertions
+          java-version: '25'
+      - name: Verify source hashes and execute real ActorRuntime JUnit
         shell: bash
-        run: bash scripts/verify-supervisor-failure-escrow-v1.sh
+        run: bash scripts/verify-supervisor-escrow-runtime-bridge-v1.sh
