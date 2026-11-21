@@ -5525,21 +5525,61 @@ public final class Parser {
         return new Ast.SwitchStmt(subject, cases, defaultBody);
     }
 
+    /**
+     * Both "try { ... } catch (...) { ... }" and
+     * "try ... catch (...) ... finally ... end" lower to the same TryStmt.
+     * The opening delimiter selects the style for every arm; a keyword try
+     * owns exactly one END, and braced tries must not consume an END.
+     */
     private Ast.TryStmt parseTry() {
-        List<Ast.Stmt> body = parseBlock();
-        // try { } finally { } without catch: the failure propagates after
-        // finally runs (errorName == null marks "no catch").
-        if (!check(CATCH)) {
-            if (!match(FINALLY)) throw error(peek(), "expected catch or finally after try block");
-            return new Ast.TryStmt(body, null, List.of(), parseBlock());
+        boolean braced = check(LBRACE);
+        List<Ast.Stmt> body = braced ? parseBlock() : parseTryKeywordBody(CATCH, FINALLY, END);
+        if (!check(CATCH) && !check(FINALLY)) {
+            throw error(peek(), "expected catch or finally after try block");
         }
-        consume(CATCH, "expected catch after try block");
-        consume(LPAREN, "expected '(' after catch");
-        String error = consume(IDENT, "expected catch binding").lexeme();
-        consume(RPAREN, "expected ')' after catch binding");
-        List<Ast.Stmt> catchBody = parseBlock();
-        List<Ast.Stmt> finallyBody = match(FINALLY) ? parseBlock() : List.of();
-        return new Ast.TryStmt(body, error, catchBody, finallyBody);
+
+        String errorName = null;
+        List<Ast.Stmt> catchBody = List.of();
+        if (match(CATCH)) {
+            consume(LPAREN, "expected '(' after catch");
+            if (check(RPAREN)) {
+                // An unspellable internal binder ensures catch() never makes
+                // an exception variable visible to user code.
+                errorName = "$catch_ignored";
+            } else {
+                Token first = consume(IDENT, "expected catch binding or Error type");
+                if (check(IDENT)) {
+                    if (!first.lexeme().equals("Error")) {
+                        throw error(first, "typed catch currently requires Error");
+                    }
+                    errorName = consume(IDENT, "expected name after catch Error").lexeme();
+                } else {
+                    errorName = first.lexeme();
+                }
+            }
+            consume(RPAREN, "expected ')' after catch binding");
+            catchBody = braced ? parseBlock() : parseTryKeywordBody(FINALLY, END);
+            if (check(CATCH)) throw error(peek(), "at most one catch clause is allowed");
+        }
+
+        List<Ast.Stmt> finallyBody = List.of();
+        if (match(FINALLY)) {
+            finallyBody = braced ? parseBlock() : parseTryKeywordBody(END);
+            if (check(CATCH) || check(FINALLY)) {
+                throw error(peek(), "catch must precede finally; at most one finally is allowed");
+            }
+        }
+        if (!braced) consume(END, "expected 'end' to close keyword try");
+        return new Ast.TryStmt(body, errorName, catchBody, finallyBody);
+    }
+
+    private List<Ast.Stmt> parseTryKeywordBody(Token.Type... stops) {
+        localTypeScopes.push(new java.util.HashSet<>());
+        try {
+            return parseUntil(stops);
+        } finally {
+            localTypeScopes.pop();
+        }
     }
 
     private List<Ast.Stmt> parseUntil(Token.Type... terminators) {
