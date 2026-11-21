@@ -591,6 +591,117 @@ final class HostGeneratorTurnPumpTest {
         }
     }
 
+
+    @Test
+    void stagedJavaNextStepAutoDispatchesThreeCompiledYieldsThroughOwnedScheduler()
+            throws Exception {
+        // A one-carrier stand-in for the context-owned root turn. This checks
+        // that arbitrary Java host threads cannot run source code or dispatch
+        // it themselves. Real Truffle Context.enter remains a separate P0 gate.
+        try (OresScheduler root = new OresScheduler(1)) {
+            AtomicReference<HostGeneratorTurnPump> owner = new AtomicReference<>();
+            AtomicInteger ownerWakeups = new AtomicInteger();
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> OresScheduler.current() == root,
+                    () -> root.startSync(() -> {
+                        ownerWakeups.incrementAndGet();
+                        // Owner wakeups are advisory. Multiple host submits
+                        // can queue wake tasks before the first reservation;
+                        // a later wake may legitimately find an active turn.
+                        owner.get().dispatchOne();
+                        return null;
+                    }), 8, root);
+            owner.set(pump);
+            String source = """
+                    async generator fnc values(): int {
+                      yield 11;
+                      yield 22;
+                      yield 33;
+                      return;
+                    }
+                    """;
+            GeneratorRuntime.HostPullSession<Object> host =
+                    GeneratorRuntime.stagedSourceHostPullSession(
+                            pump, root, source, "values", java.util.Map.of());
+            assertNull(OresScheduler.current(),
+                    "Java host must not have scheduler or guest-entry rights");
+            // Enqueue all four pulls without a guest entry on this host thread.
+            var first = host.nextStep();
+            var second = host.nextStep();
+            var third = host.nextStep();
+            var done = host.nextStep();
+            assertNull(OresScheduler.current());
+            assertEquals(11, ((Number) first.get(5, TimeUnit.SECONDS).value()).intValue());
+            assertEquals(22, ((Number) second.get(5, TimeUnit.SECONDS).value()).intValue());
+            assertEquals(33, ((Number) third.get(5, TimeUnit.SECONDS).value()).intValue());
+            assertTrue(done.get(5, TimeUnit.SECONDS).done());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!host.isPhysicallyQuiescent() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(host.isPhysicallyQuiescent(), "all four pulls need physical DONE");
+            assertTrue(host.isTerminal());
+            assertTrue(ownerWakeups.get() >= 4, "root owner must dispatch every pull");
+            host.close();
+            assertThrows(java.util.concurrent.RejectedExecutionException.class, host::nextStep);
+        }
+    }
+
+    @Test
+    void stagedHostCloseCannotRetireYieldedSourceBeforeFinallyRuns() throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            AtomicReference<HostGeneratorTurnPump> owner = new AtomicReference<>();
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> OresScheduler.current() == root,
+                    () -> root.startSync(() -> { owner.get().dispatchOne(); return null; }),
+                    4, root);
+            owner.set(pump);
+            String source = """
+                    async generator fnc values(): int {
+                      try { yield 1; yield 2; }
+                      catch (err) { }
+                      finally { val int cleanup = 1; }
+                      return;
+                    }
+                    """;
+            var host = GeneratorRuntime.stagedSourceHostPullSession(
+                    pump, root, source, "values", java.util.Map.of());
+            assertEquals(1,
+                    ((Number) host.nextStep().get(5, TimeUnit.SECONDS).value()).intValue());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!host.isPhysicallyQuiescent() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertTrue(host.isPhysicallyQuiescent());
+            assertFalse(host.isTerminal());
+            assertThrows(IllegalStateException.class, host::close,
+                    "physical exit of one yield does not prove source finally");
+            assertThrows(IllegalStateException.class, host::close,
+                    "a second close must not erase incomplete lexical cleanup");
+            assertThrows(java.util.concurrent.RejectedExecutionException.class, host::nextStep);
+        }
+    }
+
+    @Test
+    void invalidSourceCannotCreateHostPullsOrWakeScheduler() throws Exception {
+        try (OresScheduler root = new OresScheduler(1)) {
+            AtomicInteger wakes = new AtomicInteger();
+            HostGeneratorTurnPump pump = new HostGeneratorTurnPump(
+                    UUID.randomUUID(), () -> false, wakes::incrementAndGet, 2, root);
+            assertThrows(IllegalArgumentException.class,
+                    () -> GeneratorRuntime.stagedSourceHostPullSession(
+                            pump, root, """
+                                    async generator fnc values(): int {
+                                      yield 1 + 2;
+                                      return;
+                                    }
+                                    """, "values", java.util.Map.of()));
+            assertEquals(0, wakes.get());
+            assertTrue(pump.isQuiescent());
+            pump.close();
+        }
+    }
+
     @Test
     void hostIteratorPreflightRejectsForeignRootWithoutQuarantiningOwner()
             throws Exception {

@@ -1,5 +1,8 @@
 package dev.oreslang.nodes;
 
+import dev.oreslang.runtime.OresContext;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 import dev.oreslang.runtime.OresFuture;
 import org.graalvm.polyglot.Value;
 
@@ -22,6 +25,122 @@ import java.util.UUID;
 public final class OresHostFutureBridge {
     private static final ThreadLocal<ArrayDeque<Slot>> CAPTURES =
             new ThreadLocal<>();
+    // Bindings are bootstrap-only and never published as guest Values.
+    // The caller may register only its own, already parsed source.
+    private static final ThreadLocal<SourceBinding> SOURCE_BINDING =
+            new ThreadLocal<>();
+
+    private static final class SourceBinding {
+        final String nonce = UUID.randomUUID().toString();
+        OresContext owner;
+        Object root;
+        boolean claimed;
+
+        void claim(String presentedNonce, OresContext context, Object sourceRoot) {
+            if (!nonce.equals(presentedNonce) || claimed
+                    || context == null || sourceRoot == null) {
+                throw new SecurityException("invalid or reused host source binding");
+            }
+            claimed = true;
+            owner = context;
+            root = sourceRoot;
+        }
+    }
+
+    /**
+     * Explicitly mediated embedder handle. Unlike the legacy unbound bridge,
+     * this reserves host entry BEFORE Value.execute. It fails closed if a
+     * scheduler carrier already owns the physical guest-entry boundary.
+     * The Value itself and its root authority are not exposed to guest code.
+     */
+    public static final class BoundSource implements AutoCloseable {
+        private final Value parsedSource;
+        private final OresContext context;
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        private BoundSource(Value parsedSource, OresContext context) {
+            this.parsedSource = Objects.requireNonNull(parsedSource);
+            this.context = Objects.requireNonNull(context);
+        }
+
+        private void requireOpen() {
+            if (closed.get()) {
+                throw new java.util.concurrent.RejectedExecutionException(
+                        "bound host source is closed");
+            }
+        }
+
+        /** Convert the Polyglot Value while the host-entry lease is held. */
+        public <T> T executeAndConvert(Function<Value, T> converter, Object... command) {
+            requireOpen();
+            Objects.requireNonNull(converter, "converter");
+            Objects.requireNonNull(command, "command");
+            context.beginScopedHostFutureHandoff();
+            try {
+                requireOpen();
+                return converter.apply(parsedSource.execute(command));
+            } finally {
+                context.endScopedHostFutureHandoff();
+            }
+        }
+
+        public void executeCommand(Object... command) {
+            executeAndConvert(ignored -> null, command);
+        }
+
+        public <T> OresFuture<T> invokePublicFuture(
+                String function, Object... arguments) {
+            requireOpen();
+            context.beginScopedHostFutureHandoff();
+            try {
+                requireOpen();
+                return OresHostFutureBridge.invokePublicFuture(
+                        parsedSource, function, arguments);
+            } finally {
+                context.endScopedHostFutureHandoff();
+            }
+        }
+
+        @Override public void close() {
+            closed.set(true);
+        }
+    }
+
+    /**
+     * Bootstrap handshake. Call immediately after Context.parse and before
+     * starting ANY guest carriers. This one-time registration itself enters
+     * Polyglot and cannot retroactively protect an already-running context.
+     * Do not use this to attach to an arbitrary live unmediated Value.
+     */
+    public static BoundSource bindBeforeGuestStart(Value parsedSource) {
+        Objects.requireNonNull(parsedSource, "parsedSource");
+        if (SOURCE_BINDING.get() != null) {
+            throw new SecurityException("nested host source binding is forbidden");
+        }
+        SourceBinding binding = new SourceBinding();
+        SOURCE_BINDING.set(binding);
+        try {
+            parsedSource.execute(
+                    OresEvalRootNode.BIND_SCOPED_HOST_SOURCE_COMMAND,
+                    binding.nonce);
+            if (!binding.claimed || binding.owner == null || binding.root == null) {
+                throw new SecurityException(
+                        "host source failed to authenticate its context");
+            }
+            return new BoundSource(parsedSource, binding.owner);
+        } finally {
+            SOURCE_BINDING.remove();
+        }
+    }
+
+    /** A one-use binding can be claimed only by the source's real root. */
+    static void claimBoundSource(String nonce, OresContext context, Object root) {
+        SourceBinding binding = SOURCE_BINDING.get();
+        if (binding == null) {
+            throw new SecurityException("unregistered host source binding command");
+        }
+        binding.claim(nonce, context, root);
+    }
 
     /**
      * A one-use ticket. Claim happens before any guest dispatch; publication
@@ -39,6 +158,7 @@ public final class OresHostFutureBridge {
         private Object ownerContext;
         private Object ownerRoot;
         private OresFuture<?> future;
+        private boolean contextHandoffAcquired;
 
         Slot(String function) {
             this.function = Objects.requireNonNull(function, "function");
@@ -60,6 +180,13 @@ public final class OresHostFutureBridge {
             // a rejected claim must not retain a partially staged context.
             Object validatedContext = Objects.requireNonNull(context, "context");
             Object validatedRoot = Objects.requireNonNull(root, "root");
+            // This callback executes while the host's outer Value.execute
+            // still owns guest entry. Protect the gap until its host finally
+            // block releases the claim; reject a foreign guest reservation.
+            if (validatedContext instanceof OresContext guestContext) {
+                guestContext.beginScopedHostFutureHandoff();
+                contextHandoffAcquired = true;
+            }
             ownerContext = validatedContext;
             ownerRoot = validatedRoot;
             state = State.CLAIMED;
@@ -106,9 +233,16 @@ public final class OresHostFutureBridge {
 
         void close() {
             state = State.CLOSED;
-            ownerContext = null;
-            ownerRoot = null;
-            future = null;
+            try {
+                if (contextHandoffAcquired) {
+                    contextHandoffAcquired = false;
+                    ((OresContext) ownerContext).endScopedHostFutureHandoff();
+                }
+            } finally {
+                ownerContext = null;
+                ownerRoot = null;
+                future = null;
+            }
         }
     }
 

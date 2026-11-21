@@ -578,4 +578,121 @@ final class FormalHostGeneratorTurnPumpModelCheckTest {
                 invariantLexical(new LexicalState(4, 0, true, false, true)));
     }
 
+
+    /** Bounded abstraction of the staged Java nextStep and close contract. */
+    private enum HostSessionEvent {
+        NEXT, YIELD, DONE, PHYSICAL_DONE, CANCEL_PUBLIC,
+        UNKNOWN_PHYSICAL_EXIT, SEAL, RETRY_CLOSE
+    }
+
+    private record HostSessionState(
+            int pulls, boolean physicalActive, boolean yielded,
+            boolean terminal, boolean sealed, boolean poisoned,
+            boolean retired) {
+        static HostSessionState initial() {
+            return new HostSessionState(0, false, false, false,
+                    false, false, false);
+        }
+    }
+
+    private static HostSessionState hostSessionStep(
+            HostSessionState s, HostSessionEvent event) {
+        if (s.retired) return s;
+        int pulls = s.pulls;
+        boolean physical = s.physicalActive;
+        boolean yielded = s.yielded, terminal = s.terminal;
+        boolean sealed = s.sealed, poisoned = s.poisoned, retired = false;
+        switch (event) {
+            case NEXT -> {
+                if (!sealed && !physical && pulls < 2) {
+                    pulls++;
+                    physical = true;
+                }
+            }
+            case YIELD -> {
+                if (physical && !terminal) yielded = true;
+            }
+            case DONE -> {
+                if (physical) terminal = true;
+            }
+            case PHYSICAL_DONE -> {
+                if (physical && !poisoned) physical = false;
+            }
+            case CANCEL_PUBLIC -> {
+                // Cancellation of a host Future is not physical DONE nor
+                // proof that lexical source cleanup has completed.
+            }
+            case UNKNOWN_PHYSICAL_EXIT -> {
+                if (physical) {
+                    poisoned = true;
+                    sealed = true;
+                }
+            }
+            case SEAL, RETRY_CLOSE -> {
+                sealed = true;
+                // An untouched session may close, but a started source frame
+                // must be terminal AND physically quiescent before retirement.
+                if (!physical && !poisoned && (pulls == 0 || terminal)) {
+                    retired = true;
+                }
+            }
+        }
+        return new HostSessionState(pulls, physical, yielded, terminal,
+                sealed, poisoned, retired);
+    }
+
+    private static void invariantHostSession(HostSessionState state) {
+        assertTrue(state.pulls >= 0 && state.pulls <= 2);
+        if (state.poisoned) {
+            assertTrue(state.sealed && !state.retired,
+                    "unknown guest exit released an unproven context");
+        }
+        if (state.retired) {
+            assertTrue(state.sealed && !state.physicalActive && !state.poisoned
+                    && (state.pulls == 0 || state.terminal),
+                    "host session retired an unexhausted generator");
+        }
+    }
+
+    @Test
+    void boundedJavaHostNextStepCannotRetireUnexhaustedOrActiveSource() {
+        Set<HostSessionState> states = new HashSet<>();
+        ArrayDeque<HostSessionState> open = new ArrayDeque<>();
+        HostSessionState initial = HostSessionState.initial();
+        states.add(initial);
+        open.add(initial);
+        boolean sawIdleYieldClose = false, sawCompletedRetirement = false;
+        boolean sawUnknownQuarantine = false;
+        while (!open.isEmpty()) {
+            HostSessionState state = open.removeFirst();
+            invariantHostSession(state);
+            sawUnknownQuarantine |= state.poisoned;
+            sawCompletedRetirement |= state.retired && state.pulls != 0;
+            for (HostSessionEvent event : HostSessionEvent.values()) {
+                HostSessionState next = hostSessionStep(state, event);
+                invariantHostSession(next);
+                if ((event == HostSessionEvent.SEAL
+                        || event == HostSessionEvent.RETRY_CLOSE)
+                        && state.yielded && !state.physicalActive
+                        && !state.terminal) {
+                    sawIdleYieldClose = true;
+                    assertFalse(next.retired,
+                            "close must not treat a yielded source as cleaned up");
+                }
+                if (states.add(next)) open.addLast(next);
+            }
+        }
+        assertTrue(states.size() >= 12, "session state exploration collapsed");
+        assertTrue(sawIdleYieldClose && sawCompletedRetirement
+                && sawUnknownQuarantine,
+                "missing early close, terminal retirement or unknown-exit race");
+    }
+
+    @Test
+    void unsafeHostSessionRetirementWithoutCleanupViolatesInvariant() {
+        HostSessionState unsafe =
+                new HostSessionState(1, false, true, false, true, false, true);
+        assertThrows(AssertionError.class, () -> invariantHostSession(unsafe));
+    }
+
 }
