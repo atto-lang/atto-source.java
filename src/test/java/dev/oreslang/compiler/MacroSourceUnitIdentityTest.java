@@ -101,4 +101,30 @@ final class MacroSourceUnitIdentityTest {
                 MacroSourceUnitIdentity.MEMORY_UNIT,
                 MacroSourceUnitIdentity.unitId(program));
     }
+
+    @Test
+    void rejectsControlAndBidiSpoofingEvenInEliminatedSegments() {
+        for (String malformed : new String[] {
+                "pkg/line" + (char) 0x0A + "break.atto",
+                "pkg/hide" + (char) 0x202E + ".atto",
+                "pkg/" + (char) 0xD800 + ".atto",
+                "pkg/hidden" + (char) 0x0A + "/../safe.atto",
+                "C:drive-relative.atto"
+        }) {
+            Ast.Program program = Parser.parse("fnc answer() -> int { return 42; }");
+            assertThrows(IllegalArgumentException.class,
+                    () -> MacroSourceUnitIdentity.attach(program, malformed),
+                    "should reject " + Integer.toHexString(malformed.hashCode()));
+        }
+
+        String supplementaryFormat = new String(Character.toChars(917505));
+        Ast.Program special = Parser.parse("fnc answer() -> int { return 42; }");
+        assertThrows(IllegalArgumentException.class,
+                () -> MacroSourceUnitIdentity.attach(special,
+                        "pkg/" + supplementaryFormat + ".atto"));
+
+        Ast.Program valid = Parser.parse("fnc answer() -> int { return 42; }");
+        assertDoesNotThrow(() -> MacroSourceUnitIdentity.attach(valid, "pkg/álgebra🙂.atto"));
+        assertEquals("pkg/álgebra🙂.atto", MacroSourceUnitIdentity.unitId(valid));
+    }
 }

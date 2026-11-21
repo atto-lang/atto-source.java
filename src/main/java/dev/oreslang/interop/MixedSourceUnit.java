@@ -99,9 +99,10 @@ public final class MixedSourceUnit {
         String raw = source == null ? "" : source;
         String lower = fileName.toLowerCase(Locale.ROOT);
         PrimaryLanguage primary;
-        if (lower.endsWith(".ores")) primary = PrimaryLanguage.ORES;
+        // .atto is canonical; .ores stays supported for legacy repositories.
+        if (lower.endsWith(".atto") || lower.endsWith(".ores")) primary = PrimaryLanguage.ORES;
         else if (lower.endsWith(".java")) primary = PrimaryLanguage.JAVA;
-        else throw new IllegalArgumentException("mixed source must use .ores or .java: " + fileName);
+        else throw new IllegalArgumentException("mixed source must use .atto, .ores, or .java: " + fileName);
 
         if (primary == PrimaryLanguage.ORES) {
             return parseOresPrimary(unitId, raw);

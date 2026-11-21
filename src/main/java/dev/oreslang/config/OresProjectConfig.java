@@ -188,7 +188,12 @@ public final class OresProjectConfig {
         if (Files.isRegularFile(normalized)) return Optional.of(normalized);
 
         String text = normalized.toString().toLowerCase();
-        if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
+        if (text.endsWith(".atto") || text.endsWith(".ores")
+                || text.endsWith(".java")) return Optional.empty();
+
+        // Prefer the canonical AttoLang extension when the import is extensionless.
+        Path atto = Path.of(normalized.toString() + ".atto");
+        if (Files.isRegularFile(atto)) return Optional.of(atto.toAbsolutePath().normalize());
 
         Path ores = Path.of(normalized.toString() + ".ores");
         if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());

@@ -112,12 +112,14 @@ public final class IncrementalCompiler {
                     id, parsed.get(id), parsed, normalizedImportResolutions);
             Map<String, Ast.InterfaceDecl> contracts = linkedImportedContracts(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
+            Map<String, LinkedMacroImports.Binding> linkedMacros = LinkedMacroImports.collect(
+                    id, parsed.get(id), parsed, normalizedImportResolutions);
             try {
                 TypeChecker.TypeCheckResult analysis =
                         TypeChecker.checkTypesWithLinkedMetadataWithDiagnostics(
                                 MacroSourceUnitIdentity.attach(
                                         Parser.parse(normalized.get(id)), id),
-                                linked.classes(), linked.aliases(), contracts);
+                                linked.classes(), linked.aliases(), contracts, linkedMacros);
                 checked = analysis.program();
                 OwnershipChecker.checkWithImportedClasses(
                         checked, linked.classes(), analysis.shortInferredAliases());
@@ -345,23 +347,27 @@ public final class IncrementalCompiler {
                     abi.append('\n');
                 }
             }
-            for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
+            for (Ast.Decl decl : module.declarations()) appendAbi(abi, module.name(), decl);
         }
         return digest(abi.toString());
     }
 
-    private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+    private static void appendAbi(StringBuilder abi, String ownerModule, Ast.Decl decl) {
         if (decl instanceof Ast.MacroDecl macro) {
             if (macro.visibility() != Ast.Visibility.PUBLIC) return;
+            MacroExportArtifact export = MacroExportArtifact.fromDeclaration(ownerModule, macro);
+            // Re-verify the exact AST binding before publishing build identity.
+            export.verifyAgainst(ownerModule, macro);
             abi.append("pub macro ").append(macro.name()).append('(');
             for (Ast.MacroParam parameter : macro.parameters()) {
                 abi.append(macroParamAbi(parameter.type()))
                         .append(':').append(parameter.name()).append(',');
             }
             abi.append(")=>").append(macroResultAbi(macro.resultKind()))
-                    .append(" content-format=").append(MacroCanonicalIdentity.FORMAT)
+                    .append(" content-format=").append(export.format())
+                    .append(" semantics-abi=").append(export.semanticsAbi())
                     .append(" content=")
-                    .append(digest(MacroCanonicalIdentity.encode(macro)))
+                    .append(export.contentSha256())
                     .append('\n');
             return;
         }
@@ -565,8 +571,11 @@ public final class IncrementalCompiler {
                     ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
                     : Path.of(raw).normalize();
             String candidate = normalizeUnitId(candidatePath.toString());
-            if (!available.contains(candidate) && !candidate.endsWith(".ores") && available.contains(candidate + ".ores")) {
-                candidate += ".ores";
+            if (!available.contains(candidate)
+                    && !candidate.endsWith(".atto") && !candidate.endsWith(".ores")
+                    && !candidate.endsWith(".java")) {
+                if (available.contains(candidate + ".atto")) candidate += ".atto";
+                else if (available.contains(candidate + ".ores")) candidate += ".ores";
             }
             if (available.contains(candidate)) {
                 result.add(candidate);
@@ -619,7 +628,8 @@ public final class IncrementalCompiler {
     private static String packageId(String unitId, Ast.Program program) {
         if (program.namespace() != null) return program.namespace();
         String id = unitId;
-        if (id.endsWith(".ores")) id = id.substring(0, id.length() - ".ores".length());
+        if (id.endsWith(".atto")) id = id.substring(0, id.length() - ".atto".length());
+        else if (id.endsWith(".ores")) id = id.substring(0, id.length() - ".ores".length());
         return id;
     }
 

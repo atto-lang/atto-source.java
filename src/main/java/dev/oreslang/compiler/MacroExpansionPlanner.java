@@ -60,17 +60,29 @@ public final class MacroExpansionPlanner {
     }
 
     private final Map<String, Ast.MacroDecl> macros = new LinkedHashMap<>();
+    private final Map<String, LinkedMacroImports.Binding> importedMacros;
     private final List<WorkItem> workItems = new ArrayList<>();
     private final String sourceUnitId;
     private int ordinal;
 
-    private MacroExpansionPlanner(String sourceUnitId) {
+    private MacroExpansionPlanner(
+            String sourceUnitId,
+            Map<String, LinkedMacroImports.Binding> importedMacros) {
         this.sourceUnitId = sourceUnitId;
+        // Preserve explicit importer order for deterministic error admission.
+        this.importedMacros = java.util.Collections.unmodifiableMap(
+                new java.util.LinkedHashMap<>(importedMacros));
     }
 
     public static Plan plan(Ast.Program program) {
+        return plan(program, Map.of());
+    }
+
+    public static Plan plan(
+            Ast.Program program,
+            Map<String, LinkedMacroImports.Binding> importedMacros) {
         MacroExpansionPlanner planner =
-                new MacroExpansionPlanner(MacroSourceUnitIdentity.unitId(program));
+                new MacroExpansionPlanner(MacroSourceUnitIdentity.unitId(program), importedMacros);
         planner.collect(program);
         planner.scan(program);
         return new Plan(planner.workItems);
@@ -87,6 +99,15 @@ public final class MacroExpansionPlanner {
                             "duplicate define macro '" + macro.name()
                                     + "' in module '" + module.name() + "'");
                 }
+            }
+        }
+        for (Map.Entry<String, LinkedMacroImports.Binding> entry : importedMacros.entrySet()) {
+            LinkedMacroImports.Binding binding = entry.getValue();
+            binding.verify();
+            if (macros.putIfAbsent(entry.getKey(), binding.declaration()) != null) {
+                throw new IllegalArgumentException(
+                        "imported macro alias collides with a local module macro: "
+                                + entry.getKey());
             }
         }
     }
@@ -456,6 +477,8 @@ public final class MacroExpansionPlanner {
     }
 
     private String macroOwnerModule(String callerModule, String invocationName) {
+        LinkedMacroImports.Binding imported = importedMacros.get(invocationName);
+        if (imported != null) return imported.canonicalOwnerIdentity();
         int separator = invocationName.lastIndexOf('.');
         return separator >= 0
                 ? invocationName.substring(0, separator)
