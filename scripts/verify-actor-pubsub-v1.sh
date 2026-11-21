@@ -25,7 +25,7 @@ command -v mvn >/dev/null || { echo "Maven unavailable" >&2; exit 2; }
 # Pin both newly added share! source fixtures before Maven/guest execution.
 test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-share-bang-v1.atto)" = "00f311e2f569cf66009ba533282b63d35571853f"
 test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-reject-unlowered-share-bang-try-publish.atto)" = "dc33b5970301f4fbb84eea001e19b9611c0a0586"
-test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-v1.atto)" = "ed35171946748eed4f970442d5cdb2c61c96029d"
+test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-v1.atto)" = "41fda4efc19823807b56545a31230b6182de0ee1"
 test "$(git hash-object --no-filters contracts/v1/fixtures/actor-pubsub-try-publish-policy-denied.atto)" = "5f3d79ba763a98ff6a1daf5b85d9d6ae0cec6a41"
 
 # Must execute the Channel<T> recursive Sendable/callable negatives,

@@ -120,7 +120,7 @@ final class SourceActorPubSubExecutionTest {
         // A receipt confirms atomic admission, not processing completion.
         assertEquals("subscribed|p-1|1",
                 run(pinnedFixture("actor-pubsub-try-publish-v1.atto",
-                        "ed35171946748eed4f970442d5cdb2c61c96029d"), "actor-pubsub-try-publish-v1.atto"));
+                        "41fda4efc19823807b56545a31230b6182de0ee1"), "actor-pubsub-try-publish-v1.atto"));
     }
 
     @Test
