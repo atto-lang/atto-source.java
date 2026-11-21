@@ -2,11 +2,44 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Token;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 final class BangExceptionKeywordLexerTest {
+    @Test
+    void canonicalTrapBangDoesNotFallThroughLegacyOptionLowering() {
+        // trap! promises Result<T,Error>, which the legacy trap Option<T>
+        // cannot implement. The parser preserves the canonical spelling and
+        // the type checker fails before native guest execution.
+        var canonical = Parser.parse("fnc main():int { return trap! 7; }");
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(canonical));
+        assertTrue(rejected.getMessage().contains("TRAP_BANG_RESULT_LOWERING_UNVERIFIED"));
+
+        // Bare migration spelling remains a distinct legacy path. It can
+        // reject for its own type reasons but must not be misclassified as
+        // the canonical Result-returning operator.
+        var legacy = Parser.parse("fnc main():int { return trap 7; }");
+        try {
+            TypeChecker.checkTypes(legacy);
+        } catch (IllegalArgumentException error) {
+            assertFalse(error.getMessage().contains("TRAP_BANG_RESULT_LOWERING_UNVERIFIED"));
+        }
+    }
+
+    @Test
+    void trapBangFunctionModifierCannotSilentlyAdoptLegacyOptionAbi() {
+        var rejected = assertThrows(RuntimeException.class,
+                () -> Parser.parse("trap! fnc main():int { return 7; }"));
+        assertTrue(rejected.getMessage().contains("TRAP_BANG_RESULT_LOWERING_UNVERIFIED"));
+    }
+
     @Test
     void contiguousExceptionKeywordsAreAtomicWithoutChangingTheirMeaning() {
         List<Token> tokens = new Lexer("trap! call; throw! err; raise! err; panic! err").scan();
