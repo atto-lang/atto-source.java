@@ -1,0 +1,71 @@
+name: Exact-head Java source timer guest tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/source-timer-exact-head.yml'
+      - 'src/main/java/dev/oreslang/runtime/OresTimers.java'
+      - 'src/main/java/dev/oreslang/runtime/OresDuration.java'
+      - 'src/main/java/dev/oreslang/runtime/OresContext.java'
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/SourceTimerLanguageTest.java'
+      - 'src/test/java/dev/oreslang/AsyncAwaitLanguageTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OresTimersTest.java'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guest-timer-regressions:
+    # Never build untrusted fork code in a privileged source-repo context.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Attest exact source commit and whole source tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+          echo "EXACT_HEAD=$EXPECTED_HEAD"
+          echo "EXACT_ROOT_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Set up GraalVM 25 and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Show toolchain
+        run: |
+          java -version
+          mvn -version
+      - name: Execute actual timer host and guest JUnit regressions
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=SourceTimerLanguageTest,OresTimersTest,AsyncAwaitLanguageTest,FuturePipelineProvenanceTest#typingPreservesProvenanceAndCurrentFutureBoundaries,MemberSuspensionLanguageTest#importedPolymorphicPullCannotSuspendWithBorrowedReceiver,AsyncNativeIoTest#delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof test
+      - name: Verify each suite produced a real Surefire report
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suite in SourceTimerLanguageTest OresTimersTest AsyncAwaitLanguageTest FuturePipelineProvenanceTest MemberSuspensionLanguageTest AsyncNativeIoTest; do
+            file="$(find target/surefire-reports -maxdepth 1 -type f -name "TEST-*.${suite}.xml" -print -quit)"
+            test -n "$file"
+            suite_line="$(grep -m1 '<testsuite ' "$file")"
+            # A generated report with zero tests is not execution proof.
+            grep -Eq 'tests="[1-9][0-9]*"' <<< "$suite_line"
+            grep -Eq 'errors="0"' <<< "$suite_line"
+            grep -Eq 'failures="0"' <<< "$suite_line"
+            echo "EXECUTED_SUITE=$suite REPORT=$file $suite_line"
+          done

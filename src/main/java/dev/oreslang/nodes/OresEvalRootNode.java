@@ -24,6 +24,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.OresDuration;
 import dev.oreslang.runtime.TaskScope;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
@@ -7279,6 +7280,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("http")) return new HttpFacade(context);
                 if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("time")) return new TimeFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
@@ -8131,6 +8133,29 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof StdFacade std) {
                 if (name.equals("process")) return new ProcessFacade(std.context());
                 throw new IllegalArgumentException("unknown std member " + name);
+            }
+            if (receiver instanceof TimeFacade clock) {
+                return switch (name) {
+                    case "sleep", "after" -> (Invokable) args -> {
+                        // Type checking rejects lexical actor uses, but a
+                        // guest could carry this callable through an imported
+                        // helper, a closure, or a linked-module boundary. The
+                        // runtime is the final actor-lifetime authority.
+                        if (ActorRuntime.inActorExecution()
+                                || ActorRuntime.inActorGroupMailmanExecution()) {
+                            throw new IllegalStateException(
+                                    "actor time.* requires actor-owned timer lifecycle lowering");
+                        }
+                        requireOne(args, "time." + name);
+                        if (!(args.getFirst() instanceof OresDuration duration)) {
+                            throw new IllegalArgumentException(
+                                    "time." + name + " requires a checked Duration literal");
+                        }
+                        return clock.context().timers().afterNanos(duration.nanos());
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unsupported time member " + name);
+                };
             }
             if (receiver instanceof ProcessFacade process) {
                 return switch (name) {
@@ -11424,6 +11449,7 @@ public final class OresEvalRootNode extends RootNode {
         }
     }
     private record StdFacade(OresContext context) { }
+    private record TimeFacade(OresContext context) { }
     private record ProcessFacade(OresContext context) {
         private Object exit(List<Object> args) {
             requireOne(args, "std.process.exit");

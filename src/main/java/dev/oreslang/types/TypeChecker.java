@@ -47,7 +47,7 @@ public final class TypeChecker {
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
             "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex",
-            "Channel", "Future", "Fnc", "Function",
+            "Channel", "Future", "Duration", "Fnc", "Function",
             "HttpClientResponse", "HttpClientBody");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
@@ -324,7 +324,7 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
-                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
+                "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "time", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
                 "Box", "Arc", "Weak", "Rc", "RefCell", "Mutex", "RwLock",
                 "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult",
@@ -333,7 +333,7 @@ public final class TypeChecker {
                 "HttpClientResponse", "HttpClientBody",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind", "ActorStream", "StreamOperator",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
-                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
+                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "Duration", "void",
                 "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -383,6 +383,10 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("time")) {
+                throw new IllegalArgumentException(
+                        "time is a reserved runtime namespace; module time cannot shadow it");
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
@@ -405,9 +409,10 @@ public final class TypeChecker {
     }
 
     private static void rejectReservedSymbolTypeName(String name, String declarationKind) {
-        if ("Symbol".equals(name)) {
-            throw new IllegalArgumentException("Symbol is a reserved nominal built-in; cannot declare "
-                    + declarationKind + " Symbol");
+        if ("Symbol".equals(name) || "Duration".equals(name)) {
+            throw new IllegalArgumentException(name
+                    + " is a reserved nominal built-in; cannot declare "
+                    + declarationKind + " " + name);
         }
     }
 
@@ -738,6 +743,20 @@ public final class TypeChecker {
                     "suspends " + label + " requires an async or suspends caller");
     }
 
+    /**
+     * Mirror executeMain's actual entrypoint resolution, not an arbitrary
+     * visibility/name predicate. The selected zero-arity main already owns
+     * OresVM's ROOT_TASK even when the declaration is not public.
+     */
+    private boolean schedulerOwnedMain(Ast.FunctionDecl fn) {
+        if (!fn.name().equals("main") || !fn.parameters().isEmpty()
+                || fn.actorKind() != Ast.ActorKind.NONE) {
+            return false;
+        }
+        Ast.FunctionDecl root = findFunction(Parser.ROOT_MODULE + ".main", 0);
+        return (root != null ? root : findFunction("main", 0)) == fn;
+    }
+
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         if (fn.name().endsWith("_blocking") && !fn.suspends())
             throw new IllegalArgumentException(
@@ -864,7 +883,17 @@ public final class TypeChecker {
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
-        currentMaySuspend = fn.async() || fn.suspends();
+        // The public main entrypoint is already run by a scheduler-owned
+        // root Task, so legacy non-async main() may await without spawning
+        // a second source Task. Ordinary synchronous helpers may NOT await.
+        // A nested synchronous lambda still clears this effect capability.
+        // A synchronous actor fnc also executes in a mailbox-owned,
+        // resumable actor turn. Keep that distinct from ordinary synchronous
+        // function calls; its own actor admission and ownership gates still
+        // apply, and no independent source Task is spawned for each await.
+        currentMaySuspend = fn.async() || fn.suspends()
+                || fn.actorKind() != Ast.ActorKind.NONE
+                || schedulerOwnedMain(fn);
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
@@ -1680,7 +1709,12 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
-            currentMaySuspend = method.async() || method.suspends();
+            // Actor.receive is declared synchronously on purpose: the actor
+            // mailbox turn is already a resumable, owner-bound continuation.
+            // This does not authorize actor.on_start or arbitrary instance
+            // methods to await without an explicit suspends effect.
+            currentMaySuspend = method.async() || method.suspends()
+                    || actorReceiveHook;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
@@ -2398,6 +2432,9 @@ public final class TypeChecker {
             if (value instanceof Double) return Primitive.FLOAT;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
+            if (value instanceof dev.oreslang.runtime.OresDuration) {
+                return new Named("Duration", List.of());
+            }
             if (value instanceof dev.oreslang.runtime.OresSymbol symbol) {
                 // Userland identities need tenant-scoped exports before an untrusted
                 // actor may compile a reference to them. Never silently intern them.
@@ -2430,6 +2467,7 @@ public final class TypeChecker {
                     || name.name().equals("network")
                     || name.name().equals("net")
                     || name.name().equals("http")
+                    || name.name().equals("time")
                     || name.name().equals("env")) {
                 return new Named(name.name(), List.of());
             }
@@ -2859,6 +2897,35 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr timerCall
+                    && timerCall.receiver() instanceof Ast.NameExpr clock
+                    && clock.name().equals("time")
+                    && env.lookup("time") == null) {
+                // Actor timer capabilities require actor-local CONTROL and
+                // lifecycle admission. The context-only substrate must not
+                // silently grant an actor an untracked timer registration.
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor time.* requires actor-owned timer lifecycle lowering");
+                }
+                if (call.typeArgumentsPresent()
+                        || !(timerCall.member().equals("sleep")
+                                || timerCall.member().equals("after"))) {
+                    throw new IllegalArgumentException(
+                            "only time.sleep/after(Duration) are enabled in this source slice");
+                }
+                if (call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException(
+                            "time." + timerCall.member() + " expects exactly one Duration");
+                }
+                Type duration = deref(typeOf(call.arguments().getFirst(), env, generics, self));
+                if (!new Named("Duration", List.of()).equals(duration)) {
+                    throw new IllegalArgumentException(
+                            "time." + timerCall.member() + " expects Duration, got " + duration);
+                }
+                return new Named("Future", List.of(Primitive.VOID));
+            }
             if (call.callee() instanceof Ast.MemberExpr sumMethod
                     && Set.of("map", "map_err", "and_then", "or_else", "filter",
                               "ok_or_else", "unwrap_or_else", "ok_or", "transpose", "ok").contains(sumMethod.member())) {
@@ -3814,6 +3881,19 @@ public final class TypeChecker {
                     && env.lookup("process") == null && member.member().equals("unique_id")) {
                 return new Function(List.of(), Primitive.STRING);
             }
+            if (member.receiver() instanceof Ast.NameExpr timeName
+                    && timeName.name().equals("time") && env.lookup("time") == null) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor time.* requires actor-owned timer lifecycle lowering");
+                }
+                if (member.member().equals("sleep") || member.member().equals("after")) {
+                    return new Function(List.of(new Named("Duration", List.of())),
+                            new Named("Future", List.of(Primitive.VOID)));
+                }
+                throw new IllegalArgumentException(
+                        "only time.sleep/after(Duration) are enabled in this source slice");
+            }
             if (member.receiver() instanceof Ast.NameExpr clockName && clockName.name().equals("process")
                     && env.lookup("process") == null
                     && (member.member().equals("monotonic_ns") || member.member().equals("unix_ms"))) {
@@ -4321,7 +4401,15 @@ public final class TypeChecker {
             return new Named("Future", List.of(Primitive.VOID));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            // First validate the awaited operand. Invalid loans, channel
+            // operations and type errors must not be masked by a less precise
+            // outer suspension-effect diagnostic.
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
+            if (!currentMaySuspend) {
+                throw new IllegalArgumentException(
+                        "await requires async/suspends, an actor mailbox turn, "
+                                + "or the scheduler-owned zero-argument main entrypoint");
+            }
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
                     && named.arguments().size() == 1) {
@@ -9534,7 +9622,7 @@ public final class TypeChecker {
         if (Set.of("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
                 "int", "uint", "bigint", "f32", "f64", "float", "decimal",
                 "complex64", "complex128", "complex", "string", "String",
-                "void").contains(ref.name())
+                "void", "Duration").contains(ref.name())
                 && (ref.inferArguments() || !ref.arguments().isEmpty())) {
             throw new IllegalArgumentException(
                     "non-generic built-in type '" + ref.name() + "' cannot accept type arguments");
@@ -9552,6 +9640,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Duration" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Duration does not accept type arguments");
+                }
+                yield new Named("Duration", List.of());
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");

@@ -41,6 +41,10 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
+    // One context-owned deadline domain; time.sleep/after never spawn a guest Task.
+    // Revocation is separate from scheduler/actor physical-retirement receipts.
+    private final OresTimers timers = new OresTimers();
+    public OresTimers timers() { return timers; }
     public AsyncNativeIo nativeIo() { return nativeIo; }
     private final OutboundEgressPolicy.Policy outboundHttpPolicy =
             OutboundEgressPolicy.Policy.loopbackOnly();
@@ -156,6 +160,7 @@ public final class OresContext implements AutoCloseable {
             this.asyncRuntime = async;
             this.garbageCollector = gc;
         } catch (RuntimeException | Error failure) {
+            timers.close();
             if (async != null) {
                 try { async.close(); } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
             }
@@ -510,6 +515,10 @@ public final class OresContext implements AutoCloseable {
         // Hold the entire actor, scheduler, Truffle code image and GC graph
         // strongly reachable until BOTH physical joins succeed.
         QUARANTINED_CONTEXTS.add(this);
+        // Revoke outstanding timer Futures before joining any actor/async
+        // continuations, so a retired context cannot emit fresh time wakeups.
+        // close() is revocation, NOT the physical retirement barrier.
+        timers.close();
         try {
             joinActorsAndNativeIo(actors, nativeIo);
         } catch (RuntimeException incomplete) {

@@ -4,6 +4,7 @@ public record Token(Type type, String lexeme, int line, int column) {
     public enum Type {
         IDENT,
         INT,
+        DURATION,
         FLOAT,
         IMAG,
         STRING,
