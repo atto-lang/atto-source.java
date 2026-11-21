@@ -2767,10 +2767,44 @@ public final class TypeChecker {
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
                 if (actorSelf && PIPELINE_ACTOR_INTRINSICS.contains(member.member())) {
-                    throw new IllegalArgumentException(
-                            "self." + member.member()
-                                    + " requires compiled typed pipeline actor routing and "
-                                    + "scheduler-owned admission; source lowering is not enabled");
+                    String intrinsic = member.member();
+                    if (currentActorKind != Ast.ActorKind.SHARED) {
+                        throw new IllegalArgumentException(
+                                "self." + intrinsic
+                                        + " requires a SHARED actor; PRIVATE/UNTRUSTED actors "
+                                        + "cannot receive correlated pipeline route frames");
+                    }
+                    if (intrinsic.equals("forward_all") || intrinsic.equals("reply")) {
+                        throw new IllegalArgumentException(
+                                "self." + intrinsic
+                                        + " requires the next typed pipeline routing phase; "
+                                        + "guest fan-out receipts/full-path replies are not enabled");
+                    }
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "self." + intrinsic + " does not accept call-site type arguments");
+                    }
+                    int expected = (intrinsic.equals("forward_to")
+                            || intrinsic.equals("forward_by_key")) ? 2 : 1;
+                    if (call.arguments().size() != expected) {
+                        throw new IllegalArgumentException(
+                                "self." + intrinsic + " expects exactly " + expected
+                                        + (expected == 1 ? " argument" : " arguments"));
+                    }
+                    int payloadIndex = expected - 1;
+                    if (expected == 2) {
+                        Type selector = typeOf(call.arguments().getFirst(), env, generics, self);
+                        requireAssignable(selector, Primitive.STRING,
+                                "self." + intrinsic + " selector");
+                    }
+                    Type payload = typeOf(
+                            call.arguments().get(payloadIndex), env, generics, self);
+                    validateActorCallableBoundaryType(
+                            payload,
+                            currentActorKind,
+                            false,
+                            "self." + intrinsic + " routed value");
+                    return Primitive.VOID;
                 }
                 if (actorSelf && (member.member().equals("on_start")
                         || member.member().equals("receive"))) {

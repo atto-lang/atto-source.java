@@ -4340,11 +4340,59 @@ public final class OresEvalRootNode extends RootNode {
                 case "forward", "forward_all", "forward_round_robin",
                      "forward_to", "forward_by_key", "backward", "reply" ->
                         throw new IllegalArgumentException(
-                                "self." + member
-                                        + " requires compiled typed pipeline actor routing and "
-                                        + "scheduler-owned admission; source lowering is not enabled");
+                                "actor routing intrinsic '" + member
+                                        + "' is compiler-owned and may only be invoked directly as self."
+                                        + member);
                 default -> { }
             }
+        }
+
+        private static boolean loweredPipelineRoutingIntrinsic(String member) {
+            return switch (member) {
+                case "forward", "forward_round_robin", "forward_to",
+                     "forward_by_key", "backward" -> true;
+                default -> false;
+            };
+        }
+
+        private Invocation pipelineRoutingInvocation(
+                OresObject object, String member, List<Object> args) {
+            return object.owner.invokableInvocation(ignored -> {
+                ActorRuntime runtime = object.owner.context.actors();
+                switch (member) {
+                    case "forward" -> {
+                        if (args.size() != 1)
+                            throw new IllegalArgumentException("self.forward expects exactly one argument");
+                        runtime.routeCurrentPipelineForward(args.getFirst());
+                    }
+                    case "forward_round_robin" -> {
+                        if (args.size() != 1)
+                            throw new IllegalArgumentException(
+                                    "self.forward_round_robin expects exactly one argument");
+                        runtime.routeCurrentPipelineForwardRoundRobin(args.getFirst());
+                    }
+                    case "forward_to" -> {
+                        if (args.size() != 2 || !(args.getFirst() instanceof String target))
+                            throw new IllegalArgumentException(
+                                    "self.forward_to expects (string target, value)");
+                        runtime.routeCurrentPipelineForwardTo(target, args.get(1));
+                    }
+                    case "forward_by_key" -> {
+                        if (args.size() != 2 || !(args.getFirst() instanceof String key))
+                            throw new IllegalArgumentException(
+                                    "self.forward_by_key expects (string key, value)");
+                        runtime.routeCurrentPipelineForwardByKey(key, args.get(1));
+                    }
+                    case "backward" -> {
+                        if (args.size() != 1)
+                            throw new IllegalArgumentException("self.backward expects exactly one argument");
+                        runtime.routeCurrentPipelineBackward(args.getFirst());
+                    }
+                    default -> throw new IllegalArgumentException(
+                            "pipeline routing intrinsic is not lowered: " + member);
+                }
+                return null;
+            }, List.of());
         }
 
         private Invocation prepareInvocationEvaluated(
@@ -4356,6 +4404,12 @@ public final class OresEvalRootNode extends RootNode {
                     (Ast.MemberExpr) call.callee();
 
             if (receiver instanceof OresObject object) {
+                boolean directSelf = object.klass.actorKind() != Ast.ActorKind.NONE
+                        && member.receiver() instanceof Ast.NameExpr selfName
+                        && selfName.name().equals("self");
+                if (directSelf && loweredPipelineRoutingIntrinsic(member.member())) {
+                    return pipelineRoutingInvocation(object, member.member(), args);
+                }
                 requireCompiledPipelineRouting(object, member.member());
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -5804,6 +5858,12 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresObject object) {
+                    boolean directSelf = object.klass.actorKind() != Ast.ActorKind.NONE
+                            && methodCall.receiver() instanceof Ast.NameExpr selfName
+                            && selfName.name().equals("self");
+                    if (directSelf && loweredPipelineRoutingIntrinsic(methodCall.member())) {
+                        return pipelineRoutingInvocation(object, methodCall.member(), args);
+                    }
                     requireCompiledPipelineRouting(object, methodCall.member());
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("end")) {

@@ -52,17 +52,17 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
                 if (!"fan-in".equals(value)) unexpectedPayload.incrementAndGet();
                 observed.add(binding.get().currentCorrelation());
-                binding.get().backward("ack");
+                runtime.routeCurrentPipelineBackward("ack");
                 delivered.countDown();
             });
             var a = runtime.<String>spawnShared(() -> (value, actor) -> {
-                if (value.equals("fanout")) binding.get().forward("fan-in");
-                else if (value.equals("ack")) binding.get().backward("ack");
+                if (value.equals("fanout")) runtime.routeCurrentPipelineForward("fan-in");
+                else if (value.equals("ack")) runtime.routeCurrentPipelineBackward("ack");
                 else throw new AssertionError("worker-a unexpected payload");
             });
             var b = runtime.<String>spawnShared(() -> (value, actor) -> {
-                if (value.equals("fanout")) binding.get().forward("fan-in");
-                else if (value.equals("ack")) binding.get().backward("ack");
+                if (value.equals("fanout")) runtime.routeCurrentPipelineForward("fan-in");
+                else if (value.equals("ack")) runtime.routeCurrentPipelineBackward("ack");
                 else throw new AssertionError("worker-b unexpected payload");
             });
             var source = runtime.<String>spawnShared(() -> (value, actor) -> {
@@ -78,8 +78,11 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
                     Map.of("source", source, "worker-a", a, "worker-b", b,
                            "sink", sink), 17, 12);
             binding.set(router);
-            // Caller-origin DATA cannot masquerade as a routed receive.
+            // Caller-origin DATA cannot masquerade as a routed receive, and
+            // the public compiler bridge has no ambient host/supervisor fallback.
             assertThrows(SecurityException.class, () -> router.forwardAll("spoof"));
+            assertThrows(SecurityException.class,
+                    () -> runtime.routeCurrentPipelineForward("spoof"));
             router.ingress("source", "begin");
             assertTrue(delivered.await(8, TimeUnit.SECONDS));
             assertTrue(replied.await(8, TimeUnit.SECONDS),
@@ -128,6 +131,71 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             a.getDone().get(5, TimeUnit.SECONDS);
             b.getDone().get(5, TimeUnit.SECONDS);
             sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void compilerFacingBridgeCoversRoundRobinNamedAndKeyedSelectorsAndFencesOverlap()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var delivered = new CountDownLatch(4);
+            var aValues = Collections.synchronizedList(new ArrayList<String>());
+            var bValues = Collections.synchronizedList(new ArrayList<String>());
+            var a = runtime.<String>spawnShared(() -> (value, actor) -> {
+                aValues.add(value);
+                delivered.countDown();
+            });
+            var b = runtime.<String>spawnShared(() -> (value, actor) -> {
+                bValues.add(value);
+                delivered.countDown();
+            });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (!value.equals("begin")) throw new AssertionError("source unexpected payload");
+                runtime.routeCurrentPipelineForwardRoundRobin("rr-a");
+                runtime.routeCurrentPipelineForwardRoundRobin("rr-b");
+                runtime.routeCurrentPipelineForwardTo("worker-b", "named-b");
+                runtime.routeCurrentPipelineForwardByKey("customer-7", "keyed");
+            });
+            var plan = new ActorPipelineRoutePlan(
+                    List.of(
+                            new ActorPipelineRoutePlan.Stage("source", "Producer",
+                                    ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                            new ActorPipelineRoutePlan.Stage("worker-a", "Worker",
+                                    ActorPipelineRoutePlan.Role.WRITABLE, "Event", ""),
+                            new ActorPipelineRoutePlan.Stage("worker-b", "Worker",
+                                    ActorPipelineRoutePlan.Role.WRITABLE, "Event", "")),
+                    List.of(
+                            new ActorPipelineRoutePlan.Edge("source", "worker-a", "Event"),
+                            new ActorPipelineRoutePlan.Edge("source", "worker-b", "Event")));
+            var bindings = Map.of("source", source, "worker-a", a, "worker-b", b);
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, plan, bindings, 31, 12);
+            assertThrows(IllegalStateException.class,
+                    () -> new ActorPipelineCorrelatedMailboxRouter<>(
+                            runtime, plan, bindings, 32, 12),
+                    "one actor cannot belong to overlapping live route generations");
+
+            router.ingress("source", "begin");
+            assertTrue(delivered.await(8, TimeUnit.SECONDS));
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(aValues.contains("rr-a"), "first RR turn must select worker-a");
+            assertTrue(bValues.contains("rr-b"), "second RR turn must select worker-b");
+            assertTrue(bValues.contains("named-b"), "named route must select worker-b");
+            assertEquals(4, aValues.size() + bValues.size());
+            assertEquals(0, router.outstanding());
+
+            router.close();
+            var successor = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, plan, bindings, 32, 12);
+            successor.close();
+            source.stop();
+            a.stop();
+            b.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            a.getDone().get(5, TimeUnit.SECONDS);
+            b.getDone().get(5, TimeUnit.SECONDS);
         }
     }
 
