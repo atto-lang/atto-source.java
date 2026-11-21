@@ -523,6 +523,7 @@ public final class ActorRuntime implements AutoCloseable {
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
                     dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
         } catch (RuntimeException | Error failure) {
+            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ACTOR_DISPATCHER_FAILED, 1L);
             if (privatePool != null) privatePool.shutdownNow();
             if (sharedPool != null) sharedPool.shutdownNow();
             throw failure;
@@ -1316,6 +1317,23 @@ public final class ActorRuntime implements AutoCloseable {
         ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
+
+        /**
+         * Trusted compiler-owned, synchronous pre-dispatch hook, always
+         * executed inside the admitted actor turn. It can normalize the
+         * payload, but MUST NOT alter runtime-owned identity/correlation.
+         *
+         * This is a narrow admission bridge, not async guest next_val/next.
+         * A compiled middleware continuation may later use the same
+         * ownership barrier after scheduler integration.
+         */
+        default ActorInboxMail<Object> prepareActorMail(
+                String actorTypeName,
+                ActorOwnedGuestState state,
+                ActorInboxMail<Object> mail,
+                ActorContext<Object> context) throws Exception {
+            return mail;
+        }
 
         void receiveActor(
                 String actorTypeName,
@@ -4653,6 +4671,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (bytes < 0) throw new IllegalArgumentException("shared memory release cannot be negative");
         if (bytes == 0 || closed.get()) return;
         synchronized (memoryBudgetLock) {
+            if (closed.get()) return;
             long current = sharedMemoryBytes.get();
             if (bytes > current) {
                 throw new IllegalStateException(
@@ -6403,6 +6422,21 @@ public final class ActorRuntime implements AutoCloseable {
         return 64L;
     }
 
+    /**
+     * Narrow mailbox middleware normalization grammar. Actor IDs, symbols,
+     * enum types and capability-bearing scalar objects are intentionally
+     * excluded: their meaning can carry authorization/identity rather than
+     * ordinary input cleanup.
+     */
+    private static boolean isMiddlewareScalarReplacement(Object value) {
+        return value instanceof String || value instanceof Boolean
+                || value instanceof Character || value instanceof Byte
+                || value instanceof Short || value instanceof Integer
+                || value instanceof Long || value instanceof Float
+                || value instanceof Double || value instanceof BigInteger
+                || value instanceof BigDecimal;
+    }
+
     private static boolean isScalar(Object value) {
         return value == null || value instanceof String || value instanceof OresSymbol
                 || value instanceof Boolean || value instanceof Character
@@ -7441,10 +7475,79 @@ public final class ActorRuntime implements AutoCloseable {
                                     @SuppressWarnings("unchecked")
                                     ActorContext<Object> sourceContext =
                                             (ActorContext<Object>) (ActorContext<?>) context;
+                                    // Preprocess only after mailbox admission and
+                                    // actor-owned state/generation validation.
+                                    ActorInboxMail<Object> prepared = Objects.requireNonNull(
+                                            codeExecutor.prepareActorMail(
+                                                    codeActorType, codeActorState,
+                                                    sourceMail, sourceContext),
+                                            "source actor middleware must return an envelope");
+                                    if (!sourceMail.recipient().equals(prepared.recipient())
+                                            || !sourceMail.sender().equals(prepared.sender())
+                                            || sourceMail.sequence() != prepared.sequence()) {
+                                        throw new SecurityException(
+                                                "actor middleware cannot forge mailbox recipient, sender or sequence");
+                                    }
+                                    validateMessageGraph(prepared.value());
+                                    if (prepared.value() != sourceMail.value()) {
+                                        // First implementation permits immutable scalar
+                                        // normalization only. Arbitrary object/tensor
+                                        // replacement requires a versioned actor-owned
+                                        // memory loan and lifetime transfer; mere
+                                        // graph traversal is insufficient.
+                                        if (!isMiddlewareScalarReplacement(prepared.value())) {
+                                            throw new SecurityException(
+                                                    "source middleware may replace only immutable scalar payloads "
+                                                            + "until checked actor-owned aggregate transfers are available");
+                                        }
+                                        if (prepared.value().getClass() != sourceMail.value().getClass()) {
+                                            throw new SecurityException(
+                                                    "source middleware may not change the admitted actor mail payload type");
+                                        }
+                                        // The queued original already owns its memory
+                                        // reservation. Until middleware can acquire a
+                                        // distinct actor-owned loan, replacement must
+                                        // fit within the original reserved budget.
+                                        long originalBytes = estimateFrozenBytes(sourceMail.value());
+                                        long replacementBytes = estimateFrozenBytes(prepared.value());
+                                        if (replacementBytes > originalBytes) {
+                                            throw new IllegalStateException(
+                                                    "source middleware replacement would exceed original mailbox reservation");
+                                        }
+                                        long runtimeRemaining = Math.max(
+                                                0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
+                                        if (kind == ActorKind.SHARED) {
+                                            requireOwnedSharedHandles(
+                                                    prepared.value(), new IdentityHashMap<>(), 0);
+                                            long actorRemaining = Math.max(
+                                                    0L, policy.maxHeapBytes() - sharedMailboxBytes.get());
+                                            estimateSharedTransportBytes(
+                                                    prepared.value(), new IdentityHashMap<>(), 0,
+                                                    Math.min(actorRemaining, runtimeRemaining));
+                                        } else {
+                                            estimatePrivateTransportBytes(
+                                                    prepared.value(), new IdentityHashMap<>(), 0,
+                                                    Math.min(memorySlice.remainingBytes(), runtimeRemaining));
+                                        }
+                                    }
+                                    if (kind == ActorKind.UNTRUSTED) {
+                                        rejectUntrustedInboundCapabilities(
+                                                prepared.value(), new IdentityHashMap<>(), 0);
+                                    }
+                                    requireMutexTransport(
+                                            ActorCell.this, prepared.value(), new IdentityHashMap<>(), 0);
+                                    requireOwnedActorRefs(
+                                            prepared.value(), new IdentityHashMap<>(), 0);
+                                    // currentMail must refer to the *same* trusted
+                                    // envelope as the guest receive handler.
+                                    @SuppressWarnings("unchecked")
+                                    ActorInboxMail<M> preparedMail =
+                                            (ActorInboxMail<M>) (ActorInboxMail<?>) prepared;
+                                    activeMail = preparedMail;
                                     codeExecutor.receiveActor(
                                             codeActorType,
                                             codeActorState,
-                                            sourceMail,
+                                            prepared,
                                             sourceContext);
                                 } else {
                                     behavior.onMessage(mail.value(), context);

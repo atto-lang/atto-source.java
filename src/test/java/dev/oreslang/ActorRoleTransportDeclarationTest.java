@@ -89,8 +89,10 @@ final class ActorRoleTransportDeclarationTest {
         rejects("define http actor H as end", "runtime-bound network actor adapter");
         rejects("define tcp actor T as end", "runtime-bound network actor adapter");
         rejects("define websocket actor W as end", "runtime-bound network actor adapter");
-        rejects("define unary tcp actor T as end", "typed request framing");
-        rejects("define unary websocket actor W as end", "typed request framing");
+        rejects("define unary tcp actor T as run(int value): int { return value; } end",
+                "typed request framing");
+        rejects("define unary websocket actor W as run(int value): int { return value; } end",
+                "typed request framing");
     }
 
     @Test

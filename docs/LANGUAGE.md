@@ -445,6 +445,12 @@ end
 
 ## Classes, receivers, multiple inheritance, and interfaces
 
+> **Planned, not yet implemented:** `sealed`, `non-sealed`, `final` class headers
+> and explicit `permits` lists are specified by the
+> [sealed class hierarchy v1 design](SEALED_CLASS_HIERARCHIES_V1.md).
+> This is a prospective contract and the current Java/LLVM compilers must not be
+> assumed to parse, typecheck, or execute these declarations yet.
+
 Class headers use `as` as the required body delimiter. The canonical form is `define class Name as ... end`; when `extends` or `implements` are present, `as` follows the complete class header.
 
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
@@ -788,6 +794,9 @@ Actor entry points remain governed by their actor isolation rules. `nlex` may
 add a capture-free guarantee to an actor fnc, but it does not replace mailbox,
 private-slice, or shared-actor isolation.
 
+See [value and suspension boundaries](VALUE_BOUNDARIES.md) for tuple/record
+interop, indexing, argument expansion, map ordering and template-string status.
+
 ## Conditionals
 
 `fi` is a real, distinct conditional terminator. It is not an alias for module/class `end`.
@@ -803,6 +812,21 @@ fi
 ```
 
 Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
+
+Inline value binding is supported with an explicit boolean predicate:
+
+```ores
+if some_call() as let value when value > 0 {
+  consume(value);
+} fi
+while some_call() as let value when value > 0 {
+  consume(value);
+}
+```
+
+Each reached initializer is evaluated once. The `if` binding is scoped to its
+predicate and remaining branch chain; a `while` binding is recreated on every
+test, including after `continue`. See [the full contract](VALUE_BOUNDARIES.md).
 
 ## Exceptions and defer
 
