@@ -14,6 +14,12 @@ import java.util.Objects;
 public final class ExportInterfaceCollector {
     private ExportInterfaceCollector() { }
 
+    private static boolean isExplicitPublic(Ast.Program program, String owner, String name) {
+        return owner.equals(dev.oreslang.parser.Parser.ROOT_MODULE) &&
+                program.exports().stream().anyMatch(e -> e.name().equals(name) &&
+                        e.scope() == Ast.ExportScope.PUBLIC);
+    }
+
     public static ExportInterfaceCodec.InterfaceFile collect(
             Ast.Program checked, ExportInterfaceCodec.Header header) {
         Objects.requireNonNull(checked);
@@ -39,7 +45,8 @@ public final class ExportInterfaceCollector {
             entries.add(new ExportInterfaceCodec.Entry(
                     owner, ExportInterfaceCodec.Kind.MODULE, owner, info.toString()));
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
+                if (decl instanceof Ast.FunctionDecl fn &&
+                        (fn.visibility() == Ast.Visibility.PUBLIC || isExplicitPublic(checked, owner, fn.name()))) {
                     StringBuilder sig = new StringBuilder();
                     field(sig, fn.kind().name());
                     field(sig, fn.actorKind().name());
@@ -52,14 +59,14 @@ public final class ExportInterfaceCollector {
                     entries.add(new ExportInterfaceCodec.Entry(owner,
                             ExportInterfaceCodec.Kind.FUNCTION, fn.name(), sig.toString()));
                 } else if (decl instanceof Ast.TypeAliasDecl alias
-                        && alias.visibility() == Ast.Visibility.PUBLIC) {
+                        && (alias.visibility() == Ast.Visibility.PUBLIC || isExplicitPublic(checked, owner, alias.name()))) {
                     StringBuilder sig = new StringBuilder();
                     strings(sig, alias.genericParameters());
                     requiredType(sig, alias.target());
                     entries.add(new ExportInterfaceCodec.Entry(owner,
                             ExportInterfaceCodec.Kind.TYPE, alias.name(), sig.toString()));
                 } else if (decl instanceof Ast.InterfaceDecl iface
-                        && iface.visibility() == Ast.Visibility.PUBLIC) {
+                        && (iface.visibility() == Ast.Visibility.PUBLIC || isExplicitPublic(checked, owner, iface.name()))) {
                     StringBuilder sig = new StringBuilder();
                     flags(sig, iface.moduleContract());
                     strings(sig, iface.genericParameters());
@@ -78,6 +85,18 @@ public final class ExportInterfaceCollector {
                             field(part, "field");
                             field(part, f.name());
                             requiredType(part, f.type());
+                        } else if (member instanceof Ast.InterfaceActorDecl actor) {
+                            field(part, "actor-requirement");
+                            field(part, actor.name());
+                        } else if (member instanceof Ast.InterfaceActorMethodDecl method) {
+                            field(part, "actor-receiver-method-requirement");
+                            field(part, method.actorName());
+                            field(part, method.name());
+                            field(part, method.visibility().name());
+                            params(part, method.parameters());
+                            requiredType(part, method.returnType());
+                        } else {
+                            throw new IllegalArgumentException("unhandled interface member in export ABI");
                         }
                         members.add(part.toString());
                     }
@@ -85,7 +104,7 @@ public final class ExportInterfaceCollector {
                     entries.add(new ExportInterfaceCodec.Entry(owner,
                             ExportInterfaceCodec.Kind.INTERFACE, iface.name(), sig.toString()));
                 } else if (decl instanceof Ast.ClassDecl klass
-                        && klass.visibility() == Ast.Visibility.PUBLIC) {
+                        && (klass.visibility() == Ast.Visibility.PUBLIC || isExplicitPublic(checked, owner, klass.name()))) {
                     StringBuilder sig = new StringBuilder();
                     field(sig, klass.actorKind().name());
                     flags(sig, klass.isAbstract());
