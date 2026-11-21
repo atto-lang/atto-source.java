@@ -494,29 +494,48 @@ public final class OresContext implements AutoCloseable {
     static void joinActorsAndNativeIo(ActorRuntime actors, AsyncNativeIo nativeIo) {
         java.util.Objects.requireNonNull(actors);
         java.util.Objects.requireNonNull(nativeIo);
-        RuntimeException failure = null;
+        RuntimeException sealFailure = null;
+        RuntimeException revokeFailure = null;
+        RuntimeException actorFailure = null;
+        RuntimeException ioFailure = null;
         try {
             actors.sealShutdownAdmission();
-        } catch (RuntimeException sealFailure) {
-            failure = sealFailure;
+        } catch (RuntimeException failed) {
+            sealFailure = failed;
         }
         try {
             nativeIo.requestShutdown();
-        } catch (RuntimeException revokeFailure) {
-            if (failure == null) failure = revokeFailure;
-            else if (failure != revokeFailure) failure.addSuppressed(revokeFailure);
+        } catch (RuntimeException failed) {
+            revokeFailure = failed;
         }
         try {
             actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else if (failure != actorFailure) failure.addSuppressed(actorFailure);
+        } catch (RuntimeException failed) {
+            actorFailure = failed;
         }
         try {
             nativeIo.close();
-        } catch (RuntimeException ioFailure) {
-            if (failure == null) failure = ioFailure;
-            else if (failure != ioFailure) failure.addSuppressed(ioFailure);
+        } catch (RuntimeException failed) {
+            ioFailure = failed;
+        }
+        // Actor finalization may legitimately await an actor-owned registered
+        // native handle which can be closed only by nativeIo.close(). Once
+        // native physical retirement is PROVEN, retry the already-sealed
+        // actor shutdown. Never discard the actor failure if I/O is incomplete.
+        if (actorFailure != null && ioFailure == null && revokeFailure == null) {
+            try {
+                actors.close();
+                actorFailure = null;
+            } catch (RuntimeException retryFailure) {
+                if (retryFailure != actorFailure) actorFailure.addSuppressed(retryFailure);
+            }
+        }
+        RuntimeException failure = null;
+        for (RuntimeException candidate :
+                new RuntimeException[] { sealFailure, revokeFailure, actorFailure, ioFailure }) {
+            if (candidate == null) continue;
+            if (failure == null) failure = candidate;
+            else if (candidate != failure) failure.addSuppressed(candidate);
         }
         if (failure != null) {
             throw new IllegalStateException(

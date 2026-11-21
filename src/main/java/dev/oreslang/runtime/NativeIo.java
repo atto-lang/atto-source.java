@@ -280,9 +280,29 @@ public final class NativeIo {
                 return new TcpConnection(context, endpoint, socket);
             }
         } catch (Exception failure) {
-            context.nativeIo().unregister(socket);
-            try { socket.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+            retireFailedConnect(context.nativeIo(), socket, failure);
             throw new IllegalStateException("network connection failed for " + endpoint + ": " + failure.getMessage(), failure);
+        }
+    }
+
+    /**
+     * The failed connection still owns its physical registration. A native
+     * handle must close BEFORE its actor registration can retire; this is
+     * shared by the actual connect failure path and a deterministic test.
+     * A socket that cannot be shown closed remains context-owned/quarantined.
+     */
+    static void retireFailedConnect(AsyncNativeIo io, Socket socket, Exception failure) {
+        try {
+            socket.close();
+        } catch (IOException cleanup) {
+            failure.addSuppressed(cleanup);
+        }
+        if (socket.isClosed()) {
+            try {
+                io.unregister(socket);
+            } catch (RuntimeException retirementFailure) {
+                failure.addSuppressed(retirementFailure);
+            }
         }
     }
 

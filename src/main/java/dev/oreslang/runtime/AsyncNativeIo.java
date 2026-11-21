@@ -116,6 +116,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 throw new IllegalStateException("duplicate physical I/O loan receipt");
             }
             ActorRuntime.ActorId retireActor;
+            ActorRuntime.ActorId retiredRegistrationActor = null;
             ActorPermissionScope.PhysicalLease registrationLease = null;
             synchronized (AsyncNativeIo.this) {
                 if (resourceLoans.get(lease.resource) != lease
@@ -131,16 +132,18 @@ public final class AsyncNativeIo implements AutoCloseable {
                     resourceLoans.remove(lease.resource);
                     deferredUnregister.remove(lease.resource);
                     registrationLease = lease.physicalLease;
+                    retiredRegistrationActor = decrementActorOperationLocked(lease.registeredBy);
                 }
                 retireActor = decrementActorOperationLocked(identity.actorId());
                 AsyncNativeIo.this.notifyAll();
             }
             notifyActorRetirement(retireActor);
+            notifyActorRetirement(retiredRegistrationActor);
             // Callback retirement is part of physical ownership. A corrupt
             // receipt quarantines the scope rather than forging a drain.
             if (incompleteReceipt == null) {
-                if (physicalLease != null) physicalLease.close();
-                if (registrationLease != null) registrationLease.close();
+                retireScopedPhysicalLease(physicalLease);
+                retireScopedPhysicalLease(registrationLease);
             }
         }
     }
@@ -307,7 +310,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 recordIncomplete(notificationFailure);
                 throw notificationFailure;
             } finally {
-                if (physicalLease != null && incompleteReceipt == null) physicalLease.close();
+                retireScopedPhysicalLease(physicalLease);
             }
         }
         return result;
@@ -398,7 +401,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 try {
                     notifyActorRetirement(retireActor);
                 } finally {
-                    if (physicalLease != null && incompleteReceipt == null) physicalLease.close();
+                    retireScopedPhysicalLease(physicalLease);
                 }
             }
             if (failure instanceof VirtualMachineError fatal) throw fatal;
@@ -441,7 +444,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                         try {
                             notifyActorRetirement(retireActor);
                         } finally {
-                            if (physicalLease != null && incompleteReceipt == null) physicalLease.close();
+                            retireScopedPhysicalLease(physicalLease);
                         }
                     }
                 });
@@ -450,6 +453,17 @@ public final class AsyncNativeIo implements AutoCloseable {
                 // and quarantine the context rather than forging retirement.
                 recordIncomplete(startFailure);
             }
+        }
+    }
+
+    /** Corrupt/replayed physical receipts invalidate all future actor-DONE proofs. */
+    private void retireScopedPhysicalLease(ActorPermissionScope.PhysicalLease lease) {
+        if (lease == null || incompleteReceipt != null) return;
+        try {
+            lease.close();
+        } catch (RuntimeException | Error failure) {
+            recordIncomplete(failure);
+            throw failure;
         }
     }
 
@@ -494,10 +508,15 @@ public final class AsyncNativeIo implements AutoCloseable {
             // admission. Closing it on this worker/monitor would release a
             // native handle before all context loans have exited. Retain it
             // for the post-join resource sweep and reject publication.
+            ActorRuntime.ActorId owner = currentOwnerActor();
             resources.add(resource);
             resourceLoans.put(resource, new ResourceLeaseState(
                     nextResourceGeneration.incrementAndGet(), resource,
-                    currentOwnerActor(), null));
+                    owner, null));
+            // Retain the actor incarnation even if a shutdown-racing handle
+            // was created after admissions sealed; no actor arena may retire
+            // while this late physical handle remains tracked.
+            incrementActorOperationLocked(owner);
             // This late handle never obtained a new (already-sealed)
             // delegated physical lease. Its eventual close is not a valid
             // per-scope retirement witness: quarantine the delegated scope
@@ -513,27 +532,45 @@ public final class AsyncNativeIo implements AutoCloseable {
         ActorRuntime.requireCurrentActorAuthorityActive("register native I/O resource");
         ActorPermissionScope.PhysicalLease physicalLease =
                 ActorRuntime.capturePhysicalIoLease("register native I/O resource");
+        ActorRuntime.ActorId owner = currentOwnerActor();
         resources.add(resource);
         resourceLoans.put(resource, new ResourceLeaseState(
                 nextResourceGeneration.incrementAndGet(), resource,
-                currentOwnerActor(), physicalLease));
+                owner, physicalLease));
+        // A registered actor-owned handle owns actor memory even when no
+        // read/write loan is currently active. Otherwise actor DONE could
+        // precede socket.close() and reclamation could race a later syscall.
+        incrementActorOperationLocked(owner);
     }
 
-    synchronized void unregister(AutoCloseable resource) {
-        ResourceLeaseState state = resourceLoans.get(resource);
-        if (state == null || state.unregistered) return;
-        state.unregistered = true;
-        resources.remove(resource);
-        if (state.active != 0) {
-            deferredUnregister.add(resource);
-        } else {
-            resourceLoans.remove(resource);
-            // Unregister means the physical owner has been closed or
-            // explicitly transferred to the host. All active loans are done.
-            if (state.physicalLease != null && incompleteReceipt == null) {
-                state.physicalLease.close();
+    void unregister(AutoCloseable resource) {
+        ActorRuntime.ActorId retireActor = null;
+        synchronized (this) {
+            ResourceLeaseState state = resourceLoans.get(resource);
+            if (state == null || state.unregistered) return;
+            // A detached handle is NOT evidence of physical closure. The
+            // only actor-owned handle family supported by this fast path is
+            // Socket, for which the JDK exposes a verifiable closed state.
+            // Other actor-owned AutoCloseables must stay registered through
+            // context-owned physical close; host registrations may transfer
+            // ownership as before. Fail before mutating any counters.
+            if (state.registeredBy != null
+                    && (!(resource instanceof java.net.Socket socket) || !socket.isClosed())) {
+                throw new SecurityException(
+                        "actor-owned native handle must be physically closed before unregister");
+            }
+            state.unregistered = true;
+            resources.remove(resource);
+            if (state.active != 0) {
+                deferredUnregister.add(resource);
+            } else {
+                resourceLoans.remove(resource);
+                retireActor = decrementActorOperationLocked(state.registeredBy);
+                retireScopedPhysicalLease(state.physicalLease);
             }
         }
+        // The final registration must notify lifecycle outside our monitor.
+        notifyActorRetirement(retireActor);
     }
 
     private void reportDiscarded(List<Runnable> discarded) {
@@ -657,6 +694,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 closing = new ArrayList<>(resources);
             }
             Throwable closeFailure = null;
+            List<ActorRuntime.ActorId> registrationRetirements = new ArrayList<>();
             resourceCloseActive = true;
             try {
                 for (AutoCloseable resource : closing) {
@@ -668,9 +706,14 @@ public final class AsyncNativeIo implements AutoCloseable {
                             // before closing handles; release the registration
                             // receipt only after physical close succeeded.
                             ResourceLeaseState owner = resourceLoans.remove(resource);
-                            if (owner != null && owner.physicalLease != null
-                                    && incompleteReceipt == null) {
-                                owner.physicalLease.close();
+                            if (owner != null) {
+                                // Registration is a physical actor-owned loan,
+                                // independent of currently active read/write
+                                // loans, and is retired only after close.
+                                ActorRuntime.ActorId finalOwner =
+                                        decrementActorOperationLocked(owner.registeredBy);
+                                if (finalOwner != null) registrationRetirements.add(finalOwner);
+                                retireScopedPhysicalLease(owner.physicalLease);
                             }
                         }
                     } catch (Exception failure) {
@@ -683,6 +726,13 @@ public final class AsyncNativeIo implements AutoCloseable {
                 // the reentrancy fence permanently armed. Failed resources
                 // remain owned and may be closed on a later explicit retry.
                 resourceCloseActive = false;
+            }
+            // Keep callbacks outside the AsyncNativeIo monitor. The physical
+            // resource close has already returned and its owner count was
+            // decremented; now the actor may retry finalization if this was
+            // its last registration.
+            for (ActorRuntime.ActorId actorId : registrationRetirements) {
+                notifyActorRetirement(actorId);
             }
             synchronized (this) {
                 if (!resources.isEmpty()) {
