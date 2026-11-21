@@ -126,12 +126,12 @@ public final class Parser {
                 if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
-                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                validateRetainedSourceAnnotations(annotations, AnnotationRegistry.Target.CLASS);
                 validateClassModifiers(modifiers);
                 rootDeclarations.add(parseClass(
                         modifiers.visibility,
                         modifiers.isAbstract,
-                        modifiers.visibility != Ast.Visibility.PUBLIC));
+                        modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
                 continue;
             }
 
@@ -190,12 +190,12 @@ public final class Parser {
                 if (match(CLASS)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
-                    rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                    validateRetainedSourceAnnotations(annotations, AnnotationRegistry.Target.CLASS);
                     validateClassModifiers(modifiers);
                     rootDeclarations.add(parseClass(
                             modifiers.visibility,
                             modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC));
+                            modifiers.visibility != Ast.Visibility.PUBLIC, annotations));
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
@@ -377,9 +377,9 @@ public final class Parser {
             if (match(DEFINE)) modifiers = mergeModifiers(modifiers, parseModifiers());
             modifiers = mergeModifiers(modifiers, parseModifiers());
             rejectCallableStructuralAnnotation(annotations, "class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+            validateRetainedSourceAnnotations(annotations, AnnotationRegistry.Target.CLASS);
             validateClassModifiers(modifiers);
-            return parseClass(modifiers.visibility, modifiers.isAbstract, false);
+            return parseClass(modifiers.visibility, modifiers.isAbstract, false, annotations);
         }
 
         if (check(CONTRACT) && defineFollowsAfterVisibilityModifiers()) {
@@ -424,10 +424,10 @@ public final class Parser {
             if (match(CLASS)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
-                rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
+                validateRetainedSourceAnnotations(annotations, AnnotationRegistry.Target.CLASS);
                 validateClassModifiers(modifiers);
                 return parseClass(modifiers.visibility,
-                        modifiers.isAbstract, false);
+                        modifiers.isAbstract, false, annotations);
             }
             if (match(INTERFACE, TRAIT)) {
                 Token.Type declarationKind = previous().type();
@@ -482,8 +482,8 @@ public final class Parser {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-            return parseActorClass(actorKind, modifiers.visibility);
+            validateRetainedSourceAnnotations(annotations, AnnotationRegistry.Target.ACTOR);
+            return parseActorClass(actorKind, modifiers.visibility, ActorPrefix.DEFAULT, annotations);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -609,7 +609,8 @@ public final class Parser {
     private Ast.ClassDecl parseClass(
             Ast.Visibility visibility,
             boolean isAbstract,
-            boolean filePrivateScope) {
+            boolean filePrivateScope,
+            List<Ast.Annotation> declarationAnnotations) {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -707,7 +708,9 @@ public final class Parser {
                         : "expected 'end' to close class " + name);
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
-                parents, interfaces, fields, constructor, methods);
+                parents, interfaces, fields, constructor, methods,
+                Ast.ActorConcurrency.serial(Ast.ActorTransport.GENERIC),
+                declarationAnnotations);
     }
 
     private Ast.ConstructorDecl parseConstructor(
@@ -856,8 +859,8 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility, prefix);
+        validateRetainedSourceAnnotations(annotations, AnnotationRegistry.Target.ACTOR);
+        return parseActorClass(kind, modifiers.visibility, prefix, annotations);
     }
 
     /**
@@ -915,6 +918,12 @@ public final class Parser {
 
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
+        return parseActorClass(actorKind, visibility, prefix, List.of());
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix,
+            List<Ast.Annotation> declarationAnnotations) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -1068,7 +1077,8 @@ public final class Parser {
         }
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency));
+                new Ast.ActorConcurrency(prefix.transport(), requestConcurrency, messageConcurrency),
+                declarationAnnotations);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -1565,7 +1575,18 @@ public final class Parser {
                 throw error(previous(), "duplicate @" + name
                         + " annotation; repeatable annotations require a registered schema");
             }
-            result.add(new Ast.Annotation(name, canonicalArgs));
+            Ast.Annotation annotation = new Ast.Annotation(name, canonicalArgs);
+            if (name.equals("Doc")) {
+                // Parse-time typed argument validation is shared by all retained
+                // declaration targets. Actual class/actor target checking follows.
+                try {
+                    AnnotationRegistry.validateSourceMetadata(annotation,
+                            AnnotationRegistry.Target.MODULE);
+                } catch (IllegalArgumentException invalid) {
+                    throw error(previous(), invalid.getMessage());
+                }
+            }
+            result.add(annotation);
         }
         return result;
     }
@@ -4582,6 +4603,20 @@ public final class Parser {
         if (!annotations.isEmpty()) {
             throw error(previous(), "@" + annotations.getFirst().name() + " on " + target
                     + " would be silently discarded; declaration annotation storage is not implemented");
+        }
+    }
+
+    /** Only typed, source-only metadata is admitted on class/actor declarations. */
+    private void validateRetainedSourceAnnotations(
+            List<Ast.Annotation> annotations, AnnotationRegistry.Target target) {
+        for (Ast.Annotation annotation : annotations) {
+            try {
+                AnnotationRegistry.validateSourceMetadata(annotation, target);
+            } catch (IllegalArgumentException invalid) {
+                throw error(previous(), "@" + annotation.name() + " on " + target
+                        + " would be silently discarded or lacks checked lowering: "
+                        + invalid.getMessage());
+            }
         }
     }
 
