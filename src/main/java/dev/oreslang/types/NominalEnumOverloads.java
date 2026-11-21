@@ -12,8 +12,10 @@ import java.util.Set;
  * Closed-world admission and deterministic signature IDs for nominal enum
  * overloads. This is a compiler policy helper, NOT a runtime multimethod.
  *
- * The Java evaluator still has arity-only tables. Until those tables accept
- * prebound targets, callers must not admit same-name/same-arity declarations.
+ * Direct Java fnc/routine calls may use compiler-proven prebound targets in
+ * the staged executable slice. Unbound dynamic calls and class method vtables
+ * still use arity-only dispatch and must fail closed on same-arity enums.
+ * This helper must never choose a callable from runtime enum values.
  */
 public final class NominalEnumOverloads {
     private NominalEnumOverloads() {}
@@ -31,16 +33,72 @@ public final class NominalEnumOverloads {
     /** The type identity is the resolved enum DECLARATION, not its cases. */
     public record Position(Kind kind, String id) {
         public Position {
-            Objects.requireNonNull(kind);
-            Objects.requireNonNull(id);
+            Objects.requireNonNull(kind, "overload position kind");
+            Objects.requireNonNull(id, "overload position identity");
+            if (id.isBlank()) {
+                throw new IllegalArgumentException("blank overload position identity");
+            }
+            if (kind == Kind.PRIMITIVE) {
+                if (!SCALARS.contains(id)) {
+                    throw new IllegalArgumentException("unsupported overload primitive: " + id);
+                }
+                // Directly constructed keys must agree with signature() aliases.
+                if (id.equals("String")) id = "string";
+            } else {
+                // Match the native ABI selector's bounded, ASCII-only,
+                // declaration-qualified enum identity contract.
+                if (id.length() > 1024 || id.contains("::::")) {
+                    throw new IllegalArgumentException("invalid nominal enum overload ID: " + id);
+                }
+                int boundary = id.lastIndexOf("::");
+                if (boundary <= 0 || boundary + 2 >= id.length()) {
+                    throw new IllegalArgumentException(
+                            "nominal enum overload ID must be declaration-qualified: " + id);
+                }
+                for (int i = 0; i < id.length(); i++) {
+                    char ch = id.charAt(i);
+                    if (!asciiLetter(ch) && !asciiDigit(ch)
+                            && ch != '_' && ch != '.' && ch != '/'
+                            && ch != '-' && ch != ':') {
+                        throw new IllegalArgumentException("invalid nominal enum identity character");
+                    }
+                }
+                if (!asciiLetter(id.charAt(boundary + 2))
+                        && id.charAt(boundary + 2) != '_') {
+                    throw new IllegalArgumentException("invalid enum declaration identifier");
+                }
+                for (int i = boundary + 3; i < id.length(); i++) {
+                    char ch = id.charAt(i);
+                    if (!asciiLetter(ch) && !asciiDigit(ch) && ch != '_') {
+                        throw new IllegalArgumentException("invalid enum declaration identifier");
+                    }
+                }
+            }
         }
+    }
+
+    private static boolean asciiLetter(char value) {
+        return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z';
+    }
+
+    private static boolean asciiDigit(char value) {
+        return value >= '0' && value <= '9';
     }
 
     /** Not a value-dependent selection key: all enum IDs are compiler known. */
     public record Signature(String name, List<Position> positions) {
         public Signature {
-            Objects.requireNonNull(name);
+            Objects.requireNonNull(name, "overload name");
+            if (name.isBlank()) {
+                throw new IllegalArgumentException("blank overload callable name");
+            }
             positions = List.copyOf(positions);
+            // Enforce limits at the immutable key boundary, not just the
+            // signature() factory. select()/compare() accept public records.
+            if (positions.size() > MAX_OVERLOAD_ARITY) {
+                throw new IllegalArgumentException("nominal enum overload exceeds arity limit "
+                        + MAX_OVERLOAD_ARITY);
+            }
         }
         public int arity() { return positions.size(); }
     }
@@ -81,21 +139,33 @@ public final class NominalEnumOverloads {
      */
     public static Map<String, String> eligibleEnumSymbols(Ast.Program program) {
         Map<String, String> names = new HashMap<>();
+        Map<String, String> shortNameOwners = new HashMap<>();
         Set<String> ambiguous = new java.util.HashSet<>();
+        // Register ALL enum declarations before filtering by payload eligibility:
+        // otherwise an ineligible enum can hide a duplicate declaration or
+        // leave an apparently unique short-name alias for a different owner.
+        // The policy helper is public and must not trust AST provenance.
+        Set<String> seenQualifiedSymbols = new java.util.HashSet<>();
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
-                if (!(decl instanceof Ast.EnumDecl enumeration)
-                        || !eligibleDiscriminator(enumeration)) continue;
+                if (!(decl instanceof Ast.EnumDecl enumeration)) continue;
                 // Namespace is part of nominal identity. Cross-code-unit imports
                 // need a linker-assigned symbol ID before overloads can be enabled.
                 String prefix = program.namespace() == null || program.namespace().isBlank()
                         ? "" : program.namespace() + "::";
                 String symbol = prefix + module.name() + "::" + enumeration.name();
-                String previous = names.putIfAbsent(enumeration.name(), symbol);
+                if (!seenQualifiedSymbols.add(symbol)) {
+                    throw new IllegalArgumentException(
+                            "duplicate nominal enum overload declaration: " + symbol);
+                }
+                String previous = shortNameOwners.putIfAbsent(enumeration.name(), symbol);
                 if (previous != null && !previous.equals(symbol)) {
                     ambiguous.add(enumeration.name());
                 }
-                names.put(symbol, symbol);
+                if (eligibleDiscriminator(enumeration)) {
+                    names.put(symbol, symbol);
+                    names.putIfAbsent(enumeration.name(), symbol);
+                }
             }
         }
         for (String duplicate : ambiguous) names.remove(duplicate);

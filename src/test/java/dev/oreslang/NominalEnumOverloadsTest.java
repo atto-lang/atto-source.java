@@ -134,6 +134,52 @@ final class NominalEnumOverloadsTest {
     }
 
     @Test
+    void repeatedCanonicalEnumDeclarationFailsClosedBeforeOverloadSelection() {
+        // A hand-built/relinked AST cannot reuse a qualified enum owner ID.
+        // The old putIfAbsent behavior accepted identical symbol spellings
+        // and accidentally treated duplicate declarations as one owner.
+        Ast.EnumDecl first = new Ast.EnumDecl("Color",
+                List.of(new Ast.EnumCase("Red", null, 1)));
+        Ast.EnumDecl duplicate = new Ast.EnumDecl("Color",
+                List.of(new Ast.EnumCase("Blue", null, 2)));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("alpha", List.of(first, duplicate))));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> NominalEnumOverloads.eligibleEnumSymbols(program));
+        assertTrue(error.getMessage().contains("duplicate nominal enum overload declaration"),
+                error.getMessage());
+        assertTrue(error.getMessage().contains("alpha::Color"), error.getMessage());
+    }
+
+    @Test
+    void ineligibleEnumCannotHideQualifiedDuplicateOrAmbiguousShortAlias() {
+        Ast.EnumDecl eligible = new Ast.EnumDecl("Mode",
+                List.of(new Ast.EnumCase("Ready", null, 1)));
+        Ast.EnumDecl ineligible = new Ast.EnumDecl("Mode",
+                List.of(new Ast.EnumCase("Bad", Ast.TypeRef.simple("Any"), 2)));
+
+        // Distinct qualified declarations coexist, but the short name must
+        // NOT pretend it identifies a unique eligible enum.
+        Ast.Program separateOwners = new Ast.Program(List.of(
+                new Ast.ModuleDecl("alpha", List.of(eligible)),
+                new Ast.ModuleDecl("beta", List.of(ineligible))));
+        Map<String, String> names =
+                NominalEnumOverloads.eligibleEnumSymbols(separateOwners);
+        assertFalse(names.containsKey("Mode"));
+        assertEquals("alpha::Mode", names.get("alpha::Mode"));
+        assertFalse(names.containsKey("beta::Mode"));
+
+        // The same canonical declaration cannot be repeated just because
+        // one copy has a payload layout disallowed for overloading.
+        Ast.Program duplicateOwner = new Ast.Program(List.of(
+                new Ast.ModuleDecl("alpha", List.of(eligible, ineligible))));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> NominalEnumOverloads.eligibleEnumSymbols(duplicateOwner));
+        assertTrue(error.getMessage().contains("duplicate nominal enum overload declaration"),
+                error.getMessage());
+    }
+
+    @Test
     void directEnumFncsAdmitOnlyPairwiseDistinctNominalSignatures() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(ENUMS + """
                 fnc go(Color c): int { return 1; }
@@ -171,7 +217,7 @@ final class NominalEnumOverloadsTest {
                 """)) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.checkTypes(Parser.parse(declarations
-                            + "define class Dispatcher as\\n" + methods + "end\\n")));
+                            + "define class Dispatcher as\n" + methods + "end\n")));
             assertTrue(error.getMessage().contains("already has arity 1"),
                     error.getMessage());
             assertTrue(error.getMessage().contains("not enabled"),
@@ -298,6 +344,41 @@ final class NominalEnumOverloadsTest {
                         new dev.oreslang.types.Types.Named("Color", List.of()),
                         new dev.oreslang.types.Types.Named("Mode", List.of())),
                 registry, eligible));
+    }
+
+    @Test
+    void immutableOverloadKeysCannotBypassSignatureValidation() {
+        var color = new NominalEnumOverloads.Position(
+                NominalEnumOverloads.Kind.ENUM, "unit::Color");
+        assertThrows(IllegalArgumentException.class, () ->
+                new Signature("go", java.util.Collections.nCopies(
+                        NominalEnumOverloads.MAX_OVERLOAD_ARITY + 1, color)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Signature("  ", List.of(color)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.ENUM, ""));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.ENUM, "Color"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.PRIMITIVE, "Any"));
+        // Guard forged compiler-internal record construction, including
+        // identity characters and limits rejected by the LLVM ABI selector.
+        for (String malformed : List.of(
+                "pkg/a.ores::0Color",
+                "pkg/a.ores::Bad-Case",
+                "pkg/a.ores::Color\\n",
+                "pkg::::Color",
+                "pkg/a.ores::" + "A".repeat(1024))) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    new NominalEnumOverloads.Position(
+                            NominalEnumOverloads.Kind.ENUM, malformed), malformed);
+        }
+        assertEquals("pkg/a.ores::Color",
+                new NominalEnumOverloads.Position(
+                        NominalEnumOverloads.Kind.ENUM, "pkg/a.ores::Color").id());
+        assertEquals(
+                new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.PRIMITIVE, "string"),
+                new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.PRIMITIVE, "String"));
     }
 
     @Test
