@@ -706,10 +706,11 @@ public final class ActorEventBus implements AutoCloseable {
 
                 long sequence;
                 try {
-                    // Keep mainline RELIABLE reservation-before-sequence;
-                    // retain its fail-closed signed-overflow policy until
-                    // a dedicated unsigned-u64 conformance suite is executed.
-                    sequence = Math.addExact(topic.sequence.get(), 1L);
+                    // Match the native uint64_t sequence contract, including
+                    // the 2^63 boundary. Java long is only the storage word:
+                    // its negative values represent unsigned 2^63..2^64-1.
+                    // A full u64 exhaustion must never roll over to zero.
+                    sequence = nextTopicSequenceUnsigned(topic.sequence.get());
                     Event<Object> created = new Event<>(
                             topic.name,
                             sequence,
@@ -820,6 +821,18 @@ public final class ActorEventBus implements AutoCloseable {
                 event.releaseDelivery();
             }
         }
+    }
+
+    /**
+     * Nonwrapping unsigned-u64 sequence shared by Java publication receipts
+     * and the native LLVM ABI. Zero is reserved for an uncommitted publication.
+     * A signed overflow at 2^63 is valid; only 2^64-1 is exhausted.
+     */
+    static long nextTopicSequenceUnsigned(long last) {
+        if (last == -1L) {
+            throw new ArithmeticException("ActorGroup topic u64 sequence exhausted");
+        }
+        return last + 1L;
     }
 
     private OresFuture<List<Void>> combineReliableWrites(
