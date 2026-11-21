@@ -866,7 +866,12 @@ public final class OwnershipChecker {
                 selectResultValues = prior;
             }
             if (results.isEmpty()) {
-                throw error("value-select arm must explicitly return a value");
+                if (resultSelect.select().mode() != Ast.WaitMode.NONBLOCKING) {
+                    throw error("blocking value-select arm must explicitly return a value");
+                }
+                Ast.TypeRef voidFuture = new Ast.TypeRef(
+                        "Future", List.of(Ast.TypeRef.simple("void")), false);
+                return new ValueInfo(voidFuture, kindOfType(voidFuture), null);
             }
             Ast.TypeRef resultType = results.getFirst().type;
             boolean allCopy = true;

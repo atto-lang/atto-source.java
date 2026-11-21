@@ -994,6 +994,10 @@ public final class TypeChecker {
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
             Type fieldType = classFieldType(klass, field);
+            if (fieldType == Primitive.VOID) {
+                throw new IllegalArgumentException("class field '" + klass.name() + "." + field.name()
+                        + "' cannot store void completion");
+            }
             if (field.initializer() != null && field.type() != null) {
                 Ast.ClassDecl previousClassOwner = currentClassOwner;
                 Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
@@ -1395,12 +1399,20 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        if (actual == Primitive.VOID) {
+            throw new IllegalArgumentException("module binding '" + field.name()
+                    + "' cannot store void completion");
+        }
         requireMutableReferentCompatible(
                 actual,
                 field.mutableReferent(),
                 "module binding '" + field.name() + "'");
         if (field.type() != null) {
             Type expected = resolve(field.type(), Set.of(), null);
+            if (expected == Primitive.VOID) {
+                throw new IllegalArgumentException("module binding '" + field.name()
+                        + "' cannot declare a void value");
+            }
             requireReadonlyCapabilityPreserved(
                     actual,
                     expected,
@@ -3515,14 +3527,21 @@ public final class TypeChecker {
                 currentSelectReturnTypes = prior;
                 inDeferredValueSelectArm = priorDeferred;
             }
+            if (returns.isEmpty() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                // A deferred statement-only winner is still a tracked
+                // operation. Future<void> settles AFTER that arm's cleanup.
+                // There is no first-class bare void value for the caller.
+                return new Named("Future", List.of(Primitive.VOID));
+            }
             for (Ast.SelectArm arm : selected.arms()) {
                 if (!definitelySelectArmReturns(arm.body())) {
                     throw new IllegalArgumentException(
-                            "every reachable value-select arm path must explicitly 'return value'");
+                            "every reachable value-select arm path must explicitly 'return value'; "
+                                    + "mixed value and void arms cannot share one Future result");
                 }
             }
             if (returns.isEmpty()) {
-                throw new IllegalArgumentException("value select has no typed arm return");
+                throw new IllegalArgumentException("blocking value select has no typed arm return");
             }
             Type joined = widenCollectionElement(returns.getFirst());
             for (int i = 1; i < returns.size(); i++) {
@@ -8120,6 +8139,10 @@ public final class TypeChecker {
                 Type type,
                 Ast.BindingKind kind,
                 Set<String> uninitializedFields) {
+            if (type == Primitive.VOID) {
+                throw new IllegalArgumentException("binding '" + name
+                        + "' cannot store void completion; use Future<void> or Option<void>");
+            }
             if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }

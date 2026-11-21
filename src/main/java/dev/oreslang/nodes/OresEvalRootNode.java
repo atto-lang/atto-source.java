@@ -1207,10 +1207,17 @@ public final class OresEvalRootNode extends RootNode {
                                 }
                                 done(flow.value());
                             }
+                            case NORMAL -> {
+                                // Type-checking admits all-fallthrough arms only
+                                // as Future<void>. A successful null completion
+                                // is NOT a guest-language undefined/None value.
+                                // Cleanup has already completed before this flow.
+                                done(null);
+                            }
                             case THROW -> throw sourceFailure(flow.failure());
-                            case NORMAL, RETURN, BREAK, CONTINUE ->
+                            case RETURN, BREAK, CONTINUE ->
                                     throw new IllegalStateException(
-                                            "deferred value-select arm must return its own value, got "
+                                            "deferred value-select arm leaked caller control flow: "
                                                     + flow.kind());
                         }
                         return;
