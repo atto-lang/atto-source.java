@@ -168,6 +168,73 @@ final class SourceActorPubSubTest {
     }
 
     @Test
+    void facadeTryReliableFullIsNonblockingAndPreservesTopicSequence()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {
+            SourceActorPubSub.Group group = pubsub.group("reliable-admission");
+            SourceActorPubSub.Topic topic =
+                    group.topic("events", "reliable", 1);
+
+            CountDownLatch subscribed = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        try {
+                            if ("subscribe".equals(message)) {
+                                topic.subscribe();
+                            }
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            subscribed.countDown();
+                        }
+                    });
+
+            group.join(actor);
+            actor.send("subscribe");
+            assertTrue(subscribed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+
+            java.util.Optional<ActorEventBus.PublishReceipt> first =
+                    topic.tryPublishReliable("first");
+            assertTrue(first.isPresent(), "first event must reserve the subscriber");
+            assertEquals("1", first.orElseThrow().sequenceUnsignedString());
+            assertEquals(1, first.orElseThrow().subscribers());
+
+            // The current HOST substrate permits one queued write plus one
+            // bounded pending writer at capacity=1 (outstanding limit 2).
+            // This is NOT the portable v1 strict queued+in-flight capacity.
+            java.util.Optional<ActorEventBus.PublishReceipt> second =
+                    topic.tryPublishReliable("bounded-pending");
+            assertTrue(second.isPresent());
+            assertEquals("2", second.orElseThrow().sequenceUnsignedString());
+
+            java.util.Optional<ActorEventBus.PublishReceipt> rejected =
+                    topic.tryPublishReliable("full");
+            assertTrue(rejected.isEmpty(),
+                    "exhausted host outstanding credit cannot return a receipt");
+
+            group.leave(actor);
+            java.util.Optional<ActorEventBus.PublishReceipt> afterLeave =
+                    topic.tryPublishReliable("no-members");
+            assertTrue(afterLeave.isPresent(),
+                    "zero-recipient publication still admits and takes a sequence");
+            assertEquals("3", afterLeave.orElseThrow().sequenceUnsignedString(),
+                    "Full must not consume a per-topic sequence");
+            assertEquals(0, afterLeave.orElseThrow().subscribers());
+
+            SourceActorPubSub.Topic lossy = group.topic("telemetry", "lossy", 1);
+            assertThrows(IllegalArgumentException.class,
+                    () -> lossy.tryPublishReliable("must-not-fallback"),
+                    "LOSSY is not a silent substitute for RELIABLE");
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void topicPolicyIsBoundedAndDefinitionIsStable() {
         try (ActorRuntime runtime = new ActorRuntime();
              SourceActorPubSub pubsub = new SourceActorPubSub(runtime)) {

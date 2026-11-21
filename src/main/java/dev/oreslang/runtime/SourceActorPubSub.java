@@ -247,6 +247,19 @@ public final class SourceActorPubSub implements AutoCloseable {
             return asVoidFuture(receipt.completion());
         }
 
+        /**
+         * HOST ONLY: the bounded atomic RELIABLE admission path.
+         * A present receipt means all current recipient reservations committed;
+         * Optional.empty means bounded Full, not an accepted publication.
+         * Other errors (authority, policy, payload and close) remain explicit.
+         *
+         * This is NOT source-level Topic<T>.try_publish lowering, a portable
+         * Result/ownership ABI, or proof of compiled .atto guest execution.
+         */
+        public Optional<ActorEventBus.PublishReceipt> tryPublishReliable(Object value) {
+            return raw.tryPublishReliable(value);
+        }
+
         /** Subscription belongs to the currently executing shared actor. */
         public Subscription subscribe() {
             return new Subscription(raw.subscribe());
