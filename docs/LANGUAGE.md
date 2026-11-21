@@ -1118,6 +1118,20 @@ field/method must exist with a compatible type/signature.
 read-only borrowed views: they cannot be `mut`, survive async suspension, cross an
 actor mailbox boundary, or turn an actor reference into an ordinary object.
 
+Passing an aggregate to a `structural T` parameter creates a call-scoped
+read loan instead of moving it. Calls such as `read(container.inner)` retain
+the lexical aggregate root while later arguments are evaluated, so moving or
+exclusively borrowing `container` as a later argument is rejected.
+First-class `Fnc<T,...>` arguments are also read-only call loans: a later
+argument cannot `rt take` a value passed to an earlier argument; those loans
+end at call return. Instance
+method receivers are also loaned through argument evaluation, and these loans
+release when the synchronous call finishes. An explicit `rt borrow mut`
+cannot be silently downgraded to a structural read-only parameter.
+Field/index-level partial-move precision, actor request/response handle
+lifetimes, and parallel actor re-entry require separate admission proof; this
+rule protects the named root without claiming those semantics.
+
 Interfaces may inherit from other interfaces and support literal-string marker fields:
 
 ```ores
@@ -1833,3 +1847,51 @@ When explicit thread/task spawning is added, cross-thread transfer will require 
 `@FromJson("key")` is a compiler annotation for typed class fields. It expands before type/ownership checking into public typed getters/setters; no JVM reflection or guest-code macro execution is involved. The field must have an explicit type and mutable storage. The name-first shorthand `field_name: Type` is mutable only when annotated with `@FromJson`; otherwise it is an immutable `val` field.
 
 Generated setters still require a mutable owner at the call site. Duplicate/blank keys, immutable annotated fields, accessor collisions, annotations on module bindings/callables, and annotations on actor state all fail closed. JSON wire keys participate in incremental ABI fingerprints.
+
+### Suspension and ownership audit (2026-10-12)
+
+Suspending calls check the live borrow set both before evaluating arguments and
+at invocation, while temporary argument/receiver loans still exist. A loan from
+an earlier argument also forbids suspension while evaluating a later argument.
+Synchronous calls release their temporary loans on completion. This applies to
+named functions, qualified functions, static methods and instance methods.
+
+A newly created borrowed `yield` value cannot escape into a generator result.
+Generators expose owned/copyable data; lexical borrows require an explicit
+lifetime contract before they can survive suspension.
+
+Explicit `rt take` of a move-only field/index projection is rejected until
+partial-move/drop tracking exists. Borrow the projection, or move its named
+owner. Copyable field reads remain available. `rt copy`/`rt share` continue to
+reject unsupported move-only operands rather than aliasing them.
+
+
+### Automatic loop cooperation and ownership (2026-10-12 integration draft)
+
+A source loop can produce a **compiler-inserted suspension** at an iteration
+backedge, even when its source contains no explicit `await` or `rt cooperate`.
+Until continuation lowering carries explicit loan-generation and lifetime
+provenance, ordinary lexical borrows must not remain live across that boundary.
+
+- A loan held in an outer lexical scope is rejected for `for`, `loop`,
+  `for-of`, and destructuring `for-of`; nested `borrow` type arguments
+  are included in the admission check.
+- A borrowed iterable passed directly to `for-of` is rejected even if it was
+  never stored in a local. That temporary iterator capability would be
+  retained across iterations.
+- A read-only borrow created and released within **one** iteration, or loaned
+  only during a synchronous call inside that iteration, is permitted.
+- The implicit actor `self` capability is not a user-owned borrow and can
+  survive carrier handoff under the actor's single-flight execution lease.
+  A separately created alias/borrow of `self` does not inherit this exception.
+- Synchronous critical `handle_state` callbacks and held mutex-guard regions
+  are **not** auto-preempted. Their non-suspension rules remain independent
+  safety barriers; this is not permission to retain a state loan over `await`.
+- `using` signatures must account for possible compiler-inserted `suspend`
+  on ordinary loop forms. A `requires no_block` clause alone does not forbid
+  cooperative scheduling (which is nonblocking).
+
+These are conservative source-admission rules and do not by themselves prove
+that all GraalVM or LLVM lowering paths enforce the same runtime invariants.
+The integration must pass exact-head Java/JDK25, native-image, LLVM and
+formal verification before promotion.

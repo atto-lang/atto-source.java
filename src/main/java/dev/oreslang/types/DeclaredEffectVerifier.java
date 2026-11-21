@@ -46,9 +46,11 @@ public final class DeclaredEffectVerifier {
                 using = annotation;
             }
         }
-        if (using == null) return;
+        boolean hasRequirements = annotations.stream()
+                .anyMatch(annotation -> annotation.name().equals("$requires$"));
+        if (using == null && !hasRequirements) return;
 
-        FunctionEffects allowed = FunctionEffects.ofNames(using.arguments().stream()
+        FunctionEffects allowed = using == null ? null : FunctionEffects.ofNames(using.arguments().stream()
                 .map(Ast.TypeRef::name).toList());
         EnumSet<FunctionEffects.Effect> inferred =
                 EnumSet.noneOf(FunctionEffects.Effect.class);
@@ -71,7 +73,7 @@ public final class DeclaredEffectVerifier {
             }
         }
         for (FunctionEffects.Effect effect : inferred) {
-            if (!allowed.contains(effect)) {
+            if (allowed != null && !allowed.contains(effect)) {
                 throw new IllegalArgumentException(name + " uses effect " + effect.sourceName()
                         + " not permitted by its using signature");
             }
@@ -105,6 +107,10 @@ public final class DeclaredEffectVerifier {
                     && namespace.name().equals("stdio")
                     && (member.member().equals("println") || member.member().equals("print"))) {
                 effects.add(FunctionEffects.Effect.IO);
+                // Console writes are still synchronous. An IO effect alone is
+                // not proof of nonblocking execution: a full pipe, slow sink,
+                // or host terminal can stall the actor carrier.
+                effects.add(FunctionEffects.Effect.BLOCK);
                 collect(call.arguments(), effects, stateAccess, callableName, serial);
                 return;
             }
@@ -140,12 +146,43 @@ public final class DeclaredEffectVerifier {
             collect(await.expression(), effects, stateAccess, callableName, serial);
             return;
         }
-        if (node instanceof Ast.NewExpr) {
+        // SourceTask may lower a loop backedge into a continuation handoff,
+        // even when no explicit rt cooperate appears in its body. This must
+        // appear in the caller's using-effect upper bound. The sealed inline
+        // handle_state callback runs synchronously and is deliberately exempt:
+        // its state loan is not suspendable until generation-fenced lowering
+        // exists, and admission separately rejects explicit suspension there.
+        if (stateAccess == null
+                && (node instanceof Ast.ForStmt
+                    || node instanceof Ast.ForOfStmt
+                    || node instanceof Ast.ForOfDestructureStmt
+                    || node instanceof Ast.LoopStmt)) {
+            effects.add(FunctionEffects.Effect.SUSPEND);
+        }
+        if (node instanceof Ast.NewExpr || node instanceof Ast.ListExpr
+                || node instanceof Ast.TupleExpr || node instanceof Ast.ObjectExpr) {
             effects.add(FunctionEffects.Effect.ALLOC);
         }
+        if (node instanceof Ast.DeferStmt defer) {
+            // Unlike an ordinary closure value, a deferred lambda WILL run
+            // during this function's cleanup (including exceptional exits).
+            // Skipping its body unsoundly admits no_block/no_alloc or a narrow
+            // using clause despite a delayed blocking/allocating operation.
+            // The deferred callable itself still counts as allocation until
+            // lowering proves an allocation-free cleanup representation.
+            if (defer.expression() instanceof Ast.LambdaExpr lambda) {
+                effects.add(FunctionEffects.Effect.ALLOC);
+                collect(lambda.expressionBody(), effects, stateAccess, callableName, serial);
+                collect(lambda.blockBody(), effects, stateAccess, callableName, serial);
+            } else {
+                collect(defer.expression(), effects, stateAccess, callableName, serial);
+            }
+            return;
+        }
         if (node instanceof Ast.LambdaExpr) {
-            // Merely creating a callable does not invoke its body. The
-            // handle_state intrinsic above handles synchronous invocation.
+            // Ordinary closure construction does not execute its body.
+            // A deferred lambda is instead handled by the DeferStmt branch.
+            effects.add(FunctionEffects.Effect.ALLOC);
             return;
         }
         if (node instanceof Ast.RuntimeCallExpr operation) {
@@ -153,8 +190,29 @@ public final class DeclaredEffectVerifier {
             else throw new IllegalArgumentException(
                     "runtime intrinsic in " + callableName + " lacks a trusted effect summary");
         }
-        if (node instanceof Ast.SelectStmt || node instanceof Ast.DynamicSelectExpr
-                || node instanceof Ast.ChannelOpExpr) effects.add(FunctionEffects.Effect.SUSPEND);
+        // SUSPEND means a logical continuation boundary, not necessarily a
+        // thread-blocking operation. no_block must separately reject every
+        // potentially waiting channel operation. A default arm proves that a
+        // static select cannot wait; nonblocking registrations do not block
+        // the caller. Dynamic plans remain conservative if blocking.
+        if (node instanceof Ast.SelectStmt selected) {
+            effects.add(FunctionEffects.Effect.SUSPEND);
+            if (selected.mode() == Ast.WaitMode.BLOCKING
+                    && selected.arms().stream().noneMatch(arm ->
+                            arm.operation() == Ast.ChannelOperation.DEFAULT)) {
+                effects.add(FunctionEffects.Effect.BLOCK);
+            }
+        } else if (node instanceof Ast.DynamicSelectExpr selected) {
+            effects.add(FunctionEffects.Effect.SUSPEND);
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                effects.add(FunctionEffects.Effect.BLOCK);
+            }
+        } else if (node instanceof Ast.ChannelOpExpr channel) {
+            effects.add(FunctionEffects.Effect.SUSPEND);
+            if (channel.mode() == Ast.WaitMode.BLOCKING) {
+                effects.add(FunctionEffects.Effect.BLOCK);
+            }
+        }
         if (node instanceof Iterable<?> children) {
             for (Object child : children) collect(child, effects, stateAccess, callableName, serial);
             return;
