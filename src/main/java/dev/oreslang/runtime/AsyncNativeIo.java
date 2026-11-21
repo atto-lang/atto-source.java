@@ -31,6 +31,8 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class AsyncNativeIo implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(500);
     private static final int CONTROL_CAPACITY = 16;
+    // These are admission limits, not proof of actual OS/native allocation.
+    private static final long MAX_ACCOUNTED_REGISTERED_BYTES = 64L * 1024 * 1024;
     // Failed close must not permit the model or GC to reclaim live resource
     // owners after a host releases its last direct reference to this object.
     // The only release path is a subsequent verified, successful close().
@@ -50,6 +52,10 @@ public final class AsyncNativeIo implements AutoCloseable {
     /** Identity, not equals/hashCode: each registered native handle is unique. */
     private final Map<AutoCloseable, ResourceLeaseState> resourceLoans =
             new IdentityHashMap<>();
+    /** Open registrations + deferred unregisters still physically loaned. */
+    private final int maxRegisteredResources;
+    /** Trusted host-supplied attribution; unknown sizes must not count as verified. */
+    private long registeredAccountedBytes;
     /** Counts entire I/O operations from admission through callback drain. */
     private final ConcurrentHashMap<ActorRuntime.ActorId, Integer> actorOperations =
             new ConcurrentHashMap<>();
@@ -79,13 +85,18 @@ public final class AsyncNativeIo implements AutoCloseable {
         final long generation;
         final AutoCloseable resource;
         final ActorRuntime.ActorId registeredBy;
+        final ActorPermissionScope.ResourceReservation resourceQuota;
+        final long accountedBytes;
         int active;
         boolean unregistered;
         ResourceLeaseState(long generation, AutoCloseable resource,
-                ActorRuntime.ActorId registeredBy) {
+                ActorRuntime.ActorId registeredBy,
+                ActorPermissionScope.ResourceReservation resourceQuota, long accountedBytes) {
             this.generation = generation;
             this.resource = resource;
             this.registeredBy = registeredBy;
+            this.resourceQuota = resourceQuota;
+            this.accountedBytes = accountedBytes;
         }
     }
 
@@ -110,6 +121,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                 throw new IllegalStateException("duplicate physical I/O loan receipt");
             }
             ActorRuntime.ActorId retireActor;
+            ActorRuntime.ActorId retiredRegistration = null;
             synchronized (AsyncNativeIo.this) {
                 if (resourceLoans.get(lease.resource) != lease
                         || lease.generation != identity.resourceGeneration()
@@ -121,12 +133,14 @@ public final class AsyncNativeIo implements AutoCloseable {
                 }
                 lease.active--;
                 if (lease.active == 0 && lease.unregistered) {
+                    retiredRegistration = retireRegisteredResourceLocked(lease);
                     resourceLoans.remove(lease.resource);
                     deferredUnregister.remove(lease.resource);
                 }
                 retireActor = decrementActorOperationLocked(identity.actorId());
                 AsyncNativeIo.this.notifyAll();
             }
+            notifyActorRetirement(retiredRegistration);
             notifyActorRetirement(retireActor);
         }
     }
@@ -151,6 +165,32 @@ public final class AsyncNativeIo implements AutoCloseable {
         return new IoLoan(state, new IoLoanIdentity(
                 state.generation, nextLoanGeneration.incrementAndGet(), actorId));
     }
+
+    private ActorRuntime.ActorId retireRegisteredResourceLocked(ResourceLeaseState lease) {
+        // AsyncNativeIo monitor held; fail closed before dropping physical reachability.
+        if (lease.active != 0) {
+            recordIncomplete(new IllegalStateException(
+                    "registered native resource retired with active loans"));
+            throw new IllegalStateException("physical resource loan still active");
+        }
+        if (registeredAccountedBytes < lease.accountedBytes) {
+            recordIncomplete(new IllegalStateException(
+                    "registered native resource byte accounting underflow"));
+            throw new IllegalStateException("registered native resource byte underflow");
+        }
+        try {
+            if (lease.resourceQuota != null) lease.resourceQuota.close();
+        } catch (RuntimeException badReceipt) {
+            recordIncomplete(badReceipt);
+            throw badReceipt;
+        }
+        registeredAccountedBytes -= lease.accountedBytes;
+        return decrementActorOperationLocked(lease.registeredBy);
+    }
+
+    synchronized int registeredResourceCount() { return resourceLoans.size(); }
+
+    synchronized long registeredAccountedBytes() { return registeredAccountedBytes; }
 
     int outstandingActorOperations(ActorRuntime.ActorId id) {
         // Called under ActorCell.lifecycleLock. NEVER acquire the AsyncNativeIo
@@ -212,11 +252,18 @@ public final class AsyncNativeIo implements AutoCloseable {
 
     /** Bounded deterministic worker and queue configuration for test coverage. */
     AsyncNativeIo(int capacity, int workerCount, int queueSize) {
+        this(capacity, workerCount, queueSize, Math.max(64, Math.min(capacity, 65_536)));
+    }
+
+    /** Explicit host ceiling for registered resources, including deferred loans. */
+    AsyncNativeIo(int capacity, int workerCount, int queueSize, int maxRegisteredResources) {
         if (capacity < 1 || workerCount < 1 || queueSize < 1
-                || workerCount > capacity) {
+                || workerCount > capacity || maxRegisteredResources < 1
+                || maxRegisteredResources > 65_536) {
             throw new IllegalArgumentException("invalid native I/O worker capacity");
         }
         this.capacity = capacity;
+        this.maxRegisteredResources = maxRegisteredResources;
         workers = new ThreadPoolExecutor(workerCount, workerCount, 0L,
                 TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(queueSize),
                 Thread.ofVirtual().name("ores-native-io-", 0).factory(),
@@ -463,8 +510,14 @@ public final class AsyncNativeIo implements AutoCloseable {
         return id != null ? id : ActorRuntime.currentActorId().orElse(null);
     }
 
-    synchronized void register(AutoCloseable resource) throws Exception {
+    void register(AutoCloseable resource) throws Exception {
+        register(resource, 0L);
+    }
+
+    synchronized void register(AutoCloseable resource, long accountedBytes) throws Exception {
         Objects.requireNonNull(resource);
+        if (accountedBytes < 0 || accountedBytes > MAX_ACCOUNTED_REGISTERED_BYTES)
+            throw new IllegalArgumentException("invalid native resource byte attribution");
         if (resourceLoans.containsKey(resource)) {
             throw new IllegalStateException(
                     "duplicate registration or stale native resource generation");
@@ -483,10 +536,21 @@ public final class AsyncNativeIo implements AutoCloseable {
             // admission. Closing it on this worker/monitor would release a
             // native handle before all context loans have exited. Retain it
             // for the post-join resource sweep and reject publication.
+            // An OS handle may already have been created by an admitted
+            // operation before STOP. Retain it for quarantine even if this
+            // crosses a quota; it is too late to reject physical creation.
+            if (resourceLoans.size() >= maxRegisteredResources
+                    || accountedBytes > MAX_ACCOUNTED_REGISTERED_BYTES - registeredAccountedBytes) {
+                recordIncomplete(new IllegalStateException(
+                        "late native resource exceeded registration budget; quarantined"));
+            }
+            ActorRuntime.ActorId owner = currentOwnerActor();
             resources.add(resource);
             resourceLoans.put(resource, new ResourceLeaseState(
                     nextResourceGeneration.incrementAndGet(), resource,
-                    currentOwnerActor()));
+                    owner, null, accountedBytes));
+            registeredAccountedBytes += accountedBytes;
+            incrementActorOperationLocked(owner);
             throw new IllegalStateException("I/O context closed");
         }
         // Check AFTER the closed-path quarantine branch: a resource created
@@ -495,22 +559,53 @@ public final class AsyncNativeIo implements AutoCloseable {
         // In the normal open path, reject revoked actor/worker authority
         // before publishing a new native resource to the context.
         ActorRuntime.requireCurrentActorAuthorityActive("register native I/O resource");
-        resources.add(resource);
-        resourceLoans.put(resource, new ResourceLeaseState(
-                nextResourceGeneration.incrementAndGet(), resource,
-                currentOwnerActor()));
+        if (resourceLoans.size() >= maxRegisteredResources
+                || accountedBytes > MAX_ACCOUNTED_REGISTERED_BYTES - registeredAccountedBytes) {
+            throw new RejectedExecutionException(
+                    "native registered resource handle/byte admission capacity exhausted");
+        }
+        ActorRuntime.NativeIoAuthority authority = ActorRuntime.captureNativeIoAuthority();
+        Runnable publish = () -> {
+            // Only trusted ownership bookkeeping (no guest/FFI callbacks)
+            // may run inside the actor lifecycle monitor. The identity maps
+            // can still allocate; this is not a hard-real-time allocation-free path.
+            // STOP cannot see zero loans
+            // between admission and publication of this registered handle.
+            ActorPermissionScope.ResourceReservation quota = authority == null
+                    ? null : authority.reserveResource(
+                            accountedBytes, "register native resource");
+            ActorRuntime.ActorId owner = currentOwnerActor();
+            resources.add(resource);
+            resourceLoans.put(resource, new ResourceLeaseState(
+                    nextResourceGeneration.incrementAndGet(), resource,
+                    owner, quota, accountedBytes));
+            registeredAccountedBytes += accountedBytes;
+            incrementActorOperationLocked(owner);
+        };
+        if (authority == null) publish.run();
+        else authority.withLiveIncarnation("register native resource", publish);
     }
 
-    synchronized void unregister(AutoCloseable resource) {
-        ResourceLeaseState state = resourceLoans.get(resource);
-        if (state == null || state.unregistered) return;
-        state.unregistered = true;
-        resources.remove(resource);
-        if (state.active != 0) {
-            deferredUnregister.add(resource);
-        } else {
-            resourceLoans.remove(resource);
+    /**
+     * Trusted host-side ownership transfer. A resource with active loans stays
+     * charged until the final loan retires. The caller explicitly assumes
+     * ownership of the unregistered handle and must close it separately.
+     */
+    void unregister(AutoCloseable resource) {
+        ActorRuntime.ActorId retired = null;
+        synchronized (this) {
+            ResourceLeaseState state = resourceLoans.get(resource);
+            if (state == null || state.unregistered) return;
+            state.unregistered = true;
+            resources.remove(resource);
+            if (state.active != 0) {
+                deferredUnregister.add(resource);
+            } else {
+                retired = retireRegisteredResourceLocked(state);
+                resourceLoans.remove(resource);
+            }
         }
+        notifyActorRetirement(retired);
     }
 
     private void reportDiscarded(List<Runnable> discarded) {
@@ -639,7 +734,17 @@ public final class AsyncNativeIo implements AutoCloseable {
                 for (AutoCloseable resource : closing) {
                     try {
                         resource.close();
-                        synchronized (this) { resources.remove(resource); }
+                        ActorRuntime.ActorId retired = null;
+                        synchronized (this) {
+                            ResourceLeaseState lease = resourceLoans.get(resource);
+                            if (lease != null) {
+                                retired = retireRegisteredResourceLocked(lease);
+                                resourceLoans.remove(resource);
+                                deferredUnregister.remove(resource);
+                            }
+                            resources.remove(resource);
+                        }
+                        notifyActorRetirement(retired);
                     } catch (Exception failure) {
                         if (closeFailure == null) closeFailure = failure;
                         else if (closeFailure != failure) closeFailure.addSuppressed(failure);

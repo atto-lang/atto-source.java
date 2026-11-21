@@ -494,31 +494,60 @@ public final class OresContext implements AutoCloseable {
     static void joinActorsAndNativeIo(ActorRuntime actors, AsyncNativeIo nativeIo) {
         java.util.Objects.requireNonNull(actors);
         java.util.Objects.requireNonNull(nativeIo);
-        RuntimeException failure = null;
+        RuntimeException sealFailure = null;
         try {
             actors.sealShutdownAdmission();
-        } catch (RuntimeException sealFailure) {
-            failure = sealFailure;
+        } catch (RuntimeException failure) {
+            sealFailure = failure;
         }
         try {
             nativeIo.requestShutdown();
-        } catch (RuntimeException revokeFailure) {
-            if (failure == null) failure = revokeFailure;
-            else if (failure != revokeFailure) failure.addSuppressed(revokeFailure);
+        } catch (RuntimeException failure) {
+            if (sealFailure == null) sealFailure = failure;
+            else if (sealFailure != failure) sealFailure.addSuppressed(failure);
         }
+
+        // The actor finalizer may now be waiting for a registered native
+        // handle that is only closed by nativeIo.close(). A single fixed
+        // ordering cannot join both lifetimes: actor STOP must begin before
+        // native handles retire, yet actor finalization completes afterward.
+        //
+        // Two bounded passes: request actor STOP, physically retire native
+        // workers/handles, then re-check actor finalization after the final
+        // native retirement. Transient join timeouts do not count as success.
+        // Each close() is idempotent or explicitly quarantines on failure.
+        RuntimeException actorFailure = null;
+        RuntimeException ioFailure = null;
+        for (int pass = 0; pass < 2; pass++) {
+            try {
+                actors.close();
+                actorFailure = null;
+            } catch (RuntimeException failure) {
+                actorFailure = failure;
+            }
+            try {
+                nativeIo.close();
+                ioFailure = null;
+            } catch (RuntimeException failure) {
+                ioFailure = failure;
+            }
+        }
+        // A late native handle may retire during the second I/O join; the
+        // actor's physical gate must be rechecked AFTER that last join.
         try {
             actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else if (failure != actorFailure) failure.addSuppressed(actorFailure);
+            actorFailure = null;
+        } catch (RuntimeException failure) {
+            actorFailure = failure;
         }
-        try {
-            nativeIo.close();
-        } catch (RuntimeException ioFailure) {
-            if (failure == null) failure = ioFailure;
-            else if (failure != ioFailure) failure.addSuppressed(ioFailure);
-        }
-        if (failure != null) {
+
+        if (sealFailure != null || actorFailure != null || ioFailure != null) {
+            RuntimeException failure = sealFailure != null ? sealFailure
+                    : actorFailure != null ? actorFailure : ioFailure;
+            for (RuntimeException extra : new RuntimeException[] {
+                    sealFailure, actorFailure, ioFailure }) {
+                if (extra != null && extra != failure) failure.addSuppressed(extra);
+            }
             throw new IllegalStateException(
                     "Oreslang actor and native I/O retirement incomplete", failure);
         }

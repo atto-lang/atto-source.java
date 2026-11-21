@@ -147,6 +147,28 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        ActorPermissionScope.ResourceReservation reserveResource(
+                long accountedBytes, String operation) {
+            synchronized (ownerCell.lifecycleLock) {
+                requireLiveIncarnationLocked(operation);
+                return scope.reserveResource(accountedBytes, operation);
+            }
+        }
+
+        /**
+         * Trusted native registration must publish physical ownership while
+         * holding the same lifecycle lock that linearizes actor STOP. Never
+         * execute guest/foreign callbacks inside this critical boundary.
+         */
+        void withLiveIncarnation(String operation, Runnable admission) {
+            Objects.requireNonNull(admission, "admission");
+            synchronized (ownerCell.lifecycleLock) {
+                requireLiveIncarnationLocked(operation);
+                scope.requireActive(operation);
+                admission.run();
+            }
+        }
+
         void requireActive(String operation) {
             synchronized (ownerCell.lifecycleLock) {
                 requireLiveIncarnationLocked(operation);
@@ -4686,11 +4708,30 @@ public final class ActorRuntime implements AutoCloseable {
     /** Caller-only scoped child delegation with a narrowed aggregate I/O budget. */
     public PermissionDelegation delegatePermissions(
             RuntimePermissions restrictions, int maxSubtreeIo) {
-        return delegatePermissions(restrictions, Integer.valueOf(maxSubtreeIo));
+        return delegatePermissions(restrictions, Integer.valueOf(maxSubtreeIo),
+                null, null);
+    }
+
+    /**
+     * Narrow child I/O, registered native-handle count, and trusted
+     * accounted-buffer bytes together without minting a broader capability.
+     */
+    public PermissionDelegation delegatePermissions(
+            RuntimePermissions restrictions, int maxSubtreeIo,
+            int maxRegisteredResources, long maxRegisteredResourceBytes) {
+        return delegatePermissions(restrictions, Integer.valueOf(maxSubtreeIo),
+                Integer.valueOf(maxRegisteredResources),
+                Long.valueOf(maxRegisteredResourceBytes));
     }
 
     private PermissionDelegation delegatePermissions(
             RuntimePermissions restrictions, Integer maxSubtreeIo) {
+        return delegatePermissions(restrictions, maxSubtreeIo, null, null);
+    }
+
+    private PermissionDelegation delegatePermissions(
+            RuntimePermissions restrictions, Integer maxSubtreeIo,
+            Integer maxResources, Long maxResourceBytes) {
         requireCallerRuntimeAffinity("mint actor permission delegation");
         requireNotActorGroupMailman("mint actor permission delegation");
         ActorCell<?> parent = currentActor.get();
@@ -4701,9 +4742,17 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("stopping actor cannot delegate permissions");
         }
         RuntimePermissions requested = Objects.requireNonNull(restrictions);
-        ActorPermissionScope delegated = maxSubtreeIo == null
-                ? parent.permissionScope.attenuate(requested)
-                : parent.permissionScope.attenuate(requested, maxSubtreeIo);
+        if ((maxResources == null) != (maxResourceBytes == null)) {
+            throw new IllegalArgumentException(
+                    "resource count and resource byte ceilings must be specified together");
+        }
+        ActorPermissionScope delegated = maxResources == null
+                ? (maxSubtreeIo == null
+                        ? parent.permissionScope.attenuate(requested)
+                        : parent.permissionScope.attenuate(requested, maxSubtreeIo))
+                : parent.permissionScope.attenuate(requested,
+                        Objects.requireNonNull(maxSubtreeIo), maxResources,
+                        maxResourceBytes);
         return new PermissionDelegation(this, parent.ref.id(), delegated);
     }
 
