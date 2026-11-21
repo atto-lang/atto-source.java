@@ -1677,13 +1677,24 @@ public final class ActorRuntime implements AutoCloseable {
      * identity or carrier pool.
      */
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
+        return startActorTask(task, () -> { });
+    }
+
+    public <T> OresFuture<T> startActorTask(
+            OresScheduler.Task<T> task,
+            Runnable retireAfterPhysicalDone) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(
+                retireAfterPhysicalDone, "physical Task retirement");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) {
+            return cell.sourceScheduler().startCompilerAdmittedTask(
+                    task, retireAfterPhysicalDone);
+        }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -1757,14 +1768,13 @@ public final class ActorRuntime implements AutoCloseable {
         AtomicBoolean released = new AtomicBoolean();
         Runnable retireOnce = () -> {
             if (released.compareAndSet(false, true)) {
-                try {
-                    releaseUntrustedSourceTask(cell, quota);
-                } finally {
-                    // A completed Future is not proof that an untrusted
-                    // physical carrier has exited the actor boundary.
-                    physicalQuiescenceConfirmed.set(true);
-                    releaseTimedWhenSafe.run();
-                }
+                retireUntrustedCompilerTransfer(
+                        retireAfterPhysicalDone,
+                        () -> releaseUntrustedSourceTask(cell, quota),
+                        () -> {
+                            physicalQuiescenceConfirmed.set(true);
+                            releaseTimedWhenSafe.run();
+                        });
             }
         };
         Runnable notificationsDrained = () -> {
@@ -1812,6 +1822,26 @@ public final class ActorRuntime implements AutoCloseable {
         // executing. The scheduler invokes retireOnce ONLY after guest
         // carrier quiescence, not merely when the Future settles.
         return future;
+    }
+
+    static void retireUntrustedCompilerTransfer(
+            Runnable retireAfterPhysicalDone,
+            Runnable releaseLogicalQuota,
+            Runnable publishPhysicalQuiescence) {
+        Objects.requireNonNull(
+                retireAfterPhysicalDone, "physical Task retirement");
+        Objects.requireNonNull(
+                releaseLogicalQuota, "logical Task quota release");
+        Objects.requireNonNull(
+                publishPhysicalQuiescence, "physical Task quiescence publication");
+
+        // Ownership retirement is the stronger authority. If it fails, the
+        // actor quota stays pinned and no physical-quiescence release witness
+        // is published. Callers deliberately do not retry a failed retirement:
+        // retrying can double-release ownership.
+        retireAfterPhysicalDone.run();
+        releaseLogicalQuota.run();
+        publishPhysicalQuiescence.run();
     }
 
     private void releaseUntrustedSourceTask(

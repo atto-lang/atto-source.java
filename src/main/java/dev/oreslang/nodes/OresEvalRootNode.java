@@ -1,5 +1,6 @@
 package dev.oreslang.nodes;
 
+import dev.oreslang.types.TaskAdmissionProof;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -52,16 +53,29 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
+    private final TaskAdmissionProof taskAdmissions;
     private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
-        this(language, program, "<anonymous>");
+        this(language, program, "<anonymous>", null);
     }
 
-    public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
+    public OresEvalRootNode(
+            OresLanguage language,
+            Ast.Program program,
+            String codeUnitId) {
+        this(language, program, codeUnitId, null);
+    }
+
+    public OresEvalRootNode(
+            OresLanguage language,
+            Ast.Program program,
+            String codeUnitId,
+            TaskAdmissionProof taskAdmissions) {
         super(language);
-        this.program = program;
+        this.program = java.util.Objects.requireNonNull(program, "program");
         this.codeUnitId = codeUnitId;
+        this.taskAdmissions = taskAdmissions;
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -118,7 +132,10 @@ public final class OresEvalRootNode extends RootNode {
         if (current != null) return current;
         synchronized (this) {
             current = evaluator;
-            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId);
+            if (current == null) {
+                evaluator = current = new Evaluator(
+                        program, context, codeUnitId, taskAdmissions);
+            }
             return current;
         }
     }
@@ -132,6 +149,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final TaskAdmissionProof taskAdmissions;
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -212,10 +230,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
 
-        private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
+        private Evaluator(
+                Ast.Program program,
+                OresContext context,
+                String codeUnitId,
+                TaskAdmissionProof taskAdmissions) {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.taskAdmissions = taskAdmissions;
             indexImports();
             indexDeclarations();
             indexCallableSlots();
@@ -1264,17 +1287,48 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceBlockTask(
                 Ast.TaskExpr task,
                 Env caller) {
-            // Every capture must have been proven at the compiler ownership
-            // boundary. Project just those names into fresh independent slots:
-            // normal lambda Env.snapshot() intentionally shares its Slot
-            // instances and MUST NOT be used directly for cross-Task moves.
-            Env captured = caller.taskProjection(task.captures());
-            return startSourceBlockTask(task.body(), captured);
+            if (taskAdmissions == null) {
+                throw new IllegalStateException(
+                        "source Task execution requires a joined compiler admission proof");
+            }
+            if (taskAdmissions.releaseBarrier()
+                    != TaskAdmissionProof.ReleaseBarrier.PHYSICAL_TASK_SCOPE_DONE) {
+                throw new IllegalStateException(
+                        "source Task proof is not bound to physical completion");
+            }
+            List<TaskAdmissionProof.AdmittedTransfer> admitted =
+                    taskAdmissions.requireFor(program, task);
+            List<String> proofNames = admitted.stream()
+                    .map(TaskAdmissionProof.AdmittedTransfer::name)
+                    .toList();
+            if (!proofNames.equals(task.captures())) {
+                throw new IllegalStateException(
+                        "Task capture lowering differs from the exact joined proof");
+            }
+
+            Env captured = caller.taskProjection(admitted);
+            TaskTransferLease lease = TaskTransferLease.retain(admitted, captured);
+            try {
+                return startSourceBlockTask(
+                        task.body(), captured, lease::retire);
+            } catch (RuntimeException | Error failure) {
+                // No runtime child can own the transfer after a pre-admission
+                // lowering failure.
+                lease.retire();
+                throw failure;
+            }
         }
 
         private OresFuture<Object> startSourceBlockTask(
                 List<Ast.Stmt> body,
                 Env env) {
+            return startSourceBlockTask(body, env, () -> { });
+        }
+
+        private OresFuture<Object> startSourceBlockTask(
+                List<Ast.Stmt> body,
+                Env env,
+                Runnable retireAfterPhysicalDone) {
             SourceTask task = new SourceTask(body);
             // Lexically snapshot at spawn time. Captured owned values were
             // consumed by the compile-time ownership pass; no borrowed or
@@ -1288,15 +1342,60 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "nb scope inside actor execution is not enabled until actor quota/hot-reload integration is proven");
                 }
-                return structuredScope.fork(task);
+                return structuredScope.forkCompilerAdmitted(
+                        task, retireAfterPhysicalDone);
             }
             if (ActorRuntime.inActorExecution()) {
-                OresFuture<Object> future = context.actors().startActorTask(task);
+                OresFuture<Object> future =
+                        context.actors().startActorTask(
+                                task, retireAfterPhysicalDone);
                 context.actors().ownCurrentActorFuture(future);
                 return future;
             }
             OresScheduler current = OresScheduler.current();
-            return (current != null ? current : context.vm().rootScheduler()).start(task);
+            return (current != null ? current : context.vm().rootScheduler())
+                    .startCompilerAdmittedTask(
+                            task, retireAfterPhysicalDone);
+        }
+
+        private static final class TaskTransferLease {
+            private final java.util.concurrent.atomic.AtomicReference<List<Object>>
+                    retained;
+            private final java.util.concurrent.atomic.AtomicBoolean retired =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+
+            private TaskTransferLease(List<Object> retained) {
+                this.retained =
+                        new java.util.concurrent.atomic.AtomicReference<>(
+                                List.copyOf(retained));
+            }
+
+            private static TaskTransferLease retain(
+                    List<TaskAdmissionProof.AdmittedTransfer> admitted,
+                    Env captured) {
+                ArrayList<Object> values = new ArrayList<>();
+                for (TaskAdmissionProof.AdmittedTransfer transfer : admitted) {
+                    if (transfer.ownership()
+                            == dev.oreslang.types.TaskTransferProvenance
+                                    .TransferKind.COPY) {
+                        continue;
+                    }
+                    Object value = captured.lookup(transfer.name());
+                    if (value == Env.MISSING) {
+                        throw new IllegalStateException(
+                                "proven Task transfer '" + transfer.name()
+                                        + "' is missing from projected environment");
+                    }
+                    values.add(value);
+                }
+                return new TaskTransferLease(values);
+            }
+
+            private void retire() {
+                if (retired.compareAndSet(false, true)) {
+                    retained.set(List.of());
+                }
+            }
         }
 
         private OresFuture<Object> startSourceMethodTask(
@@ -9193,17 +9292,48 @@ public final class OresEvalRootNode extends RootNode {
          * Copy-safe scalars are isolated by slot; owned heap references are
          * transferred only after the compiler has consumed their owners.
          */
-        private Env taskProjection(List<String> captureNames) {
-            Env cp = new Env(null, descendantsNonLexical, accessClass,
-                    null, lexicalModule, lexicalContainerClass);
-            cp.structuredTaskScope = structuredTaskScope;
-            for (String name : captureNames) {
+        private Env taskProjection(
+                List<TaskAdmissionProof.AdmittedTransfer> transfers) {
+            Objects.requireNonNull(transfers, "Task transfers");
+
+            // Validate the entire exact proof before mutating any source slot.
+            // That keeps projection failure atomic while making the runtime
+            // enforce the compiler's affine move rather than merely trusting
+            // later guest code not to observe the old binding.
+            ArrayList<Slot> sources = new ArrayList<>(transfers.size());
+            ArrayList<Object> values = new ArrayList<>(transfers.size());
+            java.util.HashSet<String> seen = new java.util.HashSet<>();
+            for (TaskAdmissionProof.AdmittedTransfer transfer : transfers) {
+                String name = transfer.name();
+                if (!seen.add(name)) {
+                    throw new IllegalStateException(
+                            "duplicate Task capture '" + name + "' in joined proof");
+                }
                 Slot slot = findTaskCapture(name);
                 if (slot == null || slot.value == MISSING) {
                     throw new IllegalStateException(
                             "Task capture '" + name + "' missing at spawn");
                 }
-                cp.slots.put(name, new Slot(slot.value, slot.kind));
+                sources.add(slot);
+                values.add(slot.value);
+            }
+
+            Env cp = new Env(null, descendantsNonLexical, accessClass,
+                    null, lexicalModule, lexicalContainerClass);
+            cp.structuredTaskScope = structuredTaskScope;
+            for (int i = 0; i < transfers.size(); i++) {
+                TaskAdmissionProof.AdmittedTransfer transfer = transfers.get(i);
+                Slot source = sources.get(i);
+                cp.slots.put(
+                        transfer.name(),
+                        new Slot(values.get(i), source.kind));
+            }
+            for (int i = 0; i < transfers.size(); i++) {
+                if (transfers.get(i).ownership()
+                        != dev.oreslang.types.TaskTransferProvenance
+                                .TransferKind.COPY) {
+                    sources.get(i).value = MISSING;
+                }
             }
             return cp;
         }

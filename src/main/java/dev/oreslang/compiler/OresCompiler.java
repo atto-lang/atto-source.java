@@ -6,20 +6,55 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.TaskAdmissionProof;
+import dev.oreslang.types.TaskSemanticAdmission;
 
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
     private OresCompiler() { }
 
+    public record ExecutionAnalysis(
+            Ast.Program program,
+            java.util.List<String> warnings,
+            TaskAdmissionProof taskAdmissions) {
+        public ExecutionAnalysis {
+            warnings = java.util.List.copyOf(warnings);
+            if (program == null || taskAdmissions == null) {
+                throw new IllegalArgumentException(
+                        "execution analysis requires program and Task proof");
+            }
+            if (taskAdmissions.releaseBarrier()
+                    != TaskAdmissionProof.ReleaseBarrier.PHYSICAL_TASK_SCOPE_DONE) {
+                throw new IllegalArgumentException(
+                        "executable Task proof has the wrong release barrier");
+            }
+        }
+    }
+
+    public static ExecutionAnalysis parseAndProveForExecution(String source) {
+        return analyzeForExecution(Parser.parse(source));
+    }
+
+    public static ExecutionAnalysis analyzeForExecution(Ast.Program program) {
+        TypeChecker.TypeCheckResult checked =
+                TypeChecker.checkTypesWithDiagnostics(program);
+        OwnershipChecker.CheckResult ownership =
+                OwnershipChecker.checkWithTaskTransferProvenance(checked.program());
+        TaskSemanticAdmission semantic =
+                TypeChecker.checkTaskTransferProvenance(
+                        checked.program(), ownership.taskTransfers());
+        TaskAdmissionProof proof =
+                TaskAdmissionProof.combine(ownership.taskTransfers(), semantic);
+        return new ExecutionAnalysis(checked.program(), checked.warnings(), proof);
+    }
+
     public static Ast.Program parseAndTypeCheck(String source) {
-        return analyze(Parser.parse(source));
+        return analyzeForExecution(Parser.parse(source)).program();
     }
 
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
-        program = TypeChecker.checkTypes(program);
-        OwnershipChecker.check(program);
-        return program;
+        return analyzeForExecution(program).program();
     }
 
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
@@ -32,8 +67,7 @@ public final class OresCompiler {
     }
 
     public static AnalysisResult analyzeWithDiagnostics(Ast.Program program) {
-        TypeChecker.TypeCheckResult checked = TypeChecker.checkTypesWithDiagnostics(program);
-        OwnershipChecker.check(checked.program());
+        ExecutionAnalysis checked = analyzeForExecution(program);
         return new AnalysisResult(checked.program(), checked.warnings());
     }
 

@@ -463,4 +463,92 @@ final class OresSchedulerTest {
         assertEquals(1, pc.get(),
                 "detached continuation must never resume after producer completion");
     }
+
+    @Test
+    void quiescenceRetirementFailureOverridesGuestSuccess() throws Exception {
+        RuntimeException retirementFailure =
+                new RuntimeException("ownership retirement failed");
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> task = scheduler.start(
+                    resume -> OresScheduler.done(42),
+                    () -> { throw retirementFailure; });
+
+            java.util.concurrent.ExecutionException observed =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> task.get(5, TimeUnit.SECONDS));
+            assertSame(retirementFailure, observed.getCause(),
+                    "trusted lifecycle failure must override guest success");
+        }
+    }
+
+
+
+    @Test
+    void compilerAdmittedTaskRetiresExactlyOnceWhenSchedulerIsClosed() {
+        OresScheduler scheduler = new OresScheduler(1);
+        scheduler.close();
+        AtomicInteger retirements = new AtomicInteger();
+        AtomicBoolean ran = new AtomicBoolean();
+
+        assertThrows(
+                java.util.concurrent.RejectedExecutionException.class,
+                () -> scheduler.startCompilerAdmittedTask(
+                        resume -> {
+                            ran.set(true);
+                            return OresScheduler.done(1);
+                        },
+                        retirements::incrementAndGet));
+
+        assertFalse(ran.get(), "closed-scheduler rejection must never enter guest task code");
+        assertEquals(1, retirements.get(),
+                "never-admitted ownership retirement must be exactly once");
+    }
+
+    @Test
+    void compilerAdmittedTaskRetiresExactlyOnceWhenReadyQueueRejects()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1, 1)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicBoolean rejectedRan = new AtomicBoolean();
+            AtomicInteger retirements = new AtomicInteger();
+
+            OresFuture<Integer> running = scheduler.start(resume -> {
+                entered.countDown();
+                assertTrue(release.await(5, TimeUnit.SECONDS));
+                return OresScheduler.done(1);
+            });
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            OresFuture<Integer> queued =
+                    scheduler.start(resume -> OresScheduler.done(2));
+
+            OresFuture<Integer> rejected =
+                    scheduler.startCompilerAdmittedTask(
+                            resume -> {
+                                rejectedRan.set(true);
+                                return OresScheduler.done(3);
+                            },
+                            retirements::incrementAndGet);
+
+            java.util.concurrent.ExecutionException observed =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> rejected.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(
+                    java.util.concurrent.RejectedExecutionException.class,
+                    observed.getCause());
+            assertFalse(rejectedRan.get(),
+                    "queue-rejected Task must never enter guest task code");
+            assertEquals(1, retirements.get(),
+                    "queue rejection must retire compiler transfer exactly once");
+
+            release.countDown();
+            assertEquals(1, running.get(5, TimeUnit.SECONDS));
+            assertEquals(2, queued.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+
 }

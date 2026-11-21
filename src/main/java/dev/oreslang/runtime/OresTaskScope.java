@@ -32,9 +32,11 @@ public final class OresTaskScope {
 
     private static final class Child {
         private volatile OresFuture<?> future;
+        private Runnable retireAfterPhysicalDone = () -> { };
         // Guarded by the enclosing scope lock.
         private boolean quiescent;
         private boolean terminal;
+        private boolean retirementClaimed;
     }
 
     private final OresScheduler scheduler;
@@ -79,13 +81,27 @@ public final class OresTaskScope {
      * proof and may finish later.</p>
      */
     public <T> OresFuture<T> fork(OresScheduler.Task<T> task) {
+        return forkCompilerAdmitted(task, () -> { });
+    }
+
+    /**
+     * Compiler-only ownership retirement hook. It is not a Future-settlement
+     * callback: retirement waits for both scheduler quiescence and irrevocable
+     * child terminal authority.
+     */
+    public <T> OresFuture<T> forkCompilerAdmitted(
+            OresScheduler.Task<T> task,
+            Runnable retireAfterPhysicalDone) {
         Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(
+                retireAfterPhysicalDone, "physical Task retirement");
         synchronized (lock) {
             if (state != State.OPEN) {
                 throw new IllegalStateException("Task scope is already sealed");
             }
 
             Child child = new Child();
+            child.retireAfterPhysicalDone = retireAfterPhysicalDone;
             children.add(child);
             final OresFuture<T> future;
             try {
@@ -94,9 +110,12 @@ public final class OresTaskScope {
                         () -> childQuiescent(child),
                         () -> childTerminal(child));
             } catch (RuntimeException | Error failure) {
-                // Admission can fail before TaskRunner ownership exists, in which
-                // case no onQuiescent callback will arrive.
                 children.remove(child);
+                try {
+                    retireAfterPhysicalDone.run();
+                } catch (RuntimeException | Error retirementFailure) {
+                    failure.addSuppressed(retirementFailure);
+                }
                 throw failure;
             }
 
@@ -209,36 +228,66 @@ public final class OresTaskScope {
     }
 
     private void childQuiescent(Child child) {
-        boolean complete;
         synchronized (lock) {
             child.quiescent = true;
-            complete = retireChildIfReadyLocked(child);
         }
-        if (complete) completeDrain();
+        retireChildIfReady(child);
     }
 
     private void childTerminal(Child child) {
-        boolean complete;
         synchronized (lock) {
             child.terminal = true;
-            complete = retireChildIfReadyLocked(child);
         }
-        if (complete) completeDrain();
+        retireChildIfReady(child);
     }
 
-    /**
-     * @return true when this transition closes the entire scope and the barrier
-     *         must be completed after releasing the lock.
-     */
-    private boolean retireChildIfReadyLocked(Child child) {
-        if (!child.quiescent || !child.terminal || !children.remove(child)) {
-            return false;
+    private void retireChildIfReady(Child child) {
+        Runnable retirement = null;
+        synchronized (lock) {
+            if (child.quiescent && child.terminal
+                    && !child.retirementClaimed
+                    && children.contains(child)) {
+                child.retirementClaimed = true;
+                retirement = child.retireAfterPhysicalDone;
+            }
         }
-        if (state != State.OPEN && children.isEmpty() && state != State.CLOSED) {
-            state = State.CLOSED;
-            return true;
+        if (retirement == null) return;
+
+        try {
+            retirement.run();
+        } catch (RuntimeException | Error failure) {
+            java.util.ArrayList<OresFuture<?>> cancel =
+                    new java.util.ArrayList<>();
+            synchronized (lock) {
+                if (state != State.CLOSED) {
+                    state = State.CANCELLING;
+                }
+                for (Child remaining : children) {
+                    if (remaining.future != null) {
+                        cancel.add(remaining.future);
+                    }
+                }
+            }
+            // Fail closed: never remove this child or publish a successful
+            // scope-drain witness when compiler-owned retirement failed.
+            drained.failFromRuntime(failure);
+            for (OresFuture<?> future : cancel) {
+                future.cancel(false);
+            }
+            return;
         }
-        return false;
+
+        boolean complete = false;
+        synchronized (lock) {
+            if (!children.remove(child)) return;
+            if (state != State.OPEN
+                    && children.isEmpty()
+                    && state != State.CLOSED) {
+                state = State.CLOSED;
+                complete = true;
+            }
+        }
+        if (complete) completeDrain();
     }
 
     private void completeDrain() {
