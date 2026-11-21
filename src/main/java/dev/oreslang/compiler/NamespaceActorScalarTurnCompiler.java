@@ -3,6 +3,7 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.NamespaceActorScalarRegion;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.types.ActorReceiverBinder;
 import dev.oreslang.types.ActorStateBinder;
@@ -181,17 +182,12 @@ final class NamespaceActorScalarTurnCompiler {
                 "NAMESPACE_ACTOR_SCALAR_MIR_UNSUPPORTED: " + reason);
     }
 
-    /** One private scalar allocation per runtime actor, never shared in CodeImage. */
-    private static final class Owned implements ActorRuntime.ActorOwnedGuestState {
-        private final ActorRuntime.ActorId owner;
-        private long integerValue;
-        private boolean booleanValue;
-        private Owned(ActorRuntime.ActorId owner, long initialInt, boolean initialBool) {
-            this.owner = owner;
-            this.integerValue = initialInt;
-            this.booleanValue = initialBool;
+    /** Runtime-backed actor-owned region, not a compiler-scoped Java value. */
+    private record Owned(NamespaceActorScalarRegion scalar)
+            implements ActorRuntime.ActorOwnedGuestState {
+        @Override public ActorRuntime.ActorId ownerActorId() {
+            return scalar.ownerActorId();
         }
-        @Override public ActorRuntime.ActorId ownerActorId() { return owner; }
     }
 
     private record Plan(
@@ -207,7 +203,8 @@ final class NamespaceActorScalarTurnCompiler {
             if (context.currentMail().isPresent()) {
                 throw new SecurityException("init must run on activation only");
             }
-            return new Owned(context.self().id(), initialInt, initialBool);
+            return new Owned(NamespaceActorScalarRegion.initialize(
+                    context, initialInt, initialBool, booleanField));
         }
 
         @Override
@@ -218,18 +215,35 @@ final class NamespaceActorScalarTurnCompiler {
                 ActorRuntime.ActorContext<Object> context) {
             requireTurn(requestedActor, context);
             if (!(state instanceof Owned owned)
-                    || !owned.owner.equals(context.self().id())
-                    || !mail.recipient().equals(context.self().id())
-                    || !mail.equals(context.currentMail().orElse(null))
-                    || !(mail.value() instanceof Long)) {
-                throw new SecurityException("cross-actor or forged scalar mailbox ingress");
+                    || !owned.ownerActorId().equals(context.self().id())) {
+                throw new SecurityException("cross-actor scalar allocation identity");
             }
-            // Runtime serializes this actor's logical mailbox turns. The
-            // compiler admitted one nonescaping critical write above.
-            // Checked overflow never wraps, and another actor's Owned
-            // allocation is never reachable through this execution.
-            if (booleanField) owned.booleanValue = true;
-            else owned.integerValue = Math.addExact(owned.integerValue, 1L);
+            // This executes the compiler-admitted closed MIR through the
+            // physical #2796 RW loan manager (zero pending capacity). No
+            // suspension or public state capability is created. Envelope
+            // validation belongs inside the same terminal-failure cleanup
+            // scope: an invalid message on a REAL actor turn must not strand
+            // the physical loan manager when graceful teardown is skipped.
+            try {
+                if (mail == null
+                        || !mail.recipient().equals(context.self().id())
+                        || !mail.equals(context.currentMail().orElse(null))
+                        || !(mail.value() instanceof Long)) {
+                    throw new SecurityException(
+                            "cross-actor or forged scalar mailbox ingress");
+                }
+                if (booleanField) owned.scalar().setTrue(context);
+                else owned.scalar().increment(context);
+            } catch (RuntimeException | Error failure) {
+                // Runtime may bypass graceful teardown after a failed turn.
+                // Revoke this allocation now so it cannot be reused or leaked.
+                try {
+                    owned.scalar().retire(context);
+                } catch (RuntimeException | Error cleanup) {
+                    failure.addSuppressed(cleanup);
+                }
+                throw failure;
+            }
         }
 
         @Override
@@ -239,11 +253,10 @@ final class NamespaceActorScalarTurnCompiler {
                 ActorRuntime.ActorContext<Object> context) {
             requireTurn(requestedActor, context);
             if (!(state instanceof Owned owned)
-                    || !owned.owner.equals(context.self().id())) {
+                    || !owned.ownerActorId().equals(context.self().id())) {
                 throw new SecurityException("cross-actor scalar teardown");
             }
-            owned.integerValue = 0;
-            owned.booleanValue = false; // actor-affine cleanup, not guest-exposed memory
+            owned.scalar().retire(context); // close and physically retire loans
         }
 
         private void requireTurn(
