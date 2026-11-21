@@ -199,3 +199,16 @@ raw-bit runtime tests are included, but all evidence remains
 Maven/GraalVM and Native Image suites. This refresh does not authorize
 cross-organization source publication and does not merge the stale #120
 Matrix/Vector tree.
+
+
+## First-class Java complex128 runtime scalar
+
+The Java complex128 value is no longer confined to a private evaluator record.
+`dev.oreslang.runtime.OresComplex` is an immutable DATA scalar backed by the
+same `Complex128Math` kernel used by guest arithmetic. Actor freeze/quota
+logic recognizes it explicitly, preserving identity for immutable transport
+while keeping live capabilities out of the value graph. The exact integer
+promotion boundary and BigInt/Decimal fail-closed rule are available at the
+runtime-value boundary as well as through the evaluator. This is the reusable
+foundation for the reviewed Matrix/Vector forward-port; it does not by itself
+admit matrix serialization or native/GPU matrix parity.

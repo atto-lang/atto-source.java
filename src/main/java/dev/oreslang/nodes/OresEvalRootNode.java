@@ -16,6 +16,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresComplex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -4774,7 +4775,7 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof java.math.BigDecimal
                     || value instanceof Enum<?>
                     || value instanceof java.util.UUID
-                    || value instanceof Complex
+                    || value instanceof OresComplex
                     || value instanceof OptionUnwrapError) {
                 return value;
             }
@@ -6109,7 +6110,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
-                if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
+                if (literal.value() instanceof Ast.Imaginary imaginary) return new OresComplex(0.0, imaginary.coefficient());
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
@@ -8364,7 +8365,7 @@ public final class OresEvalRootNode extends RootNode {
                 return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex64")) return false;
             if (name.equals("complex") || name.equals("complex128"))
-                return value instanceof Complex;
+                return value instanceof OresComplex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
@@ -8405,7 +8406,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof Boolean) return "bool";
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return "int";
             if (value instanceof Float || value instanceof Double) return "float";
-            if (value instanceof Complex) return "complex";
+            if (value instanceof OresComplex) return "complex";
             if (value instanceof HostObjectFacade) return "<host-object>";
             return "<unknown>";
         }
@@ -8515,11 +8516,11 @@ public final class OresEvalRootNode extends RootNode {
             if (left instanceof Number a && right instanceof Number b) {
                 return numericValueEquals(a, b);
             }
-            if (left instanceof Complex || right instanceof Complex) {
+            if (left instanceof OresComplex || right instanceof OresComplex) {
                 try {
-                    Complex a = asComplex(left);
-                    Complex b = asComplex(right);
-                    return a.real == b.real && a.imaginary == b.imaginary;
+                    OresComplex a = asComplex(left);
+                    OresComplex b = asComplex(right);
+                    return a.real() == b.real() && a.imaginary() == b.imaginary();
                 } catch (IllegalArgumentException ignored) {
                     return false;
                 }
@@ -8665,8 +8666,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object numeric(Object left, Object right, char op) {
-            if (left instanceof Complex || right instanceof Complex) {
-                Complex a = asComplex(left), b = asComplex(right);
+            if (left instanceof OresComplex || right instanceof OresComplex) {
+                OresComplex a = asComplex(left), b = asComplex(right);
                 return switch (op) {
                     case '+' -> a.add(b); case '-' -> a.sub(b); case '*' -> a.mul(b); case '/' -> a.div(b);
                     default -> throw new IllegalArgumentException("operator " + op + " is not supported for complex numbers");
@@ -8698,7 +8699,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object negate(Object value) {
-            if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
+            if (value instanceof OresComplex c) return new OresComplex(-c.real(), -c.imaginary());
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
@@ -8738,8 +8739,8 @@ public final class OresEvalRootNode extends RootNode {
             return value;
         }
 
-        private Complex asComplex(Object value) {
-            if (value instanceof Complex c) return c;
+        private OresComplex asComplex(Object value) {
+            if (value instanceof OresComplex c) return c;
             // Exact numeric carriers may require more than 53 bits; never
             // silently narrow them into binary64 complex arithmetic.
             if (value instanceof java.math.BigInteger || value instanceof java.math.BigDecimal) {
@@ -8755,7 +8756,7 @@ public final class OresEvalRootNode extends RootNode {
                                 "explicit conversion required from integer outside exact binary64 range to complex");
                     }
                 }
-                return new Complex(n.doubleValue(), 0.0);
+                return new OresComplex(n.doubleValue(), 0.0);
             }
             throw new IllegalArgumentException("value is not numeric");
         }
@@ -8845,7 +8846,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (declared.name().equals("complex")
                     || declared.name().equals("complex128")) {
-                if (!(value instanceof Number) && !(value instanceof Complex))
+                if (!(value instanceof Number) && !(value instanceof OresComplex))
                     throw returnTypeMismatch(callable, declared, value);
                 // Declared complex returns are a coercion boundary too. Route
                 // through the same guarded binary64 conversion as arithmetic
@@ -9248,41 +9249,6 @@ public final class OresEvalRootNode extends RootNode {
         FAILED
     }
 
-    private record Complex(double real, double imaginary) implements OresMutex.SharedState {
-        @Override public Iterable<?> sharedStateChildren(){return List.of();}
-
-        private Complex add(Complex o) {
-            var value = dev.oreslang.runtime.Complex128Math.add(
-                    real, imaginary, o.real, o.imaginary);
-            return new Complex(value.real(), value.imaginary());
-        }
-
-        private Complex sub(Complex o) {
-            var value = dev.oreslang.runtime.Complex128Math.subtract(
-                    real, imaginary, o.real, o.imaginary);
-            return new Complex(value.real(), value.imaginary());
-        }
-
-        private Complex mul(Complex o) {
-            var value = dev.oreslang.runtime.Complex128Math.multiply(
-                    real, imaginary, o.real, o.imaginary);
-            return new Complex(value.real(), value.imaginary());
-        }
-
-        private Complex div(Complex o) {
-            var value = dev.oreslang.runtime.Complex128Math.divide(
-                    real, imaginary, o.real, o.imaginary);
-            return new Complex(value.real(), value.imaginary());
-        }
-
-        @Override public String toString() {
-            String imaginaryText = Double.toString(imaginary);
-            // Comparing with < 0 fails for IEEE negative zero.
-            return real + (imaginaryText.startsWith("-") ? "" : "+")
-                    + imaginaryText + "i";
-        }
-    }
-
     /**
      * Runtime provenance for infer struct. It behaves as a Map for existing
      * structural operations while remaining immutable across aliases and async
@@ -9557,7 +9523,7 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
                     || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
-                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
+                    || value instanceof OresComplex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
                 return true;
             }
 
