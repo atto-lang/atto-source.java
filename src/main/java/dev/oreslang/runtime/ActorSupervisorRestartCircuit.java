@@ -101,7 +101,9 @@ final class ActorSupervisorRestartCircuit {
     private final boolean[] restartPending;
     private final ArrayDeque<Long> restartTimes = new ArrayDeque<>();
 
-    private long lastNowNanos = Long.MIN_VALUE;
+    private boolean clockInitialized;
+    private long lastRawNowNanos;
+    private long elapsedNowNanos;
     private long nextDecisionSequence = 1L;
     private long acceptedReplacementRestarts;
     private long escalations;
@@ -123,7 +125,7 @@ final class ActorSupervisorRestartCircuit {
             long actorGeneration,
             long nowNanos) {
         requireChild(childIndex);
-        requireMonotonicTime(nowNanos);
+        long now = requireMonotonicTime(nowNanos);
         if (actorGeneration <= 0) {
             throw new IllegalArgumentException("actor generation must be positive");
         }
@@ -134,7 +136,7 @@ final class ActorSupervisorRestartCircuit {
             throw new IllegalStateException("replacement generation must increase");
         }
         generation[childIndex] = actorGeneration;
-        startedAtNanos[childIndex] = nowNanos;
+        startedAtNanos[childIndex] = now;
         live[childIndex] = true;
         restartPending[childIndex] = false;
     }
@@ -150,7 +152,7 @@ final class ActorSupervisorRestartCircuit {
         Objects.requireNonNull(policy, "policy");
         Objects.requireNonNull(exitClass, "exitClass");
         Objects.requireNonNull(strategy, "strategy");
-        requireMonotonicTime(nowNanos);
+        long now = requireMonotonicTime(nowNanos);
         long decisionSequence = nextDecisionSequence();
 
         if (!live[childIndex] || generation[childIndex] != actorGeneration) {
@@ -196,7 +198,7 @@ final class ActorSupervisorRestartCircuit {
         };
         int width = end - first;
 
-        pruneWindow(nowNanos);
+        pruneWindow(now);
         if (width > config.maxRestarts()
                 || restartTimes.size() > config.maxRestarts() - width) {
             escalations++;
@@ -213,7 +215,7 @@ final class ActorSupervisorRestartCircuit {
         }
 
         long livedFor = nonNegativeElapsed(
-                nowNanos, startedAtNanos[childIndex]);
+                now, startedAtNanos[childIndex]);
         int attempt;
         if (config.stableResetNanos() > 0
                 && livedFor >= config.stableResetNanos()) {
@@ -231,7 +233,7 @@ final class ActorSupervisorRestartCircuit {
             restartPending[i] = true;
         }
 
-        for (int i = 0; i < width; ++i) restartTimes.addLast(nowNanos);
+        for (int i = 0; i < width; ++i) restartTimes.addLast(now);
         acceptedReplacementRestarts += width;
 
         return new RestartPlan(
@@ -256,8 +258,8 @@ final class ActorSupervisorRestartCircuit {
     }
 
     synchronized Snapshot snapshot(long nowNanos) {
-        requireMonotonicTime(nowNanos);
-        pruneWindow(nowNanos);
+        long now = requireMonotonicTime(nowNanos);
+        pruneWindow(now);
         return new Snapshot(
                 restartTimes.size(),
                 acceptedReplacementRestarts,
@@ -329,12 +331,24 @@ final class ActorSupervisorRestartCircuit {
         }
     }
 
-    private void requireMonotonicTime(long nowNanos) {
-        if (lastNowNanos != Long.MIN_VALUE && nowNanos < lastNowNanos) {
+    private long requireMonotonicTime(long rawNowNanos) {
+        if (!clockInitialized) {
+            clockInitialized = true;
+            lastRawNowNanos = rawNowNanos;
+            return 0L;
+        }
+        long delta = rawNowNanos - lastRawNowNanos;
+        if (delta < 0) {
             clockRegressions++;
             throw new IllegalArgumentException("supervisor monotonic clock regressed");
         }
-        lastNowNanos = nowNanos;
+        lastRawNowNanos = rawNowNanos;
+        try {
+            elapsedNowNanos = Math.addExact(elapsedNowNanos, delta);
+        } catch (ArithmeticException exhausted) {
+            throw new IllegalStateException("supervisor elapsed-time sequence exhausted", exhausted);
+        }
+        return elapsedNowNanos;
     }
 
     private long nextDecisionSequence() {
