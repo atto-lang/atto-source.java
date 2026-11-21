@@ -57,10 +57,20 @@ public final class AsyncRuntime implements AutoCloseable {
         private volatile Thread thread;
         private volatile OresFuture<?> completion;
         private final OresFuture<Void> quiesced = new OresFuture<>();
+        // Set by a structured owner BEFORE submitting its carrier.
+        private Runnable retirement = () -> { };
 
         private void markExited() {
-            exited.countDown();
-            quiesced.completeFromRuntime(null);
+            try {
+                // Physical retirement is part of the completion contract:
+                // failure here must never be masked by Future waiter isolation.
+                retirement.run();
+                quiesced.completeFromRuntime(null);
+            } catch (RuntimeException | Error retirementFailure) {
+                quiesced.failFromRuntime(retirementFailure);
+            } finally {
+                exited.countDown();
+            }
         }
     }
 
@@ -70,9 +80,21 @@ public final class AsyncRuntime implements AutoCloseable {
     }
 
     public AsyncRuntime(TurnExecutor turnExecutor) {
-        this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this(turnExecutor, newVirtualThreadExecutor());
+    }
+
+    private static ExecutorService newVirtualThreadExecutor() {
         ThreadFactory factory = Thread.ofVirtual().name("ores-async-", 0L).factory();
-        this.executor = Executors.newThreadPerTaskExecutor(factory);
+        return Executors.newThreadPerTaskExecutor(factory);
+    }
+
+    /**
+     * Package-private adversarial executor seam. Tests can delay, reject or
+     * fail admission deterministically without changing guest semantics.
+     */
+    AsyncRuntime(TurnExecutor turnExecutor, ExecutorService executor) {
+        this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this.executor = Objects.requireNonNull(executor, "executor");
     }
 
     /**
@@ -120,11 +142,86 @@ public final class AsyncRuntime implements AutoCloseable {
      */
     public <T> OresTask<T> submitTask(Task<T> task) {
         Objects.requireNonNull(task, "task");
-        TaskExit exit = new TaskExit();
-        OresTask<T> owner = new OresTask<>(exit.quiesced);
-        OresFuture<T> completion = submitInternal(task, exit);
-        owner.attachCompletion(completion);
-        return owner;
+        TaskAdmission<T> admitted = prepareTaskAdmission();
+        submitPreparedTask(admitted, task);
+        return admitted.owner;
+    }
+
+    /**
+     * Compiler/runtime-only physical ownership reservation. A scope owns the
+     * Task shell and quiescence fence before dispatch, so cancellation and
+     * close can join a producer even if executor admission blocks.
+     */
+    static final class TaskAdmission<T> {
+        private final AsyncRuntime runtime;
+        private final TaskExit exit = new TaskExit();
+        final OresTask<T> owner = OresTask.provisional(exit.quiesced);
+        private boolean started;
+        private boolean retirementInstalled;
+
+        private TaskAdmission(AsyncRuntime runtime) {
+            this.runtime = Objects.requireNonNull(runtime, "runtime");
+        }
+
+        // Installation and admission claim share one monitor. No caller may
+        // replace an owner-release hook after dispatch starts or install it
+        // twice. The executor and guest callbacks run outside this monitor.
+        synchronized void installRetirement(Runnable hook) {
+            Objects.requireNonNull(hook, "hook");
+            if (started || retirementInstalled)
+                throw new IllegalStateException(
+                        "Task retirement must be installed once before dispatch");
+            exit.retirement = hook;
+            retirementInstalled = true;
+        }
+
+        private synchronized boolean claimStart(AsyncRuntime requester) {
+            if (requester != runtime)
+                throw new IllegalArgumentException(
+                        "Task admission belongs to a different AsyncRuntime");
+            if (started) return false;
+            started = true;
+            return true;
+        }
+    }
+
+    <T> TaskAdmission<T> prepareTaskAdmission() {
+        return new TaskAdmission<>(this);
+    }
+
+    /**
+     * Failed scope reservation may have inserted an ownership slot before a
+     * hostile collection threw. Retire the unstarted owner exactly once so
+     * close() never waits forever on a provisional physical-exit fence.
+     */
+    void abandonPreparedTask(TaskAdmission<?> admission) {
+        Objects.requireNonNull(admission, "admission");
+        if (!admission.claimStart(this))
+            throw new IllegalStateException("Task admission already attempted");
+        if (admission.exit.state.compareAndSet(0, 2))
+            admission.exit.markExited();
+    }
+
+    <T> void submitPreparedTask(TaskAdmission<T> admission, Task<T> task) {
+        Objects.requireNonNull(admission, "admission");
+        Objects.requireNonNull(task, "task");
+        if (!admission.claimStart(this))
+            throw new IllegalStateException("Task admission already attempted");
+        try {
+            OresFuture<T> completion = submitInternal(task, admission.exit);
+            // If the owner was cancelled while the host executor was
+            // admitting it, binding replays cancellation without scope locks.
+            admission.owner.attachCompletion(completion);
+        } catch (RuntimeException | Error failure) {
+            // A pre-dispatch failure has no carrier to retire the fence.
+            // Never claim physical exit when a carrier already entered.
+            if (admission.exit.state.compareAndSet(0, 2)) {
+                OresFuture<?> registered = admission.exit.completion;
+                admission.exit.markExited();
+                if (registered != null) taskExits.remove(registered, admission.exit);
+            }
+            throw failure;
+        }
     }
 
     /** Supervised discarded-handle form; failure is never silently ignored. */
@@ -148,8 +245,8 @@ public final class AsyncRuntime implements AutoCloseable {
             Future<?> carrier = backing.getAndSet(null);
             if (carrier != null) carrier.cancel(true);
             if (exit.state.compareAndSet(0, 2)) {
-                taskExits.remove(exit.completion, exit);
                 exit.markExited();
+                taskExits.remove(exit.completion, exit);
             }
         });
         exit.completion = completion;
@@ -161,7 +258,8 @@ public final class AsyncRuntime implements AutoCloseable {
         try {
             scheduled = executor.submit(() -> {
                 if (!exit.state.compareAndSet(0, 1)) {
-                    taskExits.remove(completion, exit);
+                    // A cancelling host won pre-entry retirement. It owns
+                    // map removal only AFTER the physical fence settles.
                     return;
                 }
                 exit.thread = Thread.currentThread();
@@ -171,21 +269,31 @@ public final class AsyncRuntime implements AutoCloseable {
                     // TurnExecutor has returned, including its context leave.
                     backing.set(null);
                     exit.state.set(2);
-                    taskExits.remove(completion, exit);
                     exit.markExited();
+                    taskExits.remove(completion, exit);
                 }
             });
-        } catch (RejectedExecutionException rejected) {
-            taskExits.remove(completion, exit);
-            exit.state.set(2);
-            exit.markExited();
-            throw new RejectedExecutionException("async runtime is closed", rejected);
+        } catch (RuntimeException | Error admissionFailure) {
+            // A rejection, executor-factory failure or allocation fault
+            // happens before a scheduled carrier is returned. A concurrent
+            // runtime close may already have revoked the registered Future.
+            // Only the winning 0 -> 2 transition may retire its owner;
+            // keep the registration until that retirement has finished.
+            if (exit.state.compareAndSet(0, 2)) {
+                exit.markExited();
+                taskExits.remove(completion, exit);
+            }
+            if (admissionFailure instanceof RejectedExecutionException rejected)
+                throw new RejectedExecutionException("async runtime is closed", rejected);
+            throw admissionFailure;
         }
         backing.set(scheduled);
         if (completion.isCancelled()) {
             scheduled.cancel(true);
-            if (exit.state.compareAndSet(0, 2)) exit.markExited();
-            if (exit.state.get() == 2) taskExits.remove(completion, exit);
+            if (exit.state.compareAndSet(0, 2)) {
+                exit.markExited();
+                taskExits.remove(completion, exit);
+            }
         }
 
         // Close may race submission after the initial check.

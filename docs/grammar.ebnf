@@ -190,7 +190,7 @@ statement       = binding_decl
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
-task_stmt       = "do" ( "task" | "nb" ) block [ ";" ] ; (* fire-and-continue, no handle *)
+task_stmt       = "do" ( "task" | "nb" ) block [ ";" ] ; (* canonical do task; do nb is a compatibility alias, runtime still gated *)
 block_stmt      = "block" block ;
 break_stmt      = "break" stmt_terminator ;
 continue_stmt   = "continue" stmt_terminator ;
@@ -309,7 +309,7 @@ member_name     = IDENT | "stop" | "do" | "done"
 index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
-task_expr       = ( "task" | "nb" | "nb" "task" ) block ; (* value Task<T>, both forms equivalent; lowering gated *) ;
+task_expr       = ( "task" | "nb" | "nb" "task" ) block ; (* canonical task {}, legacy nb{} aliases; only limited guest scalar lowering enabled *) ;
 primary         = literal
                 | callable_name
                 | "self"

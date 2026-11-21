@@ -93,6 +93,12 @@ final class TaskTraitAdmissionHardeningTest {
     void ordinaryValueProofsAndExplicitSourceIntrinsicRulesRemainAvailable() {
         var checker = new SendSyncTraits(new Ast.Program(List.of()));
         assertEquals(SendSyncTraits.Traits.BOTH, checker.derive(source("int")));
+        // Source and resolved policies agree: void is a return effect, not an owned value.
+        assertEquals(SendSyncTraits.Traits.NONE, checker.derive(source("void")));
+        assertFalse(ThreadSafetyTraits.has(Types.Primitive.VOID,
+                ThreadSafetyTraits.Trait.SEND, (type, trait) -> true));
+        assertFalse(ThreadSafetyTraits.has(Types.Primitive.VOID,
+                ThreadSafetyTraits.Trait.SYNC, (type, trait) -> true));
         var ordinary = new Types.Named("OrdinaryValue", List.of(Types.Primitive.INT));
         for (var trait : ThreadSafetyTraits.Trait.values()) {
             assertTrue(ThreadSafetyTraits.has(ordinary, trait, (type, requested) -> true));

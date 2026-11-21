@@ -1,41 +1,43 @@
 # Oreslang lightweight Tasks: v0 draft frontend contract
 
-**Status (2026-10-18):** Parser/AST shape added in this branch. **Runtime execution is deliberately disabled** until capture ownership, task scopes, cancellation, cleanup and scheduling are implemented. These samples specify desired semantics, not verified executable behavior.
+**Status (2026-10-19):** Canonical `task {}` syntax is parsed. Draft PR #1484 adds only the immediate `await task { return <scalar>; }` path in a trusted public root `main`; the full-source Maven/JUnit/GraalVM execution gates have **not** been verified. All general, detached, nested and actor Tasks remain rejected. Most examples below specify intended future semantics, not executable behavior.
+
+`task { ... }` is canonical. Legacy `nb { ... }` is parsed to the identical `TaskExpr`; nonblocking `nb readch` / `nb select` retain their separate meaning. Only the restricted immediate-await scalar form in trusted root `main` has an implementation draft; the general forms below remain unexecuted until their gates pass.
 
 ## Surface syntax
 
 ```oreslang
-do nb {
+do task {
     let Data value = await fetchAsync();
     process(value);
 }
 continueWorking();
 
-let Task<int> sum = nb {
+let Task<int> sum = task {
     let int a = await fetchAAsync();
     return a + 2;
 };
 let int answer = await sum;
 
-let Task<void> write = nb {
+let Task<void> write = task {
     await writeAsync();
 };
 await write;
 ```
 
-- `do nb { ... }` is a statement with **no result**. It schedules a Task but discards the handle.
-- `nb { ... }` is an expression producing `Task<T>`. Its result type comes from the body returns; `Task<void>` is valid.
-- Bare `nb { ... }` statements are rejected: explicitly use `do nb` or bind the resulting handle.
-- `await task` suspends only the current task until completion; `await` inside an `nb` block suspends the child task, not its caller.
+- `do task { ... }` is a statement with **no result**. It schedules a Task but discards the handle.
+- `task { ... }` is an expression producing `Task<T>`. Its result type comes from the body returns; `Task<void>` is valid.
+- Bare `task { ... }` statements are rejected: explicitly use `do task` or bind the resulting handle.
+- `await task` suspends only the current task until completion; `await` inside an `task` block suspends the child task, not its caller.
 - Neither form is an actor or mailbox. `Task<T>` is an owned capability for a scheduled, single-completion computation; `Future<T>` remains an eventual-result abstraction.
 - The Task's body has its own return target. `return` in the block never returns from its enclosing function.
 
 ## Argument-bearing Task continuations via an immediately invoked lambda
 
-Reuse the normal pipe lambda with an immediate call; **no special new `nb` parameter syntax** is needed.
+Reuse the normal pipe lambda with an immediate call; **no special new `task` parameter syntax** is needed.
 
 ```oreslang
-let Task<int> task = (|int a, string b| -> nb {
+let Task<int> task = (|int a, string b| -> task {
     let int result = await computeAsync(a, b);
     return result;
 })(5, "xyz");
@@ -48,31 +50,31 @@ Exactly equivalent explicit-return variant:
 
 ```oreslang
 let Task<int> task = (|int a, string b| -> {
-    return nb {
+    return task {
         return await computeAsync(a, b);
     };
 })(5, "xyz");
 ```
 
-The outer ordinary lambda executes *synchronously* just long enough to evaluate its `nb` expression; it returns the **single `Task<int>` handle**. Arguments are evaluated once in normal left-to-right call order and bound lexically. Task creation must transfer/copy/share the lambda parameters into a heap-owned Task capture environment before the lambda frame exits. No borrowed stack address may escape. A `return` inside `nb` returns from the Task; `return nb { ... };` returns a Task handle from the lambda.
+The outer ordinary lambda executes *synchronously* just long enough to evaluate its `task` expression; it returns the **single `Task<int>` handle**. Arguments are evaluated once in normal left-to-right call order and bound lexically. Task creation must transfer/copy/share the lambda parameters into a heap-owned Task capture environment before the lambda frame exits. No borrowed stack address may escape. A `return` inside `task` returns from the Task; `return task { ... };` returns a Task handle from the lambda.
 
 **Type contract:**
 
-- `nb { return value; }` has type `Task<T>` (once compiler lowering is enabled).
-- `(|T a| -> nb { return a; })(value)` returns `Task<T>` directly.
-- `await (|T a| -> nb { return a; })(value)` returns `T` and intentionally suspends the caller; it is **not** fire-and-continue.
+- `task { return value; }` has type `Task<T>` (once compiler lowering is enabled).
+- `(|T a| -> task { return a; })(value)` returns `Task<T>` directly.
+- `await (|T a| -> task { return a; })(value)` returns `T` and intentionally suspends the caller; it is **not** fire-and-continue.
 - `let Future<T> f = task.asFuture();` is the proposed explicit readout/observation conversion, with no extra task launch. Java host `OresTask<T>.asFuture()` is implemented in the separate runtime draft; source member/type support is still gated.
-- `async |...| -> nb { ... }` now has a distinct `AsyncLambdaExpr` AST. Its intended type is `Future<Task<T>>`, **never automatically flattened**. Source type checking still rejects execution pending async-lambda lowering.
+- `async |...| -> task { ... }` now has a distinct `AsyncLambdaExpr` AST. Its intended type is `Future<Task<T>>`, **never automatically flattened**. Source type checking still rejects execution pending async-lambda lowering.
 - `async task |...| -> { return expression; }` has a distinct `TaskLambdaExpr` AST. Its **entire body** runs as one Task when invoked; its intended result is `Task<T>`, not `Future<T>` or `Future<Task<T>>`. This is a *single* semantic scheduling primitive (the `async task` modifier), not two nested async layers.
 - `async task |...| -> expression` is also accepted as an expression-bodied Task lambda with an implicit Task-local return. Its `return` (explicit or implicit) never unwinds the caller.
 - The `task` modifier is contextual after `async`; bare `task |...|` is not enabled in this draft, preserving existing identifier compatibility. Named `async task fnc` declarations are a separate future extension.
-- A lambda with a braced body needs an explicit `return nb { ... };`. It does not implicitly return its last expression.
+- A lambda with a braced body needs an explicit `return task { ... };`. It does not implicitly return its last expression.
 
-Do not permit Task type inference, expected-`Future<T>` coercion, mutable references to owner-local arguments, actor-private state access, or unmatched move-only ownership until the normal ownership/type passes prove them. Invocation arity and argument type checking continue to use ordinary callable rules; `nb` does not bypass them.
+Do not permit Task type inference, expected-`Future<T>` coercion, mutable references to owner-local arguments, actor-private state access, or unmatched move-only ownership until the normal ownership/type passes prove them. Invocation arity and argument type checking continue to use ordinary callable rules; `task` does not bypass them.
 
 ## Isolation and ownership prerequisites
 
-Task captures are explicit ownership transfers/copies/authorized shares (`rt take`, `rt copy`, `rt share`), not escaping stack borrows or implicit actor-state access. Actor handlers may create Tasks, but the Task cannot inherit an actor's state lock or mutate its private heap without an owned-message/capability boundary. Neither `do nb` nor `nb` may bypass tenant isolation, trusted/untrusted execution domains, code-version fences, or permission checks.
+Task captures are explicit ownership transfers/copies/authorized shares (`rt take`, `rt copy`, `rt share`), not escaping stack borrows or implicit actor-state access. Actor handlers may create Tasks, but the Task cannot inherit an actor's state lock or mutate its private heap without an owned-message/capability boundary. Neither `do task` nor `task` may bypass tenant isolation, trusted/untrusted execution domains, code-version fences, or permission checks.
 
 A Task must have an owning task scope/actor, cancellation token, bounded admission, full cleanup before terminal completion, and observable error supervision even when the handle is discarded. Owner shutdown cancels/drains Tasks. No detached immortal tasks.
 

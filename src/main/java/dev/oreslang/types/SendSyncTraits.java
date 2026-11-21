@@ -25,7 +25,7 @@ public final class SendSyncTraits {
     }
     private record Key(Ast.TypeRef type, Map<String, Ast.TypeRef> substitutions) { }
     private static final Set<String> SCALARS = Set.of(
-            "void", "bool", "Bool", "i8", "i16", "i32", "i64",
+            "bool", "Bool", "i8", "i16", "i32", "i64",
             "u8", "u16", "u32", "u64", "int", "uint", "bigint",
             "f32", "f64", "float", "decimal", "complex64", "complex128",
             "complex", "string", "String");

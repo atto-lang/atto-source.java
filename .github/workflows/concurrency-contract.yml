@@ -25,6 +25,6 @@ jobs:
         run: mvn -B -DskipTests -Dores.runtime.carriers=java test-compile
       - name: Runtime and language proof suite
         run: >
-          mvn -B -Dores.runtime.carriers=java
-          -Dtest=OresVMTest,OresSchedulerTest,ChannelRuntimeTest,ActorEventBusTest,ChannelSelectSyntaxTest,TaskTraitAdmissionHardeningTest,TaskBlockSyntaxTest,TaskSpawnSendAdmissionTest,TaskAccessVerifierTest,ScopedTaskTypeBridgeTest,TaskRegionHostScopeIntegrationTest,TaskRegionPhysicalExitBridgeTest,OresTaskScopeCancellationOrderingTest,OresTaskScopeFrameTest,OresTaskPartitionQuiescenceTest
+          mvn -B -Dores.runtime.carriers=java -Dsurefire.failIfNoSpecifiedTests=true
+          -Dtest=OresVMTest,OresSchedulerTest,ChannelRuntimeTest,ActorEventBusTest,ChannelSelectSyntaxTest,TaskTraitAdmissionHardeningTest,OresScalarTaskFrameTest,GuestScalarTaskAwaitTest,TaskBlockSyntaxTest,TaskSpellingSyntaxTest,TaskSpawnSendAdmissionTest,TaskAccessVerifierTest,ScopedTaskTypeBridgeTest,TaskRegionHostScopeIntegrationTest,TaskRegionPhysicalExitBridgeTest,OresTaskScopeCancellationOrderingTest,OresTaskScopePreAdmissionOwnershipTest,OresTaskScopeFailedSlotCleanupTest,OresTaskScopeRetirementBookkeepingTest,OresTaskScopeCoherentQuiescenceTest,OresTaskScopeFrameTest,OresTaskProvisionalAdmissionTest,OresTaskRuntimeAdmissionTest,OresTaskOrdinaryRetirementTest,OresTaskScopeAdmissionStressTest,AsyncRuntimeAdversarialAdmissionTest,TaskResolvedSafetyProofTest,OresTaskPartitionQuiescenceTest
           test

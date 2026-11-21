@@ -7,13 +7,13 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Syntax admission only: Task scheduling and capture-safe lowering remain gated. */
+/** Canonical task {} syntax; only immediate awaited root scalar tasks have guest lowering. */
 final class TaskBlockSyntaxTest {
     @Test
     void parsesFireAndContinueAsStatement() {
         Ast.Program program = assertDoesNotThrow(() -> Parser.parse("""
                 pub fnc main(): void {
-                    do nb {
+                    do task {
                         let int value = 7;
                     };
                     return;
@@ -26,7 +26,7 @@ final class TaskBlockSyntaxTest {
     void parsesAwaitableTaskAsExpression() {
         Ast.Program program = assertDoesNotThrow(() -> Parser.parse("""
                 pub fnc main(): void {
-                    let Task<int> computation = nb {
+                    let Task<int> computation = task {
                         return 42;
                     };
                     let int answer = await computation;
@@ -41,7 +41,7 @@ final class TaskBlockSyntaxTest {
         assertDoesNotThrow(() -> Parser.parse("""
                 async fnc operation(): int { return 2; }
                 pub fnc main(): void {
-                    let Task<void> work = nb {
+                    let Task<void> work = task {
                         let int v = await operation();
                     };
                     await work;
@@ -55,7 +55,7 @@ final class TaskBlockSyntaxTest {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
                         pub fnc main(): void {
-                            nb { return; }
+                            task { return; }
                             return;
                         }
                         """));
@@ -65,14 +65,14 @@ final class TaskBlockSyntaxTest {
     @Test
     void rejectsTaskExecutionUntilSafeLoweringExists() {
         for (String body : new String[]{
-                "do nb { let int n = 1; };",
-                "let Task<int> t = nb { return 1; };",
-                "let Task<void> t = nb { return; };"
+                "do task { let int n = 1; };",
+                "let Task<int> t = task { return 1; };",
+                "let Task<void> t = task { return; };"
         }) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(
                             "pub fnc main(): void { " + body + " return; }"));
-            assertTrue(failure.getMessage().contains("nb Task blocks"), failure::getMessage);
+            assertTrue(failure.getMessage().contains("Task blocks"), failure::getMessage);
         }
     }
 
@@ -80,8 +80,8 @@ final class TaskBlockSyntaxTest {
     void taskKeywordsInsideCommentsAndStringsHaveNoEffect() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 pub fnc message(): string {
-                    // do nb { dangerous(); }
-                    return "nb { } do nb { }";
+                    // do task { dangerous(); }
+                    return "nb { } do task { }";
                 }
                 """));
     }
