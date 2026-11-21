@@ -344,6 +344,58 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
+    private final AtomicLong actorRefBirthSequence = new AtomicLong();
+
+    // Scoped, trusted-host provisioning audit. A constructor that creates an
+    // actor and throws BEFORE returning its ActorRef must not escape rollback.
+    private final ThreadLocal<ActorProvisioningScope> activeActorProvisioning =
+            new ThreadLocal<>();
+
+    public final class ActorProvisioningScope implements AutoCloseable {
+        private final Thread ownerThread = Thread.currentThread();
+        private final ArrayList<ActorRef<?>> created = new ArrayList<>();
+        private boolean open = true;
+
+        private ActorProvisioningScope() { }
+
+        private void requireOwner() {
+            if (Thread.currentThread() != ownerThread ||
+                    activeActorProvisioning.get() != this || !open) {
+                throw new SecurityException("actor provisioning scope is not active on its owner thread");
+            }
+        }
+
+        private void capture(ActorRef<?> actor) {
+            requireOwner();
+            created.add(actor);
+        }
+
+        /** All *successfully registered* actor generations allocated inside
+         * the scope, including allocations by providers that later throw. */
+        public List<ActorRef<?>> acquiredActors() {
+            requireOwner();
+            return List.copyOf(created);
+        }
+
+        @Override
+        public void close() {
+            requireOwner();
+            open = false;
+            activeActorProvisioning.remove();
+        }
+    }
+
+    /** Only trusted host CONTROL code can create a provisioning scope.
+     * Nested scopes are rejected to avoid losing any actor allocation receipts. */
+    public ActorProvisioningScope beginActorProvisioning() {
+        requireSupervisorContext("begin trusted actor provisioning");
+        if (activeActorProvisioning.get() != null) {
+            throw new IllegalStateException("nested actor provisioning scopes are forbidden");
+        }
+        ActorProvisioningScope scope = new ActorProvisioningScope();
+        activeActorProvisioning.set(scope);
+        return scope;
+    }
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -1303,7 +1355,9 @@ public final class ActorRuntime implements AutoCloseable {
     private record LinearPipeline(
             List<ActorRef<Object>> stages,
             String nominalIdentity,
-            AtomicInteger phase) {
+            TaggedMessageCodec codec,
+            AtomicInteger phase,
+            AtomicReference<byte[]> completedReplyFrame) {
         ActorRef<Object> source() { return stages.getFirst(); }
         int count() { return stages.size(); }
         int indexOf(ActorId id) {
@@ -1335,14 +1389,16 @@ public final class ActorRuntime implements AutoCloseable {
                 stage.done().whenCompleteRuntime((ignored, failure) -> {
                     if (failure != null) {
                         physicalDone.failFromRuntime(OresFuture.unwrap(failure));
-                    } else if (route.phase().get() < 0) {
+                    } else if (route.phase().get() == -1) {
                         physicalDone.failFromRuntime(new IllegalStateException(
                                 "actor pipeline aborted before physical DONE"));
                     }
                     if (outstanding.decrementAndGet() == 0) {
-                        if (route.phase().get() != 2 * route.count()) {
+                        if (route.phase().get() != 2 * route.count()
+                                || route.completedReplyFrame().get() == null) {
                             physicalDone.failFromRuntime(new IllegalStateException(
-                                    "actor pipeline finished without the complete typed round trip"));
+                                    "actor pipeline finished without an authenticated typed reply"
+                                    + " and the complete physical DONE barrier"));
                         } else {
                             physicalDone.completeFromRuntime(null);
                         }
@@ -1352,6 +1408,17 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public int size() { return stages.size(); }
+        /** Immutable compiler-derived closed nominal mailbox identity. */
+        public String nominalDomainIdentity() { return route.nominalIdentity(); }
+
+        /** Check result admission against this actual bound stream, not a
+         * different statically declared pattern in the compilation unit. */
+        public void requireExpectedReplyCase(String expectedCase) {
+            if (!route.codec().permitsCase(expectedCase)) {
+                throw new SecurityException(
+                        "expected pipeline reply case is outside the bound nominal mailbox domain");
+            }
+        }
         public ActorRef<?> source() { return stages.getFirst(); }
         public void send(Object value) {
             @SuppressWarnings("unchecked")
@@ -1362,11 +1429,89 @@ public final class ActorRuntime implements AutoCloseable {
          * typed forward/reverse route. Cancellation of this observation never
          * cancels the owned actor group. */
         public OresFuture<Void> getDone() { return physicalDone; }
+
+        /**
+         * Return the source's actual compiler-validated backward message,
+         * rather than manufacturing a receipt from delivery completion.
+         * Each observer decodes a fresh value from the runtime-owned frame.
+         * Neither premature observation nor consumer cancellation can publish
+         * a result or cancel the actors.
+         */
+        public java.util.concurrent.CompletionStage<Object> completedReply(
+                java.util.concurrent.Executor trustedControl) {
+            Objects.requireNonNull(trustedControl, "trusted pipeline CONTROL executor");
+            // Never execute guest nominal decoding in the last stage's
+            // physical-finalization callback. A direct thenApply() executes
+            // on that callback carrier when a caller starts observing before
+            // whole-route DONE; large decoded values can park actor cleanup.
+            // Only a trusted CONTROL executor may run the copy/decoder.
+            return physicalDone.asCompletionStage().thenApplyAsync(ignored -> {
+                if (ActorRuntime.isActorCarrierThread() || ActorRuntime.inActorExecution()) {
+                    throw new SecurityException(
+                            "pipeline typed reply decoder cannot run on an actor DATA carrier");
+                }
+                byte[] committed = route.completedReplyFrame().get();
+                if (route.phase().get() != 2 * route.count() || committed == null) {
+                    throw new IllegalStateException(
+                            "pipeline completed without a compiler-validated typed reply");
+                }
+                return route.codec().decode(committed.clone());
+            }, trustedControl);
+        }
     }
 
     /** The runtime-internal delivery marker never escapes this source
      * actor turn. A plain ActorRef.send cannot spoof a pipeline hop. */
-    private final ThreadLocal<LinearPipeline> currentPipelineSend = new ThreadLocal<>();
+    private record PipelinePublication(LinearPipeline route, int expectedPhase) { }
+
+    /**
+     * Reserve the phase during encoding, but do not claim that DATA was
+     * delivered until the actual recipient mailbox tryWrite succeeds.
+     * -1 is a permanent failed route; -2 - phase is a provisional claim.
+     * A reserved phase is never a successful publication.
+     */
+    private final ThreadLocal<PipelinePublication> currentPipelineSend = new ThreadLocal<>();
+
+    private static int provisionalPipelinePhase(int expected) {
+        return -2 - expected;
+    }
+
+    /**
+     * A provisional negative publication claim is NOT a failed route.
+     * Reconstruct the most recently committed phase when deciding whether
+     * a physically finalized actor has already published its outbound DATA.
+     * Only -1 is the terminal failure sentinel.
+     */
+    static int committedPipelinePhase(int observed) {
+        return observed <= -2 ? -2 - observed : observed;
+    }
+
+    private static void reservePipelinePublication(LinearPipeline route, int expected) {
+        if (!route.phase().compareAndSet(expected, provisionalPipelinePhase(expected))) {
+            throw new SecurityException(
+                    "pipeline publication claim rejected: expected phase " + expected);
+        }
+    }
+
+    private static void commitPipelinePublication(PipelinePublication publication) {
+        LinearPipeline route = publication.route();
+        int phase = publication.expectedPhase();
+        if (!route.phase().compareAndSet(provisionalPipelinePhase(phase), phase + 1)) {
+            throw new SecurityException(
+                    "pipeline publication was aborted before mailbox commit");
+        }
+    }
+
+    private static void failPipeline(LinearPipeline route) {
+        while (true) {
+            int old = route.phase().get();
+            if (old == -1) return;
+            // Terminal source phase is not terminal *success*: every actor
+            // still must physically DONE without an error. Preserve failed
+            // finalization even after the typed reply was committed.
+            if (route.phase().compareAndSet(old, -1)) return;
+        }
+    }
 
     private static void advancePipelinePhase(LinearPipeline route, int expected, int next) {
         if (!route.phase().compareAndSet(expected, next)) {
@@ -1394,12 +1539,13 @@ public final class ActorRuntime implements AutoCloseable {
         if (route == null) return;
         int position = route.indexOf(departed.ref.id());
         if (position < 0) throw new SecurityException("unknown pipeline member");
-        int phase = route.phase().get();
+        int observedPhase = route.phase().get();
+        int committedPhase = committedPipelinePhase(observedPhase);
         Throwable failure = departed.ref.terminationCause.get();
         boolean source = position == 0;
-        boolean premature = failure != null
-                || (source ? phase != 2 * route.count()
-                           : phase < 2 * route.count() - position);
+        boolean premature = failure != null || observedPhase == -1
+                || (source ? committedPhase != 2 * route.count()
+                           : committedPhase < 2 * route.count() - position);
         // Retire only this actor's routing fence. The source may reach
         // physical DONE before a downstream stage does; releasing sibling
         // registrations here would allow arbitrary host DATA to bypass the
@@ -1409,7 +1555,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (!premature || closed.get()) return;
         while (true) {
             int old = route.phase().get();
-            if (old == -1 || old == 2 * route.count()) return;
+            if (old == -1) return;
+            // A fatal actor can terminate after source result commitment
+            // but before the full physical-DONE barrier. Never treat phase
+            // 2*N alone as irrevocable success.
             if (route.phase().compareAndSet(old, -1)) break;
         }
         IllegalStateException aborted = new IllegalStateException(
@@ -1491,8 +1640,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             List<ActorRef<Object>> linked = refs.stream()
                     .map(ref -> (ActorRef<Object>) ref).toList();
-            route = new LinearPipeline(linked, identity,
-                    new AtomicInteger(0));
+            TaggedMessageCodec sourceCodec =
+                    (TaggedMessageCodec) actors.get(refs.getFirst().id()).mailboxSchema;
+            route = new LinearPipeline(linked, identity, sourceCodec,
+                    new AtomicInteger(0), new AtomicReference<>());
             for (ActorRef<?> ref : refs) linearPipelines.put(ref.id(), route);
         }
         }
@@ -1543,19 +1694,21 @@ public final class ActorRuntime implements AutoCloseable {
             target = route.stages().get(stage - 1);
             expectedPhase = 2 * route.count() - 1 - stage;
         }
-        // Exactly one in-flight typed route: reject duplicates, replays and
-        // out-of-order causal sends before enqueueing a guest DATA envelope.
-        advancePipelinePhase(route, expectedPhase, expectedPhase + 1);
-        LinearPipeline previous = currentPipelineSend.get();
-        if (previous != null) {
-            route.phase().set(-1);
+        // Reserve single-flight authority before encoding without making the
+        // next phase visible as published DATA. The protected tryWrite in send
+        // will commit the phase before the recipient can dequeue the envelope.
+        if (currentPipelineSend.get() != null) {
+            failPipeline(route);
             throw new SecurityException("nested actor pipeline admission is unsupported");
         }
-        currentPipelineSend.set(route);
+        reservePipelinePublication(route, expectedPhase);
+        currentPipelineSend.set(new PipelinePublication(route, expectedPhase));
         try {
             send(target, value);
         } catch (RuntimeException | Error failure) {
-            route.phase().set(-1); // terminal fail-closed, no retry ambiguity
+            // A failed directional hop is terminal, including ambiguous
+            // errors after publication. Never retry a potentially sent hop.
+            failPipeline(route);
             throw failure;
         } finally {
             currentPipelineSend.remove();
@@ -1575,6 +1728,21 @@ public final class ActorRuntime implements AutoCloseable {
                     || !route.stages().get(1).id().equals(cell.activeMail.sender().orElse(null))) {
                 throw new SecurityException(
                         "pipeline source may finish only on an authorized upstream result");
+            }
+            // Capture the authenticated reverse DATA on the source's own
+            // receive turn, while its compiler-owned nominal codec is alive.
+            // Never alias the guest message graph in an observable result.
+            Object received = cell.activeMail.value();
+            if (!(received instanceof TaggedMessageCodec.TaggedValue)) {
+                throw new SecurityException("pipeline result is not a nominal typed message");
+            }
+            byte[] frame = route.codec().encode(received);
+            if (frame.length == 0 || frame.length > 1024 * 1024) {
+                throw new SecurityException("pipeline result exceeds bounded reply frame");
+            }
+            if (route.phase().get() != 2 * route.count() - 1
+                    || !route.completedReplyFrame().compareAndSet(null, frame.clone())) {
+                throw new SecurityException("pipeline source result already committed or out of phase");
             }
             advancePipelinePhase(route, 2 * route.count() - 1, 2 * route.count());
         }
@@ -1844,6 +2012,7 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorRef<M> {
         private final ActorId id;
         private final ActorKind kind;
+        private final long allocatedAt;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
@@ -1860,6 +2029,11 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
             this.kind = kind;
+            this.allocatedAt = actorRefBirthSequence.updateAndGet(previous -> {
+                if (previous == Long.MAX_VALUE)
+                    throw new IllegalStateException("actor allocation sequence exhausted");
+                return previous + 1;
+            });
             readyFuture.whenCompleteRuntime((ignored, failure) -> {
                 if (failure != null) {
                     readyRefFuture.failFromRuntime(OresFuture.unwrap(failure));
@@ -4058,6 +4232,8 @@ public final class ActorRuntime implements AutoCloseable {
                 } else {
                     actors.put(id, cell);
                 }
+                ActorProvisioningScope provisioning = activeActorProvisioning.get();
+                if (provisioning != null) provisioning.capture(ref);
                 return ref;
             } catch (RuntimeException | Error failure) {
                 if (linkedToParent && cell != null) parent.children.remove(cell);
@@ -4495,6 +4671,25 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Host-only ownership query for fail-closed provider admission. */
+    public boolean ownsActorRef(ActorRef<?> ref) {
+        return ref != null && ref.ownedBy(this);
+    }
+
+    /** Snapshot for trusted host factory admission. Never a guest API. */
+    public long actorAllocationMark() {
+        requireSupervisorContext("inspect actor allocation generation");
+        return actorRefBirthSequence.get();
+    }
+
+    /** A registered provider must return an actor allocated after its call began,
+     * not a previously captured live reference that belongs to another route. */
+    public boolean ownsFreshActorRefSince(ActorRef<?> ref, long mark) {
+        requireSupervisorContext("validate fresh provider actor");
+        return ref != null && ref.ownedBy(this) && ref.allocatedAt > mark
+                && actors.containsKey(ref.id());
+    }
+
     public boolean isAlive(ActorRef<?> ref) {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
@@ -4741,18 +4936,24 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(ref);
         LinearPipeline linkedRoute = linearPipelines.get(ref.id());
+        PipelinePublication publication = currentPipelineSend.get();
         boolean initialPipelineIngress = false;
         /* A root phase claimed before frame validation is only provisional.
          * Distinguish a rejected pre-publication attempt from an already
          * committed DATA message: never roll back a published root turn. */
         boolean initialPipelinePublished = false;
-        if (linkedRoute != null && currentPipelineSend.get() != linkedRoute) {
+        if (publication != null && publication.route() != linkedRoute) {
+            throw new SecurityException(
+                    "pipeline directional authority cannot target an unrelated mailbox");
+        }
+        if (linkedRoute != null && publication == null) {
             if (currentActor.get() != null
                     || !ref.id().equals(linkedRoute.source().id())) {
                 throw new SecurityException(
                         "pipeline actors accept only scheduler-authorized directional DATA");
             }
-            advancePipelinePhase(linkedRoute, 0, 1);
+            reservePipelinePublication(linkedRoute, 0);
+            publication = new PipelinePublication(linkedRoute, 0);
             initialPipelineIngress = true;
         }
         try {
@@ -4907,12 +5108,20 @@ public final class ActorRuntime implements AutoCloseable {
                         throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
                     }
                     /* tryWrite is the DATA publication linearization point.
-                     * The recipient may start executing immediately, so never
-                     * restore phase 0 once this publication succeeded. */
+                     * Own the queued envelope immediately, even if a concurrent
+                     * fatal stage STOP invalidated our provisional claim. Never
+                     * close/release an envelope already inside a mailbox.
+                     *
+                     * Recipient turns dequeue under this same lifecycleLock,
+                     * so phase commitment below occurs before they can execute
+                     * this DATA. Failed CAS means the route is already aborted;
+                     * publication remains terminally ambiguous, never retried.
+                     */
                     if (initialPipelineIngress) initialPipelinePublished = true;
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
                     admitted = true;
+                    if (publication != null) commitPipelinePublication(publication);
                     commitSharedMutexBindings(sharedMutexReservations);
                 }
             }
@@ -4937,8 +5146,16 @@ public final class ActorRuntime implements AutoCloseable {
              *
              * CAS prevents a late loser from rolling back a later phase. */
             if (initialPipelineIngress) {
-                linkedRoute.phase().compareAndSet(1,
-                        initialPipelinePublished ? -1 : 0);
+                if (initialPipelinePublished) {
+                    // Scheduling or bookkeeping failed after tryWrite:
+                    // already-published DATA is never safe to retry.
+                    failPipeline(linkedRoute);
+                } else {
+                    // A rejected root encode/capacity/actor admission did not
+                    // publish DATA. Only its exact provisional claim can be
+                    // returned to phase 0; a concurrent abort remains fatal.
+                    linkedRoute.phase().compareAndSet(provisionalPipelinePhase(0), 0);
+                }
             }
             throw admissionFailure;
         }

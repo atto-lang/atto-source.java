@@ -25,6 +25,11 @@ import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
+import dev.oreslang.runtime.ActorRuntimePipelineEngine;
+import dev.oreslang.runtime.pipeline.PipelineController;
+import dev.oreslang.runtime.pipeline.PipelinePlanner;
+import dev.oreslang.runtime.pipeline.PipelinePlan;
+import dev.oreslang.runtime.pipeline.PipelineRunner;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -4294,6 +4299,10 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("PipelinePlanner")
+                    || created.type().name().equals("PipelineController")) {
+                return constructPipelineBuiltin(created.type().name(), args);
+            }
             if (created.type().name().equals("Array")
                     || created.type().name().equals("List")) {
                 if (!args.isEmpty()) {
@@ -5533,6 +5542,29 @@ public final class OresEvalRootNode extends RootNode {
                             namespace.kind(), methodCall.member(), args);
                 }
 
+                if (receiver instanceof PipelineRunner runner
+                        && methodCall.member().equals("send")
+                        && call.typeArgumentsPresent()) {
+                    if (args.size() != 1 || call.typeArguments().size() != 1
+                            || call.typeArguments().getFirst().inferArguments()
+                            || !call.typeArguments().getFirst().arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "PipelineRunner.send<ResultCase> requires one message and one nominal reply case");
+                    }
+                    String expectedCase = call.typeArguments().getFirst().name();
+                    // Do not trust a static type argument alone: the actual
+                    // source actor's compiler-validated backward envelope MUST
+                    // match the expected case before completing the guest Future.
+                    return invokableInvocation(ignored ->
+                            runner.sendExpected(args.getFirst(), expectedCase).thenApply(result -> {
+                                if (!(result instanceof dev.oreslang.runtime.TaggedMessageCodec.TaggedValue tagged)
+                                        || !tagged.qualifiedName().equals(expectedCase)) {
+                                    throw new SecurityException(
+                                            "unexpected typed pipeline reply; expected " + expectedCase);
+                                }
+                                return result;
+                            }), List.of());
+                }
                 Object callee = member(receiver, methodCall.member(), env);
                 if (!(callee instanceof Invokable invokable)) {
                     throw new IllegalArgumentException("value is not callable: " + callee);
@@ -5747,6 +5779,91 @@ public final class OresEvalRootNode extends RootNode {
                 refs.add(ref);
             }
             return context.actors().bindLinearPipeline(refs);
+        }
+
+        // Builtin actor-provider closures carry immutable, compiler-checked
+        // actor type identities, not arbitrary guest-captured constructors.
+        private record StaticActorProvider(String actorTypeName, Invokable invoke)
+                implements Invokable {
+            @Override public Object call(List<Object> args) { return invoke.call(args); }
+        }
+
+        private final class GuestPipelinePlanner {
+            private final PipelinePlanner builder = new PipelinePlanner();
+
+            private void add(String stage, StaticActorProvider actor) {
+                PipelinePlan.Stage descriptor = pipelineStage(stage, actor);
+                builder.add(descriptor.name(), descriptor.providerId(),
+                        descriptor.nominalDomain(), descriptor.provider());
+            }
+            private PipelinePlan build() { return builder.build(); }
+        }
+
+        private final Map<String, PipelinePlan.ActorProvider> compiledActorProviders =
+                new HashMap<>();
+
+        private PipelinePlan.Stage pipelineStage(String stage, StaticActorProvider marker) {
+            String actorType = marker.actorTypeName();
+            var codec = mailboxSchema(actorType).orElseThrow(() ->
+                    new IllegalArgumentException(
+                            "pipeline provider requires a compiler-owned nominal mailbox"));
+            if (!(codec instanceof dev.oreslang.runtime.TaggedMessageCodec tagged)) {
+                throw new IllegalArgumentException(
+                        "dynamic pipelines v0 require one closed nominal MessagePack domain");
+            }
+            PipelinePlan.ActorProvider constructor =
+                    compiledActorProviders.computeIfAbsent(actorType, type -> () -> {
+                        Ast.ClassDecl actorClass = requireLocalActorClass(type);
+                        ActorRuntime.ActorKind kind = switch (actorClass.actorKind()) {
+                            case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
+                            case SHARED -> ActorRuntime.ActorKind.SHARED;
+                            case UNTRUSTED -> ActorRuntime.ActorKind.UNTRUSTED;
+                            case NONE -> throw new IllegalArgumentException(
+                                    "ordinary classes cannot be actor providers");
+                        };
+                        return context.actors().spawnCodeActor(kind, this, type);
+                    });
+            return new PipelinePlan.Stage(
+                    stage, actorType, tagged.closedDomainIdentity(), constructor);
+        }
+
+        private Object constructPipelineBuiltin(String type, List<Object> args) {
+            if (type.equals("PipelinePlanner")) {
+                requireZero(args, "PipelinePlanner constructor");
+                if (ActorRuntime.inActorExecution()) {
+                    throw new SecurityException("pipeline planner requires trusted root control");
+                }
+                return new GuestPipelinePlanner();
+            }
+            if (type.equals("PipelineController")) {
+                requireOne(args, "PipelineController constructor");
+                if (!(args.getFirst() instanceof PipelinePlan plan)) {
+                    throw new IllegalArgumentException("PipelineController requires a PipelinePlan");
+                }
+                if (ActorRuntime.inActorExecution()) {
+                    throw new SecurityException("pipeline control requires trusted root context");
+                }
+                // STOP and physical DONE may block, so schedule only those
+                // operations away from actor DATA carriers. Guest resume()
+                // itself remains a root CONTROL call on its caller's lane.
+                // All statically linked, nominally typed local actors are
+                // available for future paused-stage replacement without
+                // runtime code compilation or re-registering arbitrary lambdas.
+                for (Ast.ClassDecl linked : classes.values()) {
+                    if (linked.actorKind() != Ast.ActorKind.NONE
+                            && mailboxSchema(linked.name()).orElse(null)
+                                    instanceof dev.oreslang.runtime.TaggedMessageCodec) {
+                        pipelineStage(linked.name(),
+                                new StaticActorProvider(linked.name(), ignored -> {
+                                    throw new SecurityException("actor providers are not guest-callable");
+                                }));
+                    }
+                }
+                return new PipelineController(plan, new ActorRuntimePipelineEngine(
+                        context.actors(), task -> Thread.startVirtualThread(task),
+                        Map.copyOf(compiledActorProviders)));
+            }
+            throw new IllegalArgumentException("unknown pipeline constructor " + type);
         }
 
         private Object eval(Ast.Expr expr, Env env) {
@@ -6072,6 +6189,11 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("PipelinePlanner")
+                        || created.type().name().equals("PipelineController")) {
+                    List<Object> args = created.arguments().stream().map(a -> eval(a, env)).toList();
+                    return constructPipelineBuiltin(created.type().name(), args);
+                }
                 if (created.type().name().equals("Array")
                         || created.type().name().equals("List")) {
                     if (!created.arguments().isEmpty()) {
@@ -6188,6 +6310,18 @@ public final class OresEvalRootNode extends RootNode {
                 return new ReadonlyRecordValue(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
+                if (lambda.parameters().isEmpty()
+                        && lambda.blockBody() == null
+                        && lambda.expressionBody() instanceof Ast.RuntimeCallExpr spawn
+                        && spawn.operation().equals("spawn")
+                        && spawn.arguments().size() == 1
+                        && spawn.arguments().getFirst() instanceof Ast.NewExpr target
+                        && target.arguments().isEmpty()) {
+                    String actorType = target.type().name();
+                    requireLocalActorClass(actorType);
+                    return new StaticActorProvider(actorType,
+                            args -> { requireZero(args, "actor provider"); return eval(spawn, env); });
+                }
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
@@ -6221,6 +6355,70 @@ public final class OresEvalRootNode extends RootNode {
 
         private enum ActorUtilsNamespace { INSTANCE }
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof GuestPipelinePlanner planner) {
+                return switch (name) {
+                    case "add" -> (Invokable) args -> {
+                        if (args.size() != 2 || !(args.get(0) instanceof String stage)
+                                || !(args.get(1) instanceof StaticActorProvider provider)) {
+                            throw new IllegalArgumentException(
+                                    "PipelinePlanner.add(name, || -> spawn Actor())");
+                        }
+                        planner.add(stage, provider);
+                        return null;
+                    };
+                    case "build" -> (Invokable) args -> {
+                        requireZero(args, "PipelinePlanner.build");
+                        return planner.build();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown PipelinePlanner member " + name);
+                };
+            }
+            if (receiver instanceof PipelineController controller) {
+                return switch (name) {
+                    case "start" -> (Invokable) args -> {
+                        requireZero(args, "PipelineController.start");
+                        return controller.start();
+                    };
+                    case "pause" -> (Invokable) args -> {
+                        requireZero(args, "PipelineController.pause");
+                        return controller.pause();
+                    };
+                    case "resume" -> (Invokable) args -> {
+                        requireZero(args, "PipelineController.resume");
+                        return controller.resume();
+                    };
+                    case "replace" -> (Invokable) args -> {
+                        if (args.size() != 2 || !(args.get(0) instanceof String stage)
+                                || !(args.get(1) instanceof StaticActorProvider provider)) {
+                            throw new IllegalArgumentException(
+                                    "PipelineController.replace(name, || -> spawn Actor())");
+                        }
+                        controller.replace(stage, pipelineStage(stage, provider));
+                        return null;
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "PipelineController.close");
+                        return controller.close();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown PipelineController member " + name);
+                };
+            }
+            if (receiver instanceof PipelineRunner runner) {
+                return switch (name) {
+                    case "send" -> (Invokable) args -> {
+                        requireOne(args, "PipelineRunner.send");
+                        return runner.send(args.getFirst());
+                    };
+                    case "get_done" -> (Invokable) args -> {
+                        requireZero(args, "PipelineRunner.get_done");
+                        return runner.getDone();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown PipelineRunner member " + name);
+                };
+            }
             if (receiver == ActorUtilsNamespace.INSTANCE) {
                 if (!name.equals("pipe")) {
                     throw new IllegalArgumentException("unknown ActorUtils static function " + name);

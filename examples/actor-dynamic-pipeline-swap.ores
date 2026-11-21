@@ -1,0 +1,122 @@
+// Java/GraalVM compiler-native three-actor nominal MessagePack v2 pipeline.
+// Type contract: Data(int) downstream, Result(int) upstream; no host callbacks.
+define enum Signal as
+    Data: int = 1
+    Result: int = 2
+end
+
+define pattern PipeMessages as
+    Signal.Data
+    Signal.Result
+end
+
+define actor Source as
+    let int count;
+    on_start(): void {
+        self.count = 0;
+        return;
+    }
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.count = self.count + n;
+                self.forward(Signal.Data(self.count));
+            }
+            on Signal.Result n -> {
+                self.count = self.count + n;
+                if self.count == 19 then
+                    stdio.stdout.write("DYNAMIC_PIPELINE_V1_19");
+                elif self.count == 24 then
+                    stdio.stdout.write("|DYNAMIC_PIPELINE_V2_24");
+                else
+                    stdio.stdout.write("DYNAMIC_PIPELINE_BAD_RESULT");
+                fi
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+define actor Transform as
+    let int value;
+    on_start(): void {
+        self.value = 0;
+        return;
+    }
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.value = n * 2;
+                self.forward(Signal.Data(self.value));
+            }
+            on Signal.Result n -> {
+                self.value = n + 1;
+                self.backward(Signal.Result(self.value));
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+define actor TransformV2 as
+    let int value;
+    on_start(): void {
+        self.value = 0;
+        return;
+    }
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.value = n * 3;
+                self.forward(Signal.Data(self.value));
+            }
+            on Signal.Result n -> {
+                self.value = n + 1;
+                self.backward(Signal.Result(self.value));
+                self.end();
+            }
+        end
+        return;
+    }
+end
+
+define actor Sink as
+    let int value;
+    on_start(): void {
+        self.value = 0;
+        return;
+    }
+    receive(ActorMail<PipeMessages> mail): void {
+        match mail.value over
+            on Signal.Data n -> {
+                self.value = n + 3;
+                self.backward(Signal.Result(self.value));
+                self.end();
+            }
+            on Signal.Result n -> {
+                self.value = n;
+            }
+        end
+        return;
+    }
+end
+
+pub async routine main(): void {
+    val planner = new PipelinePlanner();
+    planner.add("source", || -> spawn Source());
+    planner.add("transform", || -> spawn Transform());
+    planner.add("sink", || -> spawn Sink());
+
+    val controller = new PipelineController(planner.build());
+    val first = controller.start();
+    await first.send(Signal.Data(5));
+    await controller.pause();
+
+    controller.replace("transform", || -> spawn TransformV2());
+    val second = controller.resume();
+    await second.send(Signal.Data(5));
+    await controller.close();
+    return;
+}
