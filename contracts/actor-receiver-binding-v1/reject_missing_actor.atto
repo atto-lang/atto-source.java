@@ -1,0 +1,3 @@
+define module workers as
+  define pub mtd get_count(Worker w)(): int { return 42; }
+end

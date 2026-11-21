@@ -23,6 +23,7 @@ ChangesEnvironment=yes
 WizardStyle=modern
 
 [Files]
+Source: "..\..\stage\atto.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\stage\oreslang.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\stage\oreslang-compiler.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\stage\provenance.json"; DestDir: "{app}"; Flags: ignoreversion

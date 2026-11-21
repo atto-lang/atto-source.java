@@ -497,7 +497,7 @@ final class GenericsAndOperatorsHardeningTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
                   fnc bits(int a, int b): int {
-                    return ((~a & b) | Integer.bitXor(a, b)) << 1 >> 1 >>> 1;
+                    return ((~a & b) | Integer.bitXor(a, b)) <<< 1 >>> 1 >>> 1;
                   }
 
                   fnc logic(bool a, bool b): bool {
@@ -534,7 +534,7 @@ final class GenericsAndOperatorsHardeningTest {
                   }
 
                   pub fnc main(): void {
-                    stdio.println((5 & 3) | (8 >> 2));
+                    stdio.println((5 & 3) | (8 >>> 2));
                     stdio.println(Xor(true, false));
                     stdio.println(false && [true][99]);
                     stdio.println(true || [false][99]);
