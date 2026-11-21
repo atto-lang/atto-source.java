@@ -1,0 +1,94 @@
+name: Task mutex retirement focused proof
+
+on:
+  push:
+    branches: ["audit/task-mutex-validation-20261022"]
+  pull_request:
+    paths:
+      - ".github/workflows/task-mutex-retirement.yml"
+      - "scripts/ci/SurefireReceiptGuard.java"
+      - "scripts/ci/test-surefire-receipt-guard.sh"
+      - "src/main/java/dev/oreslang/runtime/OresMutex.java"
+      - "src/main/java/dev/oreslang/runtime/TaskOwnedLeases.java"
+      - "src/main/java/dev/oreslang/runtime/TaskHandle.java"
+      - "src/main/java/dev/oreslang/runtime/OresScheduler.java"
+      - "src/test/java/dev/oreslang/runtime/TaskOwnedMutex*Test.java"
+      - "src/test/java/dev/oreslang/runtime/TaskOwnedLeasesTest.java"
+      - "src/test/java/dev/oreslang/MutexRuntimeTest.java"
+      - "pom.xml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        carrier: [java, native]
+    steps:
+      - name: Checkout submitted commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify and record source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CARRIER: ${{ matrix.carrier }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          mkdir -p ci-evidence
+          {
+            git rev-parse HEAD
+            git rev-parse 'HEAD^{tree}'
+            printf 'carrier=%s\nrun=%s\nattempt=%s\n' "$CARRIER" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          } > ci-evidence/source-identity.txt
+      - name: Set up GraalVM JDK25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: graalvm
+      - name: Record toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version 2>&1 | tee ci-evidence/java-version.txt
+          mvn -version | tee ci-evidence/maven-version.txt
+      - name: Self-test fail-closed receipt validation
+        shell: bash
+        run: bash scripts/ci/test-surefire-receipt-guard.sh
+      - name: Execute focused JUnit suites
+        env:
+          CARRIER: ${{ matrix.carrier }}
+        run: >-
+          mvn -B -ntp -Dores.runtime.carriers="$CARRIER"
+          -Dtest=TaskOwnedLeasesTest,TaskOwnedMutexRetirementTest,TaskOwnedMutexOwnerIsolationTest,TaskHandleTest,MutexRuntimeTest
+          -DfailIfNoTests=true -Dsurefire.failIfNoSpecifiedTests=true test
+      - name: Require executed suites and hash XML evidence
+        env:
+          CARRIER: ${{ matrix.carrier }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          java scripts/ci/SurefireReceiptGuard.java \
+            target/surefire-reports "ci-evidence/surefire-${CARRIER}.tsv" \
+            TaskOwnedLeasesTest TaskOwnedMutexRetirementTest \
+            TaskOwnedMutexOwnerIsolationTest TaskHandleTest MutexRuntimeTest
+          test -s "ci-evidence/surefire-${CARRIER}.tsv"
+      - name: Retain execution evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: task-mutex-${{ matrix.carrier }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ci-evidence/
+            target/surefire-reports/TEST-*.xml
+          retention-days: 7
+          if-no-files-found: error
