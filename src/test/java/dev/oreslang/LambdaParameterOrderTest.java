@@ -227,4 +227,31 @@ final class LambdaParameterOrderTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(bad));
     }
 
+
+    @Test
+    void versionedAttoLambdasRequirePipeDelimitersWithoutBreakingLegacyParser() {
+        String[] invalid = {
+                "pub fnc main(): int { val v = fnc(int x) -> x + 1; return 0; }",
+                "pub fnc main(): int { val v = (int x) -> x + 1; return 0; }",
+                "pub fnc main(): int { val v = nlex fnc(int x) -> x + 1; return 0; }"
+        };
+        for (int version : new int[] {1, 2}) {
+            for (String source : invalid) {
+                IllegalArgumentException rejected = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> Parser.parseVersionedAtto(source, version),
+                        "Atto v" + version + " must require |...| for function expressions");
+                assertTrue(rejected.getMessage().contains("E_LAMBDA_PIPES"),
+                        "unexpected rejection phase: " + rejected.getMessage());
+            }
+            assertDoesNotThrow(() -> Parser.parseVersionedAtto(
+                    "pub fnc main(): int { val v = |int x| -> x + 1; return 0; }",
+                    version), "pipe-delimited lambda must remain accepted");
+        }
+
+        // Parser.parse is the historical Oreslang grammar, not the versioned
+        // AttoLang entrypoint. Do not silently remove its legacy compatibility.
+        assertDoesNotThrow(() -> Parser.parse(invalid[0]));
+        assertDoesNotThrow(() -> Parser.parse(invalid[1]));
+    }
 }
