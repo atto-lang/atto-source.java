@@ -266,4 +266,47 @@ final class SharedDomainArenaTest {
         }
     }
 
+    @Test
+    void sameActorCannotSpendAdmissionFromArenaAInsideArenaB() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+        var firstArena = new AtomicReference<SharedDomainArena>();
+        var secondArena = new AtomicReference<SharedDomainArena>();
+        var grantA = new AtomicReference<SharedDomainArena.Grant>();
+        var grantB = new AtomicReference<SharedDomainArena.Grant>();
+        var completed = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var a = firstArena.get();
+                var b = secondArena.get();
+                var leaseA = a.write(grantA.get()).get(0, TimeUnit.NANOSECONDS);
+                // The same actor holds legitimate membership in both domains:
+                // a lease for A must never authorize a write to B.
+                assertThrows(SecurityException.class,
+                        () -> b.enter(grantB.get(), leaseA));
+                try (var access = a.enter(grantA.get(), leaseA)) {
+                    var handle = access.allocate(17L);
+                    assertEquals(17L, access.read(handle));
+                    access.drop(handle);
+                }
+                completed.countDown();
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            var a = runtime.newSharedDomainArena(2);
+            var b = runtime.newSharedDomainArena(2);
+            var aControl = a.takeControl();
+            var bControl = b.takeControl();
+            firstArena.set(a);
+            secondArena.set(b);
+            grantA.set(a.grant(aControl, actor, true, true));
+            grantB.set(b.grant(bControl, actor, true, true));
+
+            actor.send("probe");
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "actor failed: " + actor.failure());
+            assertTrue(a.tryRetire(aControl));
+            assertTrue(b.tryRetire(bControl));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
 }

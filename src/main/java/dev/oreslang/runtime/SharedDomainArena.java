@@ -88,6 +88,10 @@ public final class SharedDomainArena {
      * guest byte authority has not begun until enter() binds the resumed turn.
      */
     public final class Admission implements AutoCloseable {
+        // A logical lease grants one specific domain+membership only.
+        // Actor identity alone is insufficient: the same actor may belong
+        // to multiple shared domains or hold different rights.
+        private final Grant originGrant;
         private final ProxyRwLock.Lease logicalLease;
         private final ActorRuntime.SharedDomainActorIdentity owner;
         private final boolean write;
@@ -95,15 +99,18 @@ public final class SharedDomainArena {
         private final AtomicBoolean released = new AtomicBoolean();
 
         private Admission(
+                Grant originGrant,
                 ProxyRwLock.Lease logicalLease,
                 ActorRuntime.SharedDomainActorIdentity owner,
                 boolean write) {
+            this.originGrant = originGrant;
             this.logicalLease = logicalLease;
             this.owner = owner;
             this.write = write;
         }
 
         public boolean write() { return write; }
+        private SharedDomainArena getOuterArena() { return SharedDomainArena.this; }
 
         private boolean claim() {
             if (released.get()) return false;
@@ -368,7 +375,7 @@ public final class SharedDomainArena {
                 }
                 return;
             }
-            Admission admission = new Admission(lease, turn.actor(), write);
+            Admission admission = new Admission(grant, lease, turn.actor(), write);
             boolean permitted;
             synchronized (SharedDomainArena.this) {
                 permitted = !closing && grantStillLiveLocked(grant, turn.actor(), write);
@@ -394,6 +401,12 @@ public final class SharedDomainArena {
      */
     public Access enter(Grant grant, Admission admission) {
         Objects.requireNonNull(admission, "admission");
+        // Fail before calling claim()/close(): replaying an admission from
+        // another domain or membership must not consume its valid source
+        // lease or grant byte authority in this arena.
+        if (admission.getOuterArena() != this || admission.originGrant != grant) {
+            throw new SecurityException("foreign shared-domain admission or mismatched grant");
+        }
         ActorRuntime.SharedDomainTurnIdentity turn =
                 runtime.requireCurrentSharedDomainTurn();
         synchronized (this) {
