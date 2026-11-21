@@ -270,7 +270,7 @@ final class PersistentActorMapTest {
                 assertSame(messageRoot, message,
                         "trusted SHARED delivery must preserve verified HAMT root identity");
                 if (first.compareAndSet(false, true)) {
-                    context.localMemory().orElseThrow().allocateActorLocalBytes(8L * 1024 * 1024);
+                    context.localMemory().orElseThrow().allocateActorLocalBytes(8 * 1024 * 1024);
                     localAllocated.countDown();
                     assertTrue(releaseTurn.await(15, TimeUnit.SECONDS));
                 }
