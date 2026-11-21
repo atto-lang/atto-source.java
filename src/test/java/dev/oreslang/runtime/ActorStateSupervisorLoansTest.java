@@ -48,6 +48,10 @@ final class ActorStateSupervisorLoansTest {
         final ActorRuntime.ActorSupervisor foreign = runtime.createSupervisor();
         final ActorRuntime.ActorGroup group = runtime.createActorGroup(supervisor);
         final AtomicReference<ActorStateSupervisorLoans> region = new AtomicReference<>();
+        final AtomicReference<ActorStateSupervisorLoans.LongField> typedBalance =
+                new AtomicReference<>();
+        final AtomicReference<ActorStateSupervisorLoans.LongField> typedLate =
+                new AtomicReference<>();
         final ConcurrentLinkedQueue<ActorStateSupervisorLoans.Grant> grants =
                 new ConcurrentLinkedQueue<>();
         final AtomicInteger ownerReadOperations = new AtomicInteger();
@@ -66,8 +70,63 @@ final class ActorStateSupervisorLoansTest {
                     IsolatePolicy.developer(),
                     context -> (message, actorContext) -> {
                         switch (message) {
-                            case "create" -> region.set(
-                                    runtime.createCurrentActorStateLoans(8, 2));
+                            case "create" -> {
+                                ActorStateSupervisorLoans created =
+                                        runtime.createCurrentActorStateLoans(8, 2);
+                                region.set(created);
+                                typedBalance.set(created.declareOwnerLongField("balance", 5L));
+                            }
+                            case "typed-owner-add-field" -> {
+                                try {
+                                    typedLate.set(region.get().declareOwnerLongField("late", 71L));
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
+                            case "typed-owner-duplicate-field" -> {
+                                try {
+                                    region.get().declareOwnerLongField("balance", 99L);
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
+                            case "typed-owner-read" -> {
+                                try {
+                                    ownerScalarObserved.set(
+                                            region.get().readOwnerLongField(typedBalance.get()));
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
+                            case "typed-owner-increment" -> {
+                                try {
+                                    region.get().updateOwnerLongField(
+                                            typedBalance.get(), value -> value + 1);
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
+                            case "typed-owner-paused" -> {
+                                try {
+                                    region.get().updateOwnerLongField(
+                                            typedBalance.get(), value -> {
+                                                ownerUpdateEntered.countDown();
+                                                try {
+                                                    if (!allowOwnerUpdate.await(5, TimeUnit.SECONDS)) {
+                                                        throw new IllegalStateException(
+                                                                "typed owner update timed out");
+                                                    }
+                                                } catch (InterruptedException interrupted) {
+                                                    Thread.currentThread().interrupt();
+                                                    throw new IllegalStateException(
+                                                            "typed owner update interrupted", interrupted);
+                                                }
+                                                return value + 10;
+                                            });
+                                } catch (Throwable rejected) {
+                                    denied.set(rejected);
+                                }
+                            }
                             case "read" -> grants.add(
                                     region.get().delegateRead(supervisor));
                             case "write" -> grants.add(
@@ -902,6 +961,147 @@ final class ActorStateSupervisorLoansTest {
                     java.util.function.Consumer.class);
             assertFalse(java.lang.reflect.Modifier.isPublic(method.getModifiers()),
                     "compiler-only scoped bridge must remain runtime-package-local");
+        }
+    }
+
+
+    @Test
+    void typedLongFieldIsCanonicalOwnerAndSupervisorSharedStorage() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var field = fixture.typedBalance.get();
+            assertNotNull(field);
+            sendAndDrain(fixture.worker, "typed-owner-read");
+            assertEquals(5L, fixture.ownerScalarObserved.get());
+
+            fixture.scopedRead(region, fixture.issue("read"),
+                    scope -> assertEquals(5L, scope.read(field)));
+            fixture.scopedWrite(region, fixture.issue("write"), scope -> {
+                assertEquals(5L, scope.read(field));
+                scope.write(field, 23L);
+                assertEquals(23L, scope.read(field));
+            });
+            sendAndDrain(fixture.worker, "typed-owner-read");
+            assertEquals(23L, fixture.ownerScalarObserved.get());
+            sendAndDrain(fixture.worker, "typed-owner-increment");
+            sendAndDrain(fixture.worker, "typed-owner-read");
+            assertEquals(24L, fixture.ownerScalarObserved.get());
+            fixture.scopedRead(region, fixture.issue("read"),
+                    scope -> assertEquals(24L, scope.read(field)));
+            assertEquals(0, region.activeReaders());
+            assertEquals(0, region.activeWriters());
+        }
+    }
+
+    @Test
+    void typedLongFieldCannotBeReadWithoutItsActualPhysicalPrincipal() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var field = fixture.typedBalance.get();
+            assertThrows(SecurityException.class, () -> region.readOwnerLongField(field));
+            assertThrows(SecurityException.class,
+                    () -> region.updateOwnerLongField(field, value -> value + 1));
+            assertThrows(SecurityException.class,
+                    () -> region.declareOwnerLongField("outside", 1L));
+        }
+    }
+
+    @Test
+    void typedLongFieldDoesNotPermitSharedReaderToWrite() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var field = fixture.typedBalance.get();
+            fixture.scopedRead(region, fixture.issue("read"), scope -> {
+                assertEquals(5L, scope.read(field));
+                assertThrows(SecurityException.class, () -> scope.write(field, 77L));
+            });
+            fixture.scopedRead(region, fixture.issue("read"), scope ->
+                    assertEquals(5L, scope.read(field)));
+        }
+    }
+
+    @Test
+    void typedLongFieldRejectsForeignRegionHandleEvenIfSupervisorIsAuthenticated()
+            throws Exception {
+        try (var first = new Fixture(); var second = new Fixture()) {
+            var a = first.create();
+            var b = second.create();
+            var foreign = b == null ? null : second.typedBalance.get();
+            assertNotNull(foreign);
+            first.scopedWrite(a, first.issue("write"), scope -> {
+                assertThrows(SecurityException.class, () -> scope.read(foreign));
+                assertThrows(SecurityException.class, () -> scope.write(foreign, 81L));
+                assertEquals(5L, scope.read(first.typedBalance.get()));
+            });
+        }
+    }
+
+    @Test
+    void typedLongFieldScopedViewExpiresBeforeNextControlTurn() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var field = fixture.typedBalance.get();
+            var escaped = new AtomicReference<ActorStateSupervisorLoans.ScopedScalar>();
+            fixture.scopedRead(region, fixture.issue("read"), escaped::set);
+            assertThrows(SecurityException.class,
+                    () -> fixture.asControl(fixture.supervisor,
+                            () -> escaped.get().read(field)));
+            assertThrows(SecurityException.class,
+                    () -> fixture.asControl(fixture.supervisor, () -> {
+                        escaped.get().write(field, 8L);
+                        return null;
+                    }));
+        }
+    }
+
+    @Test
+    void typedOwnerWriteCannotCommitAcrossStopSeal() throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            fixture.worker.send("typed-owner-paused");
+            assertTrue(fixture.ownerUpdateEntered.await(5, TimeUnit.SECONDS),
+                    "owner must be inside actual mutation callback");
+            assertTrue(fixture.worker.cancel());
+            fixture.allowOwnerUpdate.countDown();
+            assertTrue(fixture.worker.awaitTermination(5, TimeUnit.SECONDS));
+            assertNotNull(fixture.denied.get(),
+                    "the stale write must fail instead of committing after STOP");
+            assertTrue(region.physicallyRetired());
+        }
+    }
+
+
+    @Test
+    void typedFieldRegistrationWaitsForExclusivePhysicalRegionAdmission()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            var writer = fixture.redeem(region, fixture.issue("write")).join();
+            sendAndDrain(fixture.worker, "typed-owner-add-field");
+            assertInstanceOf(IllegalStateException.class, fixture.denied.get());
+            assertNull(fixture.typedLate.get(),
+                    "a contended owner cannot publish a new mutable field");
+            fixture.release(writer);
+            fixture.denied.set(null);
+            sendAndDrain(fixture.worker, "typed-owner-add-field");
+            assertNull(fixture.denied.get());
+            var late = fixture.typedLate.get();
+            assertNotNull(late);
+            fixture.scopedRead(region, fixture.issue("read"),
+                    scope -> assertEquals(71L, scope.read(late)));
+        }
+    }
+
+    @Test
+    void typedFieldNamesAreOneUseAndCannotReplaceExistingGuestBacking()
+            throws Exception {
+        try (var fixture = new Fixture()) {
+            var region = fixture.create();
+            sendAndDrain(fixture.worker, "typed-owner-duplicate-field");
+            assertInstanceOf(IllegalArgumentException.class, fixture.denied.get());
+            fixture.scopedRead(region, fixture.issue("read"),
+                    scope -> assertEquals(5L,
+                            scope.read(fixture.typedBalance.get())));
         }
     }
 

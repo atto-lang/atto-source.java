@@ -2045,6 +2045,17 @@ public final class ActorRuntime implements AutoCloseable {
         Optional<ActorMemorySlice> privateMemory();
 
         /**
+         * Restricted compiler bridge for i64 actor-field storage only.
+         * A free actor returns empty; a structured worker may allocate only
+         * during its live physical initialization turn. The source guest
+         * never receives this runtime object.
+         */
+        default Optional<ActorStateSupervisorLoans> createManagedPrimitiveStateRegion(
+                int maxPending, int maxReaders) {
+            return Optional.empty();
+        }
+
+        /**
          * Current admitted mailbox envelope, present only while onMessage is
          * executing. Startup/factory code has no current mail.
          */
@@ -3390,6 +3401,34 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (authorityLock) {
                 requireOpen();
                 ActorRef<M> worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
+                try {
+                    return manageWorker(worker);
+                } catch (RuntimeException | Error failure) {
+                    try {
+                        worker.cancel();
+                    } catch (RuntimeException cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                    throw failure;
+                }
+            }
+        }
+
+        /**
+         * Structured compiler actor spawn: group ownership is installed
+         * before the code executor can initialize guest state. This makes
+         * the bounded primitive field-region bridge eligible; ordinary
+         * spawnCodeActor remains unstructured and receives no such grant.
+         */
+        public ActorRef<Object> spawnCodeWorker(
+                ActorKind kind, IsolatePolicy policy,
+                ActorCodeExecutor executor, String actorTypeName) {
+            requireManager("spawn a structured source-code actor worker");
+            synchronized (authorityLock) {
+                requireOpen();
+                ActorRef<Object> worker =
+                        ActorRuntime.this.spawnCodeActor(
+                                kind, policy, executor, actorTypeName);
                 try {
                     return manageWorker(worker);
                 } catch (RuntimeException | Error failure) {
@@ -7782,6 +7821,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final String codeActorType;
         /** Mutable source actor state, created on this actor's dispatcher. */
         private ActorOwnedGuestState codeActorState;
+        /** Only one primitive field layout can be minted per actor incarnation. */
+        private boolean primitiveStateRegionIssued;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
@@ -8718,6 +8759,23 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public ActorKind kind() { return kind; }
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
+                    }
+                    @Override public Optional<ActorStateSupervisorLoans> createManagedPrimitiveStateRegion(
+                            int maxPending, int maxReaders) {
+                        // Untrusted tenants must remain isolate-only and
+                        // cannot acquire a same-process shared-state region.
+                        if (codeExecutor == null || managedByGroup.get() == null
+                                || kind == ActorKind.UNTRUSTED
+                                || codeActorState != null || activeMail != null
+                                || primitiveStateRegionIssued) {
+                            return Optional.empty();
+                        }
+                        // Source startup executes under one physical owner
+                        // turn. Mark admission before attempting allocation:
+                        // failures cannot retry with a second mutable layout.
+                        primitiveStateRegionIssued = true;
+                        return Optional.of(ActorRuntime.this.createCurrentActorStateLoans(
+                                maxPending, maxReaders));
                     }
                     @Override public Optional<ActorInboxMail<M>> currentMail() {
                         return Optional.ofNullable(activeMail);

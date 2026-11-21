@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -33,6 +35,125 @@ public final class ActorStateSupervisorLoans {
     private boolean arbiterClosed;
     /** Owned primitive proof slot: never return a mutable actor-state alias. */
     private long protectedScalar;
+    /** Primitive actor field cells are the canonical storage, not a mirror. */
+    private final Map<String, LongField> boundLongFields = new LinkedHashMap<>();
+    private static final int MAX_BOUND_LONG_FIELDS = 64;
+
+    /**
+     * Nominal typed storage identity, minted only by the owning actor turn.
+     * The value lives in this actor-owned region and is accessible only under
+     * an authenticated physical RW loan. A handle alone conveys no access.
+     */
+    public final class LongField {
+        private final ActorStateSupervisorLoans region = ActorStateSupervisorLoans.this;
+        private final String name;
+        private long value;
+
+        private LongField(String name, long initialValue) {
+            this.name = name;
+            this.value = initialValue;
+        }
+    }
+
+    /**
+     * Compiler/host initialization bridge: bind exactly one named i64 slot
+     * while executing the owning actor incarnation. This is the actual slot
+     * backing, not an observational copy of separate guest state.
+     */
+    public LongField declareOwnerLongField(String name, long initialValue) {
+        Objects.requireNonNull(name, "name");
+        if (name.isBlank() || name.length() > 128) {
+            throw new IllegalArgumentException("actor long field requires a bounded nonblank name");
+        }
+        // Registration is a WRITE, not a free metadata update: even field
+        // creation must linearize against outstanding supervisor readers and
+        // writers. Actor carriers cannot block; contention fails closed.
+        final LongField[] minted = new LongField[1];
+        withOwnerWrite(() -> {
+            synchronized (gate) {
+                requireOpenLocked();
+                if (boundLongFields.size() >= MAX_BOUND_LONG_FIELDS) {
+                    throw new IllegalStateException("actor typed long field quota exhausted");
+                }
+                if (boundLongFields.containsKey(name)) {
+                    throw new IllegalArgumentException(
+                            "duplicate actor long field identity: " + name);
+                }
+                LongField field = new LongField(name, initialValue);
+                boundLongFields.put(name, field);
+                minted[0] = field;
+            }
+        });
+        return minted[0];
+    }
+
+    private void requireBoundLongFieldLocked(LongField field) {
+        if (field == null || field.region != this
+                || boundLongFields.get(field.name) != field) {
+            throw new SecurityException("foreign or unregistered actor primitive field");
+        }
+    }
+
+    public long readOwnerLongField(LongField field) {
+        final long[] value = new long[1];
+        withOwnerRead(() -> {
+            synchronized (gate) {
+                requireOpenLocked();
+                requireBoundLongFieldLocked(field);
+                value[0] = field.value;
+            }
+        });
+        return value[0];
+    }
+
+    /**
+     * One physically coherent owner READ of several typed fields.
+     * The supplied names must match each nominal runtime-minted field.
+     * Snapshot values are immutable primitives; no region/loan escapes.
+     */
+    public Map<String, Long> snapshotOwnerLongFields(
+            Map<String, LongField> fields) {
+        Objects.requireNonNull(fields, "fields");
+        final java.util.concurrent.atomic.AtomicReference<Map<String, Long>> snapshot =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        withOwnerRead(() -> {
+            synchronized (gate) {
+                requireOpenLocked();
+                LinkedHashMap<String, Long> copied = new LinkedHashMap<>();
+                for (Map.Entry<String, LongField> entry : fields.entrySet()) {
+                    LongField field = entry.getValue();
+                    requireBoundLongFieldLocked(field);
+                    if (!field.name.equals(entry.getKey())) {
+                        throw new SecurityException("actor field identity and layout key differ");
+                    }
+                    copied.put(field.name, field.value);
+                }
+                snapshot.set(java.util.Collections.unmodifiableMap(copied));
+            }
+        });
+        return snapshot.get();
+    }
+
+    public void updateOwnerLongField(
+            LongField field, java.util.function.LongUnaryOperator updater) {
+        Objects.requireNonNull(updater, "updater");
+        withOwnerWrite(() -> {
+            long oldValue;
+            synchronized (gate) {
+                requireOpenLocked();
+                requireBoundLongFieldLocked(field);
+                oldValue = field.value;
+            }
+            long next = updater.applyAsLong(oldValue);
+            synchronized (gate) {
+                // STOP seals commits on the same gate as the typed cell.
+                requireOpenLocked();
+                requireBoundLongFieldLocked(field);
+                field.value = next;
+            }
+        });
+    }
+
 
     // Package-private: ActorRuntime is the sole production issuer.
     ActorStateSupervisorLoans(
@@ -174,6 +295,33 @@ public final class ActorStateSupervisorLoans {
         public void write(long value) {
             requireActive();
             loan.writeScalar(value);
+        }
+
+        /** Read the actual actor-owned typed field, not the proof scalar. */
+        public long read(LongField field) {
+            requireActive();
+            synchronized (gate) {
+                requireOpenLocked();
+                if (!active) throw new SecurityException("actor field view expired");
+                loan.requireLiveLocked();
+                requireBoundLongFieldLocked(field);
+                return field.value;
+            }
+        }
+
+        /** Requires the same exclusive physical CONTROL loan as a scalar write. */
+        public void write(LongField field, long value) {
+            requireActive();
+            synchronized (gate) {
+                requireOpenLocked();
+                if (!active) throw new SecurityException("actor field view expired");
+                loan.requireLiveLocked();
+                requireBoundLongFieldLocked(field);
+                if (loan.delegate.access() != ActorStateRwLoans.Access.WRITE) {
+                    throw new SecurityException("actor field mutation requires exclusive writer");
+                }
+                field.value = value;
+            }
         }
 
         private void invalidate() {

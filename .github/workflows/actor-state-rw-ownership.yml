@@ -6,6 +6,9 @@ on:
       - "src/main/java/dev/oreslang/runtime/ActorStateRwLoans.java"
       - "src/main/java/dev/oreslang/runtime/ActorStateSupervisorLoans.java"
       - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
+      - "src/test/java/dev/oreslang/runtime/ActorManagedPrimitiveRegionCodeWorkerTest.java"
+      - "src/test/java/dev/oreslang/nodes/ActorManagedI64FieldMapTest.java"
       - "src/main/java/dev/oreslang/parser/Parser.java"
       - "src/main/java/dev/oreslang/types/OwnershipChecker.java"
       - "src/test/java/dev/oreslang/ActorStateContainerOwnershipCompilerTest.java"
@@ -21,6 +24,7 @@ on:
       - "docs/ACTOR_STATE_CONTAINER_COMPILER_V1.md"
       - "docs/ACTOR_STATE_RETURN_BORROW_FENCE_V1.md"
       - "docs/ACTOR_STATE_FIELD_BORROW_ADMISSION_V1.md"
+      - "docs/ACTOR_MANAGED_I64_FIELD_RUNTIME_BRIDGE_V1.md"
       - ".github/workflows/actor-state-rw-ownership.yml"
   workflow_dispatch:
 
@@ -61,8 +65,8 @@ jobs:
           set -euo pipefail
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
-            -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest,ActorStateContainerOwnershipCompilerTest,ActorStateBorrowReturnFenceTest,ActorStateFieldBorrowBoundaryTest -DfailIfNoTests=true test
-      - name: Verify focused Surefire receipts (27 RW, 32 CONTROL, 12 actor-state, 7 return-fence and 8 field-path tests)
+            -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest,ActorStateContainerOwnershipCompilerTest,ActorStateBorrowReturnFenceTest,ActorStateFieldBorrowBoundaryTest,ActorManagedPrimitiveRegionCodeWorkerTest,ActorManagedI64FieldMapTest -DfailIfNoTests=true test
+      - name: Verify focused Surefire receipts (27 RW, 40 CONTROL, 13 actor-state, 7 return, 9 borrow, 3 code-worker, 1 evaluator map test)
         shell: bash
         run: |
           set -euo pipefail
@@ -72,10 +76,12 @@ jobs:
           base = Path("target/surefire-reports")
           cases = {
               "dev.oreslang.runtime.ActorStateRwLoansTest": 27,
-              "dev.oreslang.runtime.ActorStateSupervisorLoansTest": 32,
-              "dev.oreslang.ActorStateContainerOwnershipCompilerTest": 12,
+              "dev.oreslang.runtime.ActorStateSupervisorLoansTest": 40,
+              "dev.oreslang.ActorStateContainerOwnershipCompilerTest": 13,
               "dev.oreslang.ActorStateBorrowReturnFenceTest": 7,
-              "dev.oreslang.ActorStateFieldBorrowBoundaryTest": 8,
+              "dev.oreslang.ActorStateFieldBorrowBoundaryTest": 9,
+              "dev.oreslang.runtime.ActorManagedPrimitiveRegionCodeWorkerTest": 3,
+              "dev.oreslang.nodes.ActorManagedI64FieldMapTest": 1,
           }
           for class_name, minimum in cases.items():
               path = base / f"TEST-{class_name}.xml"
@@ -112,6 +118,8 @@ jobs:
             target/surefire-reports/TEST-dev.oreslang.ActorStateContainerOwnershipCompilerTest.xml
             target/surefire-reports/TEST-dev.oreslang.ActorStateBorrowReturnFenceTest.xml
             target/surefire-reports/TEST-dev.oreslang.ActorStateFieldBorrowBoundaryTest.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorManagedPrimitiveRegionCodeWorkerTest.xml
+            target/surefire-reports/TEST-dev.oreslang.nodes.ActorManagedI64FieldMapTest.xml
             target/actor-state-negative-mutation/TEST-MUTATION-ActorStateBorrowReturnFenceTest.xml
             target/actor-state-negative-mutation/negative-mutation-receipt.json
           if-no-files-found: warn

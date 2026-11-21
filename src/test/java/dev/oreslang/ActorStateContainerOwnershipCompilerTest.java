@@ -86,6 +86,21 @@ final class ActorStateContainerOwnershipCompilerTest {
     }
 
     @Test
+    void fixedWidthI64ActorCounterCompilesAndExecutesThroughRealGuest() throws Exception {
+        String program = fixture("valid-primitive-i64-counter.atto");
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                OresLanguage.ID, program, "valid-primitive-i64-counter.atto")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("2", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void copyScalarCannotBeTakenOutOfActorOwnedState() throws Exception {
         var error = rejected("reject-take-field.atto");
         assertTrue(error.getMessage().contains("rt take cannot transfer actor-owned state"),

@@ -83,6 +83,12 @@ final class ActorStateFieldBorrowBoundaryTest {
     }
 
     @Test
+    void primitiveI64RuntimeBackingDoesNotAuthorizeActorFieldBorrow()
+            throws Exception {
+        deniesUnloweredFieldLoan("reject-borrow-managed-i64.atto");
+    }
+
+    @Test
     void nestedActorFieldTakeMustRejectBeforeBackendLowering() throws Exception {
         String source = atto("reject-nested-take-field.atto");
         var rejection = assertThrows(IllegalArgumentException.class,
