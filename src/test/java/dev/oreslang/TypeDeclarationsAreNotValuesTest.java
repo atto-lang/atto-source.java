@@ -42,6 +42,8 @@ final class TypeDeclarationsAreNotValuesTest {
                 .getMessage().contains("E_TYPE_NOT_VALUE"));
         assertTrue(rejects("fnc bad(): void { stdio.println(Box); }")
                 .getMessage().contains("E_TYPE_NOT_VALUE"));
+        assertTrue(rejects("fnc bad(): void { stdio.stdout.write(Box); }")
+                .getMessage().contains("E_TYPE_NOT_VALUE"));
     }
 
     @Test
