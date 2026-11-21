@@ -1132,6 +1132,43 @@ public final class Parser {
         List<Ast.Annotation> result = new ArrayList<>();
         while (match(AT)) {
             String name = consume(IDENT, "expected annotation name").lexeme();
+            if (name.equals("DefaultArgVals")) {
+                // Stage immutable, closed named defaults without pretending
+                // that default-slot/Option lowering is executable yet.
+                // The annotation is declaration-local metadata, not a value.
+                consume(LPAREN, "@DefaultArgVals requires parenthesized 'name: literal' pairs");
+                if (check(RPAREN)) {
+                    throw error(peek(), "@DefaultArgVals requires at least one named default");
+                }
+                List<Ast.TypeRef> defaults = new ArrayList<>();
+                java.util.Set<String> defaultNames = new java.util.HashSet<>();
+                do {
+                    String paramName = consume(IDENT, "@DefaultArgVals requires a parameter name").lexeme();
+                    if (!defaultNames.add(paramName)) {
+                        throw error(previous(), "duplicate @DefaultArgVals key '" + paramName + "'");
+                    }
+                    consume(COLON, "@DefaultArgVals uses 'parameter: literal' (not '=')");
+                    Ast.TypeRef value;
+                    if (match(MINUS)) {
+                        value = Ast.TypeRef.intLiteral("-"
+                                + consume(INT, "negative defaults must be integer literals").lexeme());
+                    } else {
+                        value = parseMetaValue();
+                    }
+                    boolean closedLiteral = value.isIntLiteral() || value.isBoolLiteral()
+                            || value.isStringLiteral()
+                            || (value.name().equals("None")
+                                && value.arguments().isEmpty() && !value.inferArguments());
+                    if (!closedLiteral) {
+                        throw error(previous(),
+                                "@DefaultArgVals requires a closed int, bool, string, or None literal");
+                    }
+                    defaults.add(Ast.TypeRef.namedParameter(paramName, value));
+                } while (match(COMMA));
+                consume(RPAREN, "expected ')' after @DefaultArgVals");
+                result.add(new Ast.Annotation(name, List.copyOf(defaults)));
+                continue;
+            }
             // These names claim code generation, target selection or ABI effects.
             // Until a typed annotation registry and AOT lowering exist, retaining
             // them as inert metadata would silently change program semantics.

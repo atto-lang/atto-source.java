@@ -59,6 +59,9 @@ public final class OresEvalRootNode extends RootNode {
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
         super(language);
+        // Defend direct AST/evaluator construction as well as normal checked
+        // compile paths: defaults must NEVER be silently ignored by runtime.
+        dev.oreslang.types.UnloweredDefaultArgValsGuard.reject(program);
         this.program = program;
         this.codeUnitId = codeUnitId;
     }

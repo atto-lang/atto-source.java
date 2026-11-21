@@ -151,6 +151,10 @@ public final class TypeChecker {
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
+            // Linked signatures must not bypass local-only default admission.
+            if (declaration != null) {
+                UnloweredDefaultArgValsGuard.rejectClass(declaration);
+            }
             if (name == null || declaration == null || !name.equals(declaration.name())
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
@@ -226,6 +230,9 @@ public final class TypeChecker {
     }
 
     private void collect(Ast.Program program) {
+        // No guest execution or imported symbol publication with unlowered
+        // declaration defaults. Stage parser metadata separately from ABI.
+        dev.oreslang.types.UnloweredDefaultArgValsGuard.reject(program);
         for (Ast.ModuleDecl module : program.modules()) {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
