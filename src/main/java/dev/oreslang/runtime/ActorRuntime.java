@@ -87,6 +87,17 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRuntime runtime,
             ActorGroupId groupId) { }
 
+    /**
+     * Authenticated physical CONTROL dispatch, never inferred from a
+     * SupervisorId or an arbitrary Java host call. Only the runtime wrapper
+     * around its configured CONTROL dispatcher can install this identity.
+     */
+    private record StateSupervisorControlExecution(
+            ActorRuntime runtime, ActorSupervisor supervisor, Thread carrier) { }
+
+    private static final ThreadLocal<StateSupervisorControlExecution>
+            CURRENT_STATE_SUPERVISOR_CONTROL = new ThreadLocal<>();
+
     private record ActorExecutionContext(
             ActorRuntime runtime,
             ActorId actorId,
@@ -947,10 +958,63 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    /** Host CONTROL is a temporary boundary, not guest supervisor identity. */
-    void requireSupervisorStateHostContext() {
-        requireSupervisorContext("redeem or release a state RW delegation");
-        requireCallerRuntimeAffinity("redeem or release a state RW delegation");
+    /**
+     * Package-private trusted CONTROL adapter. It must run on a distinct
+     * actual CONTROL worker, never inline in the submitting host or actor
+     * turn. An arbitrary host thread cannot install a supervisor identity by
+     * passing an ActorSupervisor record or stable ID.
+     *
+     * This does not expose a guest callable CONTROL function. Source-level
+     * lowering and scheduler-internal dispatch must supply the runnable.
+     */
+    OresFuture<Void> dispatchSupervisorStateControl(
+            ActorSupervisor supervisor, Runnable operation) {
+        requireSupervisorContext("submit supervisor state CONTROL work");
+        requireCallerRuntimeAffinity("submit supervisor state CONTROL work");
+        Objects.requireNonNull(supervisor, "supervisor");
+        Objects.requireNonNull(operation, "operation");
+        if (closed.get() || supervisors.get(supervisor.id()) != supervisor) {
+            throw new SecurityException("unknown or retired supervisor identity");
+        }
+        if (CURRENT_STATE_SUPERVISOR_CONTROL.get() != null) {
+            throw new SecurityException("nested supervisor state CONTROL is not admitted");
+        }
+        Thread submittingThread = Thread.currentThread();
+        Runnable authenticated = () -> {
+            if (Thread.currentThread() == submittingThread || inActorExecution()
+                    || inActorGroupMailmanExecution()
+                    || CURRENT_STATE_SUPERVISOR_CONTROL.get() != null) {
+                throw new SecurityException(
+                        "supervisor state CONTROL requires its own authenticated carrier");
+            }
+            if (closed.get() || supervisors.get(supervisor.id()) != supervisor) {
+                throw new SecurityException("supervisor was revoked before CONTROL dispatch");
+            }
+            CURRENT_STATE_SUPERVISOR_CONTROL.set(
+                    new StateSupervisorControlExecution(
+                            this, supervisor, Thread.currentThread()));
+            try {
+                operation.run();
+            } finally {
+                CURRENT_STATE_SUPERVISOR_CONTROL.remove();
+            }
+        };
+        return Objects.requireNonNull(
+                controlDispatcher.execute(authenticated),
+                "supervisor CONTROL dispatcher returned null Future");
+    }
+
+    /** Strict principal and carrier verification at every borrow/use/release. */
+    void requireSupervisorStateHostContext(ActorSupervisor supervisor) {
+        requireSupervisorContext("redeem, use, or release a state RW delegation");
+        requireCallerRuntimeAffinity("redeem, use, or release a state RW delegation");
+        StateSupervisorControlExecution current = CURRENT_STATE_SUPERVISOR_CONTROL.get();
+        if (current == null || current.runtime() != this
+                || current.supervisor() != supervisor
+                || current.carrier() != Thread.currentThread()) {
+            throw new SecurityException(
+                    "state RW delegation requires live authenticated supervisor CONTROL");
+        }
     }
 
     /** Exact direct structured manager; group membership alone never suffices. */
@@ -8951,8 +9015,16 @@ public final class ActorRuntime implements AutoCloseable {
                         && codeActorState != null && !sourceReceiveSuspended) {
                     gracefulTeardownPending = true;
                 }
-                // STOP is single-shot. Reentrant supervisor/host requests must
-                // not re-close a channel or reset the cleanup admission fence.
+                // STOP is single-shot. Seal owner state/CONTROL grants
+                // *before* stopped=true is observable. The seal takes only
+                // each region monitor (no host Future callbacks), so a
+                // protected scalar write cannot linearize after STOP begins.
+                // createCurrentActorStateLoans uses this lifecycle monitor
+                // and cannot publish a new region during the seal.
+                if (stopped.get()) return;
+                for (ActorStateSupervisorLoans region : supervisorStateRegions) {
+                    region.sealFromRuntimeStop();
+                }
                 if (!stopped.compareAndSet(false, true)) return;
                 sealing = true;
                 cleanupScheduler = sourceScheduler;

@@ -50,7 +50,7 @@ jobs:
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
             -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest -DfailIfNoTests=true test
-      - name: Verify exact focused Surefire evidence (26 base and 13 integration tests)
+      - name: Verify exact focused Surefire evidence (27 base and 22 integration tests)
         shell: bash
         run: |
           set -euo pipefail
@@ -59,8 +59,8 @@ jobs:
           from pathlib import Path
           base = Path("target/surefire-reports")
           cases = {
-              "ActorStateRwLoansTest": 26,
-              "ActorStateSupervisorLoansTest": 13,
+              "ActorStateRwLoansTest": 27,
+              "ActorStateSupervisorLoansTest": 22,
           }
           for class_name, minimum in cases.items():
               path = base / f"TEST-dev.oreslang.runtime.{class_name}.xml"

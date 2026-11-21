@@ -41,6 +41,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
     private StateLoan writer;
     private final ExecutionContext.AllocationDomain boundAllocation;
     private long nextEpoch;
+    private boolean admissionSealed;
     private boolean closed;
     private boolean publishing;
     private final Runnable retirementWakeup;
@@ -88,6 +89,17 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 retirementWakeup, "retirementWakeup");
     }
 
+    /**
+     * Callback-free STOP admission seal. May run under ActorCell.lifecycleLock.
+     * This must never settle pending Futures or invoke foreign callbacks.
+     * Physical shutdown must still call close() OUTSIDE that monitor.
+     */
+    void sealAdmissionsWithoutCallbacks() {
+        synchronized (monitor) {
+            admissionSealed = true;
+        }
+    }
+
     /** Nonblocking physical-retirement receipt for ActorRuntime finalization. */
     public boolean physicallyRetired() {
         synchronized (monitor) {
@@ -131,9 +143,9 @@ public final class ActorStateRwLoans implements AutoCloseable {
         }
         Authority authority = authority(execution);
         synchronized (monitor) {
-            if (closed) {
+            if (closed || admissionSealed) {
                 return OresFuture.failed(new IllegalStateException(
-                        "actor state RW loans closed"));
+                        "actor state RW loans sealed or closed"));
             }
             if (!boundAllocation.equals(execution.allocationDomain())) {
                 return OresFuture.failed(new IllegalArgumentException(
@@ -198,7 +210,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
         synchronized (monitor) {
             // An empty loan ledger on a stopped actor is NOT a suspension
             // permit. The generation is revoked once close() begins.
-            return !closed && !reserved.contains(authority(execution));
+            return !closed && !admissionSealed
+                    && !reserved.contains(authority(execution));
         }
     }
 
@@ -247,7 +260,7 @@ public final class ActorStateRwLoans implements AutoCloseable {
      * every later reader until the current readers retire and the writer runs.
      */
     private void promoteLocked() {
-        if (closed || writer != null) return;
+        if (closed || admissionSealed || writer != null) return;
 
         while (!pending.isEmpty()) {
             Pending head = pending.peekFirst();
@@ -375,7 +388,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
             Objects.requireNonNull(execution, "execution");
             Authority candidate = authority(execution);
             synchronized (monitor) {
-                if (closed || released || !authority.equals(candidate)) return false;
+                if (closed || admissionSealed || released
+                        || !authority.equals(candidate)) return false;
                 return access == Access.WRITE
                         ? writer == this
                         : readers.get(authority) == this;
@@ -400,7 +414,8 @@ public final class ActorStateRwLoans implements AutoCloseable {
                 // A previously released handle is not proof that this same
                 // execution has no *new* active or queued loan. Consult the
                 // current ledger as well as the physical release receipt.
-                return released && !reserved.contains(authority);
+                return released && !closed && !admissionSealed
+                        && !reserved.contains(authority);
             }
         }
 
