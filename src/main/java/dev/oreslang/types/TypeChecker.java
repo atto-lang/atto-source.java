@@ -3446,10 +3446,12 @@ public final class TypeChecker {
 
             env.restoreInitialization(afterCondition);
             Type left = typeOf(conditional.whenTrue(), env, generics, self);
+            requireRuntimeValue(left, "conditional true arm");
             Map<Env.Binding, Set<String>> leftExit = env.initializationSnapshot();
 
             env.restoreInitialization(afterCondition);
             Type right = typeOf(conditional.whenFalse(), env, generics, self);
+            requireRuntimeValue(right, "conditional false arm");
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(leftExit, rightExit));
@@ -3482,6 +3484,7 @@ public final class TypeChecker {
             Type ready = env.captureTypes.get(capture);
             if (ready != null) return ready;
             Type value = typeOf(capture.value(), env, generics, self);
+            requireRuntimeValue(value, "capture value");
             if (value == Primitive.VOID) throw new IllegalArgumentException("cannot capture a void expression");
             env.define(capture.name(), value, Ast.BindingKind.LET);
             env.captureTypes.put(capture, value);
@@ -3507,6 +3510,7 @@ public final class TypeChecker {
                         "trap expression cannot contain suspension until its continuation and cleanup are verified");
             }
             Type inner = typeOf(trapped.expression(), env, generics, self);
+            requireRuntimeValue(inner, "trap operand");
             if (inner instanceof Named named && named.name().equals("Future")) {
                 throw new IllegalArgumentException(
                         "trap expression cannot wrap Future<T>; asynchronous failure capture is unsupported");
@@ -3518,6 +3522,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
+            requireRuntimeValue(operand, "unary operand");
             if (unary.operator().equals("&")) {
                 // Reborrow an existing loan; borrowing the wrapper must not
                 // create Borrow<Borrow<T>> or erase the source lifetime.
@@ -3564,6 +3569,7 @@ public final class TypeChecker {
                         + " Chains and nested uses are rejected; use '<<<', '>>>' or 'ashr' for bit shifts");
             }
             Type left = typeOf(binary.left(), env, generics, self);
+            requireRuntimeValue(left, "binary left operand");
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
                 Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
@@ -3575,6 +3581,7 @@ public final class TypeChecker {
                 return Primitive.BOOL;
             }
             Type right = typeOf(binary.right(), env, generics, self);
+            requireRuntimeValue(right, "binary right operand");
             return switch (binary.operator()) {
                 case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -5918,6 +5925,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.MatchExpr valueMatch) {
             Type subject = deref(typeOf(valueMatch.subject(), env, generics, self));
+            requireRuntimeValue(subject, "value match subject");
             Type declaredResult = valueMatch.resultType() == null ? null
                     : resolve(valueMatch.resultType(), generics, self);
             if (declaredResult == Primitive.VOID || declaredResult == Unknown.INSTANCE) {
@@ -6014,7 +6022,9 @@ public final class TypeChecker {
             for (int i = 1; i < list.elements().size(); i++) {
                 element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
             }
-            return new ListType(element);
+            Type result = new ListType(element);
+            requireRuntimeValue(result, "list element");
+            return result;
         }
         if (expr instanceof Ast.MapLiteralExpr mapLiteral) {
             Ast.TypeRef witness = mapLiteral.mapType();
@@ -6102,7 +6112,10 @@ public final class TypeChecker {
                             + "unresolved or unsupported witness " + witness);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            Type result = new Tuple(tuple.elements().stream()
+                    .map(item -> typeOf(item, env, generics, self)).toList());
+            requireRuntimeValue(result, "tuple element");
+            return result;
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
@@ -6161,6 +6174,7 @@ public final class TypeChecker {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
+                requireRuntimeValue(exactValueType, "aggregate field '" + field.name() + "'");
                 if (members.putIfAbsent(
                         field.name(),
                         object.inferredFieldTypes()

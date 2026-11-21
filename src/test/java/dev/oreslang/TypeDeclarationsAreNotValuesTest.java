@@ -73,6 +73,12 @@ final class TypeDeclarationsAreNotValuesTest {
     }
 
     @Test
+    void declarationsCannotBeComparedAsRuntimeValues() {
+        assertTrue(rejects("fnc bad(): bool { return Box eq Box; }")
+                .getMessage().contains("E_TYPE_NOT_VALUE"));
+    }
+
+    @Test
     void interfaceDeclarationIsTypeOnly() {
         assertTrue(assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
