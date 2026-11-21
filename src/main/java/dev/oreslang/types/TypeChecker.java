@@ -1170,7 +1170,9 @@ public final class TypeChecker {
         // initialized final slot becomes immutable before any body executes.
         // This scope is local to klass; inherited initializers are validated
         // against their own declaring class and cannot capture child params.
-        List<Ast.ConstructorDecl> initializerVariants = new ArrayList<>(klass.constructors());
+        List<Ast.ConstructorDecl> initializerVariants = klass.constructors().stream()
+                .filter(candidate -> !ConstructorDelegation.isDelegating(candidate))
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
         if (initializerVariants.isEmpty()) initializerVariants.add(null);
         for (Ast.ConstructorDecl constructor : initializerVariants) {
         Env fieldInitializerEnv = new Env(null);
@@ -1269,7 +1271,26 @@ public final class TypeChecker {
             currentConstructorOwner = klass;
             lexicalClassOrigin = klass;
             try {
-                checkBlock(constructor.body(), constructorEnv, classGenerics, Primitive.VOID, self);
+                Ast.ConstructorDelegateStmt delegation = ConstructorDelegation.first(constructor);
+                if (delegation != null) {
+                    Ast.ConstructorDecl target =
+                            klass.constructorForArity(delegation.effectiveArity());
+                    for (int i = 0; i < target.parameters().size(); i++) {
+                        Ast.Param param = target.parameters().get(i);
+                        Type expected = resolveParam(param, classGenerics, self);
+                        Type actual = typeOf(
+                                delegation.arguments().get(i), constructorEnv, classGenerics, self);
+                        requireReadonlyCapabilityPreserved(
+                                actual, expected, "constructor delegation argument " + (i + 1));
+                        requireMutableReferentCompatible(
+                                actual, param.mutable(), "constructor delegation parameter '" + param.name() + "'");
+                        requireAssignable(
+                                actual, expected, "constructor delegation argument " + (i + 1));
+                    }
+                }
+                checkBlock(
+                        ConstructorDelegation.tail(constructor),
+                        constructorEnv, classGenerics, Primitive.VOID, self);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
@@ -1676,6 +1697,11 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.ConstructorDelegateStmt) {
+            throw new IllegalArgumentException(
+                    "constructor(...) is only legal as the first top-level statement "
+                            + "of an ordinary-class constructor");
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             boolean namedInference = binding.inferredTypeName() != null;
             Type declaredAhead = namedInference || binding.declaredType() == null

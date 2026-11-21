@@ -629,7 +629,8 @@ public final class Parser {
         // A leading bare self is an explicit spelling of the compiler-supplied
         // construction receiver. It is not a caller-visible value parameter
         // and therefore never contributes to constructor overload arity.
-        if (match(SELF) && !check(RPAREN)) {
+        boolean bindsSelf = match(SELF);
+        if (bindsSelf && !check(RPAREN)) {
             consume(COMMA, "constructor self receiver must be followed by ',' or ')'");
         }
         List<Ast.Param> params = parseParametersUntil(RPAREN);
@@ -638,7 +639,7 @@ public final class Parser {
             throw error(peek(), "constructors do not declare a return type");
         }
         List<Ast.Stmt> body = parseBlock();
-        return new Ast.ConstructorDecl(mods.visibility, params, annotations, body);
+        return new Ast.ConstructorDecl(mods.visibility, params, annotations, body, bindsSelf);
     }
 
     private boolean defineFollowsAfterVisibilityModifiers() {
@@ -1705,6 +1706,17 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        // Constructor delegation is a special statement, not an ordinary
+        // callable. Semantic validation restricts it to the first top-level
+        // statement of an ordinary-class constructor.
+        if (isContextualIdentifier("constructor") && checkNext(LPAREN)) {
+            advance();
+            consume(LPAREN, "expected '(' after constructor delegation");
+            List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+            consume(RPAREN, "expected ')' after constructor delegation arguments");
+            consumeStatementTerminator("constructor delegation should end with ';'");
+            return new Ast.ConstructorDelegateStmt(args);
+        }
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
         // not yet been lowered in the Java/Graal production compiler.

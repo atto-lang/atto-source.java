@@ -400,15 +400,30 @@ public final class Ast {
         }
     }
 
+    /**
+     * The leading source `self` binder is not a caller parameter. Retaining
+     * its presence lets lexical/ownership passes distinguish an explicitly
+     * authorized construction receiver from older implicit-receiver sources.
+     */
     public record ConstructorDecl(
             Visibility visibility,
             List<Param> parameters,
             List<Annotation> annotations,
-            List<Stmt> body) {
+            List<Stmt> body,
+            boolean bindsSelf) {
         public ConstructorDecl {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+        }
+
+        /** AST migration compatibility: the historic parser implied self. */
+        public ConstructorDecl(
+                Visibility visibility,
+                List<Param> parameters,
+                List<Annotation> annotations,
+                List<Stmt> body) {
+            this(visibility, parameters, annotations, body, false);
         }
 
         public int arity() { return parameters.size(); }
@@ -570,7 +585,7 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits ConstructorDelegateStmt, BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
@@ -655,6 +670,11 @@ public final class Ast {
         public YieldStmt {
             if (value == null) throw new IllegalArgumentException("yield requires a value");
         }
+    }
+    /** Same-object sibling constructor invocation. Never an ordinary CallExpr. */
+    public record ConstructorDelegateStmt(List<Expr> arguments) implements Stmt {
+        public ConstructorDelegateStmt { arguments = List.copyOf(arguments); }
+        public int effectiveArity() { return arguments.size(); }
     }
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }

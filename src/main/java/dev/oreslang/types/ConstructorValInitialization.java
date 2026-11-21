@@ -27,6 +27,9 @@ public final class ConstructorValInitialization {
     private ConstructorValInitialization() { }
 
     public static void check(Ast.ClassDecl klass) {
+        // Reject nested/late delegations, missing target arities and cycles
+        // before analyzing the constructor CFG. Actor constructors still fail.
+        ConstructorDelegation.validate(klass);
         if (klass.actorKind() != Ast.ActorKind.NONE || klass.constructors().isEmpty()) return;
 
         LinkedHashSet<String> required = new LinkedHashSet<>();
@@ -40,12 +43,46 @@ public final class ConstructorValInitialization {
         // Even classes with no blank val slots must not publish constructing
         // self. Ownership checks must not be the only protection: run the
         // constructor expression walker independently for every constructor.
+        Set<Integer> checkedArities = new java.util.HashSet<>();
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
-            State normalExit = block(constructor.body(), new State(required, fixed), required, klass.name());
-            if (normalExit != null) requireComplete(normalExit, required, klass.name());
+            checkConstructor(klass, constructor, required, fixed, checkedArities);
         }
     }
 
+    /**
+     * Validate each acyclic sibling-delegation chain terminal-first.
+     * All initializers run once in the terminal constructor; a successful
+     * delegate returns with every required field initialized. Delegator
+     * tails are checked with those fields already written, so duplicate
+     * immutable writes still fail while mutable let writes remain valid.
+     * Iteration avoids a compiler stack overflow on long delegation chains.
+     */
+    private static void checkConstructor(
+            Ast.ClassDecl klass,
+            Ast.ConstructorDecl constructor,
+            Set<String> required,
+            Set<String> fixed,
+            Set<Integer> checkedArities) {
+        List<Ast.ConstructorDecl> chain = new ArrayList<>();
+        Ast.ConstructorDecl current = constructor;
+        while (!checkedArities.contains(current.arity())) {
+            chain.add(current);
+            Ast.ConstructorDelegateStmt delegation = ConstructorDelegation.first(current);
+            if (delegation == null) break;
+            current = klass.constructorForArity(delegation.effectiveArity());
+        }
+        for (int index = chain.size() - 1; index >= 0; index--) {
+            Ast.ConstructorDecl frame = chain.get(index);
+            State entry = new State(required, fixed);
+            if (ConstructorDelegation.isDelegating(frame)) {
+                for (String field : required) entry.write(field);
+            }
+            State normalExit = block(
+                    ConstructorDelegation.tail(frame), entry, required, klass.name());
+            if (normalExit != null) requireComplete(normalExit, required, klass.name());
+            checkedArities.add(frame.arity());
+        }
+    }
 
     /** Mutable local cursor over immutable backend-neutral assignment intervals. */
     private static final class State {
