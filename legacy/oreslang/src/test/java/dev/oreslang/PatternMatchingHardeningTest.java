@@ -663,7 +663,7 @@ final class PatternMatchingHardeningTest {
                     define class Dog extends Animal as
                     end
 
-                    fnc consume(Dog dog): void {
+                    fnc consume(take! Dog dog): void {
                       return;
                     }
 

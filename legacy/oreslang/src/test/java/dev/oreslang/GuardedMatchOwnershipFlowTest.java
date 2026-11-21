@@ -17,7 +17,7 @@ final class GuardedMatchOwnershipFlowTest {
               pub val int id = 7;
             end
 
-            fnc consuming_predicate(Resource resource): bool {
+            fnc consuming_predicate(take! Resource resource): bool {
               return resource.id eq 7;
             }
 

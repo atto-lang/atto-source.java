@@ -11,7 +11,7 @@ public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
 
     static {
-        KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("enum", ENUM); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
+        KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE); KEYWORDS.put("contract", CONTRACT); KEYWORDS.put("conforms", CONFORMS); KEYWORDS.put("namespace", NAMESPACE);
         KEYWORDS.put("import", IMPORT); KEYWORDS.put("export", EXPORT); KEYWORDS.put("from", FROM); KEYWORDS.put("as", AS);
         KEYWORDS.put("extends", EXTENDS); KEYWORDS.put("implements", IMPLEMENTS);
         KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
@@ -298,6 +298,23 @@ public final class Lexer {
     }
 
     private void number() {
+        // 0b / 0o / 0x integer literals (with '_' separators between digits).
+        if (source.charAt(start) == '0' && (peek() == 'b' || peek() == 'B' || peek() == 'o'
+                || peek() == 'O' || peek() == 'x' || peek() == 'X')) {
+            char mark = Character.toLowerCase(peek());
+            String allowed = mark == 'b' ? "01" : mark == 'o' ? "01234567" : "0123456789abcdefABCDEF";
+            advance();
+            if (allowed.indexOf(peek()) < 0) throw error("malformed 0" + mark + " integer literal");
+            while (allowed.indexOf(peek()) >= 0 || peek() == '_') {
+                if (peek() == '_' && allowed.indexOf(peekNext()) < 0) {
+                    throw error("malformed 0" + mark + " integer separator");
+                }
+                advance();
+            }
+            if (isIdentPart(peek())) throw error("malformed 0" + mark + " integer literal");
+            add(INT);
+            return;
+        }
         // All decimal runs use one lexical separator rule, including actor
         // configuration integers, floating-point fractions, imaginary
         // literals and exponents. Never normalize malformed input in the

@@ -534,15 +534,202 @@ public final class OwnershipChecker {
         return false;
     }
 
+    /** Declared parameter (by identity) to its effective implicit-borrow parameter. */
+    private Map<Ast.Param, Ast.Param> implicitBorrowParams;
+
     private Ast.Param effectiveParam(Ast.Param param) {
+        if (implicitBorrowParams == null) computeImplicitBorrowParams();
+        return implicitBorrowParams.getOrDefault(param, param);
+    }
+
+    private boolean isImplicitBorrowParam(Ast.Param effective) {
+        if (implicitBorrowParams == null) computeImplicitBorrowParams();
+        return implicitBorrowParams.containsValue(effective);
+    }
+
+    private void computeImplicitBorrowParams() {
+        implicitBorrowParams = new HashMap<>();
+        List<Map.Entry<Ast.Param, List<Ast.Stmt>>> candidates = new ArrayList<>();
+        for (Ast.ModuleDecl module : checkedProgram.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    if (fn.async() || fn.suspends() || fn.generator()) continue;
+                    for (Ast.Param param : fn.parameters()) candidates.add(Map.entry(param, fn.body()));
+                } else if (declaration instanceof Ast.ClassDecl klass
+                        && klass.actorKind() == Ast.ActorKind.NONE) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        if (method.async() || method.suspends()) continue;
+                        for (Ast.Param param : method.parameters()) {
+                            candidates.add(Map.entry(param, method.body()));
+                        }
+                    }
+                }
+            }
+        }
+        for (Map.Entry<Ast.Param, List<Ast.Stmt>> candidate : candidates) {
+            implicitBorrow(candidate.getKey(), candidate.getValue());
+        }
+        // Fixed point: a parameter passed on to an owned formal is itself
+        // consumed, so it is owned too. Demotion is monotone, so this ends.
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (Map.Entry<Ast.Param, List<Ast.Stmt>> candidate : candidates) {
+                Ast.Param param = candidate.getKey();
+                if (implicitBorrowParams.containsKey(param)
+                        && passesToOwnedFormal(candidate.getValue(), param.name())) {
+                    implicitBorrowParams.remove(param);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    /** True when local {@code name} is passed directly to an owned formal of a known function. */
+    private boolean passesToOwnedFormal(Object node, String name) {
+        if (node instanceof Ast.CallExpr call && call.callee() instanceof Ast.NameExpr callee) {
+            Ast.FunctionDecl fn = findFunction(callee.name(), call.arguments().size());
+            if (fn != null) {
+                for (int i = 0; i < call.arguments().size() && i < fn.parameters().size(); i++) {
+                    if (!isName(call.arguments().get(i), name)) continue;
+                    Ast.Param formal = fn.parameters().get(i);
+                    if (formal.consuming()) return true;
+                    Ast.TypeRef type = formal.type();
+                    if (type != null && !type.isBorrow() && !formal.structural()
+                            && findClass(type.name()) != null && !isCopyType(type)
+                            && !implicitBorrowParams.containsKey(formal)) return true;
+                }
+            }
+        }
+        if (node instanceof Ast.LambdaExpr) return false;
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (passesToOwnedFormal(item, name)) return true;
+            return false;
+        }
+        if (node instanceof Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (passesToOwnedFormal(component.getAccessor().invoke(record), name)) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Implicit argument borrowing (atto-spec implicit-argument-borrow-v1): an
+     * ordinary non-Copy class formal `Foo f` of a synchronous fnc/method is a
+     * non-owning loan. It is exclusive only when the body writes through `f`
+     * (or calls a field-mutating method on it); otherwise shared. The callee
+     * cannot move, return or retain it; `take! Foo f` declares an owned formal.
+     */
+    private void implicitBorrow(Ast.Param param, List<Ast.Stmt> body) {
         Ast.TypeRef type = param.type();
-        if (type == null || type.isBorrow() || param.structural() || param.mutable()) return param;
+        if (param.consuming() || type == null || type.isBorrow() || param.structural()
+                || param.mutable()) return;
         if (!type.arguments().isEmpty() || type.isRecordType() || type.isUnion()
-                || type.isTupleType() || type.inferArguments()) return param;
+                || type.isTupleType() || type.inferArguments()) return;
         Ast.ClassDecl klass = findClass(type.name());
-        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) return param;
-        if (isCopyType(type)) return param;
-        return new Ast.Param(Ast.TypeRef.borrowed(type, true), param.name(), false, false);
+        if (klass == null || klass.actorKind() != Ast.ActorKind.NONE || isCopyType(type)) return;
+        // A body that explicitly takes ownership (take!/rt take, return, store,
+        // destructure, aggregate element) declares an owned formal.
+        if (consumesName(body, param.name())) return;
+        boolean mutable = mutatesThrough(body, param.name(), klass);
+        // Keyed by value: resolved call signatures may re-create equal Params.
+        // If equal declarations disagree, the exclusive loan wins.
+        Ast.Param previous = implicitBorrowParams.get(param);
+        boolean exclusive = mutable || (previous != null && previous.type().mutableBorrow());
+        implicitBorrowParams.put(param,
+                new Ast.Param(Ast.TypeRef.borrowed(type, exclusive), param.name(), false, false));
+    }
+
+    /** True when {@code node} explicitly transfers ownership of local {@code name}. */
+    private static boolean consumesName(Object node, String name) {
+        if (node instanceof Ast.RuntimeCallExpr runtime
+                && (runtime.operation().equals("take") || runtime.operation().equals("share"))
+                && runtime.arguments().size() == 1 && isName(runtime.arguments().getFirst(), name)) return true;
+        if (node instanceof Ast.ReturnStmt returned && isName(returned.value(), name)) return true;
+        if (node instanceof Ast.YieldStmt yielded && isName(yielded.value(), name)) return true;
+        if (node instanceof Ast.BindingStmt binding && isName(binding.initializer(), name)) return true;
+        if (node instanceof Ast.AssignExpr assign && isName(assign.value(), name)) return true;
+        if (node instanceof Ast.DestructureStmt) {
+            for (java.lang.reflect.RecordComponent component : node.getClass().getRecordComponents()) {
+                try {
+                    if (isName(component.getAccessor().invoke(node), name)) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true;
+                }
+            }
+        }
+        if (node instanceof Ast.TupleExpr tuple && tuple.elements().stream().anyMatch(e -> isName(e, name))) return true;
+        if (node instanceof Ast.ListExpr array && array.elements().stream().anyMatch(e -> isName(e, name))) return true;
+        if (node instanceof Ast.ObjectExpr object
+                && object.fields().stream().anyMatch(f -> isName(f.value(), name))) return true;
+        if (node instanceof Ast.LambdaExpr) return false;
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (consumesName(item, name)) return true;
+            return false;
+        }
+        if (node instanceof Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (consumesName(component.getAccessor().invoke(record), name)) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true; // unknown shape: keep the declared (owned) formal
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isName(Object expression, String name) {
+        return expression instanceof Ast.NameExpr reference && reference.name().equals(name);
+    }
+
+    /** True when {@code node} writes through local {@code name} of class {@code klass}. */
+    private static boolean mutatesThrough(Object node, String name, Ast.ClassDecl klass) {
+        if (node instanceof Ast.AssignExpr assign && rootedAt(assign.target(), name)
+                && !(assign.target() instanceof Ast.NameExpr)) return true;
+        if (node instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")
+                && rootedAt(unary.operand(), name)) return true;
+        if (node instanceof Ast.CallExpr call && call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr receiver && receiver.name().equals(name)) {
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.name().equals(member.member()) && assignsSelfField(method.body())) return true;
+            }
+        }
+        if (node instanceof java.util.Collection<?> items) {
+            for (Object item : items) if (mutatesThrough(item, name, klass)) return true;
+            return false;
+        }
+        if (node instanceof Record record) {
+            for (java.lang.reflect.RecordComponent component : record.getClass().getRecordComponents()) {
+                Class<?> type = component.getType();
+                if (type.isPrimitive() || type == String.class || type.isEnum()) continue;
+                try {
+                    if (mutatesThrough(component.getAccessor().invoke(record), name, klass)) return true;
+                } catch (ReflectiveOperationException ignored) {
+                    return true; // unknown shape: fail closed toward the exclusive loan
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean rootedAt(Ast.Expr place, String name) {
+        Ast.Expr current = place;
+        while (true) {
+            if (current instanceof Ast.NameExpr root) return root.name().equals(name);
+            if (current instanceof Ast.MemberExpr member) current = member.receiver();
+            else if (current instanceof Ast.IndexExpr index) current = index.receiver();
+            else return false;
+        }
     }
 
     private VarState stateForParam(Ast.Param param) {
@@ -2858,6 +3045,16 @@ public final class OwnershipChecker {
                             scope,
                             "mutable method receiver '" + method.name() + "'");
                 }
+                if ((method.explicitReceiverType() == null || !method.explicitReceiverType().isBorrow())
+                        && target.owner().actorKind() == Ast.ActorKind.NONE
+                        && assignsSelfField(method.body())) {
+                    // A method that writes self.field holds an inferred exclusive
+                    // self loan, so its receiver must be writable at the call site.
+                    ensureMutableReceiver(
+                            member.receiver(),
+                            scope,
+                            "field-mutating method receiver '" + method.name() + "'");
+                }
                 boolean protectedReceiver = false;
                 if (member.receiver() instanceof Ast.NameExpr receiverName) {
                     VarState receiverState = scope.lookup(receiverName.name());
@@ -3632,7 +3829,11 @@ public final class OwnershipChecker {
                 }
                 return;
             }
-            throw error(callable + " argument " + position + " must be an explicit borrow");
+            if (!isImplicitBorrowParam(param)) {
+                throw error(callable + " argument " + position + " must be an explicit borrow");
+            }
+            // A temporary or explicit take! argument to an implicitly borrowed
+            // formal has no other owner: it is passed (and dropped) by value.
         }
         ValueInfo argument = checkExpr(arg, scope, true);
         if (containsMutexGuardType(argument.type)) {
@@ -6520,7 +6721,7 @@ public final class OwnershipChecker {
         // A Channel<T> value is a handle to one runtime-synchronized channel
         // (like ActorRef): copying the handle aliases the same channel and
         // never copies or moves buffered payloads.
-        if (type.name().equals("Channel") && type.arguments().size() == 1
+        if (type.name().equals("Channel") && type.arguments().size() == 1 && !hasLocalTypeAliasNamed("Channel")
                 && findClass("Channel") == null) return true;
         if (type.arguments().isEmpty()) {
             NominalEnumRegistry.EnumType enumeration =

@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ConsoleBorrowAuditTest {
     private static final String PAYLOAD = """
             define class ConsolePayload as pub let int value = 42; end
-            fnc consume(ConsolePayload item):String { return "consumed"; }
+            fnc consume(take! ConsolePayload item):String { return "consumed"; }
             fnc edit(borrow mut ConsolePayload item):String { item.value = 43; return "edited"; }
             """;
 
@@ -73,7 +73,7 @@ final class ConsoleBorrowAuditTest {
     @Test
     void formattingSpreadPinsTheCollectionUntilTheInvocationCompletes() {
         assertBorrowRejected("""
-                fnc consume(Array<int> values):String { return "consumed"; }
+                fnc consume(take! Array<int> values):String { return "consumed"; }
                 pub fnc main():int {
                   val Array<int> values = new Array<int>(); values.add(42);
                   stdio.stdout.log(...values, consume(values));
@@ -85,7 +85,7 @@ final class ConsoleBorrowAuditTest {
     @Test
     void collectionGetterViewPinsItsCollection() {
         assertBorrowRejected(PAYLOAD + """
-                fnc consume_array(Array<ConsolePayload> values):String { return "consumed"; }
+                fnc consume_array(take! Array<ConsolePayload> values):String { return "consumed"; }
                 pub fnc main():int {
                   val Array<ConsolePayload> values = new Array<ConsolePayload>();
                   values.add(new ConsolePayload());
@@ -98,7 +98,7 @@ final class ConsoleBorrowAuditTest {
     @Test
     void collectionGetterCopySnapshotDoesNotKeepAnUnnecessaryLoan() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
-                fnc consume_array(Array<int> values):String { return "consumed"; }
+                fnc consume_array(take! Array<int> values):String { return "consumed"; }
                 pub fnc main():int {
                   val Array<int> values = new Array<int>(); values.add(42);
                   stdio.stdout.log(values.get(0), consume_array(values));
@@ -110,7 +110,7 @@ final class ConsoleBorrowAuditTest {
     @Test
     void collectionReceiverIsProtectedWhileItsIndexIsEvaluated() {
         assertBorrowRejected("""
-                fnc consume_index(Array<int> values):int { return 0; }
+                fnc consume_index(take! Array<int> values):int { return 0; }
                 pub fnc main():int {
                   val Array<int> values = new Array<int>(); values.add(42);
                   stdio.println(values.get(consume_index(values)));
@@ -123,7 +123,7 @@ final class ConsoleBorrowAuditTest {
     void projectedCollectionCopySnapshotDoesNotKeepAnUnnecessaryLoan() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 define class Holder as pub val Array<int> values; end
-                fnc consume_holder(Holder holder):String { return "consumed"; }
+                fnc consume_holder(take! Holder holder):String { return "consumed"; }
                 pub fnc main():int {
                   val Array<int> values = new Array<int>(); values.add(42);
                   val Holder holder = new Holder(values);
@@ -149,7 +149,7 @@ final class ConsoleBorrowAuditTest {
     void projectedValuePinsItsContainingOwner() {
         assertBorrowRejected(PAYLOAD + """
                 define class ConsoleHolder as pub val ConsolePayload payload; end
-                fnc consume_holder(ConsoleHolder holder):String { return "consumed"; }
+                fnc consume_holder(take! ConsoleHolder holder):String { return "consumed"; }
                 pub fnc main():int {
                   val ConsoleHolder holder = new ConsoleHolder(new ConsolePayload());
                   stdio.stdout.log(holder.payload, consume_holder(holder));

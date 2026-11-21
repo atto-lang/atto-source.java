@@ -136,7 +136,7 @@ final class CaptureExpressionAuditTest {
         assertEquals("ok", run("""
                 define class Box as end
                 fnc ready(borrow Box value):bool{return true;}
-                fnc consume(Box value):void{stdio.stdout.write("ok");return;}
+                fnc consume(take! Box value):void{stdio.stdout.write("ok");return;}
                 pub fnc main():void {
                   if ready(rt borrow (new Box() as let value)) {consume(value);fi
                   return;
@@ -149,7 +149,7 @@ final class CaptureExpressionAuditTest {
         assertEquals("ok", run("""
                 define class Box as end
                 fnc ready(borrow Box value):bool{return true;}
-                fnc consume(Box value):void{stdio.stdout.write("ok");return;}
+                fnc consume(take! Box value):void{stdio.stdout.write("ok");return;}
                 pub fnc main():void {
                   val Box owner=new Box();
                   if ready((rt borrow owner) as let view) {ready(view);fi
@@ -160,7 +160,7 @@ final class CaptureExpressionAuditTest {
         rejectOwnership("""
                 define class Box as end
                 fnc ready(borrow Box value):bool{return true;}
-                fnc consume(Box value):void{return;}
+                fnc consume(take! Box value):void{return;}
                 fnc f():void {
                   val Box owner=new Box();
                   if ready((rt borrow owner) as let view) {consume(owner);fi

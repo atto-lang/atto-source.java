@@ -626,7 +626,7 @@ public final class Parser {
                             struct ? Ast.TypeRef.structType(members) : Ast.TypeRef.recordType(members)));
                     continue;
                 }
-                if (match(ENUM)) {
+                if (matchContextualIdentifier("enum")) {
                     validateOnlyVisibilityModifiers(modifiers, "enums");
                     rejectCallableStructuralAnnotation(annotations, "enum declarations");
                     rootDeclarations.add(parseTaggedEnum());
@@ -1426,6 +1426,17 @@ public final class Parser {
             return parseVersionedCommaTailBody();
         if (!explicit && attoCallableVersion == null && !isImplicitNewlineTerminator()) {
             throw error(peek(), "end-delimited callable needs a newline or '::' after its return type");
+        }
+        if (attoCallableVersion != null) {
+            // Versioned v2 statement bodies keep their original grammar (no comma items).
+            localTypeScopes.push(new java.util.HashSet<>());
+            try {
+                List<Ast.Stmt> body = parseUntil(END);
+                consume(END, "expected 'end' after callable body");
+                return body;
+            } finally {
+                localTypeScopes.pop();
+            }
         }
         return parseEndDelimitedCallableBody("callable");
     }
@@ -3262,6 +3273,15 @@ public final class Parser {
         do {
             boolean structural = matchContextualKeyword("structural");
 
+            // Explicit consuming formal `take! Foo f` (implicit-argument-borrow-v1).
+            if (!structural && matchTakeBang()) {
+                Ast.TypeRef type = parseTypeRef();
+                boolean mutable = match(MUT);
+                String name = consume(IDENT, "expected parameter name after take! type").lexeme();
+                params.add(new Ast.Param(type, name, false, mutable, true));
+                continue;
+            }
+
             // Migration spelling for named-argument-friendly declarations:
             // |value: Type| is accepted, while oreslang-format emits |Type value|.
             if (!structural && check(IDENT) && checkNext(COLON)) {
@@ -3342,11 +3362,32 @@ public final class Parser {
         return parseParametersUntil(terminator, java.util.Set.of());
     }
 
+    /** Consumes an adjacent `take!` marker on a formal parameter. */
+    private boolean matchTakeBang() {
+        if (check(IDENT) && peek().lexeme().equals("take") && current + 1 < tokens.size()
+                && tokens.get(current + 1).type() == BANG
+                && adjacent(tokens.get(current), tokens.get(current + 1))) {
+            advance();
+            advance();
+            return true;
+        }
+        return false;
+    }
+
     private List<Ast.Param> parseParametersUntil(Token.Type terminator, java.util.Set<String> annotationStructuralNames) {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
             boolean structural = matchContextualKeyword("structural");
+
+            // Explicit consuming formal `take! Foo f` (implicit-argument-borrow-v1).
+            if (!structural && matchTakeBang()) {
+                Ast.TypeRef type = parseTypeRef();
+                boolean mutable = match(MUT);
+                String name = consume(IDENT, "expected parameter name after take! type").lexeme();
+                params.add(new Ast.Param(type, name, false, mutable, true));
+                continue;
+            }
 
             // Canonical type-first structural spelling: structural Foo y
             if (structural) {
@@ -3398,9 +3439,10 @@ public final class Parser {
             if (!structural && check(IDENT) && checkNext(COLON)) {
                 String name = advance().lexeme();
                 consume(COLON, "expected ':' after compatibility parameter name");
+                boolean consumingFormal = matchTakeBang(); // `f: take! Foo`
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                params.add(new Ast.Param(type, name, false, mutable, consumingFormal));
                 continue;
             }
 
@@ -3913,7 +3955,7 @@ public final class Parser {
             match(SEMICOLON);
             return lowered instanceof Ast.Stmt statement ? statement : new Ast.ExprStmt((Ast.Expr) lowered);
         }
-        if (attoCallableVersion != null && match(CARET)) {
+        if (match(CARET)) { // canonical `^ value;` early return (^ is never statement-initial XOR)
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary()
                     ? null : parseExpression();
             consumeExpressionStatementTerminator(value, "caret return requires ';'");
@@ -5677,9 +5719,8 @@ public final class Parser {
         if (valueArms.isEmpty()) {
             throw error(previous(), "value match requires at least one 'on' arm");
         }
-        // Canonical `over` matches are source-ordered first-match (spec language.md),
-        // consistent with statement-form `match ... over`.
-        return new Ast.MatchExpr(subject, valueArms, declaredResult, true);
+        return new Ast.MatchExpr(subject, valueArms, declaredResult,
+                canonicalFirst || legacyFirst);
     }
 
     /**
@@ -6400,6 +6441,8 @@ public final class Parser {
         while (true) {
             String op;
             if (matchAdjacentTriple(GT)) op = ">>>";
+            // `<<<` is the canonical left shift; a bare `<<` is the channel write.
+            else if (matchAdjacentTriple(LT)) op = "<<";
             else if (matchAdjacentPair(LT)) op = "<<";
             else if (matchAdjacentPair(GT)) {
                 // Canonical postfix channel read: `(ch >>)`.
@@ -6549,32 +6592,7 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnaryBody() {
-        // Canonical ownership vocabulary (atto-spec ownership-vocabulary-v1):
-        // borrow! x, borrow! mut x, take! x, share! x, copy! x, copy!! x.
-        // They lower to the same checked AST as rt borrow/take/share/copy and
-        // rt mut borrow, so every existing loan/move/share proof applies.
-        if (check(IDENT) && current + 1 < tokens.size()
-                && tokens.get(current + 1).type() == BANG
-                && adjacent(tokens.get(current), tokens.get(current + 1))) {
-            String op = peek().lexeme();
-            if (op.equals("borrow") || op.equals("take") || op.equals("share") || op.equals("copy")) {
-                Token opToken = advance();
-                advance(); // '!'
-                if (op.equals("copy") && check(BANG) && adjacent(previous(), peek())) {
-                    // copy!! (deep copy) admits only values whose typed copy
-                    // contract rt copy already proves; graphs fail closed.
-                    advance();
-                }
-                if (op.equals("borrow") && match(MUT)) {
-                    return new Ast.UnaryExpr("&mut", parseUnary());
-                }
-                if (check(MUT)) throw error(peek(), "only borrow! accepts 'mut'");
-                if (check(SEMICOLON) || check(RPAREN)) {
-                    throw error(opToken, op + "! requires an operand");
-                }
-                return new Ast.RuntimeCallExpr(op, List.of(parseUnary()));
-            }
-        }
+        if (hasBangOwnershipAlias()) return parseBangOwnershipAlias();
         // Canonical prefix channel read: `(<< ch)` takes the next value out of ch.
         if (checkAdjacentPair(LT)) {
             advance();
@@ -6582,7 +6600,6 @@ public final class Parser {
             return new Ast.ChannelOpExpr(Ast.ChannelOperation.READ, Ast.WaitMode.BLOCKING,
                     parseUnary(), null);
         }
-        if (hasBangOwnershipAlias()) return parseBangOwnershipAlias();
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
         // token sequence as a single negative literal, without broadening
@@ -7111,7 +7128,14 @@ public final class Parser {
             throw error(token, "malformed integer separator: " + literal);
         }
         try {
-            return Long.parseLong(literal.replace("_", ""));
+            String digits = literal.replace("_", "");
+            // 0b/0o/0x literals denote the same signed 64-bit two's-complement bit pattern.
+            if (digits.length() > 2 && digits.charAt(0) == '0') {
+                char radixMark = Character.toLowerCase(digits.charAt(1));
+                int radix = radixMark == 'b' ? 2 : radixMark == 'o' ? 8 : radixMark == 'x' ? 16 : 0;
+                if (radix != 0) return Long.parseUnsignedLong(digits.substring(2), radix);
+            }
+            return Long.parseLong(digits);
         } catch (NumberFormatException invalid) {
             throw error(token, "integer literal overflows signed 64-bit: " + literal);
         }
@@ -7956,12 +7980,6 @@ public final class Parser {
                 warnings.add(new SyntaxWarning(redundant.line(), redundant.column(),
                         "redundant 'mut' after 'val'; 'val' already means 'const mut'"));
             }
-            return true;
-        }
-        if (kind == Ast.BindingKind.LET) {
-            // Like `val` (= `const mut`), a `let` binding owns a writable referent;
-            // `let` additionally allows rebinding. `let mut` remains accepted.
-            match(MUT);
             return true;
         }
         return match(MUT);

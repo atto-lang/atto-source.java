@@ -405,9 +405,17 @@ public final class Ast {
         }
     }
 
-    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
-        public Param(TypeRef type, String name) { this(type, name, false, false); }
-        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
+    /**
+     * {@code consuming} marks an explicit owned formal (`take! Foo f` /
+     * `f: take! Foo`). Without it, an ordinary non-Copy class formal is an
+     * implicit borrow (atto-spec implicit-argument-borrow-v1).
+     */
+    public record Param(TypeRef type, String name, boolean structural, boolean mutable, boolean consuming) {
+        public Param(TypeRef type, String name) { this(type, name, false, false, false); }
+        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false, false); }
+        public Param(TypeRef type, String name, boolean structural, boolean mutable) {
+            this(type, name, structural, mutable, false);
+        }
     }
 
     /** A source generic name and its optional compile-time default type. */

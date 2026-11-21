@@ -17,7 +17,7 @@ final class MovedLetReinitializationTest {
               pub val int number;
             end
 
-            fnc consume(Box value): void { return; }
+            fnc consume(take! Box value): void { return; }
             """;
 
     @Test

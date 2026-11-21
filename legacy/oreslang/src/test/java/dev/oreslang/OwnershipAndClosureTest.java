@@ -172,7 +172,7 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc consume(Bar b): void {
+                        fnc consume(take! Bar b): void {
                           return;
                         }
 
@@ -262,7 +262,7 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc consume(Bar b): void { return; }
+                        fnc consume(take! Bar b): void { return; }
 
                         fnc bad(): void {
                           let Bar b = new Bar();
@@ -307,7 +307,7 @@ final class OwnershipAndClosureTest {
                   pub let String foo = "start";
                 end
 
-                fnc consume(Bar b): void { return; }
+                fnc consume(take! Bar b): void { return; }
 
                 fnc ok(bool flag): void {
                   let Bar b = new Bar();
@@ -326,7 +326,7 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc consume(Bar b): void { return; }
+                        fnc consume(take! Bar b): void { return; }
 
                         fnc bad(bool flag): void {
                           let Bar b = new Bar();

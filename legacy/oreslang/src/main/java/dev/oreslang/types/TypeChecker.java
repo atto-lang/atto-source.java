@@ -8534,7 +8534,9 @@ public final class TypeChecker {
                             previous.pattern(), arm.pattern(), subject, generics, self);
                     boolean guardDisjoint = previous.guard() != null && arm.guard() != null
                             && guardsProvablyDisjoint(previous.guard(), arm.guard());
-                    if (!patternDisjoint && !guardDisjoint) {
+                    boolean literalExcluded = literalExcludedByGuard(previous, arm)
+                            || literalExcludedByGuard(arm, previous);
+                    if (!patternDisjoint && !guardDisjoint && !literalExcluded) {
                         throw new IllegalArgumentException(
                                 "ordinary match requires provably disjoint explicit patterns "
                                         + (j + 1) + " and " + (i + 1)
@@ -9022,6 +9024,38 @@ public final class TypeChecker {
             return !typesMayOverlap(at, bt);
         }
         return false;
+    }
+
+    /**
+     * An unguarded integer literal arm is disjoint from a guarded binding arm
+     * `on n when n OP k` (OP one of > >= < <= == !=, k an integer literal)
+     * when the literal provably fails that guard.
+     */
+    private static boolean literalExcludedByGuard(Ast.MatchValueArm literalArm, Ast.MatchValueArm guardedArm) {
+        if (literalArm.guard() != null || guardedArm.guard() == null) return false;
+        if (!(literalArm.pattern() instanceof Ast.LiteralPattern literal)
+                || !(literal.value() instanceof Long value)) return false;
+        String bound = guardedArm.pattern() instanceof Ast.BindingPattern binding ? binding.name()
+                : guardedArm.pattern() instanceof Ast.TypePattern typed ? typed.binding() : null;
+        if (bound == null || !(guardedArm.guard() instanceof Ast.BinaryExpr comparison)) return false;
+        Long limit;
+        String op = comparison.operator();
+        if (comparison.left() instanceof Ast.NameExpr name && name.name().equals(bound)
+                && comparison.right() instanceof Ast.LiteralExpr k && k.value() instanceof Long l) {
+            limit = l;
+        } else {
+            return false;
+        }
+        boolean satisfied = switch (op) {
+            case ">" -> value > limit;
+            case ">=" -> value >= limit;
+            case "<" -> value < limit;
+            case "<=" -> value <= limit;
+            case "eq", "==" -> value.longValue() == limit.longValue();
+            case "neq", "!=" -> value.longValue() != limit.longValue();
+            default -> true;
+        };
+        return !satisfied;
     }
 
     private boolean guardsProvablyDisjoint(Ast.Expr left, Ast.Expr right) {

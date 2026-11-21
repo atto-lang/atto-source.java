@@ -132,7 +132,7 @@ final class ArgumentsTupleSpreadTest {
                         define class Box as
                         end
 
-                        fnc consume(Box box): int {
+                        fnc consume(take! Box box): int {
                           return 1;
                         }
 

@@ -400,7 +400,7 @@ final class CopyPolicyCompilerTest {
                 define class Holder as
                   pub val Resource resource = new Resource();
                 end
-                fnc consume(Resource resource): void { return; }
+                fnc consume(take! Resource resource): void { return; }
                 fnc bad(Holder holder): void {
                   consume(holder.resource);
                   return;
