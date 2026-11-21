@@ -6854,6 +6854,13 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parseLambda(boolean nonLexical) {
+        // The shipping legacy parser still accepts anonymous fnc(...) and
+        // parenthesized (...) -> lambdas. The explicit Atto v1/v2 grammar
+        // requires |...| on every lambda/function expression; do not silently
+        // reinterpret legacy heads when a language version is selected.
+        if (attoCallableVersion != null) {
+            throw error(peek(), "E_LAMBDA_PIPES: Atto lambda expressions require |...| parameter delimiters");
+        }
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
