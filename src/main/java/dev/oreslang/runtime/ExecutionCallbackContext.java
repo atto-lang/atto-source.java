@@ -30,21 +30,25 @@ public final class ExecutionCallbackContext {
     private final long parentExecution;
     private final long continuation;
     private final Boundary boundary;
+    private final OresAsyncTrace.CallbackSnapshot traceSnapshot;
 
     private ExecutionCallbackContext(
             ExecutionContext.ExecutionId sourceExecution,
             long sourceDispatchId,
             long parentExecution,
             long continuation,
-            Boundary boundary) {
-        this.sourceExecution = sourceExecution;
-        if (sourceDispatchId < 0 || parentExecution < 0 || continuation < 0) {
-            throw new IllegalArgumentException("callback provenance identifiers cannot be negative");
+            Boundary boundary,
+            OresAsyncTrace.CallbackSnapshot traceSnapshot) {
+        this.sourceExecution = Objects.requireNonNull(sourceExecution, "sourceExecution");
+        if (sourceDispatchId <= 0 || parentExecution < 0 || continuation < 0) {
+            throw new IllegalArgumentException(
+                    "callback provenance requires a positive dispatch and nonnegative ancestry");
         }
         this.sourceDispatchId = sourceDispatchId;
         this.parentExecution = parentExecution;
         this.continuation = continuation;
         this.boundary = Objects.requireNonNull(boundary, "boundary");
+        this.traceSnapshot = traceSnapshot;
     }
 
     /**
@@ -61,17 +65,35 @@ public final class ExecutionCallbackContext {
                     OresScheduler.currentDispatchId(),
                     active.parentExecution(),
                     active.continuation(),
-                    boundary);
+                    boundary,
+                    OresAsyncTrace.captureCallback(toTraceBoundary(boundary)));
         }
 
         ExecutionCallbackContext inherited = CURRENT.get();
         if (inherited == null) return null;
+        OresAsyncTrace.CallbackSnapshot nestedTrace = inherited.traceSnapshot == null
+                ? null
+                : inherited.traceSnapshot.withBoundary(toTraceBoundary(boundary));
         return new ExecutionCallbackContext(
                 inherited.sourceExecution,
                 inherited.sourceDispatchId,
                 inherited.parentExecution,
                 inherited.continuation,
-                boundary);
+                boundary,
+                nestedTrace);
+    }
+
+    private static OresAsyncTrace.BoundaryKind toTraceBoundary(Boundary boundary) {
+        return switch (Objects.requireNonNull(boundary, "boundary")) {
+            case HOST_CALLBACK -> OresAsyncTrace.BoundaryKind.CALLBACK_ADAPTER;
+            case IO -> OresAsyncTrace.BoundaryKind.IO_COMPLETION;
+            case TIMER -> OresAsyncTrace.BoundaryKind.TIMER;
+            case AWAIT -> OresAsyncTrace.BoundaryKind.AWAIT;
+            case ACTOR_MESSAGE -> OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE;
+            case SUPERVISOR_CONTROL -> OresAsyncTrace.BoundaryKind.SUPERVISOR_CONTROL;
+            case TASK_JOIN -> OresAsyncTrace.BoundaryKind.TASK_JOIN;
+            case SPAWN -> OresAsyncTrace.BoundaryKind.TASK_SPAWN;
+        };
     }
 
     /** Current host-only callback provenance, or {@code null} outside such a scope. */
@@ -114,6 +136,15 @@ public final class ExecutionCallbackContext {
 
     public Boundary boundary() {
         return boundary;
+    }
+
+    /** Immutable diagnostic evidence captured with this provenance, if tracing was active. */
+    public OresAsyncTrace.CallbackSnapshot traceSnapshot() {
+        return traceSnapshot;
+    }
+
+    Throwable attachTrace(Throwable failure) {
+        return OresAsyncTrace.attach(Objects.requireNonNull(failure, "failure"), traceSnapshot);
     }
 
     @Override

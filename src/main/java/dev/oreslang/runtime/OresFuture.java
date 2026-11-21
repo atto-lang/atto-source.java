@@ -212,7 +212,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 Objects.requireNonNull(failure, "failure");
                 ExecutionCallbackContext.runCaptured(callbackContext, () -> {
                     if (!claim("reject")) return;
-                    if (!future.failFromRuntime(failure) && !future.isCancelled()) {
+                    Throwable traced = callbackContext == null
+                            ? failure
+                            : callbackContext.attachTrace(failure);
+                    if (!future.failFromRuntime(traced) && !future.isCancelled()) {
                         throw new AlreadySettledException(
                                 "callback Future was already settled before reject");
                     }
@@ -242,12 +245,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             // Promise-style constructor semantics: a registrar failure rejects
             // only if the callback has not already won the single-shot race.
             if (callbackClaimed.compareAndSet(false, true)) {
-                future.failFromRuntime(failure);
-            } else if (failure instanceof VirtualMachineError fatal) {
-                throw fatal;
-            } else if (failure instanceof ThreadDeath fatal) {
-                throw fatal;
-            } else if (failure instanceof LinkageError fatal) {
+                Throwable traced = callbackContext == null
+                        ? failure
+                        : callbackContext.attachTrace(failure);
+                future.failFromRuntime(traced);
+            } else if (failure instanceof Error fatal) {
+                // Error-class failures are non-trappable runtime/control failures.
+                // A callback that already settled a value must not make them disappear.
                 throw fatal;
             }
         }
@@ -292,7 +296,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                     if (cancelled) {
                         result.cancel(false);
                     } else {
-                        result.failFromRuntime(terminalFailure);
+                        Throwable traced = callbackContext == null
+                                ? terminalFailure
+                                : callbackContext.attachTrace(terminalFailure);
+                        result.failFromRuntime(traced);
                     }
                 }));
         return result;

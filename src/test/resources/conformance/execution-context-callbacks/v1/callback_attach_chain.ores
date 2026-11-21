@@ -1,0 +1,17 @@
+async fnc chained_callback() => int {
+  val source = Future.from_callback<int>(|completion| -> {
+    completion.resolve(40);
+    return;
+  });
+  val chained = source.attach_callback<int>(|value, completion| -> {
+    completion.resolve(value + 2);
+    return;
+  });
+  return await chained;
+}
+
+pub async routine main() => void {
+  val value = await chained_callback();
+  stdio.println(value);
+  return;
+}

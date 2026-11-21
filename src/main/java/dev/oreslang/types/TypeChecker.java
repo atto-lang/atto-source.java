@@ -2819,6 +2819,36 @@ public final class TypeChecker {
                 return new Named("SelectSet", List.of());
             }
 
+            if (call.callee() instanceof Ast.MemberExpr futureFactoryCall
+                    && futureFactoryCall.receiver() instanceof Ast.NameExpr futureFactory
+                    && futureFactory.name().equals("Future")
+                    && futureFactoryCall.member().equals("from_callback")) {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Future.from_callback expects exactly one callback registrar");
+                }
+                if (!(call.arguments().getFirst() instanceof Ast.LambdaExpr registrar)) {
+                    throw new IllegalArgumentException(
+                            "Future.from_callback requires an inline callback registrar");
+                }
+                if (call.typeArguments().size() > 1) {
+                    throw new IllegalArgumentException(
+                            "Future.from_callback accepts at most one result type argument");
+                }
+                Type resultType = call.typeArguments().isEmpty()
+                        ? Unknown.INSTANCE
+                        : resolve(call.typeArguments().getFirst(), generics, self);
+                validateLambdaAgainstExpected(
+                        registrar,
+                        new Function(
+                                List.of(new Named("Callback", List.of(resultType))),
+                                Primitive.VOID),
+                        env,
+                        generics,
+                        self);
+                return new Named("Future", List.of(resultType));
+            }
+
             if (call.callee() instanceof Ast.MemberExpr futureCall
                     && futureCall.receiver() instanceof Ast.NameExpr futureFactory
                     && futureFactory.name().equals("Future")
@@ -2865,7 +2895,7 @@ public final class TypeChecker {
                 }
                 if (factory.name().equals("SharedMutex") && !isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
                     throw new IllegalArgumentException(
-                            "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
+                            "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, Callback, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 return new Named(factory.name(), List.of(element));
             }
@@ -3302,6 +3332,36 @@ public final class TypeChecker {
                     return callableResult(fn.async(), false, result);
                 }
                 if (receiver instanceof Named named) {
+                    if (named.name().equals("Future")
+                            && named.arguments().size() == 1
+                            && member.member().equals("attach_callback")) {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "Future.attach_callback expects exactly one callback registrar");
+                        }
+                        if (!(call.arguments().getFirst() instanceof Ast.LambdaExpr registrar)) {
+                            throw new IllegalArgumentException(
+                                    "Future.attach_callback requires an inline callback registrar");
+                        }
+                        if (call.typeArguments().size() > 1) {
+                            throw new IllegalArgumentException(
+                                    "Future.attach_callback accepts at most one result type argument");
+                        }
+                        Type resultType = call.typeArguments().isEmpty()
+                                ? Unknown.INSTANCE
+                                : resolve(call.typeArguments().getFirst(), generics, self);
+                        validateLambdaAgainstExpected(
+                                registrar,
+                                new Function(
+                                        List.of(
+                                                named.arguments().getFirst(),
+                                                new Named("Callback", List.of(resultType))),
+                                        Primitive.VOID),
+                                env,
+                                generics,
+                                self);
+                        return new Named("Future", List.of(resultType));
+                    }
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
                             && member.member().equals("with_lock")) {
@@ -3457,6 +3517,33 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
+            if (callee instanceof Named callback
+                    && callback.name().equals("Callback")
+                    && callback.arguments().size() == 1) {
+                Type valueType = callback.arguments().getFirst();
+                List<ExpandedCallArgument> callbackArguments =
+                        expandFixedCallArguments(
+                                call.arguments(), env, generics, self,
+                                "Callback<T> invocation");
+                if (callbackArguments.size() == 1) {
+                    Type actual = expandedCallArgumentType(
+                            callbackArguments.getFirst(),
+                            valueType,
+                            env, generics, self);
+                    requireAssignable(actual, valueType, "Callback<T> value");
+                    return Primitive.VOID;
+                }
+                if (callbackArguments.size() == 2) {
+                    Type actual = expandedCallArgumentType(
+                            callbackArguments.get(1),
+                            valueType,
+                            env, generics, self);
+                    requireAssignable(actual, valueType, "Callback<T> error-first value");
+                    return Primitive.VOID;
+                }
+                throw new IllegalArgumentException(
+                        "Callback<T> expects cb(value) or error-first cb(error, value)");
+            }
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             List<ExpandedCallArgument> expanded =
                     expandFixedCallArguments(
@@ -3577,6 +3664,8 @@ public final class TypeChecker {
             if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            Type callbackMember = builtinCallbackMember(sumReceiver, member.member());
+            if (callbackMember != null) return callbackMember;
             if (sumReceiver instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
@@ -5343,6 +5432,7 @@ public final class TypeChecker {
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler") || named.name().equals("HttpResponse") || named.name().equals("HttpResponseDraft")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+                || named.name().equals("Callback")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
@@ -5426,7 +5516,8 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("Iterator")
+                || named.name().equals("Future") || named.name().equals("Callback")
+                || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
@@ -6354,6 +6445,22 @@ public final class TypeChecker {
                 }
                 yield new Function(List.of(), element);
             }
+            default -> null;
+        };
+    }
+
+    private Type builtinCallbackMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named)
+                || !named.name().equals("Callback")
+                || named.arguments().size() != 1) {
+            return null;
+        }
+        Type element = named.arguments().getFirst();
+        return switch (member) {
+            case "resolve" -> new Function(List.of(element), Primitive.VOID);
+            case "reject" -> new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+            case "cancel" -> new Function(List.of(), Primitive.VOID);
+            case "is_done" -> new Function(List.of(), Primitive.BOOL);
             default -> null;
         };
     }
@@ -8533,7 +8640,7 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) throw new IllegalArgumentException("SharedMutex<void> is invalid");
                 if (!isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
                     throw new IllegalArgumentException(
-                            "SharedMutex<T> requires a concrete shared-safe type; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
+                            "SharedMutex<T> requires a concrete shared-safe type; borrows, Mutex, MutexGuard, Future, Callback, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 yield new Named("SharedMutex", List.of(element));
             }
