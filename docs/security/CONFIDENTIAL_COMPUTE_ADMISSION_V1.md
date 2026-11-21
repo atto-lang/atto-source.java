@@ -57,6 +57,29 @@ Shared draft sources: [spec #193](https://github.com/atto-lang/atto-spec/pull/19
 [conformance #543](https://github.com/atto-lang/atto-platform-conformance/pull/543),
 [profiles #25](https://github.com/atto-lang/atto-target-profiles/pull/25).
 
+## AMD SEV-SNP raw report and signature primitive
+
+`SevSnpReportV1` inspects the 1,184-byte raw SNP firmware report:
+64-byte `REPORT_DATA`, **48-byte SHA-384 launch measurement**, signed
+672-byte prefix, VMPL, signer kind, debug policy, algorithm and per-component
+TCB floor. It verifies the ECDSA P-384/SHA-384 report signature given an
+**already authenticated** EC public key. The key is not authenticated by
+this class: AMD pinned product roots, VCEK/VLEK certificates, vendor TCB
+extensions, chip ID, revocation, and secure secret-release channel are not
+implemented. A signature from a freshly generated synthetic key is **NOT**
+hardware attestation.
+
+`compute_bound_report_data` binds verifier nonce, deployment identity
+and an ephemeral TLS public-key SPKI to a 64-byte SHA-512 transcript.
+A wrong nonce, image identity or SPKI changes the binding. Successful
+signature checking cannot bypass the unconditional confidential-TenantVM
+admission denial.
+
+New local host-only smoke: OpenJDK 21 compiled and exercised the raw-report
+policy and signature code. Repo JUnit regression is staged as
+`SevSnpReportV1Test` but remains **NOT_EXECUTED** until verified on its
+exact current head.
+
 ## Test
 
 `mvn -Dtest=TenantIsolateManagerTest test` (requires the repository toolchain).
