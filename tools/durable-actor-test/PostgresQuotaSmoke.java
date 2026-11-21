@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.UUID;
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -37,24 +38,38 @@ public final class PostgresQuotaSmoke {
         rejects(() -> store.enqueue(address,new DurableActorStore.Inbound("m3",bytes("c"))),
             "inbox admission must stop at two entries");
 
-        var first=store.activate(address);
+        var firstOwner=UUID.randomUUID();
+        var first=store.acquireLease(address,firstOwner).activation();
         ok(first.inbox().size()==2, "bounded activation");
         var next = new DurableActorStore.Snapshot(0,1,"code-v1",1,bytes("one"));
         var firstIntent = new DurableActorStore.Outbound("o1","idempotent-key-one",bytes("push"));
-        ok(store.commitTurn(new DurableActorStore.Turn(address,first.epoch(),0,
-            "m1",next,List.of(firstIntent)))==1,"first atomic commit");
+        ok(store.commitOwnedTurn(new DurableActorStore.Turn(address,first.epoch(),0,
+            "m1",next,List.of(firstIntent)),firstOwner)==1,"first atomic commit");
         ok(store.enqueue(address,new DurableActorStore.Inbound("m3",bytes("c"))),
             "consumption frees one inbox slot");
         var blocked= new DurableActorStore.Outbound("o2","idempotent-key-two",bytes("test"));
         var two = new DurableActorStore.Snapshot(0,1,"code-v1",2,bytes("two"));
-        rejects(() -> store.commitTurn(new DurableActorStore.Turn(address,first.epoch(),1,
-            "m2",two,List.of(blocked))),"pending outbox must stop at one entry");
-        var rebooted = new PostgresDurableActorStore(ds,2,1).activate(address);
+        rejects(() -> store.commitOwnedTurn(new DurableActorStore.Turn(address,first.epoch(),1,
+            "m2",two,List.of(blocked)),firstOwner),"pending outbox must stop at one entry");
+        try (var c=ds.getConnection();
+             var p=c.prepareStatement("UPDATE ores_durable_actor SET lease_until=clock_timestamp()-interval '1 second' "+
+                "WHERE tenant_id=? AND workflow_id=? AND run_id=? AND node_id=?")) {
+            p.setString(1,address.tenantId());p.setString(2,address.workflowId());
+            p.setString(3,address.runId());p.setString(4,address.nodeId());p.executeUpdate();
+        }
+        var rebootedOwner=UUID.randomUUID();
+        var rebooted = new PostgresDurableActorStore(ds,2,1)
+            .acquireLease(address,rebootedOwner).activation();
         ok(rebooted.snapshot().stateVersion()==1 && rebooted.inbox().size()==2 &&
             rebooted.pendingOutbox().size()==1,"outbox limit rolls back state and consumption");
-        ok(store.acknowledge(address,rebooted.epoch(),"o1","receipt-1"),"clear pending outbox");
-        ok(store.commitTurn(new DurableActorStore.Turn(address,rebooted.epoch(),1,
-            "m2",two,List.of(blocked)))==2,"outbox capacity recovers after receipt");
+        rejects(() -> store.acknowledge(address,rebooted.epoch(),"o1","receipt-1"),"ownerless acknowledgement forbidden");
+        var gateway = new PostgresDurableWorkflowGate(ds);
+        var selected = gateway.claimNext(address,rebooted.epoch(),rebootedOwner,UUID.randomUUID());
+        ok(selected!=null,"pending intent can be claimed");
+        ok(gateway.recordReceipt(address,rebooted.epoch(),rebootedOwner,selected,"receipt-1"),
+            "receipt frees pending quota");
+        ok(store.commitOwnedTurn(new DurableActorStore.Turn(address,rebooted.epoch(),1,
+            "m2",two,List.of(blocked)),rebootedOwner)==2,"outbox capacity recovers after receipt");
 
         // Eight independent writers race for one available inbox slot. An actor
         // row lock must make quota check and insertion one serialization point.
@@ -82,7 +97,7 @@ public final class PostgresQuotaSmoke {
         pool.shutdown();
         ok(admitted.get()==1 && rejected.get()==7,
             "quota enforced across concurrent DB transactions");
-        ok(raceStore.activate(race).inbox().size()==1,"only one durable message committed");
+        ok(raceStore.acquireLease(race,UUID.randomUUID()).activation().inbox().size()==1,"only one durable message committed");
         System.out.println("POSTGRES_DURABLE_QUOTA_PASS");
     }
 }

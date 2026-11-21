@@ -7,6 +7,8 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
+import java.time.Duration;
 import javax.sql.DataSource;
 
 /**
@@ -99,28 +101,54 @@ public final class PostgresDurableActorStore implements DurableActorStore {
         });
     }
 
+    /** Returned owner is a host-only fencing credential, not a guest actor value. */
+    public record LeaseActivation(Activation activation, UUID owner) { }
+
+    private static final Duration LEASE_LENGTH = Duration.ofSeconds(30);
+
+    /** Legacy adapter entrypoint deliberately enforces the same healthy-owner admission. */
     @Override
     public Activation activate(Address key) {
+        throw new StaleActivationException("activation requires explicit owner UUID: use acquireLease");
+    }
+
+    /** No healthy owner can be displaced. Expiration is decided by PostgreSQL's clock. */
+    public LeaseActivation acquireLease(Address key, UUID owner) {
         Objects.requireNonNull(key);
+        Objects.requireNonNull(owner);
         return transact(c -> {
             Snapshot snap;
+
             long current;
             try (PreparedStatement p = c.prepareStatement(
                     "SELECT activation_epoch,state_version,format_version,state_schema_version," +
-                    "code_generation,encoded_state FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
+                    "code_generation,encoded_state,active,lease_until," +
+                    "clock_timestamp() FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
                 bind(p, key);
                 try (ResultSet rs = p.executeQuery()) {
                     if (!rs.next()) throw new IllegalStateException("unknown actor");
                     current = rs.getLong(1);
+                    if (rs.getBoolean(7)) {
+                        var until = rs.getTimestamp(8);
+                        var now = rs.getTimestamp(9);
+                        // A null legacy lease is ambiguous; fail closed rather
+                        // than silently stealing a healthy pre-migration actor.
+                        if (until == null || until.after(now)) {
+                            throw new StaleActivationException("healthy activation lease held");
+                        }
+                    }
                     if (current == Long.MAX_VALUE) throw new IllegalStateException("activation epoch exhausted");
                     snap = new Snapshot(rs.getInt(3), rs.getInt(4), rs.getString(5),
                             rs.getLong(2), rs.getBytes(6));
                 }
             }
             try (PreparedStatement p = c.prepareStatement(
-                    "UPDATE ores_durable_actor SET activation_epoch=?,active=true WHERE " + KEY)) {
+                    "UPDATE ores_durable_actor SET activation_epoch=?,active=true," +
+                    "lease_owner=?,lease_until=clock_timestamp() + (? * interval '1 second') WHERE " + KEY)) {
                 p.setLong(1, current + 1);
-                bindShifted(p, 2, key);
+                p.setObject(2, owner);
+                p.setLong(3, LEASE_LENGTH.toSeconds());
+                bindShifted(p, 4, key);
                 if (p.executeUpdate() != 1) throw new IllegalStateException("actor vanished");
             }
             Pending pendingInbox = pendingCount(c, "ores_durable_inbox", key);
@@ -147,7 +175,42 @@ public final class PostgresDurableActorStore implements DurableActorStore {
                     while (rs.next()) outbox.add(new Outbound(rs.getString(1), rs.getString(2), rs.getBytes(3)));
                 }
             }
-            return new Activation(current + 1, snap, inbox, outbox);
+            return new LeaseActivation(new Activation(current + 1, snap, inbox, outbox), owner);
+        });
+    }
+
+
+    /** Heartbeats cannot resurrect expired or superseded leases. */
+    public boolean renewLease(Address key, long epoch, UUID owner) {
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(owner);
+        return transact(c -> {
+            try (PreparedStatement p = c.prepareStatement(
+                    "UPDATE ores_durable_actor SET lease_until=clock_timestamp() +" +
+                    " (? * interval '1 second') WHERE " + KEY +
+                    " AND activation_epoch=? AND active AND lease_owner=?" +
+                    " AND lease_until>clock_timestamp()")) {
+                p.setLong(1, LEASE_LENGTH.toSeconds());
+                bindShifted(p, 2, key);
+                p.setLong(6, epoch);
+                p.setObject(7, owner);
+                return p.executeUpdate()==1;
+            }
+        });
+    }
+
+    public void hibernateLease(Address key, long epoch, UUID owner) {
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(owner);
+        transact(c -> {
+            try (PreparedStatement p = c.prepareStatement(
+                    "UPDATE ores_durable_actor SET active=false,lease_owner=NULL," +
+                    "lease_until=NULL WHERE " + KEY +
+                    " AND activation_epoch=? AND active AND lease_owner=? AND lease_until>clock_timestamp()")) {
+                bind(p,key); p.setLong(5,epoch); p.setObject(6,owner);
+                if (p.executeUpdate()!=1) throw new StaleActivationException("lease release fenced");
+            }
+            return null;
         });
     }
 
@@ -220,7 +283,12 @@ public final class PostgresDurableActorStore implements DurableActorStore {
 
     @Override
     public long commitTurn(Turn turn) {
+        throw new StaleActivationException("turn commit requires lease owner: use commitOwnedTurn");
+    }
+
+    public long commitOwnedTurn(Turn turn, UUID owner) {
         Objects.requireNonNull(turn);
+        Objects.requireNonNull(owner);
         return transact(c -> {
             Address key = turn.address();
             // Lock the actor before checking its epoch. Activate and hibernate use the same lock.
@@ -229,12 +297,15 @@ public final class PostgresDurableActorStore implements DurableActorStore {
             boolean active;
             try (PreparedStatement p = c.prepareStatement(
                     "SELECT activation_epoch,active,state_version,format_version,state_schema_version," +
-                    "code_generation,encoded_state FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
+                    "code_generation,encoded_state,(lease_until>clock_timestamp()) AS lease_valid," +
+                    "lease_owner" +
+                    " FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
                 bind(p, key);
                 try (ResultSet rs = p.executeQuery()) {
                     if (!rs.next()) throw new StaleActivationException("unknown actor");
                     activeEpoch = rs.getLong(1);
-                    active = rs.getBoolean(2);
+                    active = rs.getBoolean(2) && rs.getBoolean(8) &&
+                            owner.equals(rs.getObject(9, UUID.class));
                     prior = new Snapshot(rs.getInt(4), rs.getInt(5), rs.getString(6),
                             rs.getLong(3), rs.getBytes(7));
                 }
@@ -281,12 +352,14 @@ public final class PostgresDurableActorStore implements DurableActorStore {
             }
             try (PreparedStatement p = c.prepareStatement(
                     "UPDATE ores_durable_actor SET state_version=?,encoded_state=? WHERE " + KEY +
-                    " AND activation_epoch=? AND active=true AND state_version=?")) {
+                    " AND activation_epoch=? AND active=true AND lease_until>clock_timestamp()" +
+                    " AND state_version=? AND lease_owner=?")) {
                 p.setLong(1, next.stateVersion());
                 bindPayload(p, 2, next.encodedState());
                 bindShifted(p, 3, key);
                 p.setLong(7, turn.epoch());
                 p.setLong(8, turn.expectedStateVersion());
+                p.setObject(9, owner);
                 if (p.executeUpdate() != 1) throw new StaleActivationException("fenced actor update");
             }
             return next.stateVersion();
@@ -295,54 +368,12 @@ public final class PostgresDurableActorStore implements DurableActorStore {
 
     @Override
     public void hibernate(Address key, long epoch) {
-        Objects.requireNonNull(key);
-        transact(c -> {
-            try (PreparedStatement p = c.prepareStatement(
-                    "UPDATE ores_durable_actor SET active=false WHERE " + KEY +
-                    " AND active=true AND activation_epoch=?")) {
-                bind(p, key); p.setLong(5, epoch);
-                if (p.executeUpdate() != 1) throw new StaleActivationException("hibernate fenced");
-            }
-            return null;
-        });
+        throw new StaleActivationException("hibernate requires owner: use hibernateLease");
     }
 
     @Override
     public boolean acknowledge(Address key, long epoch, String intentId, String receiptId) {
-        Objects.requireNonNull(key);
-        if (intentId == null || intentId.isBlank() || receiptId == null || receiptId.isBlank())
-            throw new IllegalArgumentException("blank receipt identity");
-        return transact(c -> {
-            try (PreparedStatement p = c.prepareStatement(
-                    "SELECT activation_epoch,active FROM ores_durable_actor WHERE " + KEY + " FOR UPDATE")) {
-                bind(p, key);
-                try (ResultSet rs = p.executeQuery()) {
-                    if (!rs.next() || rs.getLong(1) != epoch || !rs.getBoolean(2))
-                        throw new StaleActivationException("receipt fenced");
-                }
-            }
-            String old;
-            try (PreparedStatement p = c.prepareStatement(
-                    "SELECT receipt_id FROM ores_durable_outbox WHERE " + KEY +
-                    " AND intent_id=? FOR UPDATE")) {
-                bind(p, key); p.setString(5, intentId);
-                try (ResultSet rs = p.executeQuery()) {
-                    if (!rs.next()) throw new IllegalArgumentException("unknown operation");
-                    old = rs.getString(1);
-                }
-            }
-            if (old != null) {
-                if (!old.equals(receiptId)) throw new IllegalStateException("receipt conflict");
-                return false;
-            }
-            try (PreparedStatement p = c.prepareStatement(
-                    "UPDATE ores_durable_outbox SET receipt_id=? WHERE " + KEY + " AND intent_id=?")) {
-                p.setString(1, receiptId);
-                bindShifted(p, 2, key);
-                p.setString(6, intentId);
-                if (p.executeUpdate() != 1) throw new IllegalStateException("receipt vanished");
-            }
-            return true;
-        });
+        throw new StaleActivationException(
+                "outbox receipt requires owner and claim token: use PostgresDurableWorkflowGate.recordReceipt");
     }
 }
