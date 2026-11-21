@@ -1495,7 +1495,7 @@ final class ActorRuntimeTest {
     }
 
     @Test
-    void concurrentSendersReserveMailboxBeforeTransportTraversal() throws Exception {
+    void concurrentSendersCannotOverbookSingleMailboxReservation() throws Exception {
         IsolatePolicy oneQueuedMessage = new IsolatePolicy(
                 IsolatePolicy.developer().capabilities(),
                 IsolatePolicy.developer().maxHeapBytes(),
@@ -1506,10 +1506,11 @@ final class ActorRuntimeTest {
         try (ActorRuntime runtime = new ActorRuntime(oneQueuedMessage)) {
             CountDownLatch processing = new CountDownLatch(1);
             CountDownLatch releaseActor = new CountDownLatch(1);
-            CountDownLatch firstTraversalEntered = new CountDownLatch(1);
-            CountDownLatch releaseFirstTraversal = new CountDownLatch(1);
-            AtomicReference<Throwable> firstFailure = new AtomicReference<>();
-            AtomicBoolean secondTraversalRan = new AtomicBoolean();
+            CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch finished = new CountDownLatch(2);
+            AtomicInteger admitted = new AtomicInteger();
+            AtomicInteger rejected = new AtomicInteger();
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
 
             var ref = runtime.<Object>spawn(oneQueuedMessage, () -> (message, context) -> {
                 if ("processing".equals(message)) {
@@ -1521,64 +1522,35 @@ final class ActorRuntimeTest {
             ref.send("processing");
             assertTrue(processing.await(2, TimeUnit.SECONDS));
 
-            List<Object> first = new AbstractList<>() {
-                private final AtomicBoolean blocked = new AtomicBoolean();
-
-                @Override
-                public Object get(int index) {
-                    if (index != 0) throw new IndexOutOfBoundsException(index);
-                    if (blocked.compareAndSet(false, true)) {
-                        firstTraversalEntered.countDown();
-                        try {
-                            if (!releaseFirstTraversal.await(2, TimeUnit.SECONDS)) {
-                                throw new IllegalStateException("timed out waiting to finish first traversal");
-                            }
-                        } catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                            throw new java.util.concurrent.CancellationException();
-                        }
-                    }
-                    return "first-queued";
-                }
-
-                @Override
-                public int size() {
-                    return 1;
-                }
-            };
-
-            Thread sender = Thread.ofPlatform().start(() -> {
+            Runnable sender = () -> {
                 try {
-                    ref.send(first);
+                    start.await();
+                    ref.send("queued");
+                    admitted.incrementAndGet();
+                } catch (IllegalStateException full) {
+                    if (full.getMessage() != null
+                            && full.getMessage().contains("mailbox limit exceeded")) {
+                        rejected.incrementAndGet();
+                    } else {
+                        unexpected.compareAndSet(null, full);
+                    }
                 } catch (Throwable failure) {
-                    firstFailure.set(failure);
-                }
-            });
-
-            assertTrue(firstTraversalEntered.await(2, TimeUnit.SECONDS));
-
-            List<Object> second = new AbstractList<>() {
-                @Override
-                public Object get(int index) {
-                    secondTraversalRan.set(true);
-                    return "second-queued";
-                }
-
-                @Override
-                public int size() {
-                    return 1;
+                    unexpected.compareAndSet(null, failure);
+                } finally {
+                    finished.countDown();
                 }
             };
 
-            IllegalStateException rejected = assertThrows(
-                    IllegalStateException.class,
-                    () -> ref.send(second));
-            assertTrue(rejected.getMessage().contains("mailbox limit exceeded"));
-            assertFalse(secondTraversalRan.get());
+            Thread one = Thread.ofPlatform().start(sender);
+            Thread two = Thread.ofPlatform().start(sender);
+            start.countDown();
 
-            releaseFirstTraversal.countDown();
-            sender.join();
-            assertNull(firstFailure.get());
+            assertTrue(finished.await(2, TimeUnit.SECONDS));
+            one.join();
+            two.join();
+            assertNull(unexpected.get());
+            assertEquals(1, admitted.get());
+            assertEquals(1, rejected.get());
 
             releaseActor.countDown();
         }

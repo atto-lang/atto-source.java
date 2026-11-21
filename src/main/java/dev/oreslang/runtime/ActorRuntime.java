@@ -83,6 +83,95 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<Boolean> ACTOR_GROUP_MAILMAN_CONTEXT_SEND =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
 
+    /*
+     * Actor transport must never treat an arbitrary host collection
+     * implementation as an Oreslang value. Calling size()/iterator()/entrySet()
+     * on an attacker-controlled subclass would execute host callbacks before the
+     * message is rejected. Only exact runtime/JDK carriers emitted by the
+     * evaluator or by freeze/isolation are traversable.
+     */
+    private static final Set<Class<?>> TRUSTED_ACTOR_LIST_CLASSES =
+            trustedActorListClasses();
+    private static final Set<Class<?>> TRUSTED_ACTOR_SET_CLASSES =
+            trustedActorSetClasses();
+    private static final Set<Class<?>> TRUSTED_ACTOR_MAP_CLASSES =
+            trustedActorMapClasses();
+
+    private static Set<Class<?>> trustedActorListClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(ArrayList.class);
+        classes.add(java.util.Arrays.asList(new Object[0]).getClass());
+        classes.add(List.of().getClass());
+        classes.add(List.of(1).getClass());
+        classes.add(List.of(1, 2, 3).getClass());
+        classes.add(Collections.emptyList().getClass());
+        classes.add(Collections.singletonList(1).getClass());
+        classes.add(Collections.nCopies(1, 1).getClass());
+        classes.add(Collections.unmodifiableList(new ArrayList<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    private static Set<Class<?>> trustedActorSetClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(java.util.HashSet.class);
+        classes.add(LinkedHashSet.class);
+        classes.add(Set.of().getClass());
+        classes.add(Set.of(1).getClass());
+        classes.add(Set.of(1, 2, 3).getClass());
+        classes.add(Collections.emptySet().getClass());
+        classes.add(Collections.singleton(1).getClass());
+        classes.add(Collections.unmodifiableSet(new LinkedHashSet<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    private static Set<Class<?>> trustedActorMapClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(java.util.HashMap.class);
+        classes.add(LinkedHashMap.class);
+        classes.add(Map.of().getClass());
+        classes.add(Map.of(1, 1).getClass());
+        classes.add(Map.of(1, 1, 2, 2).getClass());
+        classes.add(Collections.emptyMap().getClass());
+        classes.add(Collections.singletonMap(1, 1).getClass());
+        classes.add(Collections.unmodifiableMap(new LinkedHashMap<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    private static boolean isEvaluatorOwnedGuestMapClass(Class<?> type) {
+        if (type == null
+                || type.getClassLoader() != ActorRuntime.class.getClassLoader()
+                || !java.lang.reflect.Modifier.isFinal(type.getModifiers())) {
+            return false;
+        }
+        String name = type.getName();
+        return name.equals("dev.oreslang.nodes.OresEvalRootNode$MutableStructValue")
+                || name.equals("dev.oreslang.nodes.OresEvalRootNode$ReadonlyRecordValue");
+    }
+
+    private static void requireTrustedCollectionCarrier(Object value) {
+        if (value instanceof List<?>
+                && !(value instanceof OresTuple)
+                && !TRUSTED_ACTOR_LIST_CLASSES.contains(value.getClass())) {
+            throw new IllegalArgumentException(
+                    "value of type " + value.getClass().getName()
+                            + " is not Sendable; untrusted host List implementations cannot cross actor boundaries");
+        }
+        if (value instanceof Set<?>
+                && !TRUSTED_ACTOR_SET_CLASSES.contains(value.getClass())) {
+            throw new IllegalArgumentException(
+                    "value of type " + value.getClass().getName()
+                            + " is not Sendable; untrusted host Set implementations cannot cross actor boundaries");
+        }
+        if (value instanceof Map<?, ?>
+                && !(value instanceof FrozenGuestMap)
+                && !TRUSTED_ACTOR_MAP_CLASSES.contains(value.getClass())
+                && !isEvaluatorOwnedGuestMapClass(value.getClass())) {
+            throw new IllegalArgumentException(
+                    "value of type " + value.getClass().getName()
+                            + " is not Sendable; untrusted host Map implementations cannot cross actor boundaries");
+        }
+    }
+
     private record ActorGroupMailmanExecution(
             ActorRuntime runtime,
             ActorGroupId groupId) { }
@@ -5974,6 +6063,7 @@ public final class ActorRuntime implements AutoCloseable {
             policyCeiling.require(IsolatePolicy.Capability.ACTOR_SHARE_READONLY, "shareReadonly");
         }
         rejectPrivateActorSharedMemoryAccess("shareReadonly");
+        validateMessageGraph(value);
         requireOwnedSharedHandles(value, new IdentityHashMap<>(), 0);
         Object frozen = freeze(value);
         rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
@@ -6025,11 +6115,13 @@ public final class ActorRuntime implements AutoCloseable {
                 policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex host send");
             }
             target.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor receive");
-            sharedMutex.inspectForTransport(payload ->
-                    requireSharedMutexPayloadSafe(
-                            payload,
-                            new IdentityHashMap<>(),
-                            depth + 1));
+            sharedMutex.inspectForTransport(payload -> {
+                validateMessageGraph(payload);
+                requireSharedMutexPayloadSafe(
+                        payload,
+                        new IdentityHashMap<>(),
+                        depth + 1);
+            });
             return;
         }
         if (value instanceof Shared<?> shared) {
@@ -6041,7 +6133,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof OresEntry entry) {
+                requireMutexTransport(target, entry.key(), visiting, depth + 1);
+                requireMutexTransport(target, entry.value(), visiting, depth + 1);
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) requireMutexTransport(target, item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) requireMutexTransport(target, item, visiting, depth + 1);
@@ -6176,7 +6271,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof OresEntry entry) {
+                requireOwnedActorRefs(entry.key(), visiting, depth + 1);
+                requireOwnedActorRefs(entry.value(), visiting, depth + 1);
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) requireOwnedActorRefs(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) requireOwnedActorRefs(item, visiting, depth + 1);
@@ -6243,7 +6341,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof OresEntry entry) {
+                requireOwnedSharedHandles(entry.key(), visiting, depth + 1);
+                requireOwnedSharedHandles(entry.value(), visiting, depth + 1);
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) requireOwnedSharedHandles(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) requireOwnedSharedHandles(item, visiting, depth + 1);
@@ -6315,7 +6416,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof OresEntry entry) {
+                collectSharedMutexes(entry.key(), out, visiting, depth + 1);
+                collectSharedMutexes(entry.value(), out, visiting, depth + 1);
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) collectSharedMutexes(item, out, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) collectSharedMutexes(item, out, visiting, depth + 1);
@@ -6375,7 +6479,10 @@ public final class ActorRuntime implements AutoCloseable {
                     "cyclic values cannot cross an untrusted actor boundary");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof OresEntry entry) {
+                rejectUntrustedInboundCapabilities(entry.key(), visiting, depth + 1);
+                rejectUntrustedInboundCapabilities(entry.value(), visiting, depth + 1);
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) {
                     rejectUntrustedInboundCapabilities(item, visiting, depth + 1);
                 }
@@ -6430,7 +6537,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot be shared read-only");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof OresEntry entry) {
+                rejectSharedMutableHandles(entry.key(), visiting, depth + 1);
+                rejectSharedMutableHandles(entry.value(), visiting, depth + 1);
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) rejectSharedMutableHandles(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) rejectSharedMutableHandles(item, visiting, depth + 1);
@@ -6504,11 +6614,16 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             return; // transport-specific validation produces the semantic error.
         }
+        requireTrustedCollectionCarrier(value);
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof OresEntry entry) {
+                requireGraphNodeCapacity(nodes[0], 2L);
+                validateMessageGraph(entry.key(), visiting, depth + 1, nodes);
+                validateMessageGraph(entry.value(), visiting, depth + 1, nodes);
+            } else if (value instanceof List<?> list) {
                 requireGraphNodeCapacity(nodes[0], list.size());
                 for (Object item : list) validateMessageGraph(item, visiting, depth + 1, nodes);
             } else if (value instanceof Set<?> set) {
@@ -6581,7 +6696,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot be frozen");
         }
         try {
-            if (value instanceof List<?> list) {
+            if (value instanceof OresEntry entry) {
+                rejectDataFreezeCapabilities(entry.key(), visiting, depth + 1);
+                rejectDataFreezeCapabilities(entry.value(), visiting, depth + 1);
+            } else if (value instanceof List<?> list) {
                 for (Object item : list) rejectDataFreezeCapabilities(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) rejectDataFreezeCapabilities(item, visiting, depth + 1);
@@ -6598,6 +6716,31 @@ public final class ActorRuntime implements AutoCloseable {
             }
         } finally {
             visiting.remove(value);
+        }
+    }
+
+    /**
+     * Trusted immutable map produced only after actor transport validates and
+     * recursively detaches its entries. Unlike a general host Map, its
+     * containment and iteration methods never dispatch to attacker code.
+     */
+    public static final class FrozenGuestMap extends java.util.AbstractMap<Object, Object> {
+        private final Map<Object, Object> fields;
+
+        private FrozenGuestMap(Map<Object, Object> detached) {
+            fields = Collections.unmodifiableMap(new LinkedHashMap<>(detached));
+        }
+
+        @Override public Set<Entry<Object, Object>> entrySet() {
+            return fields.entrySet();
+        }
+
+        @Override public Object get(Object key) {
+            return fields.get(key);
+        }
+
+        @Override public boolean containsKey(Object key) {
+            return fields.containsKey(key);
         }
     }
 
@@ -6623,6 +6766,16 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
+            if (value instanceof OresEntry entry) {
+                return new OresEntry(
+                        freeze(entry.key(), visiting, depth + 1),
+                        freeze(entry.value(), visiting, depth + 1));
+            }
+            if (value instanceof OresTuple tuple) {
+                List<Object> frozen = new ArrayList<>(tuple.size());
+                for (Object item : tuple) frozen.add(freeze(item, visiting, depth + 1));
+                return new OresTuple(frozen);
+            }
             if (value instanceof List<?> list) {
                 List<Object> frozen = new ArrayList<>(list.size());
                 for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
@@ -6650,7 +6803,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     frozen.put(detachedKey, detachedValue);
                 }
-                return Collections.unmodifiableMap(frozen);
+                return new FrozenGuestMap(frozen);
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
@@ -6698,10 +6851,20 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
         }
         try {
+            if (value instanceof OresEntry entry) {
+                return new OresEntry(
+                        isolateCopy(entry.key(), visiting, depth + 1),
+                        isolateCopy(entry.value(), visiting, depth + 1));
+            }
+            if (value instanceof OresTuple tuple) {
+                List<Object> copy = new ArrayList<>(tuple.size());
+                for (Object item : tuple) copy.add(isolateCopy(item, visiting, depth + 1));
+                return new OresTuple(copy);
+            }
             if (value instanceof List<?> list) {
                 List<Object> copy = new ArrayList<>(list.size());
                 for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1));
-                return Collections.unmodifiableList(copy);
+                return List.copyOf(copy);
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> copy = new LinkedHashSet<>();
@@ -6725,7 +6888,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     copy.put(detachedKey, detachedValue);
                 }
-                return Collections.unmodifiableMap(copy);
+                return new FrozenGuestMap(copy);
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
@@ -6733,7 +6896,7 @@ public final class ActorRuntime implements AutoCloseable {
                 for (int i = 0; i < length; i++) {
                     copy.add(isolateCopy(Array.get(value, i), visiting, depth + 1));
                 }
-                return Collections.unmodifiableList(copy);
+                return List.copyOf(copy);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
@@ -6765,6 +6928,28 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
         try {
+            if (value instanceof OresEntry entry) {
+                long total = requireWithinLimit(40L, limit);
+                total = addWithinLimit(total,
+                        estimateSharedTransportBytes(entry.key(), visiting, depth + 1, limit - total),
+                        limit);
+                total = addWithinLimit(total,
+                        estimateSharedTransportBytes(entry.value(), visiting, depth + 1, limit - total),
+                        limit);
+                return total;
+            }
+            if (value instanceof OresTuple tuple) {
+                // OresTuple has its own nominal wrapper in addition to immutable
+                // element storage. Charge both so tuple-heavy messages cannot
+                // evade actor-memory quotas by being treated as raw Lists.
+                long total = requireWithinLimit(containerBase(48L, 8L, tuple.size()), limit);
+                for (Object item : tuple) {
+                    total = addWithinLimit(total,
+                            estimateSharedTransportBytes(item, visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
             if (value instanceof List<?> list) {
                 long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
                 for (Object item : list) {
@@ -6831,6 +7016,18 @@ public final class ActorRuntime implements AutoCloseable {
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
         long bytes = 24L;
+        if (value instanceof OresEntry entry) {
+            bytes = Math.addExact(40L, estimateSharedMailboxBytes(entry.key(), seen, depth + 1));
+            bytes = Math.addExact(bytes, estimateSharedMailboxBytes(entry.value(), seen, depth + 1));
+            return bytes;
+        }
+        if (value instanceof OresTuple tuple) {
+            bytes = Math.addExact(48L, 8L * tuple.size());
+            for (Object item : tuple) {
+                bytes = Math.addExact(bytes, estimateSharedMailboxBytes(item, seen, depth + 1));
+            }
+            return bytes;
+        }
         if (value instanceof List<?> list) {
             bytes = Math.addExact(bytes, 8L * list.size());
             for (Object item : list) {
@@ -6885,6 +7082,25 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
         }
         try {
+            if (value instanceof OresEntry entry) {
+                long total = requireWithinLimit(40L, limit);
+                total = addWithinLimit(total,
+                        estimatePrivateTransportBytes(entry.key(), visiting, depth + 1, limit - total),
+                        limit);
+                total = addWithinLimit(total,
+                        estimatePrivateTransportBytes(entry.value(), visiting, depth + 1, limit - total),
+                        limit);
+                return total;
+            }
+            if (value instanceof OresTuple tuple) {
+                long total = requireWithinLimit(containerBase(48L, 8L, tuple.size()), limit);
+                for (Object item : tuple) {
+                    total = addWithinLimit(total,
+                            estimatePrivateTransportBytes(item, visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
             if (value instanceof List<?> list) {
                 long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
                 for (Object item : list) {
@@ -6938,8 +7154,14 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
         if (value instanceof Long || value instanceof Double) return 24L;
-        if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
-        if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
+        if (value != null && value.getClass() == BigInteger.class) {
+            BigInteger integer = (BigInteger) value;
+            return 32L + integer.toByteArray().length;
+        }
+        if (value != null && value.getClass() == BigDecimal.class) {
+            BigDecimal decimal = (BigDecimal) value;
+            return 48L + decimal.unscaledValue().toByteArray().length;
+        }
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof OresSymbol symbol) return 56L + symbol.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
@@ -6990,8 +7212,14 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
         if (value instanceof Long || value instanceof Double) return 24L;
-        if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
-        if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
+        if (value != null && value.getClass() == BigInteger.class) {
+            BigInteger integer = (BigInteger) value;
+            return 32L + integer.toByteArray().length;
+        }
+        if (value != null && value.getClass() == BigDecimal.class) {
+            BigDecimal decimal = (BigDecimal) value;
+            return 48L + decimal.unscaledValue().toByteArray().length;
+        }
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof OresSymbol symbol) return 56L + symbol.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
@@ -7008,6 +7236,16 @@ public final class ActorRuntime implements AutoCloseable {
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
         long bytes = 24L;
+        if (value instanceof OresEntry entry) {
+            bytes = Math.addExact(40L, estimateFrozenBytes(entry.key(), seen, depth + 1));
+            bytes = Math.addExact(bytes, estimateFrozenBytes(entry.value(), seen, depth + 1));
+            return bytes;
+        }
+        if (value instanceof OresTuple tuple) {
+            bytes = Math.addExact(48L, 8L * tuple.size());
+            for (Object item : tuple) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
+            return bytes;
+        }
         if (value instanceof List<?> list) {
             bytes = Math.addExact(bytes, 8L * list.size());
             for (Object item : list) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
@@ -7041,7 +7279,9 @@ public final class ActorRuntime implements AutoCloseable {
         return value == null || value instanceof String || value instanceof OresSymbol
                 || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
-                || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
+                || value instanceof Float || value instanceof Double
+                || (value != null && value.getClass() == BigInteger.class)
+                || (value != null && value.getClass() == BigDecimal.class)
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
                 || value instanceof ActorGroupId;
     }

@@ -43,7 +43,7 @@ public final class TypeChecker {
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
             "Symbol", "Array", "List", "Vector", "Slice",
-            "Tuple", "FixedArray", "FixedList",
+            "Tuple", "Entry", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Box", "Arc", "Weak",
             "Rc", "RefCell", "Mutex", "RwLock", "SharedMutex",
@@ -380,8 +380,22 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("Entry")) {
+                throw new IllegalArgumentException(
+                        "Entry is a built-in key/value product namespace and cannot be shadowed by a module");
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                String reservedName = decl instanceof Ast.FunctionDecl fn ? fn.name()
+                        : decl instanceof Ast.ClassDecl klass ? klass.name()
+                        : decl instanceof Ast.InterfaceDecl iface ? iface.name()
+                        : decl instanceof Ast.TypeAliasDecl alias ? alias.name()
+                        : decl instanceof Ast.FieldDecl field ? field.name()
+                        : null;
+                if ("Entry".equals(reservedName)) {
+                    throw new IllegalArgumentException(
+                            "Entry is a built-in key/value product namespace and cannot be shadowed");
+                }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
@@ -1891,7 +1905,7 @@ public final class TypeChecker {
         }
         String name = ref.name();
         if (generics.contains(name) || GENERIC_DEFAULT_BUILTINS.contains(name)
-                || Set.of("Object", "Any", "Unknown", "Error", "Symbol",
+                || Set.of("Object", "Any", "Unknown", "Error", "Symbol", "Entry",
                         "Ref", "WeakRef", "Map", "OrderedMap", "DynamicStruct").contains(name)
                 || findClass(name) != null || findInterface(name) != null
                 || findTypeAlias(name) != null || modules.containsKey(name)
@@ -2004,7 +2018,7 @@ public final class TypeChecker {
                                 "int", "uint", "bigint", "f32", "f64", "float", "decimal",
                                 "complex64", "complex128", "complex", "bool", "Bool",
                                 "boolean", "string", "String", "void", "null", "self",
-                                "Tuple", "Array", "List", "Vector", "Slice",
+                                "Tuple", "Entry", "Array", "List", "Vector", "Slice",
                                 "FixedArray", "FixedList", "DynamicStruct", "Option",
                                 "Result", "Future", "ActorId", "ActorKind",
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
@@ -2432,6 +2446,7 @@ public final class TypeChecker {
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
                     || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+            if (name.name().equals("Entry")) return new Named("$EntryFactory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -2477,6 +2492,10 @@ public final class TypeChecker {
                 }
                 return trapFunctionType(fn, Set.of(), null);
             }
+            if (name.name().equals("tuple")) {
+                throw new IllegalArgumentException(
+                        "builtin tuple(...) is direct-call-only; use an explicit lambda to reify tuple construction");
+            }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
@@ -2520,6 +2539,11 @@ public final class TypeChecker {
                 }
                 Type receiver = receiverDispatchType(deref(receiverSource));
                 Type index = typeOf(indexed.index(), env, generics, self);
+                if (receiver instanceof Named entry && isEntryType(entry)) {
+                    requireAssignable(index, Primitive.STRING, "Entry field key");
+                    throw new IllegalArgumentException(
+                            "Entry<K,V> is immutable; indexed assignment is not allowed");
+                }
                 if (receiver instanceof Record record) {
                     requireAssignable(index, Primitive.STRING, "record/struct field key");
                     Map<String, Type> indexableMembers = indexableRecordMembers(record);
@@ -2930,6 +2954,22 @@ public final class TypeChecker {
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
             }
+            if (call.callee() instanceof Ast.NameExpr tupleName
+                    && tupleName.name().equals("tuple")
+                    && env.lookup("tuple") == null
+                    && !hasFunctionFamily("tuple")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "builtin tuple(...) does not accept call-site type arguments");
+                }
+                List<ExpandedCallArgument> items = expandFixedCallArguments(
+                        call.arguments(), env, generics, self, "tuple");
+                return new Tuple(items.stream()
+                        .map(item -> item.expression() == null
+                                ? item.staticType()
+                                : typeOf(item.expression(), env, generics, self))
+                        .toList());
+            }
             String booleanIntrinsic = booleanIntrinsicName(call, env);
             if (booleanIntrinsic != null) {
                 return typeBooleanIntrinsicCall(booleanIntrinsic, call, env, generics, self);
@@ -3066,6 +3106,33 @@ public final class TypeChecker {
                 }
                 typeOf(call.arguments().getFirst(), env, generics, self);
                 return new Named("SelectSet", List.of());
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr entryCall
+                    && entryCall.receiver() instanceof Ast.NameExpr entryFactory
+                    && entryFactory.name().equals("Entry")
+                    && env.lookup("Entry") == null
+                    && entryCall.member().equals("of")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "Entry.of infers K and V and does not accept call-site type arguments");
+                }
+                List<ExpandedCallArgument> entryArguments =
+                        expandFixedCallArguments(
+                                call.arguments(), env, generics, self, "Entry.of");
+                if (entryArguments.size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Entry.of expects exactly two arguments: key, value");
+                }
+                Type key = widenCollectionElement(
+                        entryArguments.get(0).expression() == null
+                                ? entryArguments.get(0).staticType()
+                                : typeOf(entryArguments.get(0).expression(), env, generics, self));
+                Type value = widenCollectionElement(
+                        entryArguments.get(1).expression() == null
+                                ? entryArguments.get(1).staticType()
+                                : typeOf(entryArguments.get(1).expression(), env, generics, self));
+                return entryProductType(key, value);
             }
 
             if (call.callee() instanceof Ast.MemberExpr futureCall
@@ -4019,6 +4086,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
             }
 
+            if (receiver instanceof Named entry && isEntryType(entry)) {
+                return entryMemberType(entry, member.member(), false);
+            }
+
             if (receiver instanceof Record record) {
                 Type result = record.members().get(member.member());
                 if (result != null) return result;
@@ -4078,6 +4149,18 @@ public final class TypeChecker {
             String constantKey = constantStringKey(indexed.index(), env);
             Env.Binding indexedOwner = indexed.receiver() instanceof Ast.NameExpr ownerName
                     ? env.lookup(ownerName.name()) : null;
+            if (receiver instanceof Named entry && isEntryType(entry)) {
+                requireAssignable(index, Primitive.STRING, "Entry field key");
+                if (constantKey == null) {
+                    return indexedElementUnion(entry.arguments());
+                }
+                return switch (constantKey) {
+                    case "key" -> entry.arguments().get(0);
+                    case "value" -> entry.arguments().get(1);
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry field key '" + constantKey + "'");
+                };
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
                 Map<String, Type> indexableMembers = indexableRecordMembers(record);
@@ -4187,6 +4270,10 @@ public final class TypeChecker {
                             Primitive.STRING, "HttpResponse body");
                 }
                 return new Named("HttpResponse", List.of());
+            }
+            if (created.type().name().equals("Entry") && findClass("Entry") == null) {
+                throw new IllegalArgumentException(
+                        "Entry<K,V> is an immutable value product and has no constructor; use Entry.of(key, value)");
             }
             // Guest Symbols are immutable keys, not fresh reference capabilities.
             // Do not silently reinterpret the historical STABLE constructor.
@@ -5229,6 +5316,14 @@ public final class TypeChecker {
             if (member == null) throw new IllegalArgumentException("object destructure requires member '" + memberName + "'");
             return member;
         }
+        if (source instanceof Named entry && isEntryType(entry)) {
+            return switch (memberName) {
+                case "key" -> entry.arguments().get(0);
+                case "value" -> entry.arguments().get(1);
+                default -> throw new IllegalArgumentException(
+                        "object destructure requires Entry member '" + memberName + "'");
+            };
+        }
         if (source instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass == null) throw new IllegalArgumentException("object destructuring requires a record/map-like value");
@@ -5693,6 +5788,9 @@ public final class TypeChecker {
         }
         Type receiver = receiverDispatchType(
                 unwrapMutexGuard(deref(rawReceiver)));
+        if (receiver instanceof Named entry && isEntryType(entry)) {
+            return entryMemberType(entry, member.member(), writing);
+        }
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
                     "cannot mutate a readonly structural record value");
@@ -5701,6 +5799,16 @@ public final class TypeChecker {
             Type result = record.members().get(member.member());
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             return result;
+        }
+        if (receiver instanceof Named named
+                && named.name().equals("$EntryFactory")) {
+            if (member.member().equals("of")) {
+                throw new IllegalArgumentException(
+                        "Entry.of is a generic factory and is direct-call-only; "
+                                + "wrap Entry.of(key, value) in an explicit lambda to reify it");
+            }
+            throw new IllegalArgumentException(
+                    "unknown Entry member '" + member.member() + "'");
         }
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
@@ -5837,6 +5945,7 @@ public final class TypeChecker {
 
         // Built-in sum/container values are data-only when their arguments pass.
         if (named.name().equals("Option") || named.name().equals("Result")
+                || named.name().equals("Entry")
                 || named.name().equals("OptionUnwrapError")) {
             return;
         }
@@ -5945,6 +6054,18 @@ public final class TypeChecker {
                             genericBindings);
         }
         if (named.name().equals("Result")) {
+            return named.arguments().size() == 2
+                    && isSharedMutexPayloadSafe(
+                            named.arguments().get(0),
+                            seen,
+                            genericBindings)
+                    && isSharedMutexPayloadSafe(
+                            named.arguments().get(1),
+                            seen,
+                            genericBindings);
+        }
+
+        if (named.name().equals("Entry")) {
             return named.arguments().size() == 2
                     && isSharedMutexPayloadSafe(
                             named.arguments().get(0),
@@ -6802,6 +6923,13 @@ public final class TypeChecker {
         // parameters. Reified generic payload predicates are not assumed.
         if (source instanceof ListType && target instanceof ListType) return true;
         if (source instanceof Named left && target instanceof Named right) {
+            if (left.name().equals("Entry") && right.name().equals("Entry")
+                    && left.arguments().size() == 2 && right.arguments().size() == 2) {
+                return runtimeValueTypeCovered(
+                                left.arguments().get(0), right.arguments().get(0), depth + 1)
+                        && runtimeValueTypeCovered(
+                                left.arguments().get(1), right.arguments().get(1), depth + 1);
+            }
             if (left.name().equals(right.name())) return true;
             // A proven nominal subtype is also a runtime subtype; unrelated
             // nominal values cannot be certified from structural assignability.
@@ -6836,6 +6964,11 @@ public final class TypeChecker {
         }
 
         if (a instanceof Named an && b instanceof Named bn) {
+            if (an.name().equals("Entry") && bn.name().equals("Entry")
+                    && an.arguments().size() == 2 && bn.arguments().size() == 2) {
+                return typesMayOverlap(an.arguments().get(0), bn.arguments().get(0))
+                        && typesMayOverlap(an.arguments().get(1), bn.arguments().get(1));
+            }
             boolean aNominal = findClass(an.name()) != null || findInterface(an.name()) != null;
             boolean bNominal = findClass(bn.name()) != null || findInterface(bn.name()) != null;
             if (aNominal && bNominal) {
@@ -6884,7 +7017,7 @@ public final class TypeChecker {
                 "int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "uint", "bigint",
                 "float", "f32", "f64", "decimal", "bool", "Bool", "string", "String",
                 "Symbol", "complex", "complex64", "complex128",
-                "Option", "Result", "Array", "List", "Generator", "Iterator",
+                "Option", "Result", "Entry", "Array", "List", "Generator", "Iterator",
                 "AsyncGenerator", "AsyncIterator", "IteratorResult").contains(name)
                 || findClass(name) != null || findInterface(name) != null) {
             return;
@@ -6922,6 +7055,15 @@ public final class TypeChecker {
                 || ref.name().equals("Fnc") || ref.name().equals("Function")) {
             throw new IllegalArgumentException(
                     operator + " requires a nominal/runtime-reifiable type; use 'matches' for structural patterns");
+        }
+        if (ref.name().equals("Entry")) {
+            if (ref.inferArguments() || ref.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        operator + " requires Entry<K,V> with two explicit reifiable component types");
+            }
+            requireRuntimeReifiableType(ref.arguments().get(0), operator + " Entry key");
+            requireRuntimeReifiableType(ref.arguments().get(1), operator + " Entry value");
+            return;
         }
         if (ref.inferArguments() || !ref.arguments().isEmpty()) {
             throw new IllegalArgumentException(
@@ -7425,6 +7567,31 @@ public final class TypeChecker {
         return null;
     }
 
+    private Named entryProductType(Type key, Type value) {
+        return new Named(
+                "Entry",
+                List.of(widenCollectionElement(key), widenCollectionElement(value)));
+    }
+
+    private static boolean isEntryType(Type type) {
+        return type instanceof Named named
+                && named.name().equals("Entry")
+                && named.arguments().size() == 2;
+    }
+
+    private Type entryMemberType(Named entry, String member, boolean writing) {
+        if (writing) {
+            throw new IllegalArgumentException(
+                    "Entry<K,V> is an immutable nominal key/value product");
+        }
+        return switch (member) {
+            case "key" -> entry.arguments().get(0);
+            case "value" -> entry.arguments().get(1);
+            default -> throw new IllegalArgumentException(
+                    "unknown Entry member '" + member + "'");
+        };
+    }
+
     private Type builtinCollectionMember(Type receiver, String member) {
         receiver = deref(receiver);
         if (receiver instanceof ListType list) {
@@ -7715,6 +7882,7 @@ public final class TypeChecker {
         boolean valueSemanticNamed = value instanceof Named named
                 && (named.name().equals("Option")
                     || named.name().equals("Result")
+                    || named.name().equals("Entry")
                     || named.name().equals("IteratorResult"));
 
         if (value instanceof Primitive || value instanceof StringLiteral
@@ -9486,6 +9654,18 @@ public final class TypeChecker {
                 yield new Named("$builtin$Symbol", List.of());
             }
             case "void" -> Primitive.VOID;
+            case "Entry" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Entry requires exactly two explicit type arguments");
+                }
+                Type key = resolve(ref.arguments().get(0), generics, self, allowNullMarker);
+                Type value = resolve(ref.arguments().get(1), generics, self, allowNullMarker);
+                if (key == Primitive.VOID || value == Primitive.VOID) {
+                    throw new IllegalArgumentException("Entry<void,...> and Entry<...,void> are invalid");
+                }
+                yield entryProductType(key, value);
+            }
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
                 if (!Set.of("Array", "List").contains(ref.name()) && declared != null
@@ -9966,6 +10146,10 @@ public final class TypeChecker {
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
         for (String name : names) {
+            if (name.equals("Entry")) {
+                throw new IllegalArgumentException(
+                        "generic parameter 'Entry' cannot shadow the built-in Entry<K,V> type");
+            }
             rejectReservedSymbolTypeName(name, "generic parameter in " + owner);
             if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
         }

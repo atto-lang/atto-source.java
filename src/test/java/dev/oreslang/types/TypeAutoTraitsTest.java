@@ -90,4 +90,36 @@ final class TypeAutoTraitsTest {
         assertTrue(ref.sync());
         assertTrue(ref.share());
     }
+    @Test
+    void immutableEntryComposesBothComponentCapabilities() {
+        var integer = Types.Primitive.INT;
+        var string = Types.Primitive.STRING;
+
+        var plain = TypeAutoTraits.inferClosed(
+                new Types.Named("Entry", List.of(integer, string)));
+        assertTrue(plain.send());
+        assertTrue(plain.sync());
+        assertTrue(plain.share());
+
+        var boxed = TypeAutoTraits.inferClosed(
+                new Types.Named(
+                        "Entry",
+                        List.of(
+                                integer,
+                                new Types.Named("Box", List.of(integer)))));
+        assertTrue(boxed.send());
+        assertTrue(boxed.sync());
+        assertFalse(boxed.share());
+
+        var rc = TypeAutoTraits.inferClosed(
+                new Types.Named(
+                        "Entry",
+                        List.of(
+                                integer,
+                                new Types.Named("Rc", List.of(integer)))));
+        assertFalse(rc.send());
+        assertFalse(rc.sync());
+        assertFalse(rc.share());
+    }
+
 }

@@ -5,7 +5,6 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import org.junit.jupiter.api.Test;
 
-import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -19,14 +18,14 @@ import java.time.Duration;
 
 final class MutexRuntimeTest {
 
-    private static final class BlockingSingleElementList extends AbstractList<Object> {
-        private final Object value;
+    private static final class BlockingSharedState implements OresMutex.SharedState {
+        private final int[] value;
         private final CountDownLatch entered;
         private final CountDownLatch release;
         private final AtomicBoolean blocked = new AtomicBoolean();
 
-        private BlockingSingleElementList(
-                Object value,
+        private BlockingSharedState(
+                int[] value,
                 CountDownLatch entered,
                 CountDownLatch release) {
             this.value = value;
@@ -34,9 +33,12 @@ final class MutexRuntimeTest {
             this.release = release;
         }
 
+        private int[] value() {
+            return value;
+        }
+
         @Override
-        public Object get(int index) {
-            if (index != 0) throw new IndexOutOfBoundsException(index);
+        public Iterable<?> sharedStateChildren() {
             if (blocked.compareAndSet(false, true)) {
                 entered.countDown();
                 try {
@@ -48,12 +50,7 @@ final class MutexRuntimeTest {
                     throw new java.util.concurrent.CancellationException();
                 }
             }
-            return value;
-        }
-
-        @Override
-        public int size() {
-            return 1;
+            return List.of(value);
         }
     }
 
@@ -926,11 +923,15 @@ final class MutexRuntimeTest {
     @Test
     void shutdownRacingSendDoesNotBindOrAdmitSharedMutex() throws Exception {
         ActorRuntime runtimeA = new ActorRuntime();
-        var shared = OresMutex.shared(new int[]{0});
         CountDownLatch behaviorStarted = new CountDownLatch(1);
         CountDownLatch releaseBehavior = new CountDownLatch(1);
         CountDownLatch validationEntered = new CountDownLatch(1);
         CountDownLatch releaseValidation = new CountDownLatch(1);
+        var shared = OresMutex.shared(
+                new BlockingSharedState(
+                        new int[]{0},
+                        validationEntered,
+                        releaseValidation));
         AtomicReference<Throwable> senderFailure = new AtomicReference<>();
         AtomicReference<Throwable> closeFailure = new AtomicReference<>();
 
@@ -951,11 +952,9 @@ final class MutexRuntimeTest {
         target.send("block");
         assertTrue(behaviorStarted.await(2, TimeUnit.SECONDS));
 
-        Object blockedMessage =
-                new BlockingSingleElementList(shared, validationEntered, releaseValidation);
         Thread sender = Thread.ofPlatform().start(() -> {
             try {
-                target.send(blockedMessage);
+                target.send(shared);
             } catch (Throwable failure) {
                 senderFailure.set(failure);
             }
@@ -998,16 +997,17 @@ final class MutexRuntimeTest {
 
         try (ActorRuntime runtimeB = new ActorRuntime()) {
             CountDownLatch delivered = new CountDownLatch(1);
-            var receiver = runtimeB.<OresMutex.Shared<int[]>>spawnShared(() -> (mutex, context) -> {
-                var guard = mutex.tryLock().orElseThrow();
-                guard.value()[0] = 7;
-                guard.release();
-                delivered.countDown();
-            });
+            var receiver = runtimeB.<OresMutex.Shared<BlockingSharedState>>spawnShared(
+                    () -> (mutex, context) -> {
+                        var guard = mutex.tryLock().orElseThrow();
+                        guard.value().value()[0] = 7;
+                        guard.release();
+                        delivered.countDown();
+                    });
 
             assertDoesNotThrow(() -> receiver.send(shared));
             assertTrue(delivered.await(2, TimeUnit.SECONDS));
-            assertEquals(7, shared.withLock(value -> value[0]).intValue());
+            assertEquals(7, shared.withLock(value -> value.value()[0]).intValue());
         }
     }
 

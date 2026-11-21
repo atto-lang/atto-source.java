@@ -98,6 +98,10 @@ public final class TypeAutoTraits {
                     Optional.of(named.arguments().size() == 2
                             ? combine(named.arguments(), nested)
                             : NONE);
+            case "Entry" ->
+                    Optional.of(named.arguments().size() == 2
+                            ? combine(named.arguments(), nested)
+                            : NONE);
             case "Box" -> Optional.of(wrapped(named, Kind.BOX, false, nested));
             case "Arc" -> Optional.of(wrapped(named, Kind.ARC, true, nested));
             case "Weak" -> Optional.of(wrapped(named, Kind.WEAK, true, nested));

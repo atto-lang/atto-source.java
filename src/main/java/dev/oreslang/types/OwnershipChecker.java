@@ -1108,6 +1108,15 @@ public final class OwnershipChecker {
                         throw error("rt take cannot move an indexed projection until projection-level move tracking is available; move the containing owner or use a read/borrow");
                     }
                     if (argument instanceof Ast.MemberExpr member) {
+                        Ast.TypeRef memberReceiverType = receiverType(member.receiver(), scope);
+                        if (memberReceiverType != null
+                                && memberReceiverType.name().equals("Entry")
+                                && memberReceiverType.arguments().size() == 2) {
+                            throw error(
+                                    "rt take cannot move an Entry member projection until "
+                                            + "projection-level move tracking is available; "
+                                            + "move the containing Entry or use a read/borrow");
+                        }
                         Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
                         if (ownerClass != null) {
                             Ast.FieldDecl slot = findField(
@@ -1235,6 +1244,16 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr entryNamespace
+                    && entryNamespace.name().equals("Entry")
+                    && scope.lookup("Entry") == null) {
+                if (member.member().equals("of")) {
+                    throw error(
+                            "Entry.of is a generic factory and is direct-call-only; "
+                                    + "wrap Entry.of(key, value) in an explicit lambda to reify it");
+                }
+                throw error("unknown Entry member '" + member.member() + "'");
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -1268,6 +1287,24 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.isBorrow()) {
                 concreteReceiver = concreteReceiver.borrowedTarget();
             }
+            concreteReceiver = ownershipAggregateType(concreteReceiver);
+            if (concreteReceiver != null
+                    && concreteReceiver.name().equals("Entry")
+                    && concreteReceiver.arguments().size() == 2) {
+                Ast.TypeRef valueType = switch (member.member()) {
+                    case "key" -> concreteReceiver.arguments().get(0);
+                    case "value" -> concreteReceiver.arguments().get(1);
+                    default -> throw error("unknown Entry member '" + member.member() + "'");
+                };
+                ValueKind valueKind = kindOfType(valueType);
+                if (consuming && valueKind != ValueKind.COPY) {
+                    throw error(
+                            "cannot consume a move-only Entry member projection until "
+                                    + "projection-level move tracking is available; "
+                                    + "move the containing Entry or borrow the member");
+                }
+                return new ValueInfo(valueType, valueKind, null);
+            }
             if (concreteReceiver != null && concreteReceiver.isClosedAggregateType()) {
                 Ast.TypeRef valueType = concreteReceiver.aggregateMembers().get(member.member());
                 if (valueType == null) {
@@ -1299,10 +1336,28 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.IndexExpr indexed) {
+            if (indexed.receiver() instanceof Ast.NameExpr entryNamespace
+                    && entryNamespace.name().equals("Entry")
+                    && scope.lookup("Entry") == null) {
+                throw error(
+                        "Entry factory namespace does not support computed property access; "
+                                + "invoke Entry.of(key, value) directly");
+            }
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = indexedElementType(indexed, receiver.type, scope);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
+            Ast.TypeRef indexedReceiverType = receiver.type != null && receiver.type.isBorrow()
+                    ? receiver.type.borrowedTarget() : receiver.type;
+            if (consuming && elementKind != ValueKind.COPY
+                    && indexedReceiverType != null
+                    && indexedReceiverType.name().equals("Entry")
+                    && indexedReceiverType.arguments().size() == 2) {
+                throw error(
+                        "cannot consume a move-only Entry indexed projection until "
+                                + "projection-level move tracking is available; "
+                                + "move the containing Entry or borrow the member");
+            }
             if (consuming && elementKind != ValueKind.COPY
                     && isRootedAtActorSelf(indexed.receiver(), scope)) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
@@ -1314,6 +1369,10 @@ public final class OwnershipChecker {
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Entry")) {
+                throw error(
+                        "Entry<K,V> is an immutable value product and has no constructor; use Entry.of(key, value)");
+            }
             List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
@@ -1635,6 +1694,47 @@ public final class OwnershipChecker {
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
+        }
+
+        if (call.callee() instanceof Ast.NameExpr tupleName
+                && tupleName.name().equals("tuple")
+                && scope.lookup("tuple") == null
+                && !functions.containsKey("tuple")
+                && !ambiguousFunctions.contains("tuple")) {
+            if (call.typeArgumentsPresent()) {
+                throw error("builtin tuple(...) does not accept call-site type arguments");
+            }
+            List<ValueInfo> slots = checkOwnedProductArguments(
+                    call.arguments(), scope, "tuple");
+            return new ValueInfo(
+                    Ast.TypeRef.tupleType(slots.stream().map(info -> info.type).toList()),
+                    slots.stream().allMatch(info -> info.kind == ValueKind.COPY)
+                            ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr entryCall
+                && entryCall.receiver() instanceof Ast.NameExpr entryFactory
+                && entryFactory.name().equals("Entry")
+                && scope.lookup("Entry") == null
+                && entryCall.member().equals("of")) {
+            if (call.typeArgumentsPresent()) {
+                throw error("Entry.of infers K and V and does not accept call-site type arguments");
+            }
+            List<ValueInfo> fields = checkOwnedProductArguments(
+                    call.arguments(), scope, "Entry.of");
+            if (fields.size() != 2) {
+                throw error("Entry.of expects exactly two arguments: key, value");
+            }
+            Ast.TypeRef entryType = new Ast.TypeRef(
+                    "Entry",
+                    List.of(fields.get(0).type, fields.get(1).type),
+                    false);
+            return new ValueInfo(
+                    entryType,
+                    fields.stream().allMatch(info -> info.kind == ValueKind.COPY)
+                            ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
         }
 
         if (call.callee() instanceof Ast.MemberExpr qualified
@@ -1965,6 +2065,55 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private List<ValueInfo> checkOwnedProductArguments(
+            List<Ast.Expr> arguments,
+            Scope scope,
+            String label) {
+        ArrayList<ValueInfo> values = new ArrayList<>();
+        for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.SpreadExpr spread) {
+                ValueInfo aggregate = checkExpr(spread.expression(), scope, true);
+                if (isBorrowValue(aggregate)) {
+                    throw error(label
+                            + " cannot spread a borrowed tuple into an owned product");
+                }
+                if (containsMutexGuardType(aggregate.type)) {
+                    throw error(label + " cannot store or spread a MutexGuard");
+                }
+                Ast.TypeRef aggregateType = aggregate.type;
+                if (aggregateType == null || !aggregateType.isTupleType()) {
+                    throw error(label
+                            + " spread requires a statically known tuple");
+                }
+                for (Ast.TypeRef slot : aggregateType.arguments()) {
+                    if (slot.isBorrow()) {
+                        throw error(label
+                                + " cannot store borrowed tuple elements");
+                    }
+                    if (containsMutexGuardType(slot)) {
+                        throw error(label + " cannot store a MutexGuard");
+                    }
+                    values.add(new ValueInfo(
+                            slot,
+                            kindOfType(slot),
+                            null));
+                }
+                continue;
+            }
+
+            ValueInfo value = checkExpr(argument, scope, true);
+            if (isBorrowValue(value)) {
+                throw error(label
+                        + " cannot store a borrowed value without an explicit lifetime");
+            }
+            if (containsMutexGuardType(value.type)) {
+                throw error(label + " cannot store a MutexGuard");
+            }
+            values.add(value);
+        }
+        return List.copyOf(values);
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
@@ -2448,6 +2597,12 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
+            Ast.TypeRef receiverType = receiverType(member.receiver(), scope);
+            if (receiverType != null
+                    && receiverType.name().equals("Entry")
+                    && receiverType.arguments().size() == 2) {
+                throw error("Entry<K,V> is immutable; member assignment is not allowed");
+            }
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
@@ -2473,6 +2628,12 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef receiverType = receiverType(indexed.receiver(), scope);
+            if (receiverType != null
+                    && receiverType.name().equals("Entry")
+                    && receiverType.arguments().size() == 2) {
+                throw error("Entry<K,V> is immutable; indexed assignment is not allowed");
+            }
             ensureMutableReceiver(indexed.receiver(), scope, "indexed value");
             checkExpr(indexed.index(), scope, false);
             return;
@@ -2546,7 +2707,13 @@ public final class OwnershipChecker {
             Ast.TypeRef type = receiver.type();
             if (type.isBorrow()) type = type.borrowedTarget();
             Ast.TypeRef fieldType = null;
-            if (type.isClosedAggregateType()) {
+            if (type.name().equals("Entry") && type.arguments().size() == 2) {
+                fieldType = switch (member.member()) {
+                    case "key" -> type.arguments().get(0);
+                    case "value" -> type.arguments().get(1);
+                    default -> null;
+                };
+            } else if (type.isClosedAggregateType()) {
                 fieldType = type.aggregateMembers().get(member.member());
             } else {
                 Ast.ClassDecl klass = findClass(type.name());
@@ -3358,7 +3525,7 @@ public final class OwnershipChecker {
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         if (isMutexGuardType(type)) type = type.arguments().getFirst();
-        return type;
+        return ownershipAggregateType(type);
     }
 
     private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
@@ -4260,8 +4427,20 @@ public final class OwnershipChecker {
         if (receiverType == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = receiverType.isBorrow()
                 ? receiverType.borrowedTarget() : receiverType;
+        concrete = ownershipAggregateType(concrete);
 
         Object constantIndex = computedIndexConstant(indexed.index(), scope);
+
+        if (concrete.name().equals("Entry") && concrete.arguments().size() == 2) {
+            if (constantIndex instanceof String key) {
+                return switch (key) {
+                    case "key" -> concrete.arguments().get(0);
+                    case "value" -> concrete.arguments().get(1);
+                    default -> Ast.TypeRef.inferred();
+                };
+            }
+            return Ast.TypeRef.union(concrete.arguments());
+        }
 
         if (concrete.isClosedAggregateType()) {
             Map<String, Ast.TypeRef> members = concrete.aggregateMembers();
@@ -4420,6 +4599,7 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef objectRestBindingType(Ast.TypeRef source, List<Ast.DestructureBinding> bindings) {
         Ast.TypeRef concrete = source.isBorrow() ? source.borrowedTarget() : source;
+        concrete = ownershipAggregateType(concrete);
         if (!concrete.isClosedAggregateType()) return Ast.TypeRef.inferred();
 
         Map<String, Ast.TypeRef> remainder = new LinkedHashMap<>(concrete.aggregateMembers());
@@ -4435,6 +4615,14 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {
         if (concrete.isBorrow()) concrete = concrete.borrowedTarget();
+        concrete = ownershipAggregateType(concrete);
+        if (concrete.name().equals("Entry") && concrete.arguments().size() == 2) {
+            return switch (name) {
+                case "key" -> concrete.arguments().get(0);
+                case "value" -> concrete.arguments().get(1);
+                default -> Ast.TypeRef.inferred();
+            };
+        }
         if (concrete.isClosedAggregateType()) {
             Ast.TypeRef member = concrete.aggregateMembers().get(name);
             if (member != null) return member;
@@ -4500,6 +4688,10 @@ public final class OwnershipChecker {
         Ast.TypeRef sequence = sequenceDestructureSourceType(concrete);
         if (!sequence.equals(concrete)) return iterableElementType(sequence, asyncIteration);
         return Ast.TypeRef.inferred();
+    }
+
+    private Ast.TypeRef ownershipAggregateType(Ast.TypeRef type) {
+        return type;
     }
 
     private Ast.TypeRef joinConditionalType(Ast.TypeRef left, Ast.TypeRef right) {
@@ -4581,6 +4773,9 @@ public final class OwnershipChecker {
                     -> type.arguments().isEmpty();
             case "SharedMutex", "Channel" -> type.arguments().size() == 1;
             case "ActorRef" -> isVerifiedActorReference(type);
+            case "Entry" -> type.arguments().size() == 2
+                    && isCopyType(type.arguments().get(0))
+                    && isCopyType(type.arguments().get(1));
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))

@@ -214,8 +214,7 @@ public final class Types {
         if (first instanceof Primitive a && second instanceof Primitive b) {
             // Numeric widening makes primitive numeric domains potentially overlap.
             return a != b && !(isNumeric(a) && isNumeric(b));
-        }
-        if (first instanceof Record a && second instanceof Record b) {
+        }        if (first instanceof Record a && second instanceof Record b) {
             if (!compatibleAggregateKinds(a.kind(), b.kind())) return true;
             // Only conflicting *known* fields prove disjointness. Missing keys do not.
             for (var entry : a.members().entrySet()) {
@@ -232,7 +231,34 @@ public final class Types {
                 || second instanceof ListType && first instanceof Primitive) return true;
         if (first instanceof Tuple && second instanceof Primitive
                 || second instanceof Tuple && first instanceof Primitive) return true;
+        // Entry<K,V> has a dedicated nominal runtime tag (OresEntry). A
+        // structural {key,value} record, sequence/tuple, or unrelated nominal
+        // value cannot inhabit that domain merely by sharing visible fields.
+        if (isEntryNamed(first) && isEntryNamed(second)) {
+            Named a = (Named) first;
+            Named b = (Named) second;
+            return areProvablyDisjoint(a.arguments().get(0), b.arguments().get(0))
+                    || areProvablyDisjoint(a.arguments().get(1), b.arguments().get(1));
+        }
+        if (isEntryNamed(first)) {
+            return second instanceof Record
+                    || second instanceof ListType
+                    || second instanceof Tuple
+                    || second instanceof Named named && !isEntryNamed(named);
+        }
+        if (isEntryNamed(second)) {
+            return first instanceof Record
+                    || first instanceof ListType
+                    || first instanceof Tuple
+                    || first instanceof Named named && !isEntryNamed(named);
+        }
         return false; // Not knowing if types overlap is NOT proof of exclusion.
+    }
+
+    private static boolean isEntryNamed(Type type) {
+        return type instanceof Named named
+                && named.name().equals("Entry")
+                && named.arguments().size() == 2;
     }
 
     // Shared package-internal proof query for both type relations.
@@ -304,7 +330,6 @@ public final class Types {
             }
             return true;
         }
-
         if (from instanceof Record source && to instanceof Record target) {
             if (!compatibleAggregateKinds(source.kind(), target.kind())) return false;
             // Structs are closed concrete shapes: unlike records/contracts, they do not

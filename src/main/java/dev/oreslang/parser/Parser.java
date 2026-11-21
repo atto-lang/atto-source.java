@@ -2946,15 +2946,20 @@ public final class Parser {
                 // Explicit alias capture remains available for structural records.
                 initializer = parseObjectLiteral(Ast.ObjectKind.INFERRED_RECORD, List.of());
             } else if (matchContextualKeyword("tuple")) {
-                consume(LPAREN, "expected '(' after infer<T> tuple");
-                List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
-                consume(RPAREN, "expected ')' after inferred tuple");
+                Token.Type close;
+                if (match(LBRACE)) close = RBRACE;
+                else if (match(LPAREN)) close = RPAREN; // legacy named-inference spelling
+                else throw error(peek(), "expected '{' after infer<T> tuple");
+                List<Ast.Expr> items = parseArgumentsUntil(close);
+                consume(close, close == RBRACE
+                        ? "expected '}' after inferred tuple"
+                        : "expected ')' after inferred tuple");
                 if (items.isEmpty()) {
                     throw error(previous(), "infer<T> tuple requires at least one element");
                 }
                 initializer = new Ast.TupleExpr(items);
             } else {
-                throw error(peek(), "infer<T> requires a struct {...}, record {...}, or tuple (...) literal");
+                throw error(peek(), "infer<T> requires a struct {...}, record {...}, or tuple {...} literal");
             }
         } else {
             initializer = parseExpression();
@@ -4201,11 +4206,11 @@ public final class Parser {
             advance(); // contextual record
             return parseObjectLiteral(Ast.ObjectKind.RECORD, List.of());
         }
-        if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
-            advance();
-            consume(LPAREN, "expected '(' after tuple");
-            List<Ast.Expr> items = parseArgumentsUntil(RPAREN);
-            consume(RPAREN, "expected ')' after explicit tuple");
+        if (isContextualIdentifier("tuple") && checkNext(LBRACE)) {
+            advance(); // contextual tuple literal; tuple(...) remains an ordinary call
+            consume(LBRACE, "expected '{' after tuple");
+            List<Ast.Expr> items = parseArgumentsUntil(RBRACE);
+            consume(RBRACE, "expected '}' after explicit tuple");
             return new Ast.TupleExpr(items);
         }
         if (match(IDENT, SHARED, UNTRUSTED)) {

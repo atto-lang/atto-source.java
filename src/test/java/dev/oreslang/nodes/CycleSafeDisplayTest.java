@@ -38,6 +38,28 @@ final class CycleSafeDisplayTest {
     }
 
     @Test
+    void hostClassFacadeDisplayDoesNotInvokeHostSymbolToString() {
+        java.util.concurrent.atomic.AtomicInteger callbacks =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        Object hostileSymbol = new Object() {
+            @Override public String toString() {
+                callbacks.incrementAndGet();
+                throw new AssertionError("host symbol toString invoked");
+            }
+        };
+
+        Object facade = new OresEvalRootNode.HostClassFacade(
+                "java.example.Hostile",
+                hostileSymbol,
+                false);
+        String rendered = OresEvalRootNode.CycleSafeDisplay.render(facade);
+
+        assertEquals("<host-class:java.example.Hostile>", rendered);
+        assertEquals(0, callbacks.get());
+    }
+
+    @Test
     void outputIsBoundedByDepthAndCharacters() {
         Object nested = "leaf";
         for (int i = 0; i < 150; i++) nested = List.of(nested);

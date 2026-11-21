@@ -17,6 +17,8 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresEntry;
+import dev.oreslang.runtime.OresTuple;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -50,6 +52,138 @@ public final class OresEvalRootNode extends RootNode {
     public static final String MAIN_ONLY_COMMAND = "__ores_internal_main_only__";
     public static final String INVOKE_PUBLIC_COMMAND = "__ores_internal_invoke_public__";
     public static final String REGISTER_IMPORT_COMMAND = "__ores_internal_register_import__";
+
+    private static final Set<Class<?>> TRUSTED_ASYNC_LIST_CLASSES =
+            trustedAsyncListClasses();
+    private static final Set<Class<?>> TRUSTED_ASYNC_SET_CLASSES =
+            trustedAsyncSetClasses();
+    private static final Set<Class<?>> TRUSTED_ASYNC_MAP_CLASSES =
+            trustedAsyncMapClasses();
+
+    private static Set<Class<?>> trustedAsyncListClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(ArrayList.class);
+        classes.add(java.util.Arrays.asList(new Object[0]).getClass());
+        classes.add(List.of().getClass());
+        classes.add(List.of(1).getClass());
+        classes.add(List.of(1, 2, 3).getClass());
+        classes.add(java.util.Collections.emptyList().getClass());
+        classes.add(java.util.Collections.singletonList(1).getClass());
+        classes.add(java.util.Collections.nCopies(1, 1).getClass());
+        classes.add(java.util.Collections.unmodifiableList(new ArrayList<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    private static Set<Class<?>> trustedAsyncSetClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(java.util.HashSet.class);
+        classes.add(LinkedHashSet.class);
+        classes.add(Set.of().getClass());
+        classes.add(Set.of(1).getClass());
+        classes.add(Set.of(1, 2, 3).getClass());
+        classes.add(java.util.Collections.emptySet().getClass());
+        classes.add(java.util.Collections.singleton(1).getClass());
+        classes.add(java.util.Collections.unmodifiableSet(new LinkedHashSet<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    private static Set<Class<?>> trustedAsyncMapClasses() {
+        Set<Class<?>> classes = new java.util.HashSet<>();
+        classes.add(HashMap.class);
+        classes.add(LinkedHashMap.class);
+        classes.add(Map.of().getClass());
+        classes.add(Map.of(1, 1).getClass());
+        classes.add(Map.of(1, 1, 2, 2).getClass());
+        classes.add(java.util.Collections.emptyMap().getClass());
+        classes.add(java.util.Collections.singletonMap(1, 1).getClass());
+        classes.add(java.util.Collections.unmodifiableMap(new LinkedHashMap<>()).getClass());
+        return Set.copyOf(classes);
+    }
+
+    static boolean isTrustedHostScalarResult(Object value) {
+        if (value == null
+                || value instanceof String
+                || value instanceof Boolean
+                || value instanceof Character
+                || value instanceof Byte
+                || value instanceof Short
+                || value instanceof Integer
+                || value instanceof Long
+                || value instanceof Float
+                || value instanceof Double) {
+            return true;
+        }
+        return value.getClass() == java.math.BigInteger.class
+                || value.getClass() == java.math.BigDecimal.class;
+    }
+
+    static boolean isTrustedAsyncScalar(Object value) {
+        if (value == null
+                || value instanceof String
+                || value instanceof Boolean
+                || value instanceof Character
+                || value instanceof Byte
+                || value instanceof Short
+                || value instanceof Integer
+                || value instanceof Long
+                || value instanceof Float
+                || value instanceof Double
+                || value instanceof java.util.UUID
+                || value instanceof Complex
+                || value instanceof OptionUnwrapError) {
+            return true;
+        }
+        if (value.getClass() == java.math.BigInteger.class
+                || value.getClass() == java.math.BigDecimal.class) {
+            return true;
+        }
+        if (value instanceof Enum<?> e) {
+            Class<?> declaring = e.getDeclaringClass();
+            return declaring.getClassLoader() == OresEvalRootNode.class.getClassLoader()
+                    && declaring.getName().startsWith("dev.oreslang.");
+        }
+        return false;
+    }
+
+    static boolean isRuntimeSharedSafe(Object value) {
+        return MutexFactory.runtimeSharedSafe(
+                value,
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+    }
+
+    static boolean isTrustedTraversalCollectionCarrier(Object value) {
+        if (value instanceof List<?>) {
+            return value instanceof OresTuple
+                    || TRUSTED_ASYNC_LIST_CLASSES.contains(value.getClass());
+        }
+        if (value instanceof Set<?>) {
+            return TRUSTED_ASYNC_SET_CLASSES.contains(value.getClass());
+        }
+        if (value instanceof Map<?, ?>) {
+            return value instanceof MutableStructValue
+                    || value instanceof ReadonlyRecordValue
+                    || value instanceof ActorRuntime.FrozenGuestMap
+                    || TRUSTED_ASYNC_MAP_CLASSES.contains(value.getClass());
+        }
+        return true;
+    }
+
+    static void requireTrustedTraversalCollectionCarrier(Object value, String operation) {
+        if (!isTrustedTraversalCollectionCarrier(value)) {
+            String kind = value instanceof List<?> ? "List"
+                    : value instanceof Set<?> ? "Set"
+                    : value instanceof Map<?, ?> ? "Map"
+                    : "collection";
+            throw new IllegalArgumentException(
+                    operation + " rejects untrusted host " + kind
+                            + " implementation " + value.getClass().getName()
+                            + " as opaque");
+        }
+    }
+
+    static void requireTrustedAsyncCollectionCarrier(Object value) {
+        requireTrustedTraversalCollectionCarrier(value, "async task boundary");
+    }
 
     private final Ast.Program program;
     private final String codeUnitId;
@@ -115,7 +249,8 @@ public final class OresEvalRootNode extends RootNode {
         // link/init/main commands to install a full import graph before init.
         current.link();
         current.initialize();
-        return context.runRootMain(() -> current.executeMain(arguments, false));
+        Object[] normalizedArguments = current.normalizeHostArguments(arguments);
+        return context.runRootMain(() -> current.executeMain(normalizedArguments, false));
     }
 
     private Evaluator evaluator(OresContext context) {
@@ -832,8 +967,18 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
                         + "' does not export public function '" + name + "'");
             }
-            Object result = callFunction(fn, java.util.Arrays.asList(arguments));
+            Object result = callFunction(
+                    fn,
+                    java.util.Arrays.asList(normalizeHostArguments(arguments)));
             return result instanceof HostObjectFacade host ? host.value() : result;
+        }
+
+        private Object[] normalizeHostArguments(Object[] arguments) {
+            Object[] normalized = new Object[arguments.length];
+            for (int i = 0; i < arguments.length; i++) {
+                normalized[i] = normalizeHostResult(arguments[i]);
+            }
+            return normalized;
         }
 
         private Object invoke(Invocation initial) {
@@ -1096,7 +1241,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             env.define(
                     "arguments",
-                    java.util.Collections.unmodifiableList(tuple),
+                    List.copyOf(tuple),
                     Ast.BindingKind.CONST);
         }
 
@@ -2101,6 +2246,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 return expressionContainsPotentialSuspension(trapped.expression(), seen);
+            }
+            if (expr instanceof Ast.SpreadExpr spread) {
+                return expressionContainsPotentialSuspension(
+                        spread.expression(), seen);
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 return expressionContainsPotentialSuspension(
@@ -4473,7 +4622,7 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(
                                             t,
                                             failure == null
-                                                    ? List.copyOf(values)
+                                                    ? new OresTuple(values)
                                                     : null,
                                             failure));
                     return;
@@ -4589,15 +4738,23 @@ public final class OresEvalRootNode extends RootNode {
                 continuation.accept(task, List.copyOf(values), null);
                 return;
             }
+            Ast.Expr expression = expressions.get(index);
+            Ast.Expr valueExpression = expression instanceof Ast.SpreadExpr spread
+                    ? spread.expression()
+                    : expression;
             evalSuspendableExpr(
                     task,
-                    expressions.get(index),
+                    valueExpression,
                     env,
                     (t, value, failure) -> {
                         if (failure != null) {
                             continuation.accept(t, List.of(), failure);
                         } else {
-                            values.add(value);
+                            if (expression instanceof Ast.SpreadExpr) {
+                                values.addAll(expandArgumentSequence(value, "argument spread"));
+                            } else {
+                                values.add(value);
+                            }
                             evalSuspendableArgumentAt(
                                     t,
                                     expressions,
@@ -5058,7 +5215,7 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
-                if (direct != null) {
+                if (direct != null || hasFunctionFamily(name.name())) {
                     requireExplicitClassCallableImport(env, name.name());
                     evalSuspendableArguments(
                             task,
@@ -5070,8 +5227,15 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
+                                    Ast.FunctionDecl expandedTarget =
+                                            findFunction(name.name(), values.size());
+                                    if (expandedTarget == null) {
+                                        throw new IllegalArgumentException(
+                                                "no function " + name.name()
+                                                        + " with arity " + values.size());
+                                    }
                                     Invocation invocation =
-                                            functionInvocation(direct, values);
+                                            functionInvocation(expandedTarget, values);
                                     completeSourceInvocation(
                                             t,
                                             invocation,
@@ -5084,6 +5248,24 @@ public final class OresEvalRootNode extends RootNode {
                             });
                     return;
                 }
+            }
+
+            if (call.callee() instanceof Ast.NameExpr tupleName
+                    && tupleName.name().equals("tuple")
+                    && env.lookup("tuple") == Env.MISSING
+                    && !hasFunctionFamily("tuple")) {
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) ->
+                                continuation.accept(
+                                        t,
+                                        failure == null
+                                                ? new OresTuple(values)
+                                                : null,
+                                        failure));
+                return;
             }
 
             if (call.callee() instanceof Ast.MemberExpr member) {
@@ -5237,6 +5419,13 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof EntryFactory) {
+                if (!member.member().equals("of")) {
+                    throw new IllegalArgumentException("unknown Entry member " + member.member());
+                }
+                return invokableInvocation(EntryFactory::create, args);
+            }
+
             if (receiver instanceof OptionValue option
                     && member.member().equals("unwrap_all")) {
                 int depth = checkedOptionDepth(call);
@@ -5247,6 +5436,19 @@ public final class OresEvalRootNode extends RootNode {
                         }, args);
             }
 
+            if (receiver instanceof OresEntry entry) {
+                Object field = switch (member.member()) {
+                    case "key" -> entry.key();
+                    case "value" -> entry.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry member " + member.member());
+                };
+                if (!(field instanceof Invokable invokable)) {
+                    throw new IllegalArgumentException(
+                            "Entry field '" + member.member() + "' is not callable");
+                }
+                return invokableInvocation(invokable, args);
+            }
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -5470,6 +5672,18 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
+            if (receiver instanceof OresEntry entry) {
+                if (!(index instanceof String key)) {
+                    throw new IllegalArgumentException(
+                            "Entry field index must be a String");
+                }
+                return switch (key) {
+                    case "key" -> entry.key();
+                    case "value" -> entry.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry field key " + key);
+                };
+            }
             if (receiver instanceof ReadonlyRecordValue record) {
                 if (!(index instanceof String key)) {
                     throw new IllegalArgumentException(
@@ -5587,6 +5801,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 struct.put(fieldName, value);
                 return value;
+            }
+            if (receiver instanceof OresTuple) {
+                throw new IllegalArgumentException("Tuple is immutable; indexed assignment is forbidden");
             }
             if (receiver instanceof List<?> raw) {
                 @SuppressWarnings("unchecked")
@@ -5863,22 +6080,7 @@ public final class OresEvalRootNode extends RootNode {
         private Object detachAsyncValue(
                 Object value,
                 IdentityHashMap<Object, Boolean> visiting) {
-            if (value == null
-                    || value instanceof String
-                    || value instanceof Boolean
-                    || value instanceof Character
-                    || value instanceof Byte
-                    || value instanceof Short
-                    || value instanceof Integer
-                    || value instanceof Long
-                    || value instanceof Float
-                    || value instanceof Double
-                    || value instanceof java.math.BigInteger
-                    || value instanceof java.math.BigDecimal
-                    || value instanceof Enum<?>
-                    || value instanceof java.util.UUID
-                    || value instanceof Complex
-                    || value instanceof OptionUnwrapError) {
+            if (isTrustedAsyncScalar(value)) {
                 return value;
             }
 
@@ -5908,6 +6110,11 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     return new MutableStructValue(fields);
                 }
+                if (value instanceof OresEntry entry) {
+                    return new OresEntry(
+                            detachAsyncValue(entry.key(), visiting),
+                            detachAsyncValue(entry.value(), visiting));
+                }
                 if (value instanceof OptionValue option) {
                     return option.present()
                             ? new OptionValue(true, detachAsyncValue(option.value(), visiting))
@@ -5920,12 +6127,19 @@ public final class OresEvalRootNode extends RootNode {
                     return step.done() ? GeneratorRuntime.Step.doneStep()
                             : GeneratorRuntime.Step.yielded(detachAsyncValue(step.value(), visiting));
                 }
+                if (value instanceof OresTuple tuple) {
+                    ArrayList<Object> copy = new ArrayList<>(tuple.size());
+                    for (Object item : tuple) copy.add(detachAsyncValue(item, visiting));
+                    return new OresTuple(copy);
+                }
                 if (value instanceof List<?> list) {
+                    requireTrustedAsyncCollectionCarrier(value);
                     ArrayList<Object> copy = new ArrayList<>(list.size());
                     for (Object item : list) copy.add(detachAsyncValue(item, visiting));
                     return copy;
                 }
                 if (value instanceof Map<?, ?> map) {
+                    requireTrustedAsyncCollectionCarrier(value);
                     LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
                     for (Map.Entry<?, ?> entry : map.entrySet()) {
                         copy.put(
@@ -5935,6 +6149,7 @@ public final class OresEvalRootNode extends RootNode {
                     return copy;
                 }
                 if (value instanceof Set<?> set) {
+                    requireTrustedAsyncCollectionCarrier(value);
                     LinkedHashSet<Object> copy = new LinkedHashSet<>();
                     for (Object item : set) copy.add(detachAsyncValue(item, visiting));
                     return copy;
@@ -6815,6 +7030,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private ChannelRuntime.SelectSet asSelectSet(Object value) {
             if (value instanceof ChannelRuntime.SelectSet set) return set;
+            if (value instanceof OresTuple) {
+                throw new IllegalArgumentException(
+                        "dynamic select requires an Array/List of SelectCase, not a Tuple");
+            }
 
             ArrayList<ChannelRuntime.SelectCase> cases = new ArrayList<>();
             if (value instanceof List<?> list) {
@@ -6934,18 +7153,39 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
-                    && env.lookup(directName.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
-                if (direct != null) {
-                    requireExplicitClassCallableImport(env, directName.name());
-                    List<Object> args = evaluateArguments(call.arguments(), env);
-                    return functionInvocation(direct, args);
+                    && env.lookup(directName.name()) == Env.MISSING
+                    && hasFunctionFamily(directName.name())) {
+                requireExplicitClassCallableImport(env, directName.name());
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                Ast.FunctionDecl direct =
+                        findFunction(directName.name(), args.size());
+                if (direct == null) {
+                    throw new IllegalArgumentException(
+                            "no function " + directName.name()
+                                    + " with arity " + args.size());
                 }
+                return functionInvocation(direct, args);
+            }
+
+            if (call.callee() instanceof Ast.NameExpr tupleName
+                    && tupleName.name().equals("tuple")
+                    && env.lookup("tuple") == Env.MISSING
+                    && !hasFunctionFamily("tuple")) {
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                return invokableInvocation(OresTuple::new, args);
             }
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
+
+                if (receiver instanceof EntryFactory) {
+                    if (!methodCall.member().equals("of")) {
+                        throw new IllegalArgumentException(
+                                "unknown Entry member " + methodCall.member());
+                    }
+                    return invokableInvocation(EntryFactory::create, args);
+                }
 
                 if (receiver instanceof OptionValue option
                         && methodCall.member().equals("unwrap_all")) {
@@ -7283,6 +7523,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
+                if (name.name().equals("Entry")) return EntryFactory.INSTANCE;
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
@@ -7642,7 +7883,8 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) return new OresTuple(
+                        tuple.elements().stream().map(item -> eval(item, env)).toList());
             if (expr instanceof Ast.ObjectExpr object) {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
@@ -8090,6 +8332,14 @@ public final class OresEvalRootNode extends RootNode {
                             "unknown Channel member " + name);
                 };
             }
+            if (receiver instanceof EntryFactory) {
+                if (name.equals("of")) {
+                    throw new IllegalArgumentException(
+                            "Entry.of is direct-call-only; invoke Entry.of(key, value) directly "
+                                    + "or wrap that call in an explicit lambda");
+                }
+                throw new IllegalArgumentException("unknown Entry member " + name);
+            }
             if (receiver instanceof ChannelFactory factory) {
                 if (!name.equals("new")) {
                     throw new IllegalArgumentException("unknown Channel factory member " + name);
@@ -8313,6 +8563,14 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
+            if (receiver instanceof OresEntry entry) {
+                return switch (name) {
+                    case "key" -> entry.key();
+                    case "value" -> entry.value();
+                    default -> throw new IllegalArgumentException(
+                            "unknown Entry member " + name);
+                };
+            }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) {
                     OwnedField ownedField = object.owner.findField(
@@ -8337,6 +8595,17 @@ public final class OresEvalRootNode extends RootNode {
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
+            }
+            if (receiver instanceof OresTuple tuple) {
+                return switch (name) {
+                    case "size" -> (long) tuple.size();
+                    case "get" -> (Invokable) args -> {
+                        requireOne(args, "Tuple.get");
+                        return tuple.get(checkedSequenceIndex(args.getFirst(), tuple.size()));
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "Tuple is immutable and has no member '" + name + "'");
+                };
             }
             if (receiver instanceof List<?> rawList) {
                 return switch (name) {
@@ -8439,8 +8708,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof CompletionStage<?> stage) {
                 return OresFuture.from(stage);
             }
-            if (value instanceof Number || value instanceof Boolean || value instanceof String
-                    || value instanceof Character || value instanceof OresFuture<?>) {
+            if (isTrustedHostScalarResult(value) || value instanceof OresFuture<?>) {
                 return value;
             }
             return new HostObjectFacade(value);
@@ -9328,7 +9596,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Iterable<?> iterableValues(Object value, Env env) {
-            if (value instanceof List<?> list) return list;
+            if (value instanceof List<?> list) {
+                requireTrustedTraversalCollectionCarrier(value, "synchronous iteration");
+                return list;
+            }
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof GeneratorRuntime.Generator<?> generator) return generator;
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) {
@@ -9489,7 +9760,7 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (pattern instanceof Ast.TuplePattern tuplePattern) {
-                if (!(value instanceof List<?> tuple)
+                if (!(value instanceof OresTuple tuple)
                         || tuple.size() != tuplePattern.elements().size()) return false;
                 for (int i = 0; i < tuplePattern.elements().size(); i++) {
                     if (!patternMatches(
@@ -9679,7 +9950,7 @@ public final class OresEvalRootNode extends RootNode {
                 return false;
             }
             if (target.isTupleType()) {
-                if (!(value instanceof List<?> tuple)
+                if (!(value instanceof OresTuple tuple)
                         || tuple.size() != target.arguments().size()) return false;
                 for (int i = 0; i < tuple.size(); i++) {
                     if (!oresTypeMatches(tuple.get(i), target.arguments().get(i))) {
@@ -9705,8 +9976,16 @@ public final class OresEvalRootNode extends RootNode {
                 return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
+            if (name.equals("Entry")) {
+                if (!(value instanceof OresEntry entry)
+                        || target.arguments().size() != 2) return false;
+                return oresTypeMatches(entry.key(), target.arguments().get(0))
+                        && oresTypeMatches(entry.value(), target.arguments().get(1));
+            }
             if (name.equals("Result")) return value instanceof ResultValue;
-            if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
+            if (name.equals("Array") || name.equals("List")) {
+                return value instanceof List<?> && !(value instanceof OresTuple);
+            }
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
@@ -9734,6 +10013,8 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
+            if (value instanceof OresEntry) return "Entry";
+            if (value instanceof OresTuple) return "Tuple";
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
@@ -9835,107 +10116,246 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
-        private boolean valueEquals(Object left, Object right) {
-            return valueEquals(left, right, new IdentityHashMap<>());
+        // Guest equality is graph-aware, not Java host Object.equals.
+        // An explicit worklist avoids JVM stack overflow on deeply nested
+        // acyclic values. The bounded budget also prevents cyclic/aliased
+        // products from consuming unbounded CPU or comparison memory.
+        private static final int MAX_GUEST_VALUE_EQUALITY_WORK = 65_536;
+
+        private sealed interface ValueEqualityStep
+                permits ValueEqualityPair, SequenceEqualityFrame, MapEqualityFrame { }
+
+        private record ValueEqualityPair(Object left, Object right)
+                implements ValueEqualityStep { }
+
+        private record SequenceEqualityFrame(Object left, Object right, int index, int size)
+                implements ValueEqualityStep { }
+
+        private record MapEqualityFrame(
+                java.util.Iterator<? extends Map.Entry<?, ?>> leftIterator,
+                Map<?, ?> rightFields) implements ValueEqualityStep { }
+
+        private static void enqueueValueEqualityStep(
+                ArrayDeque<ValueEqualityStep> pending, ValueEqualityStep step) {
+            if (pending.size() >= MAX_GUEST_VALUE_EQUALITY_WORK) {
+                throw new IllegalArgumentException(
+                        "guest equality graph exceeds comparison work limit");
+            }
+            pending.addLast(step);
         }
 
-        private boolean valueEquals(
-                Object left,
-                Object right,
-                IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
-            if (left == right) return true;
-            if (left == null || right == null) return false;
+        private static void enqueueValueEquality(
+                ArrayDeque<ValueEqualityStep> pending, Object left, Object right) {
+            enqueueValueEqualityStep(pending, new ValueEqualityPair(left, right));
+        }
 
-            if (left instanceof dev.oreslang.runtime.OresSymbol
-                    || right instanceof dev.oreslang.runtime.OresSymbol) {
-                return left instanceof dev.oreslang.runtime.OresSymbol
-                        && right instanceof dev.oreslang.runtime.OresSymbol
-                        && left.equals(right);
-            }
-            if (left instanceof Number a && right instanceof Number b) {
-                return numericValueEquals(a, b);
-            }
-            if (left instanceof Complex || right instanceof Complex) {
-                try {
-                    Complex a = asComplex(left);
-                    Complex b = asComplex(right);
-                    return a.real == b.real && a.imaginary == b.imaginary;
-                } catch (IllegalArgumentException ignored) {
+        private boolean valueEquals(Object left, Object right) {
+            IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen =
+                    new IdentityHashMap<>();
+            ArrayDeque<ValueEqualityStep> pending = new ArrayDeque<>();
+            enqueueValueEquality(pending, left, right);
+            int comparisons = 0;
+
+            while (!pending.isEmpty()) {
+                if (++comparisons > MAX_GUEST_VALUE_EQUALITY_WORK) {
+                    throw new IllegalArgumentException(
+                            "guest equality graph exceeds comparison work limit");
+                }
+                ValueEqualityStep next = pending.removeLast();
+                if (next instanceof SequenceEqualityFrame sequence) {
+                    if (sequence.index() < sequence.size()) {
+                        // Delay access to later slots until earlier comparisons
+                        // succeed; host List.get() must not run out of order.
+                        enqueueValueEqualityStep(pending, new SequenceEqualityFrame(
+                                sequence.left(), sequence.right(),
+                                sequence.index() + 1, sequence.size()));
+                        enqueueValueEquality(
+                                pending,
+                                sequenceElement(sequence.left(), sequence.index()),
+                                sequenceElement(sequence.right(), sequence.index()));
+                    }
+                    continue;
+                }
+                if (next instanceof MapEqualityFrame fields) {
+                    if (fields.leftIterator().hasNext()) {
+                        Map.Entry<?, ?> field = fields.leftIterator().next();
+                        Object key = field.getKey();
+                        // Structural record keys are named String fields; a
+                        // foreign Map key may have hostile hashCode/equals.
+                        if (!(key instanceof String)) {
+                            throw new IllegalArgumentException(
+                                    "guest structural equality requires string field names");
+                        }
+                        if (!fields.rightFields().containsKey(key)) return false;
+                        enqueueValueEqualityStep(pending, fields);
+                        enqueueValueEquality(
+                                pending, field.getValue(), fields.rightFields().get(key));
+                    }
+                    continue;
+                }
+                ValueEqualityPair pair = (ValueEqualityPair) next;
+                Object a = pair.left();
+                Object b = pair.right();
+                if (a == b) continue;
+                if (a == null || b == null) return false;
+
+                if (a instanceof dev.oreslang.runtime.OresSymbol
+                        || b instanceof dev.oreslang.runtime.OresSymbol) {
+                    if (!(a instanceof dev.oreslang.runtime.OresSymbol)
+                            || !(b instanceof dev.oreslang.runtime.OresSymbol)
+                            || !a.equals(b)) return false;
+                    continue;
+                }
+                if (a instanceof Number leftNumber && b instanceof Number rightNumber) {
+                    if (!isTrustedGuestNumber(leftNumber)
+                            || !isTrustedGuestNumber(rightNumber)
+                            || !numericValueEquals(leftNumber, rightNumber)) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (a instanceof Complex || b instanceof Complex) {
+                    if ((a instanceof Number leftNumber && !isTrustedGuestNumber(leftNumber))
+                            || (b instanceof Number rightNumber && !isTrustedGuestNumber(rightNumber))) {
+                        return false;
+                    }
+                    try {
+                        Complex leftComplex = asComplex(a);
+                        Complex rightComplex = asComplex(b);
+                        if (leftComplex.real != rightComplex.real
+                                || leftComplex.imaginary != rightComplex.imaginary) {
+                            return false;
+                        }
+                    } catch (IllegalArgumentException ignored) {
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (a instanceof OresEntry || b instanceof OresEntry) {
+                    if (!(a instanceof OresEntry leftEntry)
+                            || !(b instanceof OresEntry rightEntry)) return false;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    // LIFO: compare key before value, like the recursive walker.
+                    enqueueValueEquality(pending, leftEntry.value(), rightEntry.value());
+                    enqueueValueEquality(pending, leftEntry.key(), rightEntry.key());
+                    continue;
+                }
+
+                // Class/actor instances have identity equality by default.
+                if (a instanceof OresObject || b instanceof OresObject) return false;
+
+                if (a instanceof ActorRuntime.ActorId || b instanceof ActorRuntime.ActorId) {
+                    if (!(a instanceof ActorRuntime.ActorId)
+                            || !(b instanceof ActorRuntime.ActorId)
+                            || !a.equals(b)) return false;
+                    continue;
+                }
+                if (a instanceof ActorRuntime.ActorRef<?>
+                        || b instanceof ActorRuntime.ActorRef<?>) {
+                    if (!(a instanceof ActorRuntime.ActorRef<?> leftRef)
+                            || !(b instanceof ActorRuntime.ActorRef<?> rightRef)
+                            || leftRef.kind() != rightRef.kind()
+                            || !leftRef.id().equals(rightRef.id())) return false;
+                    continue;
+                }
+
+                if (a instanceof OptionValue || b instanceof OptionValue) {
+                    if (!(a instanceof OptionValue leftOption)
+                            || !(b instanceof OptionValue rightOption)
+                            || leftOption.present() != rightOption.present()) return false;
+                    if (!leftOption.present()) continue;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    enqueueValueEquality(pending, leftOption.value(), rightOption.value());
+                    continue;
+                }
+
+                if (a instanceof ResultValue || b instanceof ResultValue) {
+                    if (!(a instanceof ResultValue leftResult)
+                            || !(b instanceof ResultValue rightResult)
+                            || leftResult.ok() != rightResult.ok()) return false;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    enqueueValueEquality(pending, leftResult.value(), rightResult.value());
+                    continue;
+                }
+
+                if (a instanceof GeneratorRuntime.Step<?>
+                        || b instanceof GeneratorRuntime.Step<?>) {
+                    if (!(a instanceof GeneratorRuntime.Step<?> leftStep)
+                            || !(b instanceof GeneratorRuntime.Step<?> rightStep)
+                            || leftStep.done() != rightStep.done()) return false;
+                    if (leftStep.done()) continue;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    enqueueValueEquality(pending, leftStep.value(), rightStep.value());
+                    continue;
+                }
+
+                // Arbitrary host Map implementations are opaque. Never call
+                // their size(), entrySet(), containsKey() or get() implicitly.
+                // A tuple is a nominal product, never an Array/List even
+                // when the elements and arity happen to agree.
+                if ((a instanceof OresTuple) != (b instanceof OresTuple)) {
                     return false;
                 }
-            }
 
-            // Class/actor instances have identity equality by default.
-            if (left instanceof OresObject || right instanceof OresObject) return false;
-
-            if (left instanceof ActorRuntime.ActorId || right instanceof ActorRuntime.ActorId) {
-                return left instanceof ActorRuntime.ActorId
-                        && right instanceof ActorRuntime.ActorId
-                        && left.equals(right);
-            }
-            if (left instanceof ActorRuntime.ActorRef<?> || right instanceof ActorRuntime.ActorRef<?>) {
-                return left instanceof ActorRuntime.ActorRef<?> a
-                        && right instanceof ActorRuntime.ActorRef<?> b
-                        && a.kind() == b.kind()
-                        && a.id().equals(b.id());
-            }
-
-            if (left instanceof OptionValue || right instanceof OptionValue) {
-                if (!(left instanceof OptionValue a) || !(right instanceof OptionValue b)) return false;
-                if (a.present() != b.present()) return false;
-                if (!a.present()) return true;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                return valueEquals(a.value(), b.value(), seen);
-            }
-
-            if (left instanceof ResultValue || right instanceof ResultValue) {
-                if (!(left instanceof ResultValue a) || !(right instanceof ResultValue b)) return false;
-                if (a.ok() != b.ok()) return false;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                return valueEquals(a.value(), b.value(), seen);
-            }
-
-            if (left instanceof GeneratorRuntime.Step<?> || right instanceof GeneratorRuntime.Step<?>) {
-                if (!(left instanceof GeneratorRuntime.Step<?> a)
-                        || !(right instanceof GeneratorRuntime.Step<?> b)) return false;
-                if (a.done() != b.done()) return false;
-                if (a.done()) return true;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                return valueEquals(a.value(), b.value(), seen);
-            }
-
-            Map<?, ?> leftFields = structuralFields(left);
-            Map<?, ?> rightFields = structuralFields(right);
-            if (leftFields != null || rightFields != null) {
-                if (leftFields == null || rightFields == null || leftFields.size() != rightFields.size()) return false;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                for (Map.Entry<?, ?> entry : leftFields.entrySet()) {
-                    Object key = entry.getKey();
-                    if (!rightFields.containsKey(key)) return false;
-                    if (!valueEquals(entry.getValue(), rightFields.get(key), seen)) return false;
+                Map<?, ?> leftFields = structuralFields(a);
+                Map<?, ?> rightFields = structuralFields(b);
+                if ((a instanceof Map<?, ?> && leftFields == null)
+                        || (b instanceof Map<?, ?> && rightFields == null)) return false;
+                if (leftFields != null || rightFields != null) {
+                    if (leftFields == null || rightFields == null
+                            || leftFields.size() != rightFields.size()) return false;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    if (leftFields.size() > MAX_GUEST_VALUE_EQUALITY_WORK) {
+                        throw new IllegalArgumentException(
+                                "guest equality graph exceeds comparison work limit");
+                    }
+                    enqueueValueEqualityStep(pending, new MapEqualityFrame(
+                            leftFields.entrySet().iterator(), rightFields));
+                    continue;
                 }
-                return true;
-            }
 
-            int leftSize = sequenceSize(left);
-            int rightSize = sequenceSize(right);
-            if (leftSize >= 0 || rightSize >= 0) {
-                if (leftSize < 0 || rightSize < 0 || leftSize != rightSize) return false;
-                if (comparisonPairSeen(left, right, seen)) return true;
-                for (int i = 0; i < leftSize; i++) {
-                    if (!valueEquals(sequenceElement(left, i), sequenceElement(right, i), seen)) return false;
+                // Reject subclassed/delegating host Lists before invoking
+                // their size()/get() virtual methods.
+                if ((a instanceof List<?> && !isTrustedGuestList(a))
+                        || (b instanceof List<?> && !isTrustedGuestList(b))) return false;
+                int leftSize = sequenceSize(a);
+                int rightSize = sequenceSize(b);
+                if (leftSize >= 0 || rightSize >= 0) {
+                    if (leftSize < 0 || rightSize < 0 || leftSize != rightSize) return false;
+                    if (comparisonPairSeen(a, b, seen)) continue;
+                    if (leftSize > MAX_GUEST_VALUE_EQUALITY_WORK) {
+                        throw new IllegalArgumentException(
+                                "guest equality graph exceeds comparison work limit");
+                    }
+                    enqueueValueEqualityStep(
+                            pending, new SequenceEqualityFrame(a, b, 0, leftSize));
+                    continue;
                 }
-                return true;
-            }
 
-            if (isScalarEqualityCarrier(left) && isScalarEqualityCarrier(right)) {
-                return Objects.equals(left, right);
+                if (isScalarEqualityCarrier(a) && isScalarEqualityCarrier(b)) {
+                    if (!Objects.equals(a, b)) return false;
+                    continue;
+                }
+                return false;
             }
+            return true;
+        }
 
-            return false;
+        private boolean isTrustedGuestNumber(Number value) {
+            Class<?> type = value.getClass();
+            return type == Byte.class
+                    || type == Short.class
+                    || type == Integer.class
+                    || type == Long.class
+                    || type == Float.class
+                    || type == Double.class
+                    || type == java.math.BigInteger.class
+                    || type == java.math.BigDecimal.class;
         }
 
         private boolean numericValueEquals(Number left, Number right) {
+            if (!isTrustedGuestNumber(left) || !isTrustedGuestNumber(right)) return false;
             if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal
                     || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger) {
                 try {
@@ -9980,13 +10400,42 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Map<?, ?> structuralFields(Object value) {
-            if (value instanceof Map<?, ?> map) return map;
+            // Only evaluator-owned records, ordinary concrete record payloads
+            // and actor-runtime-frozen maps may be traversed. In particular,
+            // a custom host Map must not execute callbacks from guest ==.
+            if (value instanceof ReadonlyRecordValue
+                    || value instanceof MutableStructValue
+                    || value instanceof ActorRuntime.FrozenGuestMap
+                    || (value != null && value.getClass() == LinkedHashMap.class)) {
+                return (Map<?, ?>) value;
+            }
             return null;
         }
 
+        private static final Set<Class<?>> TRUSTED_GUEST_LIST_CLASSES =
+                trustedGuestListClasses();
+
+        private static Set<Class<?>> trustedGuestListClasses() {
+            Set<Class<?>> classes = new java.util.HashSet<>();
+            classes.add(ArrayList.class);
+            classes.add(java.util.Arrays.asList(new Object[0]).getClass());
+            classes.add(List.of().getClass());
+            classes.add(List.of(1).getClass());
+            classes.add(List.of(1, 2, 3).getClass());
+            classes.add(java.util.Collections.emptyList().getClass());
+            classes.add(java.util.Collections.singletonList(1).getClass());
+            return Set.copyOf(classes);
+        }
+
+        private boolean isTrustedGuestList(Object value) {
+            return value instanceof OresTuple
+                    || (value != null
+                    && TRUSTED_GUEST_LIST_CLASSES.contains(value.getClass()));
+        }
+
         private int sequenceSize(Object value) {
-            if (value instanceof List<?> list) return list.size();
             if (value instanceof Object[] array) return array.length;
+            if (isTrustedGuestList(value)) return ((List<?>) value).size();
             return -1;
         }
 
@@ -10095,7 +10544,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (declared.isTupleType()) {
-                List<?> items = asSequence(value);
+                if (!(value instanceof OresTuple items)) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
                 if (items.size() != declared.arguments().size()) {
                     throw new IllegalArgumentException(callable + " returned " + items.size()
                             + " tuple element(s), expected " + declared.arguments().size());
@@ -10104,7 +10555,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (int i = 0; i < fixed.length; i++) {
                     fixed[i] = shapeReturnedValue(declared.arguments().get(i), fixed[i], callable + " tuple[" + i + "]", resolving);
                 }
-                return java.util.Arrays.asList(fixed);
+                return new OresTuple(java.util.Arrays.asList(fixed));
             }
 
             if (declared.isRecordType()) {
@@ -10115,7 +10566,30 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
 
+            if (declared.name().equals("Entry")) {
+                if (declared.inferArguments() || declared.arguments().size() != 2
+                        || !(value instanceof OresEntry entry)) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                Object key = shapeReturnedValue(
+                        declared.arguments().get(0),
+                        entry.key(),
+                        callable + ".key",
+                        resolving);
+                Object entryValue = shapeReturnedValue(
+                        declared.arguments().get(1),
+                        entry.value(),
+                        callable + ".value",
+                        resolving);
+                return key == entry.key() && entryValue == entry.value()
+                        ? entry
+                        : new OresEntry(key, entryValue);
+            }
+
             if (declared.name().equals("Array") || declared.name().equals("List")) {
+                if (value instanceof OresTuple) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
                 if (declared.arguments().size() != 1) return value;
                 List<?> items = asSequence(value);
                 ArrayList<Object> shaped = new ArrayList<>(items.size());
@@ -10216,6 +10690,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object destructureRestObject(Object value, Set<String> selectedMembers) {
             if (value instanceof Map<?, ?> map) {
+                requireTrustedTraversalCollectionCarrier(value, "object rest destructuring");
                 LinkedHashMap<String, Object> remainder = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (!(entry.getKey() instanceof String key)) {
@@ -10248,6 +10723,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object destructureMember(Object value, String name) {
             if (value instanceof Map<?, ?> map) {
+                requireTrustedTraversalCollectionCarrier(value, "object destructuring");
                 if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
                 Object member = map.get(name);
                 if (member == UNINITIALIZED_FIELD) {
@@ -10597,6 +11073,10 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresMutex.Guard<?> guard) return !guard.released();
             if (!seen.add(value)) return false;
 
+            if (value instanceof OresEntry entry) {
+                return containsLiveMutexGuard(entry.key(), seen)
+                        || containsLiveMutexGuard(entry.value(), seen);
+            }
             if (value instanceof OptionValue option) {
                 return option.present() && containsLiveMutexGuard(option.value(), seen);
             }
@@ -10619,14 +11099,17 @@ public final class OresEvalRootNode extends RootNode {
                 return false;
             }
             if (value instanceof List<?> list) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Object item : list) if (containsLiveMutexGuard(item, seen)) return true;
                 return false;
             }
             if (value instanceof Set<?> set) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Object item : set) if (containsLiveMutexGuard(item, seen)) return true;
                 return false;
             }
             if (value instanceof Map<?, ?> map) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (containsLiveMutexGuard(entry.getKey(), seen)
                             || containsLiveMutexGuard(entry.getValue(), seen)) return true;
@@ -10693,6 +11176,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (!seen.add(value)) return;
 
+            if (value instanceof OresEntry entry) {
+                releaseMutexGuardsInValue(
+                        entry.key(), failed, seen, releaseErrors);
+                releaseMutexGuardsInValue(
+                        entry.value(), failed, seen, releaseErrors);
+                return;
+            }
             if (value instanceof OptionValue option) {
                 if (option.present()) {
                     releaseMutexGuardsInValue(
@@ -10731,6 +11221,7 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (value instanceof List<?> list) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return;
                 for (Object item : list) {
                     releaseMutexGuardsInValue(
                             item, failed, seen, releaseErrors);
@@ -10738,6 +11229,7 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (value instanceof Set<?> set) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return;
                 for (Object item : set) {
                     releaseMutexGuardsInValue(
                             item, failed, seen, releaseErrors);
@@ -10745,6 +11237,7 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (value instanceof Map<?, ?> map) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     releaseMutexGuardsInValue(
                             entry.getKey(), failed, seen, releaseErrors);
@@ -10902,7 +11395,17 @@ public final class OresEvalRootNode extends RootNode {
                     write(TRUNCATED);
                     return;
                 }
+                if ((value instanceof Map<?, ?>
+                        || value instanceof List<?>
+                        || value instanceof Set<?>)
+                        && !isTrustedTraversalCollectionCarrier(value)) {
+                    write("<opaque-host-collection:"
+                            + value.getClass().getName()
+                            + ">");
+                    return;
+                }
                 if (!(value instanceof OresObject
+                        || value instanceof OresEntry
                         || value instanceof ReadonlyRecordValue
                         || value instanceof OptionValue
                         || value instanceof ResultValue
@@ -10918,7 +11421,13 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 try {
-                    if (value instanceof OresObject object) {
+                    if (value instanceof OresEntry entry) {
+                        write("Entry{key=");
+                        append(entry.key(), depth + 1);
+                        write(", value=");
+                        append(entry.value(), depth + 1);
+                        write("}");
+                    } else if (value instanceof OresObject object) {
                         write(object.klass.name());
                         write("{");
                         boolean first = true;
@@ -10999,9 +11508,28 @@ public final class OresEvalRootNode extends RootNode {
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
-    private record HostClassFacade(String className, Object symbol, boolean constructible) { }
-    private record HostObjectFacade(Object value) {
-        @Override public String toString() { return String.valueOf(value); }
+    record HostClassFacade(String className, Object symbol, boolean constructible) {
+        HostClassFacade {
+            Objects.requireNonNull(className, "host class name");
+            Objects.requireNonNull(symbol, "host class symbol");
+        }
+
+        @Override
+        public String toString() {
+            // Guest diagnostics must never invoke formatting on a host symbol.
+            return "<host-class:" + className + ">";
+        }
+    }
+    record HostObjectFacade(Object value) {
+        HostObjectFacade {
+            Objects.requireNonNull(value, "host object");
+        }
+
+        @Override
+        public String toString() {
+            // Diagnostic/display conversion must not execute arbitrary host code.
+            return "<host-object:" + value.getClass().getName() + ">";
+        }
     }
     private static final class ChannelFactory {
         private Object create(List<Object> args) {
@@ -11066,6 +11594,15 @@ public final class OresEvalRootNode extends RootNode {
             return value == null ? List.of() : List.of(value);
         }
     }
+    private enum EntryFactory {
+        INSTANCE;
+
+        private static Object create(List<Object> args) {
+            requireTwo(args, "Entry.of");
+            return new OresEntry(args.get(0), args.get(1));
+        }
+    }
+
     private enum FutureFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
 
@@ -11075,7 +11612,7 @@ public final class OresEvalRootNode extends RootNode {
             if (shared) {
                 context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex.new");
                 Object value = args.getFirst();
-                if (!runtimeSharedSafe(value, java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()))) {
+                if (!OresEvalRootNode.isRuntimeSharedSafe(value)) {
                     throw new IllegalArgumentException(
                             "SharedMutex<T> runtime admission rejected non-shared-safe state");
                 }
@@ -11085,11 +11622,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private static boolean runtimeSharedSafe(Object value, Set<Object> seen) {
-            if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
-                    || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
-                    || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
-                    || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
-                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
+            if (OresEvalRootNode.isTrustedAsyncScalar(value)
+                    || value instanceof ActorRuntime.ActorId
+                    || value instanceof ActorRuntime.ActorRef<?>) {
                 return true;
             }
 
@@ -11105,6 +11640,10 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!seen.add(value)) return true;
 
+            if (value instanceof OresEntry entry) {
+                return runtimeSharedSafe(entry.key(), seen)
+                        && runtimeSharedSafe(entry.value(), seen);
+            }
             if (value instanceof OptionValue option) {
                 return !option.present() || runtimeSharedSafe(option.value(), seen);
             }
@@ -11125,10 +11664,12 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (value instanceof List<?> list) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Object item : list) if (!runtimeSharedSafe(item, seen)) return false;
                 return true;
             }
             if (value instanceof Map<?, ?> map) {
+                if (!isTrustedTraversalCollectionCarrier(value)) return false;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     if (!runtimeSharedSafe(entry.getKey(), seen) || !runtimeSharedSafe(entry.getValue(), seen)) return false;
                 }
@@ -11341,7 +11882,10 @@ public final class OresEvalRootNode extends RootNode {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
     }
     private static List<Object> expandArgumentSequence(Object value,String name){
-        if(value instanceof List<?> list)return new ArrayList<>(list);
+        if(value instanceof List<?> list){
+            requireTrustedTraversalCollectionCarrier(value,name);
+            return new ArrayList<>(list);
+        }
         if(value instanceof Object[] array)return new ArrayList<>(java.util.Arrays.asList(array));
         throw new IllegalArgumentException(name+" requires an array/list/tuple value");
     }

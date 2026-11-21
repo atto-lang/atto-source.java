@@ -195,6 +195,60 @@ final class MixedSourceInteropTest {
     }
 
     @Test
+    void javaToOresHostValuesAreOpaqueInGuestDiagnosticsAndRoundTripIdentity() throws Exception {
+        Path source = temp.resolve("HostBoundary.java");
+        Files.writeString(source, """
+                import java.util.ArrayList;
+
+                public final class HostBoundary {
+                  static final class HostileList extends ArrayList<String> {
+                    static int callbacks;
+
+                    @Override
+                    public String toString() {
+                      callbacks++;
+                      throw new AssertionError("host toString invoked");
+                    }
+                  }
+
+                  public static void main(String[] args) {
+                    var value = new HostileList();
+                    value.add("java");
+
+                    Object returned = Ores.echo(value);
+                    if (returned != value) {
+                      throw new AssertionError("Java object identity was not preserved");
+                    }
+                    if (HostileList.callbacks != 0) {
+                      throw new AssertionError("host callback count=" + HostileList.callbacks);
+                    }
+                  }
+
+                  ores {
+                    import class ArrayList as JArrayList from "java:java.util.ArrayList";
+
+                    pub fnc echo(JArrayList value): JArrayList {
+                      stdio.println(value);
+                      return value;
+                    }
+                  }
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        assertDoesNotThrow(() -> LinkedProgramRunner.run(
+                source,
+                trustedMixedPolicy(),
+                ExecutionProfile.serverJit(),
+                Set.of("java.util.ArrayList"),
+                out,
+                new ByteArrayOutputStream()));
+
+        String output = out.toString(StandardCharsets.UTF_8);
+        assertTrue(output.contains("<host-object:"), output);
+    }
+
+    @Test
     void javaBridgeTreatsBoolAndBooleanReturnsAsTheSamePrimitive() throws Exception {
         Path source = temp.resolve("BooleanBridge.java");
         Files.writeString(source, """
