@@ -52,7 +52,21 @@ public final class OresTaskScope implements AutoCloseable {
     public interface CompilerLoanRetirement {
         void bindScope(CompilerScopeEpoch scopeEpoch);
         void bindChild(CompilerScopeEpoch scopeEpoch, OresTask<?> child);
-        void retireNeverStarted(CompilerScopeEpoch scopeEpoch);
+
+        /**
+         * No provisional runtime child was ever created. This edge is valid
+         * only before bindChild and carries no authority for a child that
+         * already has an exact runtime identity.
+         */
+        void retireBeforeChildBound(CompilerScopeEpoch scopeEpoch);
+
+        /**
+         * An exact provisional child exists, but executable scheduler
+         * admission never happened. The exact child identity is mandatory.
+         */
+        void retireNeverStarted(
+                CompilerScopeEpoch scopeEpoch, OresTask<?> child);
+
         void retireAfterPhysicalQuiescence(
                 CompilerScopeEpoch scopeEpoch, OresTask<?> child);
     }
@@ -62,8 +76,10 @@ public final class OresTaskScope implements AutoCloseable {
                 @Override public void bindScope(CompilerScopeEpoch scopeEpoch) { }
                 @Override public void bindChild(
                         CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
-                @Override public void retireNeverStarted(
+                @Override public void retireBeforeChildBound(
                         CompilerScopeEpoch scopeEpoch) { }
+                @Override public void retireNeverStarted(
+                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
                 @Override public void retireAfterPhysicalQuiescence(
                         CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
             };
@@ -250,10 +266,12 @@ public final class OresTaskScope implements AutoCloseable {
         OresFuture<Void> pendingFence = null;
         OresTask<T> pendingOwner = null;
         OwnershipSlot pendingSlot = null;
+        boolean loanChildBound = false;
         try {
             pendingFence = new OresFuture<>();
             pendingOwner = OresTask.provisional(pendingFence);
             loanRetirement.bindChild(compilerScopeEpoch, pendingOwner);
+            loanChildBound = true;
             pendingSlot = new OwnershipSlot();
             pendingSlot.task = pendingOwner;
             synchronized (treeAdmissionGate) {
@@ -280,7 +298,16 @@ public final class OresTaskScope implements AutoCloseable {
             }
             if (releaseFailure == null) {
                 try {
-                    loanRetirement.retireNeverStarted(compilerScopeEpoch);
+                    if (!loanChildBound) {
+                        loanRetirement.retireBeforeChildBound(
+                                compilerScopeEpoch);
+                    } else {
+                        loanRetirement.retireNeverStarted(
+                                compilerScopeEpoch,
+                                Objects.requireNonNull(
+                                        pendingOwner,
+                                        "bound provisional Task child"));
+                    }
                 } catch (RuntimeException | Error failure) {
                     releaseFailure = failure;
                     poisonCompilerLoan(loanRetirement, failure);
@@ -383,7 +410,8 @@ public final class OresTaskScope implements AutoCloseable {
             }
             if (releaseFailure == null) {
                 try {
-                    loanRetirement.retireNeverStarted(compilerScopeEpoch);
+                    loanRetirement.retireNeverStarted(
+                            compilerScopeEpoch, ownedChild);
                 } catch (RuntimeException | Error failure) {
                     releaseFailure = failure;
                     poisonCompilerLoan(loanRetirement, failure);

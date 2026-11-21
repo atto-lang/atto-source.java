@@ -29,9 +29,18 @@ final class OresTaskScopeAuthorityPoisonTest {
         }
 
         @Override
-        public void retireNeverStarted(
+        public void retireBeforeChildBound(
                 OresTaskScope.CompilerScopeEpoch value) {
             assertSame(epoch, value);
+            assertNull(child);
+            if (retireFailure != null) throw retireFailure;
+        }
+
+        @Override
+        public void retireNeverStarted(
+                OresTaskScope.CompilerScopeEpoch value, OresTask<?> task) {
+            assertSame(epoch, value);
+            assertSame(child, task);
             if (retireFailure != null) throw retireFailure;
         }
 

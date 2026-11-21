@@ -61,12 +61,26 @@ public final class TaskLoanAdmission
     }
 
     @Override
-    public synchronized void retireNeverStarted(
+    public synchronized void retireBeforeChildBound(
             OresTaskScope.CompilerScopeEpoch scopeEpoch) {
         requireScope(scopeEpoch);
-        if (state != State.SCOPE_BOUND && state != State.CHILD_BOUND) {
+        if (state != State.SCOPE_BOUND || runtimeChild != null) {
             throw new IllegalStateException(
-                    "never-started Task loan retirement is not valid in current state");
+                    "pre-child Task loan retirement requires scope-only binding");
+        }
+        verifier.retireNeverStarted(ticket);
+        state = State.RETIRED;
+    }
+
+    @Override
+    public synchronized void retireNeverStarted(
+            OresTaskScope.CompilerScopeEpoch scopeEpoch,
+            OresTask<?> child) {
+        requireScope(scopeEpoch);
+        Objects.requireNonNull(child, "runtime child");
+        if (state != State.CHILD_BOUND || runtimeChild != child) {
+            throw new IllegalArgumentException(
+                    "never-started Task loan retirement requires the exact bound child");
         }
         verifier.retireNeverStarted(ticket);
         state = State.RETIRED;

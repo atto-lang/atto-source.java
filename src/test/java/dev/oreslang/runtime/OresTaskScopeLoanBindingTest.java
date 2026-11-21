@@ -34,9 +34,21 @@ final class OresTaskScopeLoanBindingTest {
         }
 
         @Override
-        public synchronized void retireNeverStarted(
+        public synchronized void retireBeforeChildBound(
                 OresTaskScope.CompilerScopeEpoch epoch) {
             assertSame(scopeEpoch, epoch);
+            assertNull(child,
+                    "pre-child retirement is valid only before child binding");
+            assertEquals(0, physical.get());
+            neverStarted.incrementAndGet();
+        }
+
+        @Override
+        public synchronized void retireNeverStarted(
+                OresTaskScope.CompilerScopeEpoch epoch, OresTask<?> task) {
+            assertSame(scopeEpoch, epoch);
+            assertSame(child, task,
+                    "never-started retirement must carry the exact provisional child");
             assertEquals(0, physical.get());
             neverStarted.incrementAndGet();
         }
