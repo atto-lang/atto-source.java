@@ -177,6 +177,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         Objects.requireNonNull(registrar, "registrar");
         OresFuture<T> future = new OresFuture<>();
         AtomicBoolean callbackClaimed = new AtomicBoolean();
+        ExecutionCallbackContext callbackContext =
+                ExecutionCallbackContext.captureCurrent(
+                        ExecutionCallbackContext.Boundary.HOST_CALLBACK);
 
         Callback<T> completion = new Callback<>() {
             private boolean claim(String operation) {
@@ -195,30 +198,36 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
             @Override
             public void resolve(T value) {
-                if (!claim("resolve")) return;
-                if (!future.completeFromRuntime(value) && !future.isCancelled()) {
-                    throw new AlreadySettledException(
-                            "callback Future was already settled before resolve");
-                }
+                ExecutionCallbackContext.runCaptured(callbackContext, () -> {
+                    if (!claim("resolve")) return;
+                    if (!future.completeFromRuntime(value) && !future.isCancelled()) {
+                        throw new AlreadySettledException(
+                                "callback Future was already settled before resolve");
+                    }
+                });
             }
 
             @Override
             public void reject(Throwable failure) {
                 Objects.requireNonNull(failure, "failure");
-                if (!claim("reject")) return;
-                if (!future.failFromRuntime(failure) && !future.isCancelled()) {
-                    throw new AlreadySettledException(
-                            "callback Future was already settled before reject");
-                }
+                ExecutionCallbackContext.runCaptured(callbackContext, () -> {
+                    if (!claim("reject")) return;
+                    if (!future.failFromRuntime(failure) && !future.isCancelled()) {
+                        throw new AlreadySettledException(
+                                "callback Future was already settled before reject");
+                    }
+                });
             }
 
             @Override
             public void cancel() {
-                if (!claim("cancel")) return;
-                if (!future.cancel(false) && !future.isCancelled()) {
-                    throw new AlreadySettledException(
-                            "callback Future was already settled before cancel");
-                }
+                ExecutionCallbackContext.runCaptured(callbackContext, () -> {
+                    if (!claim("cancel")) return;
+                    if (!future.cancel(false) && !future.isCancelled()) {
+                        throw new AlreadySettledException(
+                                "callback Future was already settled before cancel");
+                    }
+                });
             }
 
             @Override
@@ -265,23 +274,27 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 ? () -> cancellable.cancel(true)
                 : () -> { };
         OresFuture<T> result = new OresFuture<>(cancelHook);
-        stage.whenComplete((value, failure) -> {
-            if (failure == null) {
-                result.completeFromRuntime(value);
-                return;
-            }
+        ExecutionCallbackContext callbackContext =
+                ExecutionCallbackContext.captureCurrent(
+                        ExecutionCallbackContext.Boundary.HOST_CALLBACK);
+        stage.whenComplete((value, failure) ->
+                ExecutionCallbackContext.runCaptured(callbackContext, () -> {
+                    if (failure == null) {
+                        result.completeFromRuntime(value);
+                        return;
+                    }
 
-            Throwable terminalFailure = unwrap(failure);
-            boolean cancelled = stage instanceof Future<?> hostFuture
-                    ? hostFuture.isCancelled()
-                    : terminalFailure instanceof CancellationException;
+                    Throwable terminalFailure = unwrap(failure);
+                    boolean cancelled = stage instanceof Future<?> hostFuture
+                            ? hostFuture.isCancelled()
+                            : terminalFailure instanceof CancellationException;
 
-            if (cancelled) {
-                result.cancel(false);
-            } else {
-                result.failFromRuntime(terminalFailure);
-            }
-        });
+                    if (cancelled) {
+                        result.cancel(false);
+                    } else {
+                        result.failFromRuntime(terminalFailure);
+                    }
+                }));
         return result;
     }
 
