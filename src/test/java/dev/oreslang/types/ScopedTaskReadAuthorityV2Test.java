@@ -127,8 +127,9 @@ final class ScopedTaskReadAuthorityV2Test {
                 () -> authority.require(program, task, epoch, 13, 6));
 
         OwnershipChecker.check(program);
-        assertThrows(IllegalArgumentException.class,
-                () -> authority.require(program, task, epoch, 13, 5));
+        assertThrows(IllegalStateException.class,
+                () -> authority.require(program, task, epoch, 13, 5),
+                "a superseding ownership pass revokes runtime admission state");
 
         assertThrows(IllegalArgumentException.class,
                 () -> new ScopedTaskReadAuthority.AllocationIdentity(
