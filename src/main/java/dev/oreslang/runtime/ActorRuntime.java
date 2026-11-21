@@ -2250,6 +2250,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorGroupId id;
         private final ActorId creator;
         private final ActorGroupPlacementPolicy placementPolicy;
+        /** Null for legacy unrestricted groups; no separate thread pool. */
+        private final ActorGroupTurnGate turnGate;
         private final int memberLimit;
         private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
@@ -2288,6 +2290,9 @@ public final class ActorRuntime implements AutoCloseable {
                     Math.min(
                             MAX_EVENT_TOPICS_PER_GROUP,
                             creatorPolicy.maxMailboxMessages()));
+            this.turnGate = placementPolicy.maxParallelTurns() == Integer.MAX_VALUE
+                    ? null : new ActorGroupTurnGate(
+                            placementPolicy.maxParallelTurns(), this.memberLimit);
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
             if (creator != null) members.add(creator);
         }
@@ -2332,7 +2337,19 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
             }
             requireActorLifecycleAuthority(worker, "manage an ActorGroup worker");
-            synchronized (authorityLock) {
+            ActorCell<?> candidate = actors.get(worker.id());
+            if (candidate == null) {
+                throw new IllegalStateException("cannot manage an unknown worker");
+            }
+            // ActorCell lifecycle -> group authority is the existing teardown
+            // lock order. Coordinate ownership with schedule() so an already
+            // queued turn cannot escape the newly imposed group limit.
+            synchronized (candidate.lifecycleLock) {
+                if (turnGate != null && candidate.scheduled.get()) {
+                    throw new IllegalStateException(
+                            "bounded ActorGroup cannot adopt a scheduled or active actor");
+                }
+                synchronized (authorityLock) {
                 requireOpen();
                 ActorCell<?> cell = actors.get(worker.id());
                 if (cell == null || cell.stopped.get() || stoppingWorkers.contains(worker.id())) {
@@ -2361,6 +2378,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cell.stopped.get()) {
                     managedWorkers.remove(worker.id(), worker);
                     throw new IllegalStateException("worker stopped during group admission");
+                }
                 }
             }
             return worker;
@@ -2406,6 +2424,12 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean releaseWorker(ActorRef<?> worker) {
             requireManager("release an ActorGroup worker");
             Objects.requireNonNull(worker, "worker");
+            // Dynamic ownership transfer of a queued/active gated turn needs
+            // a separate atomic migration protocol. Fail closed for now.
+            if (turnGate != null) {
+                throw new UnsupportedOperationException(
+                        "bounded ActorGroup worker transfer requires quiescent gate migration");
+            }
             if (!worker.ownedBy(ActorRuntime.this)) {
                 throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
             }
@@ -2780,6 +2804,31 @@ public final class ActorRuntime implements AutoCloseable {
                 managedWorkers.clear();
                 stoppingWorkers.clear();
             }
+            // Withdraw queued turns without parking a physical carrier.
+            // Callbacks can finalize actors; never invoke them under authorityLock.
+            // Failure must not short-circuit membership revocation, worker
+            // cancellation, event-bus cleanup or removal of this group.
+            Throwable gateCloseFailure = null;
+            if (turnGate != null) {
+                try {
+                    turnGate.close();
+                } catch (RuntimeException | Error failure) {
+                    gateCloseFailure = failure;
+                }
+            }
+            // Reconcile any cancelled waiting ticket whose observer failed
+            // before it cleared the actor's scheduled bit. Never withdraw a
+            // GRANTED turn here: that carrier still owns its physical lease.
+            for (ActorRef<?> worker : owned) {
+                ActorCell<?> cell = actors.get(worker.id());
+                if (cell == null) continue;
+                try {
+                    cell.reconcileCancelledGateTicketOnClose();
+                } catch (RuntimeException | Error failure) {
+                    if (gateCloseFailure == null) gateCloseFailure = failure;
+                    else if (gateCloseFailure != failure) gateCloseFailure.addSuppressed(failure);
+                }
+            }
             // Revoke every membership before asynchronous worker cleanup. A
             // room close frees membership quota without stopping unrelated
             // members or tearing down their other room subscriptions.
@@ -2843,6 +2892,13 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     actorGroups.remove(id, this);
                 }
+            }
+            if (gateCloseFailure != null) {
+                if (cancellationFailure != null && gateCloseFailure != cancellationFailure) {
+                    gateCloseFailure.addSuppressed(cancellationFailure);
+                }
+                if (gateCloseFailure instanceof Error fatal) throw fatal;
+                if (gateCloseFailure instanceof RuntimeException failure) throw failure;
             }
             if (cancellationFailure != null) throw cancellationFailure;
         }
@@ -6653,6 +6709,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorOutputStream<Object> outputStream;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
+        /** Waiting or granted group-turn ticket, never a worker thread. */
+        private volatile ActorGroupTurnGate.Ticket pendingTurnGateTicket;
         /** Per-dispatch identity, guarded by lifecycleLock. A stale queued
          * runnable can never consume a newer scheduled=false->true claim. */
         private Object scheduledDispatchToken;
@@ -7066,13 +7124,36 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /** Only a cancelled WAITING group ticket can be reconciled on close. */
+        private void reconcileCancelledGateTicketOnClose() {
+            ActorGroupTurnGate.Ticket ticket = pendingTurnGateTicket;
+            if (ticket == null || !ticket.isCancelled()) return;
+            cancelQueuedScheduleOnShutdown();
+            if (pendingTurnGateTicket == ticket) pendingTurnGateTicket = null;
+        }
+
         private void cancelQueuedScheduleOnShutdown() {
-            synchronized (lifecycleLock) {
-                if (scheduled.get() && !carrierActive) {
-                    scheduledDispatchToken = null;
-                    scheduled.set(false);
-                    if (stopped.get() && activeTurns == 0) finalizeStopLocked();
-                    lifecycleLock.notifyAll();
+            ActorGroupTurnGate.Ticket abandoned = null;
+            try {
+                synchronized (lifecycleLock) {
+                    if (scheduled.get() && !carrierActive) {
+                        scheduledDispatchToken = null;
+                        scheduled.set(false);
+                        abandoned = pendingTurnGateTicket;
+                        pendingTurnGateTicket = null;
+                        if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                }
+            } finally {
+                if (abandoned != null) {
+                    // shutdownNow may discard a GRANTED dispatch without ever
+                    // invoking its runnable. Withdraw WAITING tickets or
+                    // release abandoned GRANTED leases exactly once, outside
+                    // lifecycleLock, so teardown cannot leak physical permits.
+                    // A racing executor callback will observe an obsolete
+                    // dispatch identity and cannot execute guest actor code.
+                    if (!abandoned.cancelWaiting()) abandoned.release();
                 }
             }
         }
@@ -7185,9 +7266,96 @@ public final class ActorRuntime implements AutoCloseable {
                 scheduledDispatchToken = dispatchTicket;
                 scheduled.set(true);
             }
+
+            ActorGroupTurnGate gate = null;
+            ActorGroupId ownerId = managedByGroup.get();
+            if (ownerId != null) {
+                ActorGroup owner = actorGroups.get(ownerId);
+                if (owner != null) gate = owner.turnGate;
+                else {
+                    // Never bypass a vanished lifecycle owner's placement.
+                    synchronized (lifecycleLock) {
+                        if (scheduledDispatchToken == dispatchTicket) {
+                            scheduledDispatchToken = null;
+                            scheduled.set(false);
+                        }
+                    }
+                    stop();
+                    return;
+                }
+            }
+            try {
+                if (gate == null) {
+                    dispatchScheduledTurn(dispatchTicket, null);
+                } else {
+                    ActorGroupTurnGate.Ticket ticket;
+                    // Publish the reservation atomically with respect to the
+                    // actor's stop/finalization path. Without this lifecycle
+                    // lock, stop() can miss a WAITING ticket between gate
+                    // submission and pendingTurnGateTicket publication,
+                    // permanently stranding a scheduled but unstarted actor.
+                    // gate.submit() never runs guest code: its callback only
+                    // submits to the existing VM domain dispatcher.
+                    synchronized (lifecycleLock) {
+                        if (scheduledDispatchToken != dispatchTicket
+                                || stopped.get() || forceKillFenced || closed.get()) {
+                            if (scheduledDispatchToken == dispatchTicket) {
+                                scheduledDispatchToken = null;
+                                scheduled.set(false);
+                                if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                            }
+                            return;
+                        }
+                        ticket = gate.submit(
+                                granted -> dispatchScheduledTurn(dispatchTicket, granted),
+                                () -> {
+                                    cancelQueuedScheduleOnShutdown();
+                                    // The gate may close independently due to
+                                    // a downstream carrier failure. Clearing
+                                    // scheduled alone would leave a live actor
+                                    // whose queued mail can never execute.
+                                    if (!stopped.get()) stop();
+                                });
+                        pendingTurnGateTicket = ticket;
+                        if (ticket.isSettled()) pendingTurnGateTicket = null;
+                    }
+                    if (stopped.get()) ticket.cancelWaiting();
+                }
+            } catch (RejectedExecutionException rejected) {
+                synchronized (lifecycleLock) {
+                    if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
+                        scheduledDispatchToken = null;
+                        scheduled.set(false);
+                    }
+                }
+                stop();
+                if (!closed.get()) throw rejected;
+            }
+        }
+
+        /**
+         * Submit only to the actor's preexisting VM domain dispatcher.
+         * The gate lease is returned after the full physical TurnExecutor exit.
+         */
+        private void dispatchScheduledTurn(
+                Object dispatchTicket, ActorGroupTurnGate.Ticket lease) {
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
-                Runnable dispatch = () -> runBatch(dispatchTicket);
+                Runnable dispatch = () -> {
+                    try {
+                        runBatch(dispatchTicket);
+                    } finally {
+                        if (lease != null) {
+                            try {
+                                lease.release();
+                            } finally {
+                                if (pendingTurnGateTicket == lease) {
+                                    pendingTurnGateTicket = null;
+                                }
+                            }
+                        }
+                    }
+                };
                 if (dispatcher instanceof ActorAffinityDispatcher lanes) {
                     lanes.executeOnLane(dispatchLane, dispatch);
                 } else {
@@ -7200,8 +7368,15 @@ public final class ActorRuntime implements AutoCloseable {
                         scheduled.set(false);
                     }
                 }
+                // A promoted queued turn has no caller waiting inside
+                // schedule(); stop it here as well as the immediate-admission
+                // case, otherwise the actor remains alive without runnable
+                // work after the gate closes.
                 stop();
-                if (!closed.get()) throw rejected;
+                // Let ActorGroupTurnGate close all queued admissions and
+                // reclaim this grant. Releasing it here would promote the
+                // next waiter recursively into the same broken dispatcher.
+                throw rejected;
             }
         }
 
@@ -7597,6 +7772,10 @@ public final class ActorRuntime implements AutoCloseable {
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+            // A queued gate ticket has no OS worker to execute its no-op after
+            // cancellation. Withdraw it explicitly so finalization can settle.
+            ActorGroupTurnGate.Ticket pendingTicket = pendingTurnGateTicket;
+            if (pendingTicket != null) pendingTicket.cancelWaiting();
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.

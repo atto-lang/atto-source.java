@@ -66,23 +66,21 @@ public record ActorGroupPlacementPolicy(
     }
 
     /**
-     * Fail-closed runtime admission for the initial policy slice. In
-     * particular, declaring a limit without enforcing it is unsound: no
-     * restricted parallelism, group-specific locality or GPU device mapping
-     * can be accepted until the scheduler/broker proves enforcement.
+     * Admit bounded CPU-only physical turn limits now that ActorRuntime owns
+     * a nonparking gate for its managed workers. Physical CPU/NUMA locality and
+     * GPU execution still require separate, resource-admitted backends.
      *
-     * <p>Future revisions must replace these gates with real admission and
-     * keep group creation atomic with quota reservation.
+     * <p>Creating a policy never authorizes a device, changes actor ownership,
+     * or changes how ordinary cooperation-group membership is scheduled.
      */
     void requireSupported() {
         if (cpuAffinity != CpuAffinity.ANY) {
             throw new UnsupportedOperationException(
                     "ActorGroup CPU affinity requires group-aware scheduler placement");
         }
-        if (maxParallelTurns != Integer.MAX_VALUE) {
-            throw new UnsupportedOperationException(
-                    "ActorGroup maxParallelTurns requires nonblocking scheduler permits");
-        }
+        // A bounded physical-turn permit gate is admitted by ActorRuntime.
+        // It never creates a group executor and holds the lease until after
+        // the physical TurnExecutor/guest-context exit.
         if (accelerator != Accelerator.CPU_ONLY) {
             throw new UnsupportedOperationException(
                     "ActorGroup GPU placement requires a resource-admitted device broker");
