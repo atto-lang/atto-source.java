@@ -20,11 +20,19 @@ final class ActorRuntimeNativeControlCountersTest {
             long before = runtime.sharedMemoryBytes();
             assertEquals(0, runtime.nativeControlReservedBytes());
             assertThrows(IllegalStateException.class, runtime::nativeControlActorReservations);
+        assertThrows(IllegalStateException.class, runtime::nativeControlCompletedMessages);
+        assertThrows(IllegalStateException.class, () -> runtime.nativeControlSnapshot(new long[2]));
             runtime.enableNativeControlCounters();
             assertEquals(44L, runtime.nativeControlReservedBytes());
             assertEquals(before + 44L, runtime.sharedMemoryBytes(),
                     "native CONTROL root must count against the aggregate runtime budget");
             assertEquals(0L, runtime.nativeControlActorReservations());
+            assertEquals(0L, runtime.nativeControlCompletedMessages());
+            long[] snapshot = new long[2];
+            runtime.nativeControlSnapshot(snapshot);
+            assertArrayEquals(new long[] {0L, 0L}, snapshot);
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.nativeControlSnapshot(new long[1]));
             assertThrows(IllegalStateException.class, runtime::enableNativeControlCounters);
 
             ActorRuntime.ActorRef<String> first =
@@ -32,6 +40,17 @@ final class ActorRuntimeNativeControlCountersTest {
             assertEquals(1, runtime.actorCount());
             assertEquals(1L, runtime.nativeControlActorReservations(),
                     "native control reservation reflects actual actor admission");
+            first.send("ping");
+            long completionDeadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (System.nanoTime() < completionDeadline
+                    && runtime.nativeControlCompletedMessages() != 1L) {
+                Thread.sleep(1);
+            }
+            assertEquals(1L, runtime.nativeControlCompletedMessages(),
+                    "real actor mailbox completion must be published to native CONTROL bytes");
+            runtime.nativeControlSnapshot(snapshot);
+            assertArrayEquals(new long[] {1L, 1L}, snapshot,
+                    "one atomic native 128-bit snapshot records live actors and completions");
             runtime.stop(first);
             long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
             while (System.nanoTime() < deadline &&
@@ -42,6 +61,9 @@ final class ActorRuntimeNativeControlCountersTest {
             assertEquals(0, runtime.actorCount(), "actor STOP must physically unregister");
             assertEquals(0L, runtime.nativeControlActorReservations(),
                     "control native count is reclaimed only after actor retirement");
+            runtime.nativeControlSnapshot(snapshot);
+            assertArrayEquals(new long[] {0L, 1L}, snapshot,
+                    "STOP clears actor count without losing committed message completion");
         } finally {
             runtime.close();
         }
