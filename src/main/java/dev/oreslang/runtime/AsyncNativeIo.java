@@ -139,6 +139,7 @@ public final class AsyncNativeIo implements AutoCloseable {
                     pending.clear();
                 }
                 IllegalStateException releaseFailure = null;
+                Error fatalFailure = null;
                 for (AutoCloseable resource : closing) {
                     try {
                         resource.close();
@@ -152,6 +153,12 @@ public final class AsyncNativeIo implements AutoCloseable {
                                     "native I/O resources did not release after worker exit");
                         }
                         releaseFailure.addSuppressed(failure);
+                        if (failure instanceof VirtualMachineError
+                                || failure instanceof ThreadDeath
+                                || failure instanceof LinkageError) {
+                            if (fatalFailure == null) fatalFailure = (Error) failure;
+                            else if (fatalFailure != failure) fatalFailure.addSuppressed(failure);
+                        }
                     }
                 }
                 for (OresFuture<?> future : failing) {
@@ -166,7 +173,17 @@ public final class AsyncNativeIo implements AutoCloseable {
                                     "native I/O completion publication failed during physical shutdown");
                         }
                         releaseFailure.addSuppressed(failure);
+                        if (failure instanceof VirtualMachineError
+                                || failure instanceof ThreadDeath
+                                || failure instanceof LinkageError) {
+                            if (fatalFailure == null) fatalFailure = (Error) failure;
+                            else if (fatalFailure != failure) fatalFailure.addSuppressed(failure);
+                        }
                     }
+                }
+                if (fatalFailure != null) {
+                    if (releaseFailure != null) fatalFailure.addSuppressed(releaseFailure);
+                    throw fatalFailure;
                 }
                 if (releaseFailure != null) throw releaseFailure;
                 retired = true;
