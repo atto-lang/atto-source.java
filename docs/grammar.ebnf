@@ -17,8 +17,10 @@ import_names    = IDENT { "," IDENT } [ "as" IDENT ]
 top_level_item  = annotated_module_decl
                 | contract_decl
                 | actor_decl
+                | declared_actor_decl
                 | actor_callable_decl
                 | external_actor_method_decl
+                | actor_state_attachment_decl
                 | callable_decl
                 | class_decl
                 | interface_decl
@@ -61,17 +63,35 @@ actor_callable_decl
    execution. Canonical receiver-first and legacy name-first spellings have
    the same AST identity. Neither grants runtime receiver authority. *)
 external_actor_method_decl
-                = "define" visibility "mtd"
+                = [ "define" ] visibility "mtd"
                   ( "(" type_ref IDENT ")" callable_name
                   | callable_name "(" type_ref IDENT ")" )
                   "(" [ param_list ] ")" [ (":" | "=>") type_ref ] block ;
 
-actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
+actor_decl      = [ "define" ] visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   actor_body ;
 actor_body      = "{" { actor_member } "}"
                 | { actor_member } "end" ;
+
+(* Declaration-only actor contract. No state, methods, instance or scheduler
+   exists until a manifest-pinned linker proves all external constituents.
+   Bodyless 'define actor Foo;' is invalid. *)
+declared_actor_decl
+                = ( "declare" visibility | visibility "declare" ) "actor"
+                  IDENT [ ( "implements" | "impl" ) type_ref { "," type_ref } ] ";" ;
+(* This is compiler-only actor-owned schema metadata, not a free runtime
+   state container. The v1 source-admission subset requires namespace-root
+   scope, one schema per nominal actor, 1..32 scalar int/bool literal fields,
+   and a closed, manifest-verified source set. Runtime remains fail closed. *)
+actor_state_attachment_decl
+                = "define" "state" "on" "actor" IDENT "as" "{"
+                  attached_state_field { ";" attached_state_field }
+                  [ ";" ] "}" [ ";" ] ;
+attached_state_field
+                = ( "let" | "val" ) type_ref IDENT ( ":" | "=" ) expression ;
+
 actor_member    = field_decl
                 | final_actor_field_decl
                 | actor_method_decl

@@ -162,6 +162,18 @@ public final class TypeChecker {
         ActorReceiverBinder.bind(program);
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.DeclaredActorDecl actor) {
+                    throw new IllegalArgumentException(
+                            "DECLARED_ACTOR_LINKING_UNSUPPORTED: '" + actor.name()
+                                    + "' is a nominal declaration only; contract witnesses, "
+                                    + "typed receiver dispatch and state ownership remain unverified");
+                }
+                if (declaration instanceof Ast.ActorStateAttachmentDecl state) {
+                    throw new IllegalArgumentException(
+                            "ACTOR_STATE_ATTACHMENT_LOWERING_UNSUPPORTED: '" + state.actorName()
+                                    + "' is statically indexed but requires a verified actor-owned layout, "
+                                    + "one-shot state initialization, critical loans and generation-fenced runtime");
+                }
                 if (declaration instanceof Ast.ExternalActorMethodDecl method) {
                     throw new IllegalArgumentException(
                             "EXTERNAL_ACTOR_RECEIVER_LOWERING_UNSUPPORTED: '" + method.name()

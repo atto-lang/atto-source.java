@@ -39,7 +39,9 @@ public final class ActorReceiverBinder {
         public Binding {
             java.util.Objects.requireNonNull(method, "external actor method");
             String targetName;
-            if (nominalActor instanceof Ast.StandaloneActorDecl standalone) {
+            if (nominalActor instanceof Ast.DeclaredActorDecl declared) {
+                targetName = declared.name();
+            } else if (nominalActor instanceof Ast.StandaloneActorDecl standalone) {
                 targetName = standalone.name();
             } else if (nominalActor instanceof Ast.ClassDecl klass
                     && klass.actorKind() != Ast.ActorKind.NONE) {
@@ -64,7 +66,9 @@ public final class ActorReceiverBinder {
         boolean hasExternalActorSyntax = program.modules().stream().anyMatch(
                 module -> module.declarations().stream().anyMatch(
                         decl -> decl instanceof Ast.StandaloneActorDecl
-                                || decl instanceof Ast.ExternalActorMethodDecl));
+                                || decl instanceof Ast.DeclaredActorDecl
+                                || decl instanceof Ast.ExternalActorMethodDecl
+                                || decl instanceof Ast.ActorStateAttachmentDecl));
         // Do not perturb existing class-like actor programs before new
         // standalone/external receiver syntax actually appears.
         if (!hasExternalActorSyntax) return Map.of();
@@ -242,13 +246,25 @@ public final class ActorReceiverBinder {
         Map<String, Set<String>> embeddedInstanceSlots = new LinkedHashMap<>();
         Map<String, String> declaredTypes = new LinkedHashMap<>();
         Set<String> receiverAliases = new LinkedHashSet<>();
+        Map<String, Ast.ActorStateAttachmentDecl> attachedState = new LinkedHashMap<>();
 
         // Two passes: the actor may be declared after its external mtd body
         // in the same module; no order-dependent resolution is permitted.
         for (Ast.Decl declaration : module.declarations()) {
             String typeName = null;
             String category = null;
-            if (declaration instanceof Ast.StandaloneActorDecl actor) {
+            if (declaration instanceof Ast.ActorStateAttachmentDecl state) {
+                if (attachedState.putIfAbsent(state.actorName(), state) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate attached actor state schema for '" + module.name()
+                                    + "." + state.actorName() + "'");
+                }
+            }
+            if (declaration instanceof Ast.DeclaredActorDecl actor) {
+                typeName = actor.name();
+                category = "declaration-only actor";
+                nominalActors.put(typeName, actor);
+            } else if (declaration instanceof Ast.StandaloneActorDecl actor) {
                 typeName = actor.name();
                 category = "standalone actor";
                 if (!receiverAliases.add(actor.receiverName())) {
@@ -295,6 +311,27 @@ public final class ActorReceiverBinder {
             }
         }
 
+        // Prove attachment is a unique schema owned by a locally declared
+        // nominal actor, never a namespace-level mutable value or class field.
+        for (Ast.ActorStateAttachmentDecl state : attachedState.values()) {
+            Ast.Decl target = nominalActors.get(state.actorName());
+            if (target == null) {
+                throw new IllegalArgumentException(
+                        "attached actor state has no local nominal actor '"
+                                + module.name() + "." + state.actorName() + "'");
+            }
+            if (target instanceof Ast.ClassDecl klass) {
+                if (!klass.fields().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "attached actor state cannot mix with legacy actor fields");
+                }
+                if (!klass.genericParameters().isEmpty() || !klass.parents().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "attached actor state on generic/inherited actors needs checked layout coherence");
+                }
+            }
+        }
+
         for (Ast.Decl declaration : module.declarations()) {
             if (!(declaration instanceof Ast.ExternalActorMethodDecl method)) continue;
             Ast.Decl target = nominalActors.get(method.actorName());
@@ -306,9 +343,11 @@ public final class ActorReceiverBinder {
                                 + "actors in other modules cannot grant receiver authority");
             }
             Ast.Visibility actorVisibility =
-                    target instanceof Ast.StandaloneActorDecl standalone
-                            ? standalone.visibility()
-                            : ((Ast.ClassDecl) target).visibility();
+                    target instanceof Ast.DeclaredActorDecl declared
+                            ? declared.visibility()
+                            : target instanceof Ast.StandaloneActorDecl standalone
+                                    ? standalone.visibility()
+                                    : ((Ast.ClassDecl) target).visibility();
             if (method.visibility() == Ast.Visibility.PUBLIC
                     && actorVisibility != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException(

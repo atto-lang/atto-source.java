@@ -1,0 +1,5 @@
+namespace foo;
+
+// Pure type declaration; no actor instance or field storage is allocated here.
+// ActorXYZ witness linking is NOT yet proven by this static-only corpus.
+declare pub actor Foo implements ActorXYZ;

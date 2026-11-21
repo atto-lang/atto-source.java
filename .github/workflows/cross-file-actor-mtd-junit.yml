@@ -5,8 +5,12 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/types/ActorReceiverBinder.java'
       - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/ast/Ast.java'
+      - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/test/java/dev/oreslang/CrossFileActorReceiverBindingTest.java'
       - 'src/test/java/dev/oreslang/NamespaceActorReceiverSecurityTest.java'
+      - 'src/test/java/dev/oreslang/NamespaceActorStateAttachmentTest.java'
+      - 'contracts/namespace-actor-state-v1/**'
       - 'src/test/java/dev/oreslang/ActorReceiverBinderTest.java'
       - 'src/test/java/dev/oreslang/ExternalActorReceiverAstAdmissionTest.java'
       - 'contracts/cross-file-actor-mtd-v1/**'
@@ -42,7 +46,10 @@ jobs:
           printf 'RECEIPT source_tree=%s\n' "$(git rev-parse HEAD^{tree})"
           for file in \
               contracts/cross-file-actor-mtd-v1/file1.atto \
-              contracts/cross-file-actor-mtd-v1/file2.atto; do
+              contracts/cross-file-actor-mtd-v1/file2.atto \
+              contracts/namespace-actor-state-v1/actor.atto \
+              contracts/namespace-actor-state-v1/state.atto \
+              contracts/namespace-actor-state-v1/methods.atto; do
             test -s "$file"
             printf 'RECEIPT fixture_sha256='
             sha256sum "$file"
@@ -62,7 +69,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
@@ -71,6 +78,7 @@ jobs:
           for suite in \
               CrossFileActorReceiverBindingTest \
               NamespaceActorReceiverSecurityTest \
+              NamespaceActorStateAttachmentTest \
               ActorReceiverBinderTest \
               ExternalActorReceiverAstAdmissionTest; do
             report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"

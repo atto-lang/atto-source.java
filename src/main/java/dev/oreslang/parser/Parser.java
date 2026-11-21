@@ -135,6 +135,10 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            if (isDeclaredActorHead()) {
+                rootDeclarations.add(parseDeclaredActor(annotations, modifiers));
+                continue;
+            }
             if (isContextualIdentifier("declare")) {
                 rootForwards.add(parseForwardType(annotations, modifiers));
                 continue;
@@ -179,10 +183,21 @@ public final class Parser {
                 continue;
             }
 
+            // Canonical namespace attachment may omit 'define': pub mtd (Foo f) bar().
+            // It is still typed as a non-executable actor receiver, never a free fnc.
+            if (isExternalActorMethodHead()) {
+                rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
+                continue;
+            }
+
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 if (isExternalActorMethodHead()) {
                     rootDeclarations.add(parseExternalActorMethod(annotations, modifiers));
+                    continue;
+                }
+                if (isActorStateAttachmentHead()) {
+                    rootDeclarations.add(parseActorStateAttachment(annotations, modifiers));
                     continue;
                 }
                 if (isProtectedDeclarationHead()) {
@@ -396,6 +411,10 @@ public final class Parser {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
+        if (isDeclaredActorHead()) {
+            throw error(peek(),
+                    "declare actor must be a namespace-root declaration, not a named module member");
+        }
         if (isContextualIdentifier("declare")) {
             if (moduleForwards == null) throw error(peek(), "forward declaration outside module scope");
             moduleForwards.add(parseForwardType(annotations, modifiers));
@@ -439,6 +458,9 @@ public final class Parser {
             modifiers = mergeModifiers(modifiers, parseModifiers());
             if (isExternalActorMethodHead()) {
                 return parseExternalActorMethod(annotations, modifiers);
+            }
+            if (isActorStateAttachmentHead()) {
+                throw error(peek(), "define state on actor is a package namespace-root declaration, not a module member");
             }
             if (isProtectedDeclarationHead()) {
                 return parseProtectedDeclaration(modifiers, annotations);
@@ -641,6 +663,103 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
+    }
+
+    /**
+     * Source-only sealed state attachment. Only explicit namespace-root files
+     * can later contribute a state witness to a manifest-verified package.
+     * No user declaration is authorized to create a state loan or actor heap.
+     */
+    private boolean isActorStateAttachmentHead() {
+        return isContextualIdentifier("state")
+                && current + 2 < tokens.size()
+                && tokens.get(current + 1).lexeme().equals("on")
+                && tokens.get(current + 2).type() == ACTOR;
+    }
+
+    private Ast.ActorStateAttachmentDecl parseActorStateAttachment(
+            List<Ast.Annotation> annotations, Modifiers modifiers) {
+        validateNoModifiers(modifiers, "attached actor state declarations");
+        rejectDiscardedDeclarationAnnotations(annotations, "attached actor state declarations");
+        consumeContextualIdentifier("state", "expected 'state' for actor state attachment");
+        consumeContextualIdentifier("on", "expected 'on' after state");
+        consume(ACTOR, "expected 'actor' after state on");
+        String actorName = consumeTypeDeclarationName("expected nominal actor state owner");
+        consume(AS, "expected 'as' before actor state fields");
+        consume(LBRACE, "expected '{' for attached actor state schema");
+        List<Ast.AttachedActorStateField> fields = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            if (!match(LET, VAL)) {
+                throw error(peek(), "attached actor state fields require let or val (no public fields)");
+            }
+            Ast.BindingKind kind = previous().type() == LET
+                    ? Ast.BindingKind.LET : Ast.BindingKind.VAL;
+            Ast.TypeRef type = parseTypeRef();
+            String fieldName = consume(IDENT, "expected attached actor state field name").lexeme();
+            if (!match(COLON, EQUAL)) {
+                throw error(peek(), "attached actor state default requires ':' or '='");
+            }
+            Ast.Expr initializer = parseExpression();
+            if (!seen.add(fieldName)) {
+                throw error(previous(), "duplicate attached actor state field '" + fieldName + "'");
+            }
+            try {
+                fields.add(new Ast.AttachedActorStateField(fieldName, kind, type, initializer));
+            } catch (IllegalArgumentException invalid) {
+                throw error(previous(), invalid.getMessage());
+            }
+            if (fields.size() > 32) {
+                throw error(previous(), "attached actor state exceeds 32 fields");
+            }
+            if (!match(SEMICOLON) && !check(RBRACE)) {
+                throw error(peek(), "attached actor state fields require ';' separators");
+            }
+        }
+        consume(RBRACE, "expected '}' after attached actor state");
+        match(SEMICOLON);
+        if (fields.isEmpty()) throw error(previous(), "attached actor state requires at least one field");
+        return new Ast.ActorStateAttachmentDecl(actorName, fields);
+    }
+
+    /**
+     * Unlike a forward declaration of a type/trait/interface, declare actor
+     * introduces a nominal actor contract whose constituents must be supplied
+     * by an authenticated package source set. It is never an empty ClassDecl.
+     */
+    private boolean isDeclaredActorHead() {
+        if (!isContextualIdentifier("declare")) return false;
+        int after = current + 1;
+        if (after < tokens.size() &&
+                (tokens.get(after).type() == PUB || tokens.get(after).type() == PRIVATE)) {
+            after++;
+        }
+        return after < tokens.size() && tokens.get(after).type() == ACTOR;
+    }
+
+    private Ast.DeclaredActorDecl parseDeclaredActor(
+            List<Ast.Annotation> annotations, Modifiers before) {
+        consumeContextualIdentifier("declare", "expected 'declare' before actor");
+        Modifiers modifiers = mergeModifiers(before, parseModifiers());
+        validateOnlyVisibilityModifiers(modifiers, "declare actor");
+        rejectDiscardedDeclarationAnnotations(annotations, "declare actor");
+        consume(ACTOR, "expected actor after declare");
+        String name = consumeTypeDeclarationName("expected declared actor type");
+        if (check(LT)) {
+            throw error(peek(), "declare actor generics require a checked witness linker");
+        }
+        if (check(EXTENDS)) {
+            throw error(peek(), "declare actor inheritance requires hierarchy and slot coherence");
+        }
+        List<Ast.TypeRef> contracts = match(IMPLEMENTS, IMPL)
+                ? parseTypeRefList() : List.of();
+        consume(SEMICOLON, "declare actor must end with ';' and cannot contain a body");
+        try {
+            return new Ast.DeclaredActorDecl(
+                    name, modifiers.visibility, Ast.ActorKind.SHARED, contracts);
+        } catch (IllegalArgumentException invalid) {
+            throw error(previous(), invalid.getMessage());
+        }
     }
 
     /** Contextual mtd accepts both receiver-first and name-first declarations. */
@@ -1129,6 +1248,14 @@ public final class Parser {
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        // A bodyless declaration must not synthesize an executable ClassDecl.
+        // Use the distinct, source-set-bound nominal declaration instead.
+        if (match(SEMICOLON)) {
+            throw error(previous(),
+                    "bodyless actor types use 'declare actor " + name
+                            + "' (not 'define actor " + name + ";')");
+        }
 
         // Standalone actor declaration: retain the receiver-binding name in
         // its own AST node. Never synthesize an empty class, dispatch table,

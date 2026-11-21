@@ -1,0 +1,7 @@
+namespace foo;
+
+// Normal receiver attachment: the state is not a namespace global.
+// This body intentionally uses no yet-unlowered critical intrinsic.
+pub mtd (Foo f) bar(): void {
+    return;
+}
