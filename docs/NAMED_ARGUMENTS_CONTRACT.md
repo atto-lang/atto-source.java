@@ -1,6 +1,15 @@
 # Named value arguments and named type metadata: pre-1.0 contract
 
-Status: **proposed contract / implementation not yet enabled**. This is an audit artifact, not a claim that the compiler accepts named value arguments.
+Status (2026-10-19): **Java exact-required static-source slice implemented on the
+stacked named-call lowering branch; broader feature still incomplete**. The
+implemented slice covers statically resolved source functions, module-qualified
+functions, static class functions and instance methods. It evaluates the
+receiver first, then every source argument exactly once in lexical order, and
+only then permutes evaluated values into declaration/ABI order using an
+identity-bound compiler proof. Generic callable inference, imported/dynamic
+callables, function-valued fields, named constructors/actor spawn, optional
+arguments, defaults/rest and LLVM parity remain fail-closed or separately
+staged. This document therefore does not claim full named-argument support.
 
 ## Canonical delimiters and surfaces
 
@@ -35,12 +44,41 @@ A compiler binds a call against its *statically resolved callable declaration*:
 
 1. Select the callable by existing namespace/owner, name and arity rules. Class method overload selectors are **(kind, name, arity)** and must **not** incorporate labels or argument runtime types.
 2. Evaluate the callee/receiver (as applicable), then each argument expression **exactly once in lexical source order** into independently tracked temporaries. Preserve existing ownership, move/borrow, effect, suspension, cancellation and cleanup semantics in that order.
-3. Bind positional arguments to the leading unclaimed parameter slots. After the first named argument, all remaining arguments must be named.
+3. Bind positional arguments to the leading unclaimed parameter slots. After the first named argument, all remaining arguments must be named **except** for the narrowly defined final anonymous trailing-closure rule below.
 4. Bind each `name: expression` by exact, case-sensitive declared parameter name to one unclaimed slot.
 5. Reject unknown names, duplicates, any slot filled twice (whether positionally or by name), missing required slots, excess arguments and wrong argument types at compile time.
 6. After checking, pass the evaluated temporaries to the existing ABI in **declaration parameter order**. No runtime dictionary/hash map lookup, runtime label reflection, or parameter-name overload dispatch.
 
 An implementation MUST NOT re-sort the original expressions before evaluation: `foo(a: effect1(), bar: effect2())` evaluates `effect1` before `effect2`, even though `bar` is the first formal parameter. Ownership checking is performed on that same lexical evaluation order, with each argument's applicable formal parameter mode known from binding.
+
+## Final anonymous trailing-closure exception
+
+A call may contain **exactly one** unlabeled final anonymous closure after named value arguments:
+
+```oreslang
+compute(
+    region: motion,
+    writes: [Motion.x, Motion.y],
+    fnc(chunk) { update(chunk); }
+)
+```
+
+The accepted syntactic closure forms are `fnc(...) { ... }`, `|...| -> { ... }`,
+and their `nlex` variants. This exception is not general positional-after-named
+support. Before execution, static binding MUST prove that:
+
+- the closure is the final source call item;
+- exactly one formal slot remains unclaimed;
+- that slot is the declaration's final formal;
+- the final formal has a statically known callable type compatible with the closure;
+- there is no spread, omission, second trailing closure, dynamic/opaque callable,
+  label-only overload distinction, or runtime label lookup involved.
+
+The AST retains an explicit trailing-closure origin bit so later lowering cannot
+mistake this item for an ordinary positional argument. Its expression is still
+evaluated exactly once in lexical source order. If any proof is unavailable the
+call is rejected; callers can always use an explicit label such as
+`body: fnc(chunk) { ... }`.
 
 ## Scope and compatibility
 
@@ -102,11 +140,25 @@ The `IDENT ":"` recognition applies **only at the top level of a call argument i
 
 ## Implementation order
 
-1. Add first-class `CallArgument(label?, expression, spread, sourceSpan)` representation, preserving original order, to Java and LLVM frontends; ensure all walkers account for it.
-2. Add one shared semantic named-call binder **per backend** that emits a checked call plan/slot permutation before type/effect/ownership checks and lowering; do not reorder raw AST expressions.
-3. Integrate call plans in Java interpreter/suspendable execution and AOT; cover normal, tail, async, method, static and constructor calls.
-4. Integrate LLVM frontend/native lowering with the identical semantic tests.
-5. Update grammar, language docs and oreslang-format; keep format-only transformations semantics-preserving.
-6. Enable CI parity and negative tests on exact Git trees before treating the feature as supported.
+1. **Java parser/AST — implemented for the staged surface.** First-class
+   `CallArgument` items preserve lexical source order and trailing-closure origin.
+2. **Java required-arity binder/proof — implemented for the static-source slice.**
+   `NamedCallBindingPlan` computes source↔formal permutations without evaluating
+   expressions. Type checking attaches an identity-bound `NamedCallProof` only
+   after the source-ordered argument checks succeed.
+3. **Java ownership/capability/runtime — implemented for required static-source
+   functions and methods.** Ownership processes arguments in lexical source
+   order while keeping invocation loans live; synchronous and resumable runtime
+   paths evaluate into source-order temporaries and permute values only after
+   evaluation. Tree shaking preserves the exact proof-carrying call node and
+   refuses constant specialization through it.
+4. **Still required in Java:** generic named-call inference, imported/dynamic
+   callable labels, function-valued fields, named constructors/actor spawn,
+   optional/default/rest integration, explicit tail-call optimization coverage,
+   and exact-tree JDK/Graal/Native Image execution.
+5. **LLVM parity:** implement the same checked-plan contract in the LLVM
+   frontend/native lowering with identical source-order and negative tests.
+6. **Tooling/parity:** update formatter and remaining documentation, then require
+   exact-tree CI parity before treating the complete feature as supported.
 
 **No runtime named-argument reflection or nominal-type overload matching is required.** This is compile-time sugar with strict contract checking.
