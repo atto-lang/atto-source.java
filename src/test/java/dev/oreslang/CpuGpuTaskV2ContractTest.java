@@ -79,13 +79,15 @@ final class CpuGpuTaskV2ContractTest {
         assertTrue(error.getMessage().contains("no implicit CPU fallback"), error::getMessage);
     }
 
-    @Test void bareSynchronousCpuAndGpuRegionsRemainReservedUntilContinuationLoweringLands() {
-        for (String domain : new String[]{"cpu", "gpu"}) {
-            var error = assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse("pub fnc main():int{return " + domain + " { 42 };}"));
-            assertTrue(error.getMessage().contains("synchronous execution domain"), error::getMessage);
-            assertTrue(error.getMessage().contains("no implicit CPU fallback"), error::getMessage);
-        }
+    @Test void gpuSyncRemainsReservedWhileCpuScalarSubsetIsExplicitlyAdmitted() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
+                "pub fnc main():int{return cpu { 40 + 2 };}"));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("pub fnc main():int{return gpu { 42 };}"));
+        assertTrue(error.getMessage().contains("synchronous execution domain"),
+                error::getMessage);
+        assertTrue(error.getMessage().contains("no implicit CPU fallback"),
+                error::getMessage);
     }
 
     @Test void pinnedV2CorpusDoesNotDriftWhileBackendsAdvanceAtDifferentRates() throws Exception {

@@ -4308,6 +4308,14 @@ public final class TypeChecker {
             }
             return nominal;
         }
+        if (expr instanceof Ast.CpuScalarRegionExpr region) {
+            // A synchronous CPU region is int, not Future<int>, and is
+            // compiler-admitted only for the AST constructor's closed,
+            // side-effect-free scalar subset. Do not import Task authority.
+            Type actual = typeOf(region.value(), env, generics, self);
+            requireAssignable(actual, Primitive.INT, "closed cpu scalar region");
+            return Primitive.INT;
+        }
         if (expr instanceof Ast.TaskExpr task) {
             // A value-producing task needs contextual Future<T> information so
             // every return path can be checked without guessing a result type.

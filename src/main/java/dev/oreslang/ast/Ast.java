@@ -1039,7 +1039,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TaskExpr, CpuScalarRegionExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -1437,6 +1437,48 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+
+    /**
+     * Stage-v3 scalar-only synchronous CPU execution region.
+     *
+     * A separate typed node is essential: this is not an async Task and must
+     * never inherit task-capture submission, actor detachment or Future<T>.
+     * For now admit only closed signed-int scalar arithmetic. Captures, calls,
+     * actor state, suspension, dynamic dispatch and buffers require a later
+     * audited region/effect/loan lowering and must fail closed.
+     */
+    public record CpuScalarRegionExpr(Expr value) implements Expr {
+        public CpuScalarRegionExpr {
+            // Bound both recursion depth and total work at admission. An
+            // expression with shallow nesting can still contain many nodes.
+            if (!closedScalar(value, 0, new int[]{512})) {
+                throw new IllegalArgumentException(
+                        "cpu scalar execution region requires a bounded closed int literal or checked +, -, * arithmetic; "
+                                + "captures, calls, suspension and effects are not enabled");
+            }
+        }
+
+        private static boolean closedScalar(Expr expr, int depth, int[] remaining) {
+            if (depth > 64 || --remaining[0] < 0) return false;
+            if (expr instanceof LiteralExpr literal) {
+                // The front-end types only Long as Oreslang signed i64. Reject
+                // Java Integer AST payloads here rather than admitting a
+                // scalar region that fails the later type checker.
+                return literal.value() instanceof Long;
+            }
+            if (expr instanceof UnaryExpr unary) {
+                return ("-".equals(unary.operator()) || "+".equals(unary.operator()))
+                        && closedScalar(unary.operand(), depth + 1, remaining);
+            }
+            if (expr instanceof BinaryExpr binary) {
+                return ("+".equals(binary.operator()) || "-".equals(binary.operator())
+                        || "*".equals(binary.operator()))
+                        && closedScalar(binary.left(), depth + 1, remaining)
+                        && closedScalar(binary.right(), depth + 1, remaining);
+            }
+            return false;
+        }
+    }
 
     /** CPU/GPU task expression. Legacy nb spelling is normalized here for diagnostics/formatting only. */
     public enum ExecutionDomain { CPU, GPU }

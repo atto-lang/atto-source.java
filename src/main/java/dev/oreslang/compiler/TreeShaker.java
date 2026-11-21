@@ -500,7 +500,16 @@ public final class TreeShaker {
                 if (operand == UNKNOWN) return UNKNOWN;
                 if (unary.operator().equals("!") && operand instanceof Boolean value) return !value;
                 if (unary.operator().equals("+") && operand instanceof Number) return operand;
-                if (unary.operator().equals("-") && operand instanceof Long value) return -value;
+                if (unary.operator().equals("-") && operand instanceof Long value) {
+                    // Preserve checked signed-i64 semantics across build optimization:
+                    // plain Java unary negation wraps Long.MIN_VALUE silently.
+                    // Leave an overflowing expression intact for runtime checking.
+                    try {
+                        return Math.negateExact(value);
+                    } catch (ArithmeticException overflow) {
+                        return UNKNOWN;
+                    }
+                }
                 if (unary.operator().equals("-") && operand instanceof Double value) return -value;
                 return UNKNOWN;
             }
@@ -984,6 +993,13 @@ public final class TreeShaker {
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(rewriteExpression(awaited.expression(), module, locals));
             }
+            if (expression instanceof Ast.CpuScalarRegionExpr cpu) {
+                // Preserve the explicit execution boundary through shaking.
+                // Any rewrite that introduces an effect or capture is rejected
+                // by the constructor rather than losing the region silently.
+                return new Ast.CpuScalarRegionExpr(
+                        rewriteExpression(cpu.value(), module, locals));
+            }
             if (expression instanceof Ast.TaskExpr task) {
                 return new Ast.TaskExpr(
                         task.domain(),
@@ -1407,6 +1423,8 @@ public final class TreeShaker {
                 for (Ast.Expr argument : created.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.AwaitExpr awaited) {
                 scanExpression(module, awaited.expression(), locals);
+            } else if (expression instanceof Ast.CpuScalarRegionExpr cpu) {
+                scanExpression(module, cpu.value(), locals);
             } else if (expression instanceof Ast.TaskExpr task) {
                 // Task execution is deferred but its referenced code/types are
                 // still reachable from the enclosing executable.

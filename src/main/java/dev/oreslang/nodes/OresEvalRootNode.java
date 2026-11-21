@@ -7247,7 +7247,46 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        /**
+         * Physical host integer execution for stage-v3 closed CPU regions.
+         * Do not call the generic evaluator for the region body: that would
+         * silently admit new effectful expression kinds as the AST expands.
+         * Every admitted operator is checked and the tree has no captures.
+         */
+        private static long evalCpuScalarValue(Ast.Expr expr) {
+            if (expr instanceof Ast.LiteralExpr literal) {
+                Object value = literal.value();
+                // The scalar AST and type checker admit canonical signed i64
+                // Long values only. Never silently widen arbitrary host
+                // numeric payloads into the Oreslang execution domain.
+                if (value instanceof Long number) return number;
+            }
+            if (expr instanceof Ast.UnaryExpr unary) {
+                long operand = evalCpuScalarValue(unary.operand());
+                return switch (unary.operator()) {
+                    case "+" -> operand;
+                    case "-" -> Math.negateExact(operand);
+                    default -> throw new IllegalStateException("unadmitted cpu scalar unary operator");
+                };
+            }
+            if (expr instanceof Ast.BinaryExpr binary) {
+                long left = evalCpuScalarValue(binary.left());
+                long right = evalCpuScalarValue(binary.right());
+                return switch (binary.operator()) {
+                    case "+" -> Math.addExact(left, right);
+                    case "-" -> Math.subtractExact(left, right);
+                    case "*" -> Math.multiplyExact(left, right);
+                    default -> throw new IllegalStateException("unadmitted cpu scalar binary operator");
+                };
+            }
+            throw new IllegalStateException(
+                    "unadmitted cpu scalar region operation; no implicit host fallback");
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.CpuScalarRegionExpr cpu) {
+                return evalCpuScalarValue(cpu.value());
+            }
             if (expr instanceof Ast.MatchExpr valueMatch) {
                 Object subject = eval(valueMatch.subject(), env);
                 for (Ast.MatchValueArm arm : valueMatch.arms()) {

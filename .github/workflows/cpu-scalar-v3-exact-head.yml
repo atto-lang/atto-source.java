@@ -1,0 +1,104 @@
+name: CPU scalar v3 exact-head JVM verification
+
+on:
+  push:
+    branches:
+      - feat/cpu-scalar-region-source-v3-20261029
+
+# Source-repository-only hosted runner, no cross-org export or self-hosted access.
+permissions:
+  contents: read
+
+concurrency:
+  group: cpu-scalar-v3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compiler-and-guest:
+    if: >-
+      github.repository == 'ores-truffle-oreslang/oreslang-source.java' &&
+      github.repository_id == 1400792274 &&
+      github.ref == 'refs/heads/feat/cpu-scalar-region-source-v3-20261029'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout immutable exact push commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # repository-pinned
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prove exact source tree and repository identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+          EXPECTED_REPO_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'ores-truffle-oreslang/oreslang-source.java'
+          test "$EXPECTED_REPO_ID" = '1400792274'
+          test "$GITHUB_REF" = 'refs/heads/feat/cpu-scalar-region-source-v3-20261029'
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          git cat-file -e "${EXPECTED_HEAD}^{commit}"
+          printf 'SOURCE_REPO_ID=%s\nSOURCE_HEAD=%s\nSOURCE_TREE=%s\n' \
+            "$EXPECTED_REPO_ID" "$EXPECTED_HEAD" "$(git rev-parse 'HEAD^{tree}')"
+      - name: Install GraalVM 25.3 / Java 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # repository-pinned
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          # No cross-org credentials, Maven cache, or source export.
+      - name: Verify runtime and compiler toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          java --version
+          javac --version
+          native-image --version
+          mvn --version
+          test "$(javac -version 2>&1 | awk '{print $2}' | cut -d. -f1)" = 25
+      - name: Run actual CPU scalar and domain JUnit tests
+        run: >-
+          mvn -B -ntp -Dores.runtime.carriers=native
+          -Dtest=CpuScalarSyncV3Test,ExecutionDomainAdmissionTest,CpuGpuTaskV2ContractTest
+          test
+      - name: Verify three required JUnit XML reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A Maven exit code alone is not proof that the intended tests ran.
+          for expected in CpuScalarSyncV3Test:11 ExecutionDomainAdmissionTest:11 CpuGpuTaskV2ContractTest:7; do
+            suite="${expected%%:*}"
+            minimum="${expected#*:}"
+            report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"
+            [[ -s "$report" ]] || { echo "Missing JUnit report: $report" >&2; exit 1; }
+            header="$(grep -m1 '<testsuite' "$report")"
+            [[ -n "$header" ]] || { echo "Missing testsuite element: $report" >&2; exit 1; }
+            for attribute in tests errors failures skipped; do
+              if [[ "$header" =~ [[:space:]]${attribute}=\"([0-9]+)\" ]]; then
+                count="${BASH_REMATCH[1]}"
+              else
+                echo "Missing ${attribute} attribute in $report" >&2
+                exit 1
+              fi
+              case "$attribute" in
+                tests)
+                  tests_count="$count"
+                  (( 10#$count >= minimum )) || {
+                    echo "Too few tests in $suite: $count < $minimum" >&2
+                    exit 1
+                  }
+                  ;;
+                *) (( 10#$count == 0 )) || {
+                     echo "Nonzero $attribute in $suite: $count" >&2
+                     exit 1
+                   } ;;
+              esac
+            done
+            printf 'VERIFIED_JUNIT|%s|tests=%s|errors=0|failures=0|skipped=0\n' \
+              "$suite" "$tests_count"
+          done
+      - name: Run complete JVM verification
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify

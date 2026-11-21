@@ -22,6 +22,10 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // -1 outside the deliberately restricted synchronous CPU scalar parser.
+    // This counts parseUnary() frames, including nested parenthesized
+    // expressions, so independent lexical limits cannot accumulate.
+    private int scalarCpuRecursiveFrames = -1;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
     private int matchGuardStartToken = -1;
@@ -89,7 +93,13 @@ public final class Parser {
                         i > 0 && tokens.get(i - 1).type() == NB
                                 && i + 1 < tokens.size()
                                 && tokens.get(i + 1).type() == LBRACE;
-                if (!canonicalTask && !legacyNbTask) {
+                // Stage-v3 scalar CPU blocks have a dedicated *restricted*
+                // AST. GPU sync blocks remain reserved; arbitrary cpu blocks
+                // fail in the scalar AST constructor before type checking.
+                boolean scalarCpuRegion = token.type() == CPU
+                        && i + 1 < tokens.size()
+                        && tokens.get(i + 1).type() == LBRACE;
+                if (!canonicalTask && !legacyNbTask && !scalarCpuRegion) {
                     throw error(token, "synchronous execution domain '" + token.lexeme()
                             + " { ... }' is reserved but not production-lowered yet;"
                             + " use '" + token.lexeme() + " task { ... }' for asynchronous work;"
@@ -3851,6 +3861,14 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
+        boolean scalarFrame = scalarCpuRecursiveFrames >= 0;
+        // A 64-operator unary expression legitimately needs a 65th
+        // parseUnary frame for its terminal literal.
+        if (scalarFrame && ++scalarCpuRecursiveFrames > 65) {
+            scalarCpuRecursiveFrames--;
+            throw error(peek(), "scalar cpu region exceeds combined recursive parser depth budget");
+        }
+        try {
         // Signed i64's negative endpoint requires magnitude 2^63, which
         // cannot be parsed as a positive Java long. Treat exactly that
         // token sequence as a single negative literal, without broadening
@@ -3882,6 +3900,27 @@ public final class Parser {
             Ast.ExecutionDomain domain = domainToken.type() == CPU
                     ? Ast.ExecutionDomain.CPU : Ast.ExecutionDomain.GPU;
             if (!matchContextualKeyword("task")) {
+                if (domain == Ast.ExecutionDomain.CPU && match(LBRACE)) {
+                    // Deliberately not parseBlock(): a scalar CPU region is
+                    // one expression, optionally prefixed by return, rather
+                    // than an arbitrary host block or a detached Task.
+                    // Reject excessively large/nested token windows before
+                    // recursive expression parsing; the AST enforces a
+                    // separate 512-node / 64-depth bound after construction.
+                    preflightScalarCpuTokens();
+                    match(RETURN);
+                    int previousDepth = scalarCpuRecursiveFrames;
+                    scalarCpuRecursiveFrames = 0;
+                    Ast.Expr scalar;
+                    try {
+                        scalar = parseExpression();
+                    } finally {
+                        scalarCpuRecursiveFrames = previousDepth;
+                    }
+                    match(SEMICOLON);
+                    consume(RBRACE, "scalar cpu { } accepts exactly one closed scalar expression");
+                    return new Ast.CpuScalarRegionExpr(scalar);
+                }
                 throw error(domainToken,
                         "synchronous " + domainToken.lexeme()
                                 + " { ... } lowering is not enabled yet; use "
@@ -3947,6 +3986,53 @@ public final class Parser {
         if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.BLOCKING);
 
         return parsePostfix();
+        } finally {
+            if (scalarFrame) scalarCpuRecursiveFrames--;
+        }
+    }
+
+    /** Lexer-level work bound before parsing scalar-only cpu { ... }. */
+    private void preflightScalarCpuTokens() {
+        int parens = 0;
+        int consecutiveOperators = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token token = tokens.get(i);
+            // Count the closing delimiter too: this is a strict 1,024-
+            // token window, not 1,025 tokens due to zero-based indexing.
+            if (i - current >= 1024) {
+                throw error(token, "scalar cpu region exceeds token budget");
+            }
+            if (token.type() == LBRACE) {
+                throw error(token,
+                        "nested blocks are not admitted inside scalar cpu region");
+            }
+            // parseUnary() is recursive. Do not construct a potentially
+            // thousand-frame unary chain before the AST depth gate runs.
+            // Counting every adjacent operator token is conservative:
+            // the closed scalar region needs no other operator sequences.
+            if (token.type() == PLUS || token.type() == MINUS
+                    || token.type() == BANG || token.type() == TILDE) {
+                if (++consecutiveOperators > 64) {
+                    throw error(token, "scalar cpu region exceeds unary operator depth budget");
+                }
+            } else {
+                consecutiveOperators = 0;
+            }
+            if (token.type() == LPAREN && ++parens > 64) {
+                throw error(token, "scalar cpu region exceeds parenthesis depth budget");
+            }
+            if (token.type() == RPAREN && --parens < 0) {
+                throw error(token, "unmatched ')' in scalar cpu region");
+            }
+            if (token.type() == RBRACE) {
+                if (parens != 0) {
+                    throw error(token, "unclosed '(' in scalar cpu region");
+                }
+                return;
+            }
+            if (token.type() == EOF) break;
+        }
+        throw error(peek(), "unterminated scalar cpu region");
     }
 
     private Ast.Expr parseRuntimeExpression() {
