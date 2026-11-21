@@ -120,8 +120,17 @@ static_function_decl
                   "(" [ param_list ] ")" return_spec block ;
 
 contract_decl   = visibility "define" "contract" IDENT [ generic_params ]
-                  [ "for" "namespace" ]
-                  [ "extends" type_ref { "," type_ref } ] module_contract_body ;
+                  [ "for" ( "namespace" | "actor" ) ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  ( module_contract_body | actor_contract_body ) ;
+actor_contract_body = "{" { actor_contract_member } "}"
+                    | "as" { actor_contract_member } "end" ;
+actor_contract_member = [ visibility ] "mtd" IDENT "(" [ param_list ] ")"
+                        [ (":" | "=>") type_ref ] member_terminator ;
+(* Only a 'for actor' declaration uses actor_contract_body. This first
+   implementation requires nongeneric, noninherited public method slots.
+   The signature itself grants no mailbox or state access and is fulfilled
+   by existing actor-owned method implementations only. *)
 (* A 'for namespace' contract is file-root-only and distinct from a module
    contract. The first linked slice supports only non-generic, non-inherited
    public actor/fnc requirements; other requirements fail closed. *)

@@ -131,6 +131,40 @@ Portable `.atto` samples live in `contracts/standalone-actor-v1/`.
 Java/Graal parser/type-checker coverage and executable guest behavior
 remain **unverified** until exact-head, stepful runs.
 
+## Stacked Java actor-target contract stage (draft / unexecuted)
+
+```atto
+define contract FooContract for actor as
+  mtd abc(): void;
+  pub mtd xyz(): void;
+end
+
+pub define actor Foo implements FooContract as
+  pub abc(): void { return; }
+  pub xyz(): void { return; }
+end
+```
+
+An actor-targeted contract is a nominal collection of required **public
+actor method slots**. It is neither a module nor a namespace contract;
+ordinary classes may not `implements` it. Existing actor methods must
+satisfy the contract, and the normal actor mailbox still mediates calls.
+The v1 actor contract rejects generics, inheritance, fields, `fnc`
+requirements and unsupported checked effects. Required methods must be
+**directly declared, public, concrete, nonstatic and synchronous** on the
+actor itself; a parent class method, private method, suspended/async method
+or explicit receiver with unproved lowering is not a witness. Runtime-only
+`tear_down`, CONTROL `on_*` hooks, compiler-owned `handle_state`, and
+special `receive` handlers cannot be laundered into ordinary public
+actor contracts. The parser and type checker also reject `pub tear_down`
+even without a contract; teardown remains private and synchronous.
+`on_stop` and `on_restart` cannot be user-defined until compiler-owned
+generation-fenced CONTROL lowering exists. These hooks require their own typed lowering.
+It **does not** grant actor-state, mailbox-dispatch or supervisor authority. Imported
+cross-file actor contract metadata and external executable method
+bodies are outside this stage. The actor-contract fixture suite and
+JUnit tests are authored but **NOT EXECUTED**.
+
 ## Proposed next stage: executable external receiver methods
 
 The intended surface grammar is:

@@ -830,6 +830,41 @@ public final class TypeChecker {
     }
 
     private void checkInterface(Ast.InterfaceDecl iface) {
+        if (iface.actorContract()) {
+            if (!iface.genericParameters().isEmpty() || !iface.parents().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "actor contract '" + iface.name()
+                                + "' cannot use generics or inheritance without static witness lowering");
+            }
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (!(member instanceof Ast.InterfaceFunctionDecl fn)
+                        || fn.structural() || !fn.genericParameters().isEmpty()
+                        || !fn.effects().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor contract '" + iface.name()
+                                    + "' accepts only non-generic mtd signatures");
+                }
+                // Lifecycle, supervisor and mailbox entry points are not
+                // ordinary actor method APIs. Their names must never be
+                // laundered into public callable contracts before typed
+                // CONTROL/receive-specific lowering is established.
+                if (Set.of("tear_down", "handle_state", "on_panic",
+                        "on_throw", "on_throws", "on_raise", "on_recover",
+                        "on_start", "on_stop", "on_restart", "receive")
+                        .contains(fn.name())) {
+                    throw new IllegalArgumentException(
+                            "actor contract '" + iface.name() + "' cannot require reserved "
+                                    + "lifecycle/control/receive hook '" + fn.name() + "'");
+                }
+                for (Ast.Param param : fn.parameters()) {
+                    if (param.structural()) {
+                        throw new IllegalArgumentException(
+                                "actor contract '" + iface.name()
+                                        + "' cannot require structural actor arguments");
+                    }
+                }
+            }
+        }
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
         Type interfaceSelf = iface.moduleContract() ? null : new SelfType(nominalInterfaceType(iface));
 
@@ -1707,6 +1742,14 @@ public final class TypeChecker {
 
         for (Ast.MethodDecl method : klass.methods()) {
             if (klass.actorKind() != Ast.ActorKind.NONE
+                    && (method.name().equals("on_stop")
+                            || method.name().equals("on_restart"))) {
+                throw new IllegalArgumentException(
+                        "actor control/lifecycle method '" + klass.name() + "."
+                                + method.name() + "' requires compiler-owned "
+                                + "generation-fenced lowering and cannot be user-defined");
+            }
+            if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
                             || method.name().equals("end")
@@ -1716,6 +1759,22 @@ public final class TypeChecker {
                                 + "' is reserved by the non-overridable actor transport/lifecycle API");
             }
 
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("tear_down")) {
+                // Defense in depth: AST producers and compiler transformations
+                // must not turn supervisor-owned teardown into an ordinary
+                // public actor method even if they bypass the source parser.
+                if (method.visibility() == Ast.Visibility.PUBLIC
+                        || method.isStatic() || method.isAbstract()
+                        || method.async() || method.suspends()
+                        || !method.effects().isEmpty()
+                        || method.arity() != 0
+                        || !method.genericParameters().isEmpty()
+                        || !method.returnType().equals(Ast.TypeRef.simple("void"))) {
+                    throw new IllegalArgumentException(
+                            "actor tear_down is a private synchronous runtime-only lifecycle hook");
+                }
+            }
             boolean actorStartupHook = method.name().equals("on_start");
             boolean actorReceiveHook = klass.actorKind() != Ast.ActorKind.NONE
                     && method.name().equals("receive");
@@ -1921,7 +1980,64 @@ public final class TypeChecker {
             }
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
-            if (iface.moduleContract()) throw new IllegalArgumentException("module contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            if (iface.moduleContract()) throw new IllegalArgumentException("module/namespace contract '" + interfaceRef.name() + "' cannot be implemented by class '" + klass.name() + "'");
+            if (iface.actorContract()) {
+                if (klass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor contract '" + iface.name() + "' can only be implemented by actors");
+                }
+                if (!klass.genericParameters().isEmpty() || !interfaceRef.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor contract '" + iface.name()
+                                    + "' requires a non-generic nominal actor witness in v1");
+                }
+                // Ordinary structural/publicClassShape checks do not capture
+                // every actor execution effect (notably suspends/CONTROL
+                // handlers). A contract must be backed by a DIRECT declared
+                // mailbox actor method, never an inherited ordinary class
+                // method, static function, abstract slot or lifecycle hook.
+                for (Ast.InterfaceMember member : iface.members()) {
+                    if (!(member instanceof Ast.InterfaceFunctionDecl required)) {
+                        throw new IllegalArgumentException(
+                                "actor contract '" + iface.name()
+                                        + "' has an unsupported non-method requirement");
+                    }
+                    Ast.MethodDecl witness = null;
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        if (method.name().equals(required.name())
+                                && method.arity() == required.parameters().size()
+                                && !method.isStatic()) {
+                            witness = method;
+                            break;
+                        }
+                    }
+                    if (witness == null || witness.isAbstract()
+                            || witness.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "actor contract '" + iface.name() + "' requires a directly "
+                                        + "declared public mailbox method '" + klass.name()
+                                        + "." + required.name() + "' with arity "
+                                        + required.parameters().size());
+                    }
+                    if (witness.async() || witness.suspends()
+                            || witness.structural()
+                            || witness.explicitReceiverType() != null
+                            || !witness.genericParameters().isEmpty()
+                            || !witness.effects().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "actor contract '" + iface.name() + "' method '"
+                                        + klass.name() + "." + required.name()
+                                        + "' has unsupported execution effects/generics");
+                    }
+                    for (int i = 0; i < witness.parameters().size(); i++) {
+                        if (witness.parameters().get(i).structural()) {
+                            throw new IllegalArgumentException(
+                                    "actor contract '" + iface.name()
+                                            + "' cannot bind structural actor method parameters");
+                        }
+                    }
+                }
+            }
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());

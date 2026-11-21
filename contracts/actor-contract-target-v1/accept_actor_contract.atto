@@ -1,0 +1,10 @@
+// Stage 2: actor-only nominal interface witness, no external method bodies.
+define contract FooContract for actor as
+  mtd abc(): void;
+  pub mtd xyz(): void;
+end
+
+pub define actor Foo implements FooContract as
+  pub abc(): void { return; }
+  pub xyz(): void { return; }
+end

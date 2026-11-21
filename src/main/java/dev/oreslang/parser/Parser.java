@@ -1220,6 +1220,10 @@ public final class Parser {
                 // ordinary user-invokable actor method. The first executable
                 // slice is synchronous; suspend/async awaits require a pinned
                 // teardown continuation and are rejected until implemented.
+                if (teardown.visibility() == Ast.Visibility.PUBLIC) {
+                    throw error(previous(),
+                            "actor tear_down is a runtime-only lifecycle hook and cannot be public");
+                }
                 if (teardown.isStatic() || teardown.async() || teardown.suspends()
                         || teardown.arity() != 0
                         || !teardown.genericParameters().isEmpty()
@@ -1241,6 +1245,12 @@ public final class Parser {
             if (check(IDENT) && peek().lexeme().equals("handle_state")) {
                 throw error(peek(), "actor handle_state is compiler-owned; "
                         + "user-defined state-loan authority is forbidden");
+            }
+            if (check(IDENT) && (peek().lexeme().equals("on_stop")
+                    || peek().lexeme().equals("on_restart"))) {
+                throw error(peek(), "actor lifecycle on_stop/on_restart require "
+                        + "compiler-owned CONTROL and generation-fenced lowering; "
+                        + "source methods are not yet enabled");
             }
             if (check(IDENT) && peek().lexeme().equals("on_panic")) {
                 throw error(peek(), "actor-local on_panic is forbidden: "
@@ -1306,9 +1316,11 @@ public final class Parser {
         String name = consumeTypeDeclarationName("expected interface name");
         List<String> generics = parseGenericParameters();
         boolean namespaceContract = false;
+        boolean actorContract = false;
         if (moduleContract && match(FOR)) {
-            consume(NAMESPACE, "contract target must be 'namespace'");
-            namespaceContract = true;
+            if (match(NAMESPACE)) namespaceContract = true;
+            else if (match(ACTOR)) actorContract = true;
+            else throw error(peek(), "contract target must be 'namespace' or 'actor'");
         }
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         boolean braceStyle = match(LBRACE);
@@ -1323,7 +1335,7 @@ public final class Parser {
             // A module contract may require the presence of a public nominal
             // actor type. This is a type requirement, not a callable or a
             // second actor declaration. It must not confer state authority.
-            if (moduleContract && match(ACTOR)) {
+            if (moduleContract && !actorContract && match(ACTOR)) {
                 validateNoModifiers(memberModifiers, "module contract actor requirements");
                 if (!memberAnnotations.isEmpty()) {
                     throw error(previous(), "contract actor requirements do not accept annotations");
@@ -1344,7 +1356,34 @@ public final class Parser {
                     && current + 2 < tokens.size()
                     && tokens.get(current + 1).type() == IDENT
                     && tokens.get(current + 2).type() == LPAREN;
-            if (moduleContract && actorMethodHead) {
+            if (actorContract && actorMethodHead) {
+                advance(); // contextual mtd: nominal actor method requirement
+                validateOnlyVisibilityModifiers(memberModifiers, "actor contract method requirements");
+                if (memberModifiers.visibilitySeen
+                        && memberModifiers.visibility != Ast.Visibility.PUBLIC) {
+                    throw error(previous(), "actor contract methods are public API requirements");
+                }
+                if (!memberAnnotations.isEmpty()) {
+                    throw error(previous(), "actor contract method requirements do not accept annotations");
+                }
+                String methodName = consumeCallableName("expected required actor method name");
+                consume(LPAREN, "expected '(' after required actor method name");
+                List<Ast.Param> parameters = parseParametersUntil(RPAREN);
+                consume(RPAREN, "expected ')' after actor method parameters");
+                if (parameters.stream().anyMatch(Ast.Param::structural)) {
+                    throw error(previous(), "actor contract methods reject structural arguments");
+                }
+                Ast.TypeRef returns = match(FAT_ARROW, COLON)
+                        ? parseTypeRef() : Ast.TypeRef.simple("void");
+                if (!parseCheckedEffects().isEmpty()) {
+                    throw error(previous(), "actor contract checked effects require typed lowering");
+                }
+                consumeMemberTerminator(terminator, "actor contract method should end with ';'");
+                members.add(new Ast.InterfaceFunctionDecl(
+                        methodName, false, List.of(), parameters, returns));
+                continue;
+            }
+            if (moduleContract && !actorContract && actorMethodHead) {
                 advance(); // contextual mtd
                 validateOnlyVisibilityModifiers(memberModifiers, "module contract receiver requirements");
                 if (!memberAnnotations.isEmpty()) {
@@ -1377,6 +1416,9 @@ public final class Parser {
             if (!moduleContract && actorMethodHead) {
                 throw error(peek(), "actor receiver requirements belong only in module contracts");
             }
+            if (actorContract && check(FNC)) {
+                throw error(peek(), "actor contracts require 'mtd' method signatures, not 'fnc'");
+            }
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
             }
@@ -1401,6 +1443,9 @@ public final class Parser {
                 continue;
             }
 
+            if (actorContract) {
+                throw error(peek(), "actor contract fields and other members are not yet supported; use mtd signatures");
+            }
             validateNoModifiers(memberModifiers, "interface fields");
             if (!memberAnnotations.isEmpty()) {
                 throw error(previous(),
@@ -1435,7 +1480,7 @@ public final class Parser {
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
         return new Ast.InterfaceDecl(name, visibility, generics, parents, members,
-                moduleContract, namespaceContract);
+                moduleContract && !actorContract, namespaceContract, actorContract);
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {

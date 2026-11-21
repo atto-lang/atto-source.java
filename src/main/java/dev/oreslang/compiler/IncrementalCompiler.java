@@ -511,6 +511,7 @@ public final class IncrementalCompiler {
             if (iface.visibility() != Ast.Visibility.PUBLIC
                     && !iface.namespaceContract()) return;
             abi.append(iface.namespaceContract() ? "namespace-contract "
+                    : iface.actorContract() ? "actor-contract "
                     : iface.moduleContract() ? "contract " : "interface ")
                     .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
