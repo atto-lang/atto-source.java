@@ -140,6 +140,19 @@ final class SharedDomainArenaTest {
 
             actor.send("leak");
             assertTrue(first.await(5, TimeUnit.SECONDS));
+
+            var foreignCloseFailure = new AtomicReference<Throwable>();
+            Thread foreignCompletion = new Thread(() -> {
+                try { leaked.get().close(); }
+                catch (Throwable denied) { foreignCloseFailure.set(denied); }
+            }, "foreign-shared-access-close");
+            foreignCompletion.start();
+            foreignCompletion.join(3000);
+            assertFalse(foreignCompletion.isAlive());
+            assertInstanceOf(SecurityException.class, foreignCloseFailure.get(),
+                    "off-carrier must not prematurely release a lexical critical loan");
+            // The actor itself may release an already leaked loan during a
+            // later trusted cleanup turn, but cannot use its prior byte scope.
             actor.send("replay");
             assertTrue(second.await(5, TimeUnit.SECONDS));
 
