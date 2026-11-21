@@ -6564,7 +6564,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
         if (value instanceof Long || value instanceof Double) return 24L;
-        if (value instanceof OresComplex) return 32L;
+        if (value instanceof ImmutableGuestValue immutable) return immutable.logicalBytes();
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
@@ -6617,7 +6617,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
         if (value instanceof Long || value instanceof Double) return 24L;
-        if (value instanceof OresComplex) return 32L;
+        if (value instanceof ImmutableGuestValue immutable) return immutable.logicalBytes();
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
@@ -6674,7 +6674,7 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof OresComplex || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
+                || value instanceof ImmutableGuestValue || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
                 || value instanceof ActorGroupId;
     }
 
