@@ -12,9 +12,12 @@ import java.util.ArrayDeque;
  * locals, return continuations, or suspended SourceTask state. The JVM carrier
  * still executes the interpreter and requires a separate native stack guard.
  *
- * <p>Call-chain identities are new for each outermost guarded synchronous
- * call and never travel through await. Actor migration and continuation
- * ownership remain separate compiler/scheduler obligations.
+ * <p>A synchronous call outside a source task mints a fresh guard-chain
+ * identity. Inside an actor-bound SourceTask the guard uses the existing
+ * scheduler execution ID, stacking call frames above its suspended-task
+ * root frame and sharing one actor byte quota. Guarded call frames always
+ * unwind before await; only the SourceTask root lease crosses suspension.
+ * The JVM native carrier stack is still not independently actor-owned.
  */
 public final class GuestCallDepthGuard {
     public static final int MAX_SYNCHRONOUS_GUEST_CALLS = 64;
@@ -31,7 +34,25 @@ public final class GuestCallDepthGuard {
         Scope(ActorGuestStack actorStack, ActorFrameArena arena) {
             this.actorStack = actorStack;
             this.arena = arena;
-            this.execution = arena == null ? null : arena.newSynchronousExecution();
+            if (arena == null) {
+                this.execution = null;
+            } else {
+                ExecutionContext taskExecution = OresScheduler.currentExecutionContext();
+                if (taskExecution == null
+                        || taskExecution.allocationDomain().kind()
+                            == ExecutionContext.AllocationKind.NONE) {
+                    this.execution = arena.newSynchronousExecution();
+                } else if (arena.allocationDomain().equals(
+                        taskExecution.allocationDomain())) {
+                    // Same owner and generation, same logical SourceTask.
+                    // The suspended root frame remains beneath our calls.
+                    this.execution = taskExecution;
+                } else {
+                    arena.poisonFromGuestGuard();
+                    throw new SecurityException(
+                            "guest invocation source-task allocation domain mismatch");
+                }
+            }
         }
     }
 
@@ -101,6 +122,55 @@ public final class GuestCallDepthGuard {
         scope.depth = prior + 1;
         CURRENT.set(scope);
         return scope.depth;
+    }
+
+    /**
+     * Attach evaluator call-site metadata to the frame ALREADY reserved by
+     * enter(), without double-counting the actor's frame or byte budgets.
+     * Metadata contains only primitive values; no guest object can escape
+     * through the host frame capability.
+     */
+    static void writeInvocationDescriptor(int enteredDepth, byte[] descriptor) {
+        Scope scope = requireInvocationScope(enteredDepth);
+        if (descriptor == null || descriptor.length != 16) {
+            throw new IllegalArgumentException("invalid 16-byte guest call descriptor");
+        }
+        if (scope.arena == null) return;
+        ActorFrameArena.FrameRef frame = scope.frames.peekLast();
+        if (frame == null) throw new IllegalStateException("missing guest invocation frame");
+        scope.arena.write(scope.execution, frame, 0, descriptor);
+    }
+
+    /** Host-runtime diagnostic identity; never made available to guest source. */
+    static ExecutionContext currentInvocationExecutionContext() {
+        Scope scope = CURRENT.get();
+        return scope == null ? null : requireInvocationScope(scope.depth).execution;
+    }
+
+    /** Package-private read returns a defensive copy, never frame backing bytes. */
+    static byte[] readInvocationDescriptor(int enteredDepth) {
+        Scope scope = requireInvocationScope(enteredDepth);
+        if (scope.arena == null) return new byte[0];
+        ActorFrameArena.FrameRef frame = scope.frames.peekLast();
+        if (frame == null) throw new IllegalStateException("missing guest invocation frame");
+        return scope.arena.read(scope.execution, frame, 0, 16);
+    }
+
+    private static Scope requireInvocationScope(int enteredDepth) {
+        Scope scope = CURRENT.get();
+        if (scope == null || enteredDepth <= 0 || scope.depth != enteredDepth
+                || scope.actorStack != ActorRuntime.currentActorGuestStack()
+                || scope.arena != ActorRuntime.currentActorFrameArena()) {
+            if (scope != null && scope.actorStack != null) scope.actorStack.poison();
+            if (scope != null && scope.arena != null) scope.arena.poisonFromGuestGuard();
+            ActorGuestStack currentStack = ActorRuntime.currentActorGuestStack();
+            ActorFrameArena currentArena = ActorRuntime.currentActorFrameArena();
+            if (currentStack != null) currentStack.poison();
+            if (currentArena != null) currentArena.poisonFromGuestGuard();
+            CURRENT.remove();
+            throw new IllegalStateException("guest invocation descriptor outside active frame");
+        }
+        return scope;
     }
 
     /** Pop the actor-owned frame before releasing its logical guest charge. */

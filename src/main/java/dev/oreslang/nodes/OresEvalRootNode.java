@@ -839,25 +839,27 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invoke(Invocation initial) {
-            // Count non-tail guest invocation nesting before pushing another
-            // interpreter frame. Tail hops stay in this single guarded entry.
-            // This is an early budget check, not recovery from StackOverflowError.
-            int guestCallDepth = dev.oreslang.runtime.GuestCallDepthGuard.enter();
-            try {
+            // Shared compiler/interpreter call entry for functions, methods,
+            // static methods and invokables. A source actor charges one
+            // generation-fenced 16-byte frame descriptor to its own arena
+            // AND reserves native-carrier recursion headroom transactionally.
+            // Proper tail transfers rewrite the same actor-owned frame.
+            try (dev.oreslang.runtime.GuestInvocationFrame frame =
+                    dev.oreslang.runtime.GuestInvocationFrame.enter(
+                            initial.kind().ordinal(), initial.arguments().size())) {
                 Invocation current = initial;
-                int tailHops = 0;
+                long tailHops = 0;
                 while (true) {
                     Object result = current.owner().executeRaw(current);
                     if (!(result instanceof TailCall tail)) return result;
                     current = tail.invocation();
                     tailHops++;
+                    frame.tailTransfer(
+                            current.kind().ordinal(), current.arguments().size(), tailHops);
                     if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
                         current.owner().context.schedulerSafepoint();
                     }
                 }
-            } finally {
-                // Carrier reuse must not inherit a prior actor's call budget.
-                dev.oreslang.runtime.GuestCallDepthGuard.leave(guestCallDepth);
             }
         }
 
