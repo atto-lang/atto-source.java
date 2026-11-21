@@ -19,6 +19,13 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Execute source-free adversarial Git blob and mode regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_fourway_source_closure.py -v
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo 'ATTO_FOURWAY_SOURCE_FREE_ADVERSARIAL_TESTS=PASS'
       - name: Verify immutable Git tree SHA and all 41 pinned PR blob identities
         shell: bash
         env:
