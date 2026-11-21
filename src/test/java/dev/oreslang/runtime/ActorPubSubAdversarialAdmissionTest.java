@@ -108,6 +108,74 @@ final class ActorPubSubAdversarialAdmissionTest {
     }
 
     @Test
+    void revocationWinsAgainstInFlightPublishAtMembershipFence() throws Exception {
+        // Exact linearization regression. Start a source-actor publication
+        // while the host owns the same membership lock used by leaveId().
+        // Revoke membership BEFORE releasing the lock: the delayed publisher
+        // must fail closed rather than delivering a stale actor-turn event.
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup group = runtime.createActorGroup();
+            ActorRuntime.ActorGroupJoinCapability join = group.joinCapability();
+            ActorEventBus.Topic<String> topic = group.events().topic(
+                    "revocation-wins", ActorEventBus.DeliveryPolicy.RELIABLE, 1);
+            CountDownLatch joined = new CountDownLatch(1);
+            CountDownLatch attempted = new CountDownLatch(1);
+            CountDownLatch rejected = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> publisher =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        if ("join".equals(message)) {
+                            try {
+                                join.join();
+                            } catch (Throwable problem) {
+                                failure.compareAndSet(null, problem);
+                            } finally {
+                                joined.countDown();
+                            }
+                        } else if ("publish".equals(message)) {
+                            attempted.countDown();
+                            try {
+                                topic.tryPublishReliable("must-not-deliver");
+                                failure.compareAndSet(null, new AssertionError(
+                                        "revoked publisher committed after leave"));
+                            } catch (SecurityException expected) {
+                                // A live source actor no longer has group authority.
+                            } catch (Throwable unexpected) {
+                                failure.compareAndSet(null, unexpected);
+                            } finally {
+                                rejected.countDown();
+                            }
+                        }
+                    });
+
+            publisher.send("join");
+            assertTrue(joined.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            var field = ActorRuntime.class.getDeclaredField("groupMembershipLock");
+            field.setAccessible(true);
+            Object lock = field.get(runtime);
+            synchronized (lock) {
+                publisher.send("publish");
+                assertTrue(attempted.await(5, TimeUnit.SECONDS));
+                assertFalse(rejected.await(200, TimeUnit.MILLISECONDS),
+                        "publication cannot bypass the held authority fence");
+                group.leave(publisher);
+                assertFalse(group.contains(publisher),
+                        "leave must revoke membership before publication resumes");
+                assertEquals(0L, group.events().topics().getFirst().published(),
+                        "revoked publication must not consume a topic sequence");
+            }
+            assertTrue(rejected.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), "revoked publisher must fail with SecurityException");
+            assertEquals(0L, group.events().topics().getFirst().published(),
+                    "an in-flight revoked actor cannot mint a phantom receipt");
+            publisher.stop();
+            assertTrue(publisher.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
+    @Test
     void zeroRecipientPublicationsAllocateSequenceButDoNotReplay() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.ActorGroup group = runtime.createActorGroup();
