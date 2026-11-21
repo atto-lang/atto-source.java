@@ -110,7 +110,7 @@ Module shape is described by a dedicated `contract`, not by a trait or ordinary 
 
 ```ores
 define contract MathApi as
-  fnc add(int a, int b) => int;
+  fnc add(int a, int b) -> int;
   String name;
 end
 
@@ -123,6 +123,30 @@ end
 Only exported (`pub`) module members satisfy a module contract. Contracts may require exported fields/constants as well as functions. A module may conform to multiple contracts with comma-separated names. The legacy module `@AdheresTo(...)` form is rejected; use `conforms` instead.
 
 A module contract is not a class/struct interface and cannot be implemented by a class or actor.
+
+Static class namespaces use the separate static-contract domain. A class opts in
+per requirement with `implements static Contract`; this does not affect
+instance-interface dispatch or instance layout:
+
+```ores
+define static contract Factory as
+  info: tuple (int, int, string);
+  fnc create(int id) -> tuple (int, int, string);
+end
+
+define class Widget implements static Factory as
+  pub static const info: tuple (int, int, string) = (0, 0, "widget");
+
+  pub static fnc create(int id) -> tuple (int, int, string) {
+    return (1, id, "widget");
+  }
+end
+```
+
+Module and static contracts may spell callable requirements with `-> Type`.
+Instance interfaces and traits retain the type-level `=> Type` signature
+spelling. This distinction does not enable keyword-delimited class methods or
+class `static fnc` implementations; those remain brace-bodied.
 
 ## Functions and returns
 
@@ -186,7 +210,7 @@ fnc named(): {foo: int, bar: string} {
 }
 ```
 
-The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. A record type names required members; extra members remain compatible with the structural type system.
+The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. The contextual `tuple (T1, T2, ...)` spelling normalizes to that same finite tuple TypeRef and is bounded to 64 slots; it is not a second runtime representation. A record type names required members; extra members remain compatible with the structural type system.
 
 ## Collection shapes and named type metadata
 
