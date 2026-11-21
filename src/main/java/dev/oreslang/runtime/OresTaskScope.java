@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -94,6 +95,15 @@ public final class OresTaskScope implements AutoCloseable {
     private boolean cancelled;
     private boolean joining;
     private volatile Throwable closeFailure;
+    /**
+     * Exact trusted authority identities whose release could not be proven.
+     * This covers both compiler-loan capabilities and physical code/resource
+     * cleanup callbacks. An empty Task slot set is not quiescence while this
+     * ledger is non-empty.
+     */
+    private final IdentityHashMap<Object, Throwable> failedCompilerAuthorities =
+            new IdentityHashMap<>();
+    private volatile Throwable compilerAuthorityFailure;
 
     public OresTaskScope(AsyncRuntime runtime) {
         this(Objects.requireNonNull(runtime, "runtime"), null);
@@ -225,7 +235,15 @@ public final class OresTaskScope implements AutoCloseable {
         Objects.requireNonNull(frame, "frame");
         Objects.requireNonNull(onPhysicalExit, "onPhysicalExit");
         Objects.requireNonNull(loanRetirement, "loanRetirement");
-        loanRetirement.bindScope(compilerScopeEpoch);
+        try {
+            loanRetirement.bindScope(compilerScopeEpoch);
+        } catch (RuntimeException | Error bindingFailure) {
+            // A trusted lifecycle object may fail after partially accepting
+            // this exact runtime epoch. Retain its identity even though no
+            // provisional Task owner exists yet.
+            poisonCompilerLoan(loanRetirement, bindingFailure);
+            throw bindingFailure;
+        }
 
         // Reserve the owner before executable dispatch, but never run a
         // scheduler, guest turn or code-image release under admission locks.
@@ -247,14 +265,36 @@ public final class OresTaskScope implements AutoCloseable {
                 }
             }
         } catch (RuntimeException | Error preparationFailure) {
-            // A hostile collection can insert and then throw. An equally
-            // hostile remove must never suppress the required code release.
+            // External/code cleanup may still use borrowed memory, so it must
+            // retire before the compiler loan. Only after BOTH trusted
+            // authorities retire may a provisional owner slot disappear.
+            Throwable releaseFailure = null;
+            try {
+                onPhysicalExit.run();
+            } catch (RuntimeException | Error failure) {
+                releaseFailure = failure;
+                poisonPhysicalExitAndDependentLoan(
+                        onPhysicalExit, loanRetirement, failure);
+                if (failure != preparationFailure)
+                    preparationFailure.addSuppressed(failure);
+            }
+            if (releaseFailure == null) {
+                try {
+                    loanRetirement.retireNeverStarted(compilerScopeEpoch);
+                } catch (RuntimeException | Error failure) {
+                    releaseFailure = failure;
+                    poisonCompilerLoan(loanRetirement, failure);
+                    if (failure != preparationFailure)
+                        preparationFailure.addSuppressed(failure);
+                }
+            }
+
             Throwable bookkeepingFailure = null;
-            if (pendingSlot != null) {
+            if (releaseFailure == null && pendingSlot != null) {
                 try {
                     synchronized (gate) {
                         // A sealed scope can reject before insertion. Do NOT
-                        // call a hostile removal hook for a never-owned slot.
+                        // invoke a hostile removal hook for a never-owned slot.
                         // An insert-then-throw collection is still detected
                         // by contains() when registered is false.
                         if (pendingSlot.registered || tasks.contains(pendingSlot)) {
@@ -265,26 +305,6 @@ public final class OresTaskScope implements AutoCloseable {
                     }
                 } catch (RuntimeException | Error failure) {
                     bookkeepingFailure = failure;
-                    if (failure != preparationFailure)
-                        preparationFailure.addSuppressed(failure);
-                }
-            }
-            // External/code cleanup must succeed before returning borrowed
-            // memory authority. If cleanup fails, keep the compiler loan live
-            // even though no executable child was admitted.
-            Throwable releaseFailure = null;
-            try {
-                onPhysicalExit.run();
-            } catch (RuntimeException | Error failure) {
-                releaseFailure = failure;
-                if (failure != preparationFailure)
-                    preparationFailure.addSuppressed(failure);
-            }
-            if (releaseFailure == null) {
-                try {
-                    loanRetirement.retireNeverStarted(compilerScopeEpoch);
-                } catch (RuntimeException | Error failure) {
-                    releaseFailure = failure;
                     if (failure != preparationFailure)
                         preparationFailure.addSuppressed(failure);
                 }
@@ -323,6 +343,8 @@ public final class OresTaskScope implements AutoCloseable {
                 try {
                     onPhysicalExit.run();
                 } catch (RuntimeException | Error releaseFailure) {
+                    poisonPhysicalExitAndDependentLoan(
+                            onPhysicalExit, loanRetirement, releaseFailure);
                     exitFence.failFromRuntime(releaseFailure);
                     return;
                 }
@@ -330,6 +352,7 @@ public final class OresTaskScope implements AutoCloseable {
                     loanRetirement.retireAfterPhysicalQuiescence(
                             compilerScopeEpoch, ownedChild);
                 } catch (RuntimeException | Error loanFailure) {
+                    poisonCompilerLoan(loanRetirement, loanFailure);
                     exitFence.failFromRuntime(loanFailure);
                     return;
                 }
@@ -345,14 +368,16 @@ public final class OresTaskScope implements AutoCloseable {
                 }
             });
         } catch (RuntimeException | Error rejectedBeforeDispatch) {
-            // Scheduler.start is guaranteed to throw only before TaskRunner
-            // registration. Retire the code image before removing ownership;
-            // a failed remove is reported both to the caller and joiners.
+            // Scheduler.start threw before TaskRunner registration. Preserve
+            // the same dependency ordering as physical exit: code/FFI/resource
+            // cleanup first, then memory-loan return, then owner-slot removal.
             Throwable releaseFailure = null;
             try {
                 onPhysicalExit.run();
             } catch (RuntimeException | Error failure) {
                 releaseFailure = failure;
+                poisonPhysicalExitAndDependentLoan(
+                        onPhysicalExit, loanRetirement, failure);
                 if (failure != rejectedBeforeDispatch)
                     rejectedBeforeDispatch.addSuppressed(failure);
             }
@@ -361,6 +386,7 @@ public final class OresTaskScope implements AutoCloseable {
                     loanRetirement.retireNeverStarted(compilerScopeEpoch);
                 } catch (RuntimeException | Error failure) {
                     releaseFailure = failure;
+                    poisonCompilerLoan(loanRetirement, failure);
                     if (failure != rejectedBeforeDispatch)
                         rejectedBeforeDispatch.addSuppressed(failure);
                 }
@@ -447,6 +473,46 @@ public final class OresTaskScope implements AutoCloseable {
 
 
 
+    private void poisonCompilerAuthority(Object authority, Throwable failure) {
+        Objects.requireNonNull(authority, "authority");
+        Objects.requireNonNull(failure, "failure");
+        synchronized (gate) {
+            failedCompilerAuthorities.put(authority, failure);
+            if (compilerAuthorityFailure == null) {
+                compilerAuthorityFailure = failure;
+            } else if (compilerAuthorityFailure != failure) {
+                compilerAuthorityFailure.addSuppressed(failure);
+            }
+        }
+    }
+
+    private void poisonCompilerLoan(
+            CompilerLoanRetirement loanRetirement, Throwable failure) {
+        if (loanRetirement != NO_COMPILER_LOAN) {
+            poisonCompilerAuthority(loanRetirement, failure);
+        }
+    }
+
+    private void poisonPhysicalExitAndDependentLoan(
+            Runnable onPhysicalExit,
+            CompilerLoanRetirement loanRetirement,
+            Throwable failure) {
+        poisonCompilerAuthority(onPhysicalExit, failure);
+        // Cleanup failed before memory authority could be returned. Retain the
+        // exact loan capability too, because its verifier ticket is still live.
+        poisonCompilerLoan(loanRetirement, failure);
+    }
+
+    Throwable compilerAuthorityFailureForTesting() {
+        return compilerAuthorityFailure;
+    }
+
+    int failedCompilerAuthoritiesForTesting() {
+        synchronized (gate) {
+            return failedCompilerAuthorities.size();
+        }
+    }
+
     private List<OresTask<?>> snapshotTasksLocked() {
         List<OresTask<?>> owned = new ArrayList<>(tasks.size());
         for (OwnershipSlot slot : tasks) {
@@ -475,8 +541,12 @@ public final class OresTaskScope implements AutoCloseable {
             while (!pending.isEmpty()) {
                 OresTaskScope scope = pending.removeLast();
                 synchronized (scope.gate) {
-                    // Failed trusted physical retirement retains its slot.
-                    if (!scope.tasks.isEmpty()) return false;
+                    // Failed trusted physical retirement retains either its
+                    // owner slot or an exact poisoned authority identity.
+                    if (!scope.tasks.isEmpty()
+                            || !scope.failedCompilerAuthorities.isEmpty()) {
+                        return false;
+                    }
                     pending.addAll(scope.childScopes);
                 }
             }
@@ -626,6 +696,11 @@ public final class OresTaskScope implements AutoCloseable {
             // either snapshot must not strand later close() on fullyJoined.
             CloseFrame prepared = new CloseFrame(this,
                     new ArrayList<>(childScopes), snapshotTasksLocked());
+            if (!failedCompilerAuthorities.isEmpty()) {
+                prepared.record(new IllegalStateException(
+                        "compiler Task authority retirement failed; scope remains non-quiescent",
+                        compilerAuthorityFailure));
+            }
             joining = true;
             return prepared;
         }
