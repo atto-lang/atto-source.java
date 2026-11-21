@@ -1336,8 +1336,42 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Every actor superclass is behavior-only. Following the complete parent
+     * chain prevents a grandparent field from silently giving a leaf actor a
+     * second mutable state region outside the compiler's sealed state loan.
+     * This is a nominal type-check gate, NOT persistence lowering.
+     */
+    private void requireStatelessActorAncestry(
+            Ast.ClassDecl parent, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(parent))
+            throw new IllegalArgumentException(
+                    "actor superclass inheritance cycle involving '" + parent.name() + "'");
+        if (parent.actorKind() == Ast.ActorKind.NONE || !parent.fields().isEmpty()
+                || parent.constructor() != null) {
+            throw new IllegalArgumentException(
+                    "actor superclasses must be stateless actor types: " + parent.name());
+        }
+        for (Ast.TypeRef ancestor : parent.parents()) {
+            Ast.ClassDecl next = resolveClassParent(ancestor, parent);
+            if (next == null) {
+                throw new IllegalArgumentException(
+                        "actor superclass cannot inherit ordinary built-in type "
+                        + ancestor.name());
+            }
+            requireStatelessActorAncestry(next, seen);
+        }
+        seen.remove(parent);
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Ast.ActorConcurrency concurrency = klass.actorConcurrency();
+        if (klass.actorKind() != Ast.ActorKind.NONE
+                && klass.isAbstract() && !klass.fields().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "abstract actor '" + klass.name()
+                    + "' cannot own fields; only a concrete leaf owns sealed actor state");
+        }
         if (klass.actorKind() == Ast.ActorKind.NONE
                 && concurrency.transport() != Ast.ActorTransport.GENERIC) {
             throw new IllegalArgumentException("only actors may declare a transport concurrency policy");
@@ -1374,6 +1408,9 @@ public final class TypeChecker {
             }
             resolve(parent, classGenerics, self);
             Ast.ClassDecl resolvedParent = resolveClassParent(parent, klass);
+            if (resolvedParent != null && klass.actorKind() != Ast.ActorKind.NONE)
+                requireStatelessActorAncestry(
+                        resolvedParent, new LinkedHashSet<>());
             if (resolvedParent != null && klass.actorKind() != resolvedParent.actorKind()) {
                 throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
                         + klass.name() + " is " + klass.actorKind() + " but parent "
