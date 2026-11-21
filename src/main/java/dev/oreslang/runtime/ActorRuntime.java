@@ -1188,6 +1188,44 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Optional, synchronous actor startup callback. Invoked exactly once on the
+     * actor's admitted logical lane after factory construction but BEFORE READY
+     * settles or any receive turn can begin. Source actors already invoke
+     * on_start during initializeActor; never invoke both paths for one actor.
+     *
+     * Startup failure is terminal and reported to the supervisor. Async guest
+     * on_start is reserved for future continuation-based READY lowering.
+     */
+    public interface ActorStartupHook<M> {
+        void onStart(ActorContext<M> context) throws Exception;
+    }
+
+    /**
+     * An opt-in host behavior contract for the *failing actor itself*.
+     *
+     * Only unhandled guest THROW/RAISE effects escaping a receive/continuation
+     * are eligible. This is distinct from SupervisionHandler, which executes
+     * on the PARENT's logical lane after a child has terminated.
+     *
+     * Neither panic, cancellation nor host/runtime faults can enter these
+     * callbacks. Returning HANDLED abandons the failed invocation and allows
+     * the actor to process FUTURE messages; it never retries that invocation.
+     * Source-level @Implements lowering is a separate compiler gate.
+     */
+    public interface LocalUncaughtFailureHandler {
+        LocalFailureResolution onThrow(GuestFailureSignal failure);
+        LocalFailureResolution onRaise(GuestFailureSignal failure);
+        // Intentionally NO onPanic: the child actor cannot intercept panic.
+    }
+
+    public enum LocalFailureResolution {
+        /** Commit local recovery; the failed invocation has already unwound. */
+        HANDLED,
+        /** Fail-stop this actor and publish a typed supervisor CONTROL event. */
+        ESCALATE
+    }
+
+    /**
      * A supervisor receives child terminal events on its own single-flight
      * actor turn, never on the failed child's carrier or a Mailman carrier.
      * Each method is mandatory: missing typed-effect coverage is a host
@@ -6468,6 +6506,11 @@ public final class ActorRuntime implements AutoCloseable {
                             validatePrivateBehaviorState(ref.id(), created);
                         }
                         behavior = created;
+                        if (created instanceof ActorStartupHook<?> startup) {
+                            @SuppressWarnings("unchecked")
+                            ActorStartupHook<M> typedStartup = (ActorStartupHook<M>) startup;
+                            typedStartup.onStart(context);
+                        }
                     }
                     synchronized (lifecycleLock) {
                         if (stopped.get() || forceKillFenced) {
@@ -6635,6 +6678,10 @@ public final class ActorRuntime implements AutoCloseable {
                             // object across turns.
                             validatePrivateBehaviorState(ref.id(), behavior);
                         }
+                    } catch (Throwable messageFailure) {
+                        if (!tryHandleLocalUncaught(messageFailure)) {
+                            throw messageFailure;
+                        }
                     }
                     processed++;
 
@@ -6701,6 +6748,48 @@ public final class ActorRuntime implements AutoCloseable {
             }
             sourceReceiveSuspended = false;
             activeMail = null;
+        }
+
+        /**
+         * Called ONLY from a message or continuation on this actor's admitted
+         * turn, after the failed invocation has unwound its lexical cleanup.
+         * It cannot catch a panic or a runtime fault, even if a host behavior
+         * implements the local failure interface.
+         */
+        private boolean tryHandleLocalUncaught(Throwable failure) {
+            if (stopped.get() || forceKillFenced
+                    || !(failure instanceof GuestFailureSignal guest)
+                    || !(behavior instanceof LocalUncaughtFailureHandler hooks)) {
+                return false;
+            }
+            SupervisorFailureLane.Kind kind = guest.kind();
+            if (kind != SupervisorFailureLane.Kind.THROW
+                    && kind != SupervisorFailureLane.Kind.RAISE) {
+                return false;
+            }
+            try {
+                LocalFailureResolution decision = Objects.requireNonNull(
+                        kind == SupervisorFailureLane.Kind.THROW
+                                ? hooks.onThrow(guest)
+                                : hooks.onRaise(guest),
+                        "actor-local failure hook returned null");
+                return decision == LocalFailureResolution.HANDLED;
+            } catch (Throwable hookFailure) {
+                // A failing local hook does not swallow the original typed
+                // failure; the hook's new failure escalates and carries it.
+                if (hookFailure != failure) {
+                    try {
+                        hookFailure.addSuppressed(failure);
+                    } catch (IllegalArgumentException ignored) {
+                        // Non-suppressible Java Throwable: retain new failure.
+                    }
+                }
+                if (hookFailure instanceof Error error) throw error;
+                if (hookFailure instanceof RuntimeException runtime) throw runtime;
+                throw new IllegalStateException(
+                        "actor-local failure hook threw a checked host exception",
+                        hookFailure);
+            }
         }
 
         private void fail(Throwable failure) {
