@@ -8,6 +8,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.types.NominalEnumOverloads;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
@@ -133,6 +134,7 @@ public final class OresEvalRootNode extends RootNode {
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+        private final Map<String, Map<Integer, List<Ast.FunctionDecl>>> enumFunctionFamilies = new HashMap<>();
         private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> declarationModules =
                 new IdentityHashMap<>();
@@ -304,6 +306,7 @@ public final class OresEvalRootNode extends RootNode {
             } else {
                 ambiguousFunctions.add(fn.name());
                 functions.remove(fn.name());
+                enumFunctionFamilies.remove(fn.name());
             }
         }
 
@@ -311,10 +314,47 @@ public final class OresEvalRootNode extends RootNode {
             LinkedHashMap<Integer, Ast.FunctionDecl> family =
                     functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
             Ast.FunctionDecl previous = family.putIfAbsent(fn.parameters().size(), fn);
-            if (previous != null) {
+            if (previous == null) return;
+            if (!enumRuntimeOverloadCompatible(previous, fn)) {
                 throw new IllegalArgumentException(
                         "callable '" + key + "' already has arity " + fn.parameters().size()
-                                + "; overload identity is name + arity only");
+                                + "; only statically-bound nominal enum overloads are admissible");
+            }
+            Map<Integer, List<Ast.FunctionDecl>> overloads =
+                    enumFunctionFamilies.computeIfAbsent(key, ignored -> new HashMap<>());
+            List<Ast.FunctionDecl> declarations = overloads.computeIfAbsent(
+                    fn.parameters().size(), ignored -> new ArrayList<>(List.of(previous)));
+            var eligibleEnums = NominalEnumOverloads.eligibleEnumSymbols(program);
+            var newSignature = NominalEnumOverloads.signature(
+                    fn.name(), fn.parameters(), eligibleEnums);
+            for (Ast.FunctionDecl existing : declarations) {
+                var known = NominalEnumOverloads.signature(
+                        existing.name(), existing.parameters(), eligibleEnums);
+                if (NominalEnumOverloads.compare(known, newSignature)
+                        != NominalEnumOverloads.PairStatus.DISTINCT_ENUMS) {
+                    throw new IllegalArgumentException(
+                            "runtime image contains ambiguous same-arity enum overload ABI");
+                }
+            }
+            if (declarations.size() >= NominalEnumOverloads.MAX_SAME_ARITY_CANDIDATES) {
+                throw new IllegalArgumentException("runtime image contains too many enum overloads");
+            }
+            declarations.add(fn);
+        }
+
+        private boolean enumRuntimeOverloadCompatible(
+                Ast.FunctionDecl first, Ast.FunctionDecl second) {
+            if (!first.genericParameters().isEmpty() || !second.genericParameters().isEmpty()
+                    || first.actorKind() != Ast.ActorKind.NONE
+                    || second.actorKind() != Ast.ActorKind.NONE) return false;
+            try {
+                var enums = NominalEnumOverloads.eligibleEnumSymbols(program);
+                return NominalEnumOverloads.compare(
+                        NominalEnumOverloads.signature(first.name(), first.parameters(), enums),
+                        NominalEnumOverloads.signature(second.name(), second.parameters(), enums))
+                        == NominalEnumOverloads.PairStatus.DISTINCT_ENUMS;
+            } catch (IllegalArgumentException invalid) {
+                return false;
             }
         }
 
@@ -338,8 +378,17 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.FunctionDecl preboundFunction(Ast.CallExpr call, String name) {
             Ast.FunctionDecl resolved = program.boundDirectCalls().get(call);
             if (resolved != null) {
-                if (!resolved.name().equals(name)) {
-                    throw new IllegalStateException("compiler-bound function name mismatch");
+                String declarationModule = declarationModules.get(resolved);
+                if (!resolved.name().equals(name)
+                        || declarationModule == null
+                        || ambiguousFunctions.contains(name)
+                        || !declarationModule.equals(unqualifiedFunctionOwners.get(name))) {
+                    throw new IllegalStateException(
+                            "compiler-bound direct target is not a callable of this code unit/name");
+                }
+                if (call.arguments().stream().noneMatch(Ast.SpreadExpr.class::isInstance)
+                        && resolved.parameters().size() != call.arguments().size()) {
+                    throw new IllegalStateException("compiler-bound direct target arity mismatch");
                 }
                 // Never inspect runtime argument values to select this target.
                 // TypeChecker has already validated arity, generic arguments,
@@ -360,6 +409,7 @@ public final class OresEvalRootNode extends RootNode {
             if (module.owner() != this
                     || !resolved.name().equals(member)
                     || resolved.visibility() != Ast.Visibility.PUBLIC
+                    || args.size() != resolved.parameters().size()
                     || module.module().declarations().stream().noneMatch(decl -> decl == resolved)) {
                 throw new IllegalStateException(
                         "compiler-bound module callable does not belong to the resolved namespace");
@@ -372,11 +422,19 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "ambiguous function " + name + "; qualify it with its module");
             }
+            if (enumFunctionFamilies.getOrDefault(name, Map.of()).containsKey(arity)) {
+                throw new IllegalArgumentException(
+                        "same-arity enum overload requires a compiler-bound call target; runtime selection is forbidden");
+            }
             LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(name);
             return family == null ? null : family.get(arity);
         }
 
         private Ast.FunctionDecl findSingleFunction(String name) {
+            if (enumFunctionFamilies.containsKey(name)) {
+                throw new IllegalArgumentException(
+                        "enum-overloaded fnc reference requires explicit signature specialization");
+            }
             if (ambiguousFunctions.contains(name)) {
                 throw new IllegalArgumentException(
                         "ambiguous function " + name + "; qualify it with its module");
@@ -385,6 +443,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Ast.FunctionDecl findQualifiedFunction(String qualifiedName, int arity) {
+            if (enumFunctionFamilies.getOrDefault(qualifiedName, Map.of()).containsKey(arity)) {
+                throw new IllegalArgumentException(
+                        "enum-overloaded module callable requires a prebound invocation");
+            }
             LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(qualifiedName);
             return family == null ? null : family.get(arity);
         }
@@ -392,6 +454,10 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.FunctionDecl singleFunction(
                 LinkedHashMap<Integer, Ast.FunctionDecl> family,
                 String displayName) {
+            if (enumFunctionFamilies.containsKey(displayName)) {
+                throw new IllegalArgumentException(
+                        "enum-overloaded callable values require an explicitly selected signature");
+            }
             if (family == null || family.isEmpty()) return null;
             if (family.size() > 1) {
                 throw new IllegalArgumentException(
@@ -7416,6 +7482,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
+            // Host, imported and first-class module calls have no statically
+            // proven enum signature. Even if only one overload is PUBLIC,
+            // selecting it by filtering runtime candidates is forbidden.
+            String qualified = module.name() + "." + name;
+            if (enumFunctionFamilies.getOrDefault(qualified, Map.of()).containsKey(args.size())) {
+                throw new IllegalArgumentException(
+                        "module callable '" + qualified + "' has same-arity nominal enum overloads; "
+                                + "an exact compiler-bound callable ID is required");
+            }
             Ast.FunctionDecl match = null;
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn

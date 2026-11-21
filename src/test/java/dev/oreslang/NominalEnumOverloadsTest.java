@@ -134,14 +134,20 @@ final class NominalEnumOverloadsTest {
     }
 
     @Test
-    void productionCompilerContinuesRejectingSameArityWhileRuntimeSelectorIsArityOnly() {
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+    void directEnumFncsAdmitOnlyPairwiseDistinctNominalSignatures() {
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(ENUMS + """
+                fnc go(Color c): int { return 1; }
+                fnc go(Mode m): int { return 2; }
+                """)));
+        IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(ENUMS + """
                         fnc go(Color c): int { return 1; }
                         fnc go(Mode m): int { return 2; }
+                        fnc go(Color again): int { return 3; }
                         """)));
-        assertTrue(failure.getMessage().contains("arity"),
-                failure.getMessage());
+        assertTrue(duplicate.getMessage().contains("arity")
+                || duplicate.getMessage().contains("pairwise"),
+                duplicate.getMessage());
     }
 
     @Test
@@ -292,5 +298,29 @@ final class NominalEnumOverloadsTest {
                         new dev.oreslang.types.Types.Named("Color", List.of()),
                         new dev.oreslang.types.Types.Named("Mode", List.of())),
                 registry, eligible));
+    }
+
+    @Test
+    void overloadPolicyRejectsExcessiveSignatureAndCandidateCounts() {
+        var enumIds = symbols();
+        Ast.Param color = param("Color");
+        assertEquals(NominalEnumOverloads.MAX_OVERLOAD_ARITY,
+                NominalEnumOverloads.signature("go",
+                        java.util.Collections.nCopies(
+                                NominalEnumOverloads.MAX_OVERLOAD_ARITY, color),
+                        enumIds).arity());
+        IllegalArgumentException hugeArity = assertThrows(IllegalArgumentException.class,
+                () -> NominalEnumOverloads.signature("go",
+                        java.util.Collections.nCopies(
+                                NominalEnumOverloads.MAX_OVERLOAD_ARITY + 1, color),
+                        enumIds));
+        assertTrue(hugeArity.getMessage().contains("arity limit"));
+        Signature valid = signature("go", "Color");
+        IllegalArgumentException hugeFamily = assertThrows(IllegalArgumentException.class,
+                () -> NominalEnumOverloads.select(
+                        java.util.Collections.nCopies(
+                                NominalEnumOverloads.MAX_SAME_ARITY_CANDIDATES + 1, valid),
+                        Map.of(0, enumIds.get("Color"))));
+        assertTrue(hugeFamily.getMessage().contains("candidate limit"));
     }
 }

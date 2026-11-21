@@ -41,6 +41,9 @@ public final class TypeChecker {
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    /** Only compile-time-admitted, pairwise-disjoint same-arity enum fnc families. */
+    private final Map<String, Map<Integer, List<Ast.FunctionDecl>>> enumFunctionFamilies =
+            new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -198,6 +201,7 @@ public final class TypeChecker {
         } else {
             ambiguousFunctions.add(fn.name());
             functions.remove(fn.name());
+            enumFunctionFamilies.remove(fn.name());
         }
     }
 
@@ -205,11 +209,51 @@ public final class TypeChecker {
         LinkedHashMap<Integer, Ast.FunctionDecl> family =
                 functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
         Ast.FunctionDecl previous = family.putIfAbsent(fn.parameters().size(), fn);
-        if (previous != null) {
+        if (previous == null) return;
+        if (!enumOverloadCompatible(previous, fn)) {
             throw new IllegalArgumentException(
                     "callable '" + key + "' already has arity " + fn.parameters().size()
                             + "; " + sameArityOverloadDiagnostic(fn.name(),
                                     previous.parameters(), fn.parameters()));
+        }
+        Map<Integer, List<Ast.FunctionDecl>> overloads =
+                enumFunctionFamilies.computeIfAbsent(key, ignored -> new HashMap<>());
+        List<Ast.FunctionDecl> signatures = overloads.computeIfAbsent(
+                fn.parameters().size(), ignored -> new ArrayList<>(List.of(previous)));
+        var newSignature = NominalEnumOverloads.signature(
+                fn.name(), fn.parameters(), eligibleEnumOverloadSymbols);
+        for (Ast.FunctionDecl alternative : signatures) {
+            var oldSignature = NominalEnumOverloads.signature(
+                    alternative.name(), alternative.parameters(), eligibleEnumOverloadSymbols);
+            if (NominalEnumOverloads.compare(oldSignature, newSignature)
+                    != NominalEnumOverloads.PairStatus.DISTINCT_ENUMS) {
+                throw new IllegalArgumentException(
+                        "same-arity enum overload family must be pairwise "
+                                + "distinguishable by nominal enum identity");
+            }
+        }
+        if (signatures.size() >= NominalEnumOverloads.MAX_SAME_ARITY_CANDIDATES) {
+            throw new IllegalArgumentException("same-arity enum overload family exceeds "
+                    + NominalEnumOverloads.MAX_SAME_ARITY_CANDIDATES + " candidates");
+        }
+        signatures.add(fn);
+    }
+
+    private boolean enumOverloadCompatible(Ast.FunctionDecl first, Ast.FunctionDecl second) {
+        // The initial executable slice excludes generic/actor/supervisor
+        // callables; fnc and routine share the callable namespace.
+        if (!first.genericParameters().isEmpty() || !second.genericParameters().isEmpty()
+                || first.actorKind() != Ast.ActorKind.NONE
+                || second.actorKind() != Ast.ActorKind.NONE) return false;
+        try {
+            return NominalEnumOverloads.compare(
+                    NominalEnumOverloads.signature(
+                            first.name(), first.parameters(), eligibleEnumOverloadSymbols),
+                    NominalEnumOverloads.signature(
+                            second.name(), second.parameters(), eligibleEnumOverloadSymbols))
+                    == NominalEnumOverloads.PairStatus.DISTINCT_ENUMS;
+        } catch (IllegalArgumentException notEligible) {
+            return false;
         }
     }
 
@@ -2128,9 +2172,18 @@ public final class TypeChecker {
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + functionName.name());
-                Ast.FunctionDecl target = findFunction(functionName.name(), arity);
+                Ast.FunctionDecl target = selectFunctionAtCall(
+                        functionName.name(), arity, call.arguments(), env, generics, self);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
+                    String ownerModule = unqualifiedFunctionOwners.get(functionName.name());
+                    if (enumFunctionFamilies.containsKey(functionName.name())
+                            && target.visibility() != Ast.Visibility.PUBLIC
+                            && !java.util.Objects.equals(ownerModule, currentLexicalModule)) {
+                        throw new IllegalArgumentException(
+                                "nominal enum overload '" + functionName.name()
+                                        + "' is private to module " + ownerModule);
+                    }
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
@@ -2166,10 +2219,18 @@ public final class TypeChecker {
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
                         "function " + namespace.name() + "." + qualifiedCall.member());
-                Ast.FunctionDecl target = findQualifiedFunction(
+                Ast.FunctionDecl target = selectFunctionAtCall(
                         namespace.name() + "." + qualifiedCall.member(),
-                        arity);
+                        arity, call.arguments(), env, generics, self);
                 if (target != null) {
+                    // A module-qualified call is a public namespace access.
+                    // Private declarations must not type-check only to fail
+                    // later (or accidentally run via prebound dispatch).
+                    if (target.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "module function '" + namespace.name() + "."
+                                        + target.name() + "' is private");
+                    }
                     if (target.actorKind() != Ast.ActorKind.NONE
                             && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
@@ -8084,16 +8145,79 @@ public final class TypeChecker {
         return functions.containsKey(name);
     }
 
+    private Ast.FunctionDecl selectFunctionAtCall(
+            String name, int arity, List<Ast.Expr> arguments,
+            Env env, Set<String> generics, Type self) {
+        if (ambiguousFunctions.contains(name)) {
+            throw new IllegalArgumentException(
+                    "ambiguous function/routine name '" + name + "'; qualify it with its module");
+        }
+        Map<Integer, List<Ast.FunctionDecl>> families = enumFunctionFamilies.get(name);
+        List<Ast.FunctionDecl> candidates = families == null ? null : families.get(arity);
+        if (candidates == null) {
+            LinkedHashMap<Integer, Ast.FunctionDecl> byArity = functions.get(name);
+            return byArity == null ? null : byArity.get(arity);
+        }
+        if (arguments.size() != arity || arguments.stream().anyMatch(Ast.SpreadExpr.class::isInstance)) {
+            throw new IllegalArgumentException(
+                    "enum overload calls require a statically known direct argument list");
+        }
+        List<NominalEnumOverloads.Signature> signatures = candidates.stream()
+                .map(fn -> NominalEnumOverloads.signature(
+                        fn.name(), fn.parameters(), eligibleEnumOverloadSymbols))
+                .toList();
+        Set<Integer> needed = new HashSet<>();
+        for (int i = 0; i < signatures.size(); i++) {
+            for (int j = i + 1; j < signatures.size(); j++) {
+                for (int pos = 0; pos < arity; pos++) {
+                    if (!signatures.get(i).positions().get(pos)
+                            .equals(signatures.get(j).positions().get(pos))) needed.add(pos);
+                }
+            }
+        }
+        Map<Integer, String> proofs = new HashMap<>();
+        for (int pos : needed) {
+            Type actual = typeOf(arguments.get(pos), env, generics, self);
+            String symbol = NominalEnumOverloads.staticEnumArgumentSymbol(
+                    deref(actual), taggedMessages, eligibleEnumOverloadSymbols);
+            if (symbol == null) {
+                throw new IllegalArgumentException(
+                        "cannot select nominal enum overload of '" + name
+                                + "' at argument " + (pos + 1)
+                                + ": requires a proven static enum type; "
+                                + "Any, Unknown, unions and structural shapes cannot select overloads");
+            }
+            proofs.put(pos, symbol);
+        }
+        NominalEnumOverloads.Signature selected =
+                NominalEnumOverloads.select(signatures, proofs);
+        // The selector inspects only compiler-proven enum symbol IDs.
+        // Ordinary argument assignability runs once, AFTER selection.
+        for (int i = 0; i < signatures.size(); i++) {
+            if (signatures.get(i) == selected) return candidates.get(i);
+        }
+        throw new IllegalStateException("nominal enum overload selector lost declaration identity");
+    }
+
     private Ast.FunctionDecl findFunction(String name, int arity) {
         if (ambiguousFunctions.contains(name)) {
             throw new IllegalArgumentException(
                     "ambiguous function/routine name '" + name + "'; qualify it with its module");
+        }
+        if (enumFunctionFamilies.getOrDefault(name, Map.of()).containsKey(arity)) {
+            throw new IllegalArgumentException(
+                    "enum-overloaded callable '" + name
+                            + "' requires an explicitly compiler-bound call site");
         }
         LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(name);
         return family == null ? null : family.get(arity);
     }
 
     private Ast.FunctionDecl findSingleFunction(String name) {
+        if (enumFunctionFamilies.containsKey(name)) {
+            throw new IllegalArgumentException(
+                    "enum-overloaded function references require explicit signature specialization");
+        }
         if (ambiguousFunctions.contains(name)) {
             throw new IllegalArgumentException(
                     "ambiguous function/routine name '" + name + "'; qualify it with its module");
@@ -8102,11 +8226,20 @@ public final class TypeChecker {
     }
 
     private Ast.FunctionDecl findQualifiedFunction(String qualifiedName, int arity) {
+        if (enumFunctionFamilies.getOrDefault(qualifiedName, Map.of()).containsKey(arity)) {
+            throw new IllegalArgumentException(
+                    "enum-overloaded callable '" + qualifiedName
+                            + "' must be statically selected at its call site");
+        }
         LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(qualifiedName);
         return family == null ? null : family.get(arity);
     }
 
     private Ast.FunctionDecl findSingleQualifiedFunction(String qualifiedName) {
+        if (enumFunctionFamilies.containsKey(qualifiedName)) {
+            throw new IllegalArgumentException(
+                    "enum-overloaded function references require explicit signature specialization");
+        }
         return singleFunction(functions.get(qualifiedName), qualifiedName);
     }
 
