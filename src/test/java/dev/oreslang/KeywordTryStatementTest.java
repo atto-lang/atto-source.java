@@ -62,6 +62,26 @@ final class KeywordTryStatementTest {
     }
 
     @Test
+    void bracedInnerCatchCannotStealOuterKeywordCatchAndFinally() throws Exception {
+        assertEquals("body|outer-finally", run("""
+                pub fnc main(): void {
+                  try
+                    try {
+                      stdio.stdout.write("body");
+                    } catch() {
+                      stdio.stdout.write("inner-catch-unreached");
+                    }
+                  catch()
+                    stdio.stdout.write("outer-catch-unreached");
+                  finally
+                    stdio.stdout.write("|outer-finally");
+                  end
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void catchOnlyAndCatchWithoutBindingAreValid() throws Exception {
         assertEquals("after", run("""
                 pub fnc main(): void {
