@@ -2685,7 +2685,21 @@ public final class Parser {
                 throw error(peek(), "checked " + category + " requires a type");
             }
             types.add(parseTypeRef());
-            while (match(COMMA)) types.add(parseTypeRef());
+            // A top-level comma before the next contextual kind separates
+            // *kinds*, whereas a comma before a type extends this kind's
+            // nominal error-type list. The balanced type parser consumes
+            // commas inside generic arguments itself.
+            while (check(COMMA)) {
+                if (current + 1 < tokens.size()
+                        && tokens.get(current + 1).type() == IDENT
+                        && java.util.Set.of("throws", "raises", "panics")
+                                .contains(tokens.get(current + 1).lexeme())) {
+                    advance(); // clause separator, not a new error type
+                    break;
+                }
+                advance();
+                types.add(parseTypeRef());
+            }
             if (new java.util.HashSet<>(types).size() != types.size()) {
                 throw error(previous(), "duplicate checked " + category + " type");
             }
