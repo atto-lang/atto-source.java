@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Guest E2E acceptance for the staged, scalar-only nonempty Map constructor. */
+/** Guest E2E targets for canonical Map.of; the separately stacked #2735 lowering is a merge gate. */
 final class NonemptyTildeMapGuestTest {
     private static String fixture(String file) {
         try (InputStream input = NonemptyTildeMapGuestTest.class.getResourceAsStream(
@@ -79,17 +79,25 @@ final class NonemptyTildeMapGuestTest {
         for (String name : new String[]{
                 "nonempty-wrong-value-reject",
                 "nonempty-wrong-key-reject"}) {
-            assertThrows(IllegalArgumentException.class,
-                    () -> OresCompiler.parseAndTypeCheck(
-                            fixture(name + ".atto")), name);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(fixture(name + ".atto")), name);
+            String expected = name.contains("value")
+                    ? "Map literal value" : "Map literal key";
+            assertTrue(failure.getMessage().contains(expected),
+                    "must fail the actual Map.of type gate, not unrelated parsing: "
+                            + name + ": " + failure.getMessage());
         }
     }
 
     @Test
     void missingWitnessSpreadAndRecordSyntaxCannotBypassAdmission() {
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException untyped = assertThrows(
+                IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck(
                         fixture("nonempty-untyped-reject.atto")));
+        assertTrue(untyped.getMessage().contains("Map<K,V>"),
+                "missing Map witness must fail the type gate: " + untyped.getMessage());
         for (String name : new String[]{
                 "nonempty-spread-reject",
                 "nonempty-mixed-reject"}) {
@@ -99,9 +107,22 @@ final class NonemptyTildeMapGuestTest {
     }
 
     @Test
+    void removedTildeMapAliasesRejectBeforeGuestAllocation() {
+        for (String old : new String[]{
+                "~map<string,int>(\"a\" => 1)",
+                "~map(\"a\" => 1)",
+                "~map()",
+                "~<Map<string,int>>()",
+                "~(\"a\" => 1)"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc read(): void { const m = " + old + "; return; }"), old);
+        }
+    }
+
+    @Test
     void mapLiteralRejectsOverBoundBeforeAnyBackendAllocation() {
         StringBuilder src = new StringBuilder(
-                "fnc read(): void { const m = ~map<string,int>(");
+                "fnc read(): void { const m = Map.of<string,int>(");
         for (int i = 0; i <= 4096; i++) {
             if (i != 0) src.append(", ");
             src.append("\"key_").append(i).append("\" => ").append(i);

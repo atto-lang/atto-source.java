@@ -1,4 +1,4 @@
 fnc read(): void {
-    const pair = ~tuple(1, "two");
+    const pair = Tuple.of(1, "two");
     return;
 }

@@ -1,5 +1,5 @@
 fnc bad(): void {
-    const base = ~(name: "Ada");
-    const row = ~record(...base);
+    const base = Record.of(name: "Ada");
+    const row = Record.of(...base);
     return;
 }

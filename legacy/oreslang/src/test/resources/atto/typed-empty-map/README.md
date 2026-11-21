@@ -1,29 +1,18 @@
-# Typed empty Map guest construction — staged compiler primitive
+# Typed empty Map.of: staged guest construction contract
 
-This fixture family is the first **empty-only**, explicitly typed Map<K,V>
-guest construction slice, stacked on Java tilde record PR #2715.
+Canonical `Map.of<K,V>()` and directly context-typed `Map.of()` represent an
+empty Map<K,V> with the existing OresKeyedMap guest runtime. They replace
+retired `~map<K,V>()`, `~map()`, and `~<Map<K,V>>()` constructors.
 
-- `~map<string,int>()` and `~<Map<Symbol,bool>>()` must both produce
-  the existing `OresKeyedMap` runtime type. `size` is the only guest-accessible
-  member of this new constructor path; both values must initially have size 0.
-- Only canonical String or Symbol keys and primitive int/bool/string/Symbol
-  values are initially admitted. Neither aliases nor unconstrained
-  generic type parameters are inferred; host/guest key domains are not
-  unified by implicit conversions.
-- `~map()` is accepted only as the **direct initializer of an explicitly
-  declared `Map<K,V>` local binding**, in either `const Map<K,V> m = ~map()`
-  or `const m: Map<K,V> = ~map()` spelling. The parser preserves the exact
-  K/V witness and the typechecker/ownership gate still validates the
-  canonical storage and supported scalar domains.
-- Untyped `const m = ~map()`, unsupported/unknown key/value types and
-  non-Map bindings are rejected during compilation. Full contextual type
-  propagation through returns, calls, branches, class fields and aliases
-  is **not yet enabled**; no `Any` or runtime reflection fallback exists.
-- The source-only exact-head parser verification on a private runner
-  proves syntax/AST and diagnostics, **not** ownership, Truffle guest execution,
-  runtime allocation, Maven/JUnit success, or five-backend parity.
-- Nonempty map entries, put/get/take, map spreads, duplicate-key rollback,
-  actor transport, and full serialization are **not supported** by this PR.
-- Source-org Actions runner-admission failures with zero executed steps
-  do **not** prove this test suite passed. Mark all guest tests NOT_EXECUTED
-  until verified on the exact source commit SHA.
+- Only verified key/value types are admitted. Empty maps have size 0.
+- `Map.of()` without a supported type witness, incompatible declared types,
+  and unverified generic domains must fail during compiler/typechecker
+  admission; ordinary call parsing alone is insufficient.
+- `Map.of<K,V>()` is checked for the exact number and domain of type args.
+- `Map.of(...)` nonempty values follow the separate scalar Map contract.
+- Class shadowing must not redirect nominal/user-defined factories into
+  compiler-owned Map lowering; integrated symbol-resolution tests are a
+  merge blocker.
+- Positive and negative fixtures here are **AUTHORED / NOT_EXECUTED**.
+  Java #2735 factory lowering is stacked and not present on the removal branch;
+  JUnit/guest/Native Image and cross-backend parity are **not certified**.
