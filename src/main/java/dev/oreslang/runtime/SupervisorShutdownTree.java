@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Executor;
@@ -52,6 +53,9 @@ public final class SupervisorShutdownTree {
         private final Hooks hooks;
         private final int depth;
         private final List<Supervisor> children = new ArrayList<>();
+        // Published under the tree freeze, never rewritten by a callback.
+        private SupervisorChildGenerationFence frozenChildEpochs =
+                new SupervisorChildGenerationFence(Map.of());
         // Strong refs are kept only until actor shutdown actually settles.
         private volatile List<ActorRuntime.ActorRef<?>> shutdownWorkers = List.of();
         private final OresFuture<Void> terminated = new OresFuture<>(() -> false, () -> { });
@@ -77,7 +81,33 @@ public final class SupervisorShutdownTree {
 
         private void transition(SupervisorLifecycleFsm.Event event) {
             synchronized (treeLock) {
-                lifecycle.updateAndGet(state -> SupervisorLifecycleFsm.reduce(state, event));
+                var before = lifecycle.get();
+                var after = SupervisorLifecycleFsm.reduce(before, event);
+                if (before != after) {
+                    lifecycle.set(after);
+                    if (traceJournal != null) {
+                        traceJournal.record(supervisorId, before, event, after);
+                    }
+                }
+            }
+        }
+
+        private void childFinished(long parentEpoch, long childId, long childEpoch,
+                SupervisorLifecycleFsm.State observedChild, boolean failed) {
+            synchronized (treeLock) {
+                frozenChildEpochs.requireReceipt(
+                        childId, childEpoch, observedChild.epoch());
+                // A future which settled abnormally during emergency CONTROL
+                // teardown is NOT proof that the child finished its hooks.
+                // No parent can acknowledge it as a successful/failed logical
+                // retirement without a matching completed child state.
+                if (!observedChild.logicallyStopped()
+                        || observedChild.failed() != failed) {
+                    throw new IllegalStateException(
+                            "parent received child outcome without matching logical retirement");
+                }
+                transition(new SupervisorLifecycleFsm.ChildFinished(
+                        parentEpoch, childId, failed));
             }
         }
 
@@ -94,7 +124,12 @@ public final class SupervisorShutdownTree {
 
     /** Coherent tree snapshot. Logical stop never implies physical reclamation. */
     public record NodeStatus(
-            long id, Long parentId, String name, SupervisorLifecycleFsm.State lifecycle) {}
+            long id, Long parentId, String name, SupervisorLifecycleFsm.State lifecycle,
+            Map<Long, Long> frozenChildEpochs) {
+        public NodeStatus {
+            frozenChildEpochs = Map.copyOf(frozenChildEpochs);
+        }
+    }
     public record TreeStatus(
             List<NodeStatus> nodes,
             boolean allLogicallyStopped,
@@ -105,7 +140,8 @@ public final class SupervisorShutdownTree {
     }
 
     private static void statuses(Supervisor node, Long parentId, List<NodeStatus> out) {
-        out.add(new NodeStatus(node.supervisorId, parentId, node.name, node.lifecycle.get()));
+        out.add(new NodeStatus(node.supervisorId, parentId, node.name,
+                node.lifecycle.get(), node.frozenChildEpochs.expectedEpochs()));
         for (Supervisor child : node.children) statuses(child, node.supervisorId, out);
     }
 
@@ -127,6 +163,7 @@ public final class SupervisorShutdownTree {
 
     private final ActorRuntime runtime;
     private final Executor control;
+    private final SupervisorLifecycleTrace.Journal traceJournal;
     private final Object treeLock = new Object();
     private final Set<ActorRuntime.ActorGroup> boundGroups =
             Collections.newSetFromMap(new IdentityHashMap<>());
@@ -143,8 +180,29 @@ public final class SupervisorShutdownTree {
     private boolean shuttingDown;
 
     public SupervisorShutdownTree(ActorRuntime runtime, Executor serialControlExecutor) {
+        this(runtime, serialControlExecutor, false);
+    }
+
+    /**
+     * Enable a bounded in-memory diagnostic trace. Disabled by default; no
+     * untrusted guest code or transport exporter is invoked by tracing.
+     */
+    public SupervisorShutdownTree(
+            ActorRuntime runtime, Executor serialControlExecutor, boolean traceEnabled) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.control = Objects.requireNonNull(serialControlExecutor, "serialControlExecutor");
+        this.traceJournal = traceEnabled ? new SupervisorLifecycleTrace.Journal(32768) : null;
+    }
+
+    /** Immutable diagnostic snapshot; trace overflow is explicitly reported. */
+    public SupervisorLifecycleTrace.Snapshot trace() {
+        runtime.requireSupervisorShutdownAuthority("inspect supervisor lifecycle trace");
+        synchronized (treeLock) {
+            if (traceJournal == null) {
+                throw new IllegalStateException("supervisor lifecycle tracing is disabled");
+            }
+            return traceJournal.snapshot();
+        }
     }
 
     public Supervisor setRoot(String name, ActorRuntime.ActorGroup group, Hooks hooks) {
@@ -341,10 +399,13 @@ public final class SupervisorShutdownTree {
     private void sealSubtree(Supervisor node) {
         node.group.fenceWorkerAdmissions();
         node.shutdownWorkers = node.group.workers();
+        Map<Long, Long> epochs = new java.util.HashMap<>();
+        for (Supervisor child : node.children) {
+            epochs.put(child.supervisorId, child.lifecycle.get().epoch());
+        }
+        node.frozenChildEpochs = new SupervisorChildGenerationFence(epochs);
         node.transition(new SupervisorLifecycleFsm.ShutdownRequested(
-                node.lifecycle.get().epoch(),
-                node.children.stream().map(child -> child.supervisorId)
-                        .collect(java.util.stream.Collectors.toSet())));
+                node.lifecycle.get().epoch(), epochs.keySet()));
         for (Supervisor child : node.children) sealSubtree(child);
     }
 
@@ -550,11 +611,14 @@ public final class SupervisorShutdownTree {
         }
         Supervisor child = node.children.get(position);
         final long epoch = node.lifecycle.get().epoch();
+        final long childEpoch = child.lifecycle.get().epoch();
         child.terminated.whenCompleteRuntime((ignored, failure) ->
                 dispatch(() -> {
+                    // The observed current child generation must agree with
+                    // BOTH the frozen parent snapshot and callback's token.
+                    node.childFinished(epoch, child.supervisorId, childEpoch,
+                            child.lifecycle.get(), failure != null);
                     if (failure != null) failures.add(failure);
-                    node.transition(new SupervisorLifecycleFsm.ChildFinished(
-                            epoch, child.supervisorId, failure != null));
                     stopChildren(node, reason, position - 1, failures);
                 }));
         start(child, Reason.PARENT_EXIT);

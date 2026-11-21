@@ -157,6 +157,60 @@ final class SupervisorLifecycleFsmIntegrationTest {
     }
 
     @Test
+    void forgedPrematureChildTerminationCannotAdvanceParentFsm() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            var tree = new SupervisorShutdownTree(runtime, control, true);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            var child = root.addChild("child", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            // Trusted test-only fault injection: a logical child-completion
+            // future is forged before the child's onShutdown/onStopped hooks.
+            child.terminated().completeFromRuntime(null);
+            var actual = tree.shutdown(SupervisorShutdownTree.Reason.REQUESTED);
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> actual.get(5, TimeUnit.SECONDS),
+                    "premature child done must fail CONTROL, not complete root");
+            assertTrue(tree.status().hasFailures());
+            assertFalse(root.lifecycle().logicallyStopped(),
+                    "parent must not publish a counterfeit clean child receipt");
+            SupervisorLifecycleTrace.verifyComplete(tree.trace());
+        }
+    }
+
+    @Test
+    void realSupervisorShutdownProducesCompleteReplayableControlTrace() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             var control = Executors.newSingleThreadExecutor()) {
+            var tree = new SupervisorShutdownTree(runtime, control, true);
+            var root = tree.setRoot("root", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            var child = root.addChild("child", runtime.createActorGroup(),
+                    new SupervisorShutdownTree.Hooks() {});
+            var initial = tree.trace();
+            assertTrue(initial.complete());
+            assertEquals(0, initial.entries().size());
+            tree.shutdown(SupervisorShutdownTree.Reason.NORMAL).get(5, TimeUnit.SECONDS);
+            var recorded = tree.trace();
+            SupervisorLifecycleTrace.verifyComplete(recorded);
+            assertTrue(recorded.issued() >= 7, "hooks and actor barriers must be journaled");
+            assertEquals(0, recorded.dropped());
+            assertTrue(recorded.entries().stream()
+                    .anyMatch(e -> e.supervisorId() == root.supervisorId()));
+            assertTrue(recorded.entries().stream()
+                    .anyMatch(e -> e.supervisorId() == child.supervisorId()));
+            assertTrue(tree.status().allLogicallyStopped());
+            assertFalse(tree.status().allPhysicallyReclaimed());
+            var rootNode = tree.status().nodes().stream()
+                    .filter(n -> n.id() == root.supervisorId()).findFirst().orElseThrow();
+            assertEquals(java.util.Map.of(child.supervisorId(), child.lifecycle().epoch()),
+                    rootNode.frozenChildEpochs(),
+                    "shutdown snapshot must preserve the child's exact incarnation");
+        }
+    }
+
+    @Test
     void snapshotShowsEveryNodeQuiescingThenLogicallyStoppedNotPhysicallyReclaimed()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime();
