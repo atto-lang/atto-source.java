@@ -45,5 +45,21 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Dmaven.compiler.release=25 -Dtest=ActorRuntimeNativeControlCountersTest test
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          path = Path("target/surefire-reports/TEST-dev.oreslang.runtime.ActorRuntimeNativeControlCountersTest.xml")
+          if not path.is_file():
+              raise SystemExit("missing JUnit runtime control integration report")
+          report = ET.parse(path).getroot()
+          for key, wanted in [("tests", 1), ("failures", 0), ("errors", 0), ("skipped", 0)]:
+              if int(report.attrib.get(key, "-1")) != wanted:
+                  raise SystemExit(f"unexpected test result {key}: {report.attrib}")
+          marker = "PASS java actor-runtime native control snapshot managed-byte delta=0 (HOST ONLY)"
+          stdout = "".join(elem.text or "" for elem in report.iter("system-out"))
+          if marker not in stdout:
+              raise SystemExit("missing actual warmed native snapshot allocation receipt")
+          print("PASS java JDK25 runtime i128 native root integration JUnit receipt (host only)")
+          PY
       - name: Scope of test
         run: echo 'HOST-ONLY Java FFM and ActorRuntime control integration; no compiled Atto guest or whole-process zero GC'
