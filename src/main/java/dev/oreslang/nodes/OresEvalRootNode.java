@@ -18,6 +18,7 @@ import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.HttpResponseDraft;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresKeyedMap;
+import dev.oreslang.runtime.OresJsonValue;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -133,6 +134,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final boolean allocJsonImported;
         // Actor carriers may enter the same evaluator concurrently. The
         // identity map only retains call nodes already owned by this program.
         private final Map<Ast.CallExpr, Integer> optionDepthCache =
@@ -217,9 +219,20 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.allocJsonImported = program.imports().stream()
+                    .anyMatch(Evaluator::isCanonicalAllocJsonImport);
             indexImports();
             indexDeclarations();
             indexCallableSlots();
+        }
+
+        private static boolean isCanonicalAllocJsonImport(Ast.ImportDecl imported) {
+            if (imported.kind() != Ast.ImportKind.MODULE || imported.wildcard()) return false;
+            String path = imported.path();
+            if (!(path.equals("alloc/json") || path.equals("alloc/json.ores"))) return false;
+            return imported.names().size() == 1
+                    && imported.names().getFirst().equals("Json")
+                    && ImportRules.localName(imported, "Json").equals("Json");
         }
 
         private void indexImports() {
@@ -4709,7 +4722,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (member.equals("put")) {
                     // Typed Maps reject null values, so null unambiguously
                     // means this key was absent before the committed write.
-                    Object previous = map.put(key, args.get(1));
+                    Object offered = normalizeTypedMapStoredValue(map, args.get(1));
+                    Object previous = map.put(key, offered);
                     return new OptionValue(previous != null, previous);
                 }
                 OresKeyedMap.Lookup<Object> removed = map.take(key);
@@ -4993,6 +5007,11 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             if (receiver instanceof OresKeyedMap<?, ?> map) {
+                if (map.valueDomain() == OresKeyedMap.ValueDomain.JSON) {
+                    throw new IllegalArgumentException(
+                            "Map<String, JsonValue> indexed reads are disabled until "
+                                    + "move-only borrow/snapshot semantics are implemented");
+                }
                 return map.getRequired(index);
             }
             if (receiver instanceof Map<?, ?> map) {
@@ -5094,8 +5113,9 @@ public final class OresEvalRootNode extends RootNode {
                 @SuppressWarnings("unchecked")
                 OresKeyedMap<Object, Object> map =
                         (OresKeyedMap<Object, Object>) rawMap;
-                map.put(key, value);
-                return value;
+                Object stored = normalizeTypedMapStoredValue(map, value);
+                map.put(key, stored);
+                return stored;
             }
             if (receiver instanceof MutableStructValue rawStruct) {
                 if (!(key instanceof String fieldName)) {
@@ -5196,6 +5216,12 @@ public final class OresEvalRootNode extends RootNode {
             Ast.TypeRef valueType = type.arguments().get(1);
             OresKeyedMap.ValueDomain values = mapValueDomain(valueType);
 
+            if (values == OresKeyedMap.ValueDomain.JSON
+                    && !isStringMapKeyType(keyType)) {
+                throw new IllegalArgumentException(
+                        "Map<String, JsonValue> requires String keys");
+            }
+
             if (!keyType.isUnion()) {
                 if (!keyType.inferArguments() && keyType.arguments().isEmpty()) {
                     if (keyType.name().equals("String")
@@ -5237,10 +5263,17 @@ public final class OresEvalRootNode extends RootNode {
                     && type.name().equals("Symbol");
         }
 
-        private static OresKeyedMap.ValueDomain mapValueDomain(Ast.TypeRef type) {
+        private OresKeyedMap.ValueDomain mapValueDomain(Ast.TypeRef type) {
             if (type.inferArguments() || !type.arguments().isEmpty()) {
                 throw new IllegalArgumentException(
-                        "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+                        "closed Map<K,V> values require directly spelled reifiable domains");
+            }
+            if (type.name().equals("JsonValue")) {
+                if (!allocJsonImported) {
+                    throw new SecurityException(
+                            "JsonValue Map allocation requires canonical alloc/json import");
+                }
+                return OresKeyedMap.ValueDomain.JSON;
             }
             if (Set.of(
                     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
@@ -5257,7 +5290,27 @@ public final class OresEvalRootNode extends RootNode {
                 return OresKeyedMap.ValueDomain.SYMBOL;
             }
             throw new IllegalArgumentException(
-                    "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+                    "closed Map<K,V> values must be int, string, bool, Symbol, "
+                            + "or JsonValue from alloc/json");
+        }
+
+        private static Object normalizeTypedMapStoredValue(
+                OresKeyedMap<?, ?> map,
+                Object value) {
+            if (map.valueDomain() != OresKeyedMap.ValueDomain.JSON) return value;
+            if (value instanceof OresJsonValue json) return json;
+            if (value instanceof String string) return OresJsonValue.of(string);
+            if (value instanceof Boolean bool) return OresJsonValue.of(bool);
+            if (value instanceof Byte number) return OresJsonValue.of(number.longValue());
+            if (value instanceof Short number) return OresJsonValue.of(number.longValue());
+            if (value instanceof Integer number) return OresJsonValue.of(number.longValue());
+            if (value instanceof Long number) return OresJsonValue.of(number);
+            if (value instanceof java.math.BigInteger number) return OresJsonValue.of(number);
+            if (value instanceof java.math.BigDecimal number) return OresJsonValue.of(number);
+            if (value instanceof Float number) return OresJsonValue.of(number.doubleValue());
+            if (value instanceof Double number) return OresJsonValue.of(number);
+            throw new IllegalArgumentException(
+                    "Map<String, JsonValue> currently accepts scalar JSON values only");
         }
 
         private Object instantiateEvaluated(
@@ -7948,11 +8001,18 @@ public final class OresEvalRootNode extends RootNode {
                         requireOne(args, "Map.has");
                         return map.containsKey(args.getFirst());
                     };
-                    case "get" -> (Invokable) args -> {
-                        requireOne(args, "Map.get");
-                        OresKeyedMap.Lookup<?> found = map.lookup(args.getFirst());
-                        return new OptionValue(found.present(), found.value());
-                    };
+                    case "get" -> {
+                        if (map.valueDomain() == OresKeyedMap.ValueDomain.JSON) {
+                            throw new IllegalArgumentException(
+                                    "Map<String, JsonValue>.get is disabled until "
+                                            + "move-only borrow/snapshot semantics are implemented");
+                        }
+                        yield (Invokable) args -> {
+                            requireOne(args, "Map.get");
+                            OresKeyedMap.Lookup<?> found = map.lookup(args.getFirst());
+                            return new OptionValue(found.present(), found.value());
+                        };
+                    }
                     case "put", "take", "remove" -> throw new SecurityException(
                             "Map." + name
                                     + " is direct-call-only because mutation authority belongs to the owning binding");

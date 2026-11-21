@@ -84,6 +84,11 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    /**
+     * Exact allocator-backed JSON module gate. JsonValue is never ambient:
+     * only the canonical module import may enable JSON Map lowering.
+     */
+    private boolean allocJsonImported;
     /** Both type-only and value imports occupy names short inference may not redefine. */
     private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -249,6 +254,9 @@ public final class TypeChecker {
 
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
+            if (isCanonicalAllocJsonImport(imported)) {
+                allocJsonImported = true;
+            }
             for (String name : ImportRules.exposedBindings(imported)) {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 importedNames.add(name);
@@ -266,6 +274,15 @@ public final class TypeChecker {
                 }
             }
         }
+    }
+
+    private static boolean isCanonicalAllocJsonImport(Ast.ImportDecl imported) {
+        if (imported.kind() != Ast.ImportKind.MODULE || imported.wildcard()) return false;
+        String path = imported.path();
+        if (!(path.equals("alloc/json") || path.equals("alloc/json.ores"))) return false;
+        return imported.names().size() == 1
+                && imported.names().getFirst().equals("Json")
+                && ImportRules.localName(imported, "Json").equals("Json");
     }
 
     private void collect(Ast.Program program) {
@@ -2472,7 +2489,15 @@ public final class TypeChecker {
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
-            requireAssignable(value, targetType, "assignment to " + where);
+            if (isJsonValueType(targetType)) {
+                if (!isJsonScalarLiftable(value)) {
+                    throw new IllegalArgumentException(
+                            "JSON Map insertion currently accepts scalar values only; "
+                                    + "moving an existing JsonValue requires rollback-safe owned-put lowering");
+                }
+            } else {
+                requireAssignable(value, targetType, "assignment to " + where);
+            }
             for (Type slot : dynamicFixedSlots) {
                 requireReadonlyCapabilityPreserved(value, slot, "dynamic indexed target assignment");
                 requireAssignable(value, slot, "dynamic indexed target assignment");
@@ -3212,14 +3237,29 @@ public final class TypeChecker {
                     for (int i = 0; i < builtin.parameters().size(); i++) {
                         Type actualArgument =
                                 typeOf(call.arguments().get(i), env, generics, self);
+                        Type expectedArgument = builtin.parameters().get(i);
                         requireReadonlyCapabilityPreserved(
                                 actualArgument,
-                                builtin.parameters().get(i),
+                                expectedArgument,
                                 "collection member argument " + (i + 1));
-                        requireAssignable(
-                                actualArgument,
-                                builtin.parameters().get(i),
-                                "collection member argument " + (i + 1));
+                        boolean jsonPutValue =
+                                isTypedMapType(receiver)
+                                        && member.member().equals("put")
+                                        && i == 1
+                                        && isJsonValueType(expectedArgument);
+                        if (jsonPutValue) {
+                            if (!isJsonScalarLiftable(actualArgument)) {
+                                throw new IllegalArgumentException(
+                                        "Map<String, JsonValue>.put currently accepts scalar "
+                                                + "values only; owned JsonValue transfer awaits "
+                                                + "rollback-safe lowering");
+                            }
+                        } else {
+                            requireAssignable(
+                                    actualArgument,
+                                    expectedArgument,
+                                    "collection member argument " + (i + 1));
+                        }
                     }
                     return builtin.result();
                 }
@@ -3903,7 +3943,14 @@ public final class TypeChecker {
                     ? env.lookup(ownerName.name()) : null;
             if (isTypedMapType(receiver)) {
                 requireAssignable(index, typedMapKeyType(receiver), "Map key");
-                return typedMapValueType(receiver);
+                Type value = typedMapValueType(receiver);
+                if (isJsonValueType(value)) {
+                    throw new IllegalArgumentException(
+                            "Map<String, JsonValue> indexed reads are disabled until "
+                                    + "borrow/snapshot semantics prevent move-only aliasing; "
+                                    + "use has/take/remove for the staged surface");
+                }
+                return value;
             }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "record/struct field key");
@@ -6713,9 +6760,16 @@ public final class TypeChecker {
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "has" -> new Function(List.of(key), Primitive.BOOL);
-                case "get" -> new Function(
-                        List.of(key),
-                        new Named("Option", List.of(value)));
+                case "get" -> {
+                    if (isJsonValueType(value)) {
+                        throw new IllegalArgumentException(
+                                "Map<String, JsonValue>.get is disabled until "
+                                        + "move-only borrow/snapshot semantics are implemented");
+                    }
+                    yield new Function(
+                            List.of(key),
+                            new Named("Option", List.of(value)));
+                }
                 case "put" -> new Function(
                         List.of(key, value),
                         new Named("Option", List.of(value)));
@@ -8734,6 +8788,16 @@ public final class TypeChecker {
             }
         }
 
+        if (ref.name().equals("JsonValue")) {
+            if (!allocJsonImported) {
+                throw new IllegalArgumentException(
+                        "JsonValue requires 'import module Json from \"alloc/json\"'");
+            }
+            throw new IllegalArgumentException(
+                    "standalone JsonValue declarations are not enabled in this staged surface; "
+                            + "use JsonValue only as Map<String, JsonValue> until owned value lowering lands");
+        }
+
         // Primitive and scalar built-in types do not accept higher-kinded
         // application. Previously e.g. int<string> silently resolved to int.
         if (Set.of("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
@@ -8777,14 +8841,22 @@ public final class TypeChecker {
                                     + "type aliases and generic wrappers are not accepted yet");
                 }
                 Type key = resolve(rawKey, generics, self);
-                Type value = resolve(rawValue, generics, self);
+                boolean jsonValue = isDirectAllocJsonValueRef(rawValue);
+                Type value = jsonValue
+                        ? new Named("$alloc$json$JsonValue", List.of())
+                        : resolve(rawValue, generics, self);
                 if (!isSupportedTypedMapKey(key)) {
                     throw new IllegalArgumentException(
                             "Map<K,V> key type must be String, Symbol, or String | Symbol");
                 }
+                if (jsonValue && key != Primitive.STRING) {
+                    throw new IllegalArgumentException(
+                            "Map<String, JsonValue> requires String keys; JSON object keys are never Symbols");
+                }
                 if (!isSupportedTypedMapValue(value)) {
                     throw new IllegalArgumentException(
-                            "closed Map<K,V> v1 values must be int, string, bool, or Symbol");
+                            "closed Map<K,V> values must be int, string, bool, Symbol, "
+                                    + "or JsonValue from an explicit alloc/json import");
                 }
                 yield new Named("Map", List.of(key, value));
             }
@@ -9039,12 +9111,42 @@ public final class TypeChecker {
                 || isDirectTypedMapSymbolRef(a) && isDirectTypedMapStringRef(b);
     }
 
-    private static boolean isDirectTypedMapValueRef(Ast.TypeRef ref) {
+    private boolean isDirectTypedMapValueRef(Ast.TypeRef ref) {
         if (ref.inferArguments() || !ref.arguments().isEmpty()) return false;
+        if (isDirectAllocJsonValueRef(ref)) return true;
         return Set.of(
                 "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
                 "int", "uint", "bigint", "string", "String", "bool", "Bool",
                 "Symbol").contains(ref.name());
+    }
+
+    private boolean isDirectAllocJsonValueRef(Ast.TypeRef ref) {
+        return allocJsonImported
+                && !ref.inferArguments()
+                && ref.arguments().isEmpty()
+                && ref.name().equals("JsonValue")
+                && findClass("JsonValue") == null
+                && findInterface("JsonValue") == null
+                && findTypeAlias("JsonValue") == null
+                && !modules.containsKey("JsonValue")
+                && !importedNames.contains("JsonValue");
+    }
+
+    private static boolean isJsonValueType(Type type) {
+        Type concrete = type instanceof Borrow borrow ? borrow.target() : type;
+        return concrete instanceof Named named
+                && named.name().equals("$alloc$json$JsonValue")
+                && named.arguments().isEmpty();
+    }
+
+    private static boolean isJsonScalarLiftable(Type type) {
+        Type concrete = type instanceof Borrow borrow ? borrow.target() : type;
+        return concrete == Primitive.INT
+                || concrete == Primitive.FLOAT
+                || concrete == Primitive.DECIMAL
+                || concrete == Primitive.BOOL
+                || concrete == Primitive.STRING
+                || concrete instanceof StringLiteral;
     }
 
     private boolean isSupportedTypedMapKey(Type key) {
@@ -9071,9 +9173,10 @@ public final class TypeChecker {
         if (concrete == Primitive.INT
                 || concrete == Primitive.STRING
                 || concrete == Primitive.BOOL) return true;
-        return concrete instanceof Named named
+        if (concrete instanceof Named named
                 && named.name().equals("$builtin$Symbol")
-                && named.arguments().isEmpty();
+                && named.arguments().isEmpty()) return true;
+        return isJsonValueType(concrete);
     }
 
     private boolean isFreshTypedMapConstruction(Ast.Expr expression) {
