@@ -628,7 +628,7 @@ public final class Parser {
         while (!check(END) && !check(EOF)) {
             // The first canonical field uses 'let'; subsequent fields may
             // omit it. Neither spelling grants an unverified field loan.
-            match(LET);
+            boolean mutableField = match(LET);
             Token field = consume(IDENT, "expected inverted column name");
             if (!fieldNames.add(field.lexeme())) {
                 throw error(field, "duplicate inverted column '" + field.lexeme() + "'");
@@ -640,7 +640,7 @@ public final class Parser {
                 throw error(previous(), "inverted v1 field must be a scalar int");
             }
             consume(SEMICOLON, "expected ';' after inverted column type");
-            fields.add(new Ast.InvertedColumnDecl(field.lexeme(), type));
+            fields.add(new Ast.InvertedColumnDecl(field.lexeme(), type, mutableField));
             if (fields.size() > 2) {
                 throw error(previous(), "inverted v1 schema requires exactly two columns");
             }

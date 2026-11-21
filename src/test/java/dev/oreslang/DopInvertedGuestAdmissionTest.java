@@ -57,6 +57,11 @@ final class DopInvertedGuestAdmissionTest {
                     schema.columns().stream().map(Ast.InvertedColumnDecl::name).toList());
             assertEquals(List.of("int", "int"),
                     schema.columns().stream().map(c -> c.type().name()).toList());
+            // The canonical fixture uses 'let value' and an implicit
+            // immutable token. Losing this bit makes future MIR allow a
+            // write to a value column that LLVM already treats as fixed.
+            assertEquals(List.of(true, false),
+                    schema.columns().stream().map(Ast.InvertedColumnDecl::mutableField).toList());
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(schemaOnly(fixture(name))),
                     "schema parsed but not executable until ownership MIR exists");
@@ -97,6 +102,31 @@ final class DopInvertedGuestAdmissionTest {
                 () -> Parser.parse("define inverted struct Row<T> as value: int; token: int; end"));
         assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse(prefix + "value: int = 7; token: int; end"));
+    }
+
+    @Test
+    void perColumnMutabilitySurvivesParsingWithoutAuthorizingGuestExecution() {
+        var allImmutable = parsedSchema("define inverted struct R as "
+                + "x: int; y: int; end");
+        assertEquals(List.of(false, false),
+                allImmutable.columns().stream().map(Ast.InvertedColumnDecl::mutableField).toList());
+        var bothMutable = parsedSchema("define inverted struct R as "
+                + "let x: int; let y: int; end");
+        assertEquals(List.of(true, true),
+                bothMutable.columns().stream().map(Ast.InvertedColumnDecl::mutableField).toList());
+        var mixed = parsedSchema("define inverted struct R as "
+                + "x: int; let y: int; end");
+        assertEquals(List.of(false, true),
+                mixed.columns().stream().map(Ast.InvertedColumnDecl::mutableField).toList());
+        for (var schema : List.of(allImmutable, bothMutable, mixed)) {
+            assertTrue(assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(
+                            "define inverted struct R as "
+                                    + (schema.columns().getFirst().mutableField() ? "let " : "")
+                                    + "x: int; "
+                                    + (schema.columns().get(1).mutableField() ? "let " : "")
+                                    + "y: int; end")).getMessage().contains(MISSING_BACKEND));
+        }
     }
 
     @Test

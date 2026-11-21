@@ -491,7 +491,9 @@ public final class Ast {
      * guest-visible backing collection. It is rejected by TypeChecker until
      * ownership-checked MIR and the column ABI are implemented.
      */
-    public record InvertedColumnDecl(String name, TypeRef type) {
+    public record InvertedColumnDecl(String name, TypeRef type, boolean mutableField) {
+        // The 'let' modifier is part of the nominal column schema, not
+        // permission to borrow a live row before ownership MIR is verified.
         public InvertedColumnDecl {
             java.util.Objects.requireNonNull(name, "inverted column name");
             java.util.Objects.requireNonNull(type, "inverted column type");
