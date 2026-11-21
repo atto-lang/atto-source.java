@@ -141,14 +141,23 @@ final class ProxyRwLock {
                 idle = drainIdleCallbacksLocked();
             }
         }
+        Throwable publicationFailure = null;
         for (Waiter waiter : failed) {
-            if (failure instanceof java.util.concurrent.CancellationException) {
-                waiter.future.cancel(false);
-            } else {
-                waiter.future.failFromRuntime(failure);
+            try {
+                if (failure instanceof java.util.concurrent.CancellationException) {
+                    waiter.future.cancel(false);
+                } else {
+                    waiter.future.failFromRuntime(failure);
+                }
+            } catch (Throwable observerFailure) {
+                publicationFailure = appendFailure(publicationFailure, observerFailure);
             }
         }
-        runIdleCallbacks(idle);
+        try { runIdleCallbacks(idle); }
+        catch (Throwable callbackFailure) {
+            publicationFailure = appendFailure(publicationFailure, callbackFailure);
+        }
+        propagatePublicationFailure(publicationFailure);
     }
 
     private boolean canGrantNow(boolean write) {
@@ -208,8 +217,14 @@ final class ProxyRwLock {
                 idle = drainIdleCallbacksLocked();
             }
         }
-        settleGrants(grants);
-        runIdleCallbacks(idle);
+        Throwable publicationFailure = null;
+        try { settleGrants(grants); }
+        catch (Throwable failure) { publicationFailure = failure; }
+        try { runIdleCallbacks(idle); }
+        catch (Throwable failure) {
+            publicationFailure = appendFailure(publicationFailure, failure);
+        }
+        propagatePublicationFailure(publicationFailure);
     }
 
     /**
@@ -248,26 +263,56 @@ final class ProxyRwLock {
         return callbacks;
     }
 
+    private static Throwable appendFailure(Throwable first, Throwable next) {
+        if (first == null) return next;
+        if (first != next) first.addSuppressed(next);
+        return first;
+    }
+
+    private static void propagatePublicationFailure(Throwable failure) {
+        if (failure == null) return;
+        if (failure instanceof Error fatal) throw fatal;
+        if (failure instanceof RuntimeException error) throw error;
+        throw new IllegalStateException("proxy shared-domain settlement failed", failure);
+    }
+
     private static void runIdleCallbacks(List<Runnable> callbacks) {
+        Throwable fatal = null;
         for (Runnable callback : callbacks) {
-            try {
-                callback.run();
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
+            try { callback.run(); }
+            catch (VirtualMachineError | ThreadDeath | LinkageError failed) {
+                fatal = appendFailure(fatal, failed);
             } catch (Throwable ignored) {
-                // Retirement callbacks are runtime bookkeeping. One failed
-                // cleanup must not corrupt the logical lock state machine.
+                // Independent retirement retries preserve their own errors.
+                // One ordinary close failure cannot prevent another callback.
             }
         }
+        propagatePublicationFailure(fatal);
     }
 
     private void settleGrants(List<Grant> grants) {
+        Throwable failure = null;
         for (Grant grant : grants) {
-            if (!grant.waiter.future.completeFromRuntime(grant.lease)) {
-                // Cancellation won after dequeue/reservation but before future
-                // settlement. Return the logical lease and continue draining.
-                grant.lease.close();
+            try {
+                if (!grant.waiter.future.completeFromRuntime(grant.lease)) {
+                    // Cancellation won after reservation, so refund the
+                    // physical/logical credit and keep draining later grants.
+                    grant.lease.close();
+                }
+            } catch (Throwable observerFailure) {
+                // The Future's terminal state is published by CAS BEFORE
+                // callbacks execute. A throwing observer may not strand the
+                // other independently reserved FIFO leases.
+                if (!grant.waiter.future.isDone()
+                        || grant.waiter.future.isCancelled()) {
+                    try { grant.lease.close(); }
+                    catch (Throwable cleanupFailure) {
+                        observerFailure = appendFailure(observerFailure, cleanupFailure);
+                    }
+                }
+                failure = appendFailure(failure, observerFailure);
             }
         }
+        propagatePublicationFailure(failure);
     }
 }
