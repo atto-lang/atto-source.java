@@ -1812,6 +1812,11 @@ public final class OwnershipChecker {
                     checkExpr(argument, scope, true);
                     yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
                 }
+                case "typeof" -> {
+                    // Observes the operand's runtime type; never consumes it.
+                    checkExpr(argument, scope, false);
+                    yield new ValueInfo(Ast.TypeRef.simple("TypeInfo"), ValueKind.COPY, null);
+                }
                 case "recover" -> {
                     // The handler closure's captures are checked like any closure.
                     checkExpr(argument, scope, false);

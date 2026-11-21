@@ -3695,6 +3695,11 @@ public final class TypeChecker {
                 }
                 return Primitive.VOID;
             }
+            if (runtime.operation().equals("typeof")) {
+                if (runtime.arguments().size() != 1) throw new IllegalArgumentException("typeof expects one operand");
+                typeOf(runtime.arguments().getFirst(), env, generics, self);
+                return new Named("TypeInfo", List.of());
+            }
             if (isExceptionalEffect(runtime) || runtime.operation().equals("recover")) {
                 if (runtime.arguments().size() != 1) {
                     throw new IllegalArgumentException(runtime.operation() + " expects exactly one operand");
@@ -5349,6 +5354,12 @@ public final class TypeChecker {
                 if (member.member().equals("stderr") || member.member().equals("err")) return new Named("stdio.stderr", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            if (receiver instanceof Named typeInfo && typeInfo.name().equals("TypeInfo")
+                    && typeInfo.arguments().isEmpty() && findClass("TypeInfo") == null) {
+                if (member.member().equals("name")) return Primitive.STRING;
+                if (member.member().equals("to_string")) return new Function(List.of(), Primitive.STRING);
+                throw new IllegalArgumentException("TypeInfo has no member '" + member.member() + "'");
+            }
             if (receiver instanceof Named named && named.name().equals("$TelemetrySpan")) {
                 return switch (member.member()) {
                     case "attribute" -> new Function(
@@ -8541,7 +8552,11 @@ public final class TypeChecker {
                             && guardsProvablyDisjoint(previous.guard(), arm.guard());
                     boolean literalExcluded = literalExcludedByGuard(previous, arm)
                             || literalExcludedByGuard(arm, previous);
-                    if (!patternDisjoint && !guardDisjoint && !literalExcluded) {
+                    // A guarded arm is conditional: overlap with it is resolved by
+                    // source order (refinement then fallback). Two unguarded
+                    // overlapping arms still need an explicit 'match first'.
+                    boolean guardedOrder = previous.guard() != null || arm.guard() != null;
+                    if (!patternDisjoint && !guardDisjoint && !literalExcluded && !guardedOrder) {
                         throw new IllegalArgumentException(
                                 "ordinary match requires provably disjoint explicit patterns "
                                         + (j + 1) + " and " + (i + 1)

@@ -6766,6 +6766,27 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        /** Runtime `typeof value`: a readonly descriptor with name and to_string(). */
+        private static Object typeInfoOf(Object value) {
+            String name;
+            if (value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte) name = "int";
+            else if (value instanceof Double || value instanceof Float) name = "float";
+            else if (value instanceof String) name = "string";
+            else if (value instanceof Boolean) name = "bool";
+            else if (value instanceof OresObject object) name = object.klass.name();
+            else if (value instanceof NominalEnumValue nominal) name = nominal.enumName();
+            else if (value instanceof OptionValue) name = "Option";
+            else if (value instanceof ResultValue) name = "Result";
+            else if (value instanceof TupleList) name = "Tuple";
+            else if (value instanceof List<?>) name = "List";
+            else if (value == null) name = "void";
+            else name = value.getClass().getSimpleName();
+            Map<String, Object> fields = new LinkedHashMap<>();
+            fields.put("name", name);
+            fields.put("to_string", (Invokable) ignored -> name);
+            return new ReadonlyRecordValue(fields);
+        }
+
         private static final String RECOVER_SLOT = "$recover$";
 
         private static boolean registersRecover(List<Ast.Stmt> body) {
@@ -8777,6 +8798,7 @@ public final class OresEvalRootNode extends RootNode {
                     registerRecoverHandler(value, env);
                     return null;
                 }
+                if (runtime.operation().equals("typeof")) return typeInfoOf(value);
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {

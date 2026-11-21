@@ -5663,6 +5663,13 @@ public final class Parser {
                 continue;
             }
 
+            if (match(COLON)) {
+                // Per-arm `: T ->` annotation; it must repeat the match<T> result type.
+                Ast.TypeRef armType = parseTypeRef();
+                if (declaredResult == null || !armType.equals(declaredResult)) {
+                    throw error(previous(), "match arm result annotation must equal the match<T> result type");
+                }
+            }
             consume(ARROW, "value match arms use the slim arrow '->'");
 
             if (match(DOUBLE_COLON)) {
@@ -6011,6 +6018,10 @@ public final class Parser {
                 List<Ast.Pattern> args = new ArrayList<>();
                 if (!check(RPAREN)) {
                     do args.add(parsePattern()); while (match(COMMA));
+                }
+                if (args.isEmpty() && (name.equals("Ok") || name.equals("Err") || name.equals("Some"))) {
+                    // `on Err() ->` matches the variant and ignores its payload (= `Err(_)`).
+                    args.add(new Ast.WildcardPattern());
                 }
                 consume(RPAREN, "expected ')' after constructor pattern");
                 return new Ast.ConstructorPattern(name, args);
@@ -6593,6 +6604,8 @@ public final class Parser {
 
     private Ast.Expr parseUnaryBody() {
         if (hasBangOwnershipAlias()) return parseBangOwnershipAlias();
+        // Expression `typeof value`: a runtime TypeInfo (name, to_string()).
+        if (match(TYPEOF)) return new Ast.RuntimeCallExpr("typeof", List.of(parseUnary()));
         // Canonical prefix channel read: `(<< ch)` takes the next value out of ch.
         if (checkAdjacentPair(LT)) {
             advance();
@@ -7188,6 +7201,8 @@ public final class Parser {
                     + "no host fallback is allowed");
         }
         if (match(MATCH)) return parseValueMatch();
+        // Typed value `switch<T> subject over ... end` is the same checked value match.
+        if (check(SWITCH) && checkNext(LT)) { advance(); return parseValueMatch(); }
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
