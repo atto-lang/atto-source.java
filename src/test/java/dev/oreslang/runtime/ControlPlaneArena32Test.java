@@ -11,7 +11,7 @@ public final class ControlPlaneArena32Test {
         if (!rejected) throw new AssertionError("expected fail-closed control ref rejection");
     }
     public static void main(String[] args) {
-        check(ControlPlaneArena32.ABI.equals("control_generation20_slot12_v1"), "ABI must be explicit");
+        check(ControlPlaneArena32.ABI.equals("control_generation12_slot20_v1"), "ABI must be explicit");
         check(ControlPlaneArena32.RECORD_BYTES == 32, "record layout");
         final long huge = 9_000_000_000L;
         try (var a = new ControlPlaneArena32(2); var b = new ControlPlaneArena32(2)) {
