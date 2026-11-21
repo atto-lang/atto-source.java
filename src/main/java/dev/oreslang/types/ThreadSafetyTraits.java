@@ -244,9 +244,16 @@ public final class ThreadSafetyTraits {
                     && has(named.arguments().get(1), trait, nominalProof,
                             visiting, proven, steps, depth + 1);
         }
-        if (name.equals("Channel")) {
+        if (name.equals("Channel") || name.equals("Stream")) {
+            // Both are bounded synchronized handles. Stream<T> is stronger:
+            // its payload must be data-only, and another Stream/Channel
+            // capability hidden in Option, Result or a structural container
+            // cannot acquire a Send proof by recursively trusting intrinsics.
+            // The TypeChecker additionally validates nominal class fields.
             return trait == Trait.SEND && nominalProof.trustedIntrinsic(named)
                     && named.arguments().size() == 1
+                    && (!name.equals("Stream")
+                        || !containsNestedTransportHandle(named.arguments().getFirst()))
                     && has(named.arguments().getFirst(), Trait.SEND, nominalProof,
                             visiting, proven, steps, depth + 1);
         }
@@ -258,6 +265,45 @@ public final class ThreadSafetyTraits {
                     visiting, proven, steps, depth + 1)) return false;
         }
         return nominalProof.has(named, trait);
+    }
+
+    private static boolean containsNestedTransportHandle(Type root) {
+        record Pending(Type type, int depth) { }
+        java.util.ArrayDeque<Pending> pending = new java.util.ArrayDeque<>();
+        Set<Type> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        pending.push(new Pending(root, 0));
+        int nodes = 0;
+        while (!pending.isEmpty()) {
+            Pending item = pending.pop();
+            Type type = item.type();
+            if (type == null || item.depth() > MAX_TYPE_DEPTH || ++nodes > 4096) {
+                return true; // fail closed on excessive type-graph complexity
+            }
+            if (!seen.add(type)) continue;
+            if (type instanceof Named named) {
+                if (named.name().equals("Channel") || named.name().equals("Stream")) {
+                    return true;
+                }
+                for (Type argument : named.arguments()) {
+                    pending.push(new Pending(argument, item.depth() + 1));
+                }
+            } else if (type instanceof ListType list) {
+                pending.push(new Pending(list.element(), item.depth() + 1));
+            } else if (type instanceof Tuple tuple) {
+                for (Type member : tuple.elements()) {
+                    pending.push(new Pending(member, item.depth() + 1));
+                }
+            } else if (type instanceof Record record) {
+                for (Type member : record.members().values()) {
+                    pending.push(new Pending(member, item.depth() + 1));
+                }
+            } else if (type instanceof Union union) {
+                for (Type member : union.options()) {
+                    pending.push(new Pending(member, item.depth() + 1));
+                }
+            }
+        }
+        return false;
     }
 
 }

@@ -284,6 +284,12 @@ public final class ReturnCleanupChecker {
             }
             expression(assignment.target(), scope, inDefer, state);
             expression(assignment.value(), scope, inDefer, state);
+        } else if (expr instanceof Ast.GpuRegionExpr) {
+            throw new IllegalArgumentException(
+                    "gpu { } cleanup requires verified device-quiescence semantics");
+        } else if (expr instanceof Ast.CpuRegionExpr cpu) {
+            // Region-local return/cleanup cannot redirect an enclosing finally.
+            callable(cpu.body(), List.of(), scope);
         } else if (expr instanceof Ast.TaskExpr task) {
             // nb Task is an independent return/cleanup control scope. Never
             // treat Task returns or defers as operating on the caller frame.

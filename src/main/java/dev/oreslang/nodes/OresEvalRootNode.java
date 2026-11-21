@@ -1015,6 +1015,9 @@ public final class OresEvalRootNode extends RootNode {
             private final Ast.MethodDecl method;
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
+            // The exact compiler-checked source Task return type, not a
+            // caller-provided runtime string or a host object class.
+            private final Ast.TypeRef blockResultType;
             private final List<?> arguments;
             private TaskScope.Registration scopeRegistration;
             private final Object taskScopeLock = new Object();
@@ -1032,6 +1035,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
+                this.blockResultType = null;
                 this.arguments = List.copyOf(arguments);
             }
 
@@ -1043,15 +1047,18 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = Objects.requireNonNull(method, "method");
                 this.receiver = receiver;
                 this.blockBody = null;
+                this.blockResultType = null;
                 this.arguments = List.copyOf(arguments);
             }
 
-            private SourceTask(List<Ast.Stmt> blockBody) {
+            private SourceTask(List<Ast.Stmt> blockBody, Ast.TypeRef checkedResult) {
                 this.function = null;
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
+                this.blockResultType = Objects.requireNonNull(
+                        checkedResult, "source Task has no checked result type");
                 this.arguments = List.of();
             }
 
@@ -1312,11 +1319,11 @@ public final class OresEvalRootNode extends RootNode {
                     SourceFlow flow) {
                 if (blockBody != null) {
                     switch (flow.kind()) {
-                        case NORMAL -> done(null);
-                        // Both nb { ... } and task { ... } produce Task<T>.
-                        // The compiler proves return-value type and exhaustiveness.
-                        // Returning void yields null, matching Task<void>.
-                        case RETURN -> done(flow.value());
+                        case NORMAL -> done(requireSourceTaskResult(null));
+                        // Source Task results are compiler-admitted. Enforce the
+                        // actual runtime handle at the scheduler completion
+                        // boundary, rather than trusting an untyped Object.
+                        case RETURN -> done(requireSourceTaskResult(flow.value()));
                         case THROW -> throw sourceFailure(flow.failure());
                         case BREAK, CONTINUE ->
                                 throw new IllegalStateException(
@@ -1333,6 +1340,20 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalStateException(
                                     "loop control crossed a source function boundary");
                 }
+            }
+
+            private Object requireSourceTaskResult(Object value) {
+                // Non-stream results retain their existing Task v1 ABI. For a
+                // checked Stream<T> result, never publish a Channel<T>, host
+                // iterator or other capability as a live Stream handle.
+                if (blockResultType.name().equals("Stream")) {
+                    if (blockResultType.arguments().size() != 1
+                            || !(value instanceof dev.oreslang.runtime.OresStream<?>)) {
+                        throw new IllegalStateException(
+                                "source Task return failed checked Stream<T> runtime admission");
+                    }
+                }
+                return value;
             }
 
             private Object shapeSourceReturn(
@@ -1382,6 +1403,18 @@ public final class OresEvalRootNode extends RootNode {
         private OresFuture<Object> startSourceBlockTask(
                 Ast.TaskExpr task,
                 Env caller) {
+            // Independent runtime boundary: even a forged or stale typed AST
+            // cannot route a GPU task onto an ordinary CPU scheduler.
+            if (task.executionDomain() == Ast.TaskExpr.ExecutionDomain.GPU) {
+                throw new IllegalStateException(
+                        "gpu task has no admitted device execution/fence backend; CPU fallback forbidden");
+            }
+            if (task.executionDomain() == Ast.TaskExpr.ExecutionDomain.CPU
+                    && ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "explicit cpu task offload from actors requires checked isolated capture "
+                        + "and a non-actor scheduler; no implicit actor-turn fallback");
+            }
             if (taskAdmissions == null) {
                 throw new IllegalStateException(
                         "source Task execution requires a joined compiler admission proof");
@@ -1437,6 +1470,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 future = startSourceBlockTask(
                         task.body(),
+                        task.checkedResultType(),
                         captured,
                         physicalRetirement,
                         child == null ? ignored -> { } : child::terminalReady);
@@ -1465,10 +1499,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private OresFuture<Object> startSourceBlockTask(
                 List<Ast.Stmt> body,
+                Ast.TypeRef checkedResult,
                 Env env,
                 Runnable onQuiescent,
                 java.util.function.Consumer<OresFuture<Object>> onTerminalReady) {
-            SourceTask task = new SourceTask(body);
+            SourceTask task = new SourceTask(body, checkedResult);
             task.scopeRegistration = env.taskScopeParent;
             // Lexically snapshot at spawn time. Captured owned values were
             // consumed by the compile-time ownership pass; no borrowed or
@@ -5026,7 +5061,21 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Object> detached = new ArrayList<>(args.size());
             for (int i = 0; i < args.size(); i++) {
                 Object arg = args.get(i);
-                if (arg instanceof ChannelRuntime.Channel<?> channel) {
+                if (arg instanceof dev.oreslang.runtime.OresStream<?> stream) {
+                    // Stream is a bounded and synchronized guest-owned handle,
+                    // not a borrowed generator activation or host iterator.
+                    // A detached async callable may retain it only when the
+                    // formal explicitly admits Stream<T>.
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"Stream".equals(formal.name())
+                            || formal.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "async task stream argument " + (i + 1)
+                                        + " requires an explicit Stream<T> parameter");
+                    }
+                    detached.add(stream);
+                } else if (arg instanceof ChannelRuntime.Channel<?> channel) {
                     // Channel<T> is an Ores-owned synchronized, copyable handle
                     // within an execution domain. Preserve its coordinator
                     // identity across local async source task arguments, but
@@ -5948,9 +5997,12 @@ public final class OresEvalRootNode extends RootNode {
         private ChannelRuntime.Channel<Object> requireChannel(
                 Object value,
                 String where) {
+            if (value instanceof dev.oreslang.runtime.OresStream<?> stream) {
+                return (ChannelRuntime.Channel<Object>) stream.channel();
+            }
             if (!(value instanceof ChannelRuntime.Channel<?> channel)) {
                 throw new IllegalArgumentException(
-                        where + " requires Channel<T>; got " + value);
+                        where + " requires Channel<T> or Stream<T>; got " + value);
             }
             return (ChannelRuntime.Channel<Object>) channel;
         }
@@ -6388,6 +6440,31 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.GpuRegionExpr) {
+                throw new IllegalStateException(
+                        "gpu { } has no admitted kernel launch backend; CPU fallback forbidden");
+            }
+            if (expr instanceof Ast.CpuRegionExpr cpu) {
+                // Invariant: inline CPU regions never suspend the logical turn.
+                // Compiler and ownership evidence are required; a forged AST
+                // cannot bypass the region's result-type admission.
+                Ast.TypeRef resultType = cpu.checkedResultType();
+                if (cpu.body().stream().anyMatch(statement ->
+                        statementContainsPotentialSuspension(statement,
+                                java.util.Collections.newSetFromMap(new IdentityHashMap<>())))) {
+                    throw new IllegalStateException(
+                            "cpu { } cannot suspend an actor/scheduler carrier; use cpu task { }");
+                }
+                try {
+                    // The tail barrier prevents an inner region return from
+                    // turning into a tail-call of the enclosing Oreslang routine.
+                    executeBlock(cpu.body(), env, true);
+                } catch (ReturnSignal result) {
+                    return result.value;
+                }
+                if (resultType.name().equals("void")) return null;
+                throw new IllegalStateException("non-void cpu { } completed without returning");
+            }
             if (expr instanceof Ast.TaskExpr task) {
                 return startSourceBlockTask(task, env);
             }
@@ -6426,6 +6503,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("Channel")) return new ChannelFactory();
+                if (name.name().equals("Stream")) return new StreamFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
                 if (name.name().equals("Future")) return FutureFactory.INSTANCE;
@@ -7184,6 +7262,21 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
                 };
             }
+            if (receiver instanceof dev.oreslang.runtime.OresStream<?> stream) {
+                return switch (name) {
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "Stream.close");
+                        stream.close();
+                        return null;
+                    };
+                    case "is_closed" -> (Invokable) args -> {
+                        requireZero(args, "Stream.is_closed");
+                        return stream.isClosed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Stream member " + name);
+                };
+            }
             if (receiver instanceof ChannelRuntime.Channel<?> channel) {
                 return switch (name) {
                     case "close" -> (Invokable) args -> {
@@ -7202,6 +7295,12 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ChannelFactory factory) {
                 if (!name.equals("new")) {
                     throw new IllegalArgumentException("unknown Channel factory member " + name);
+                }
+                return (Invokable) factory::create;
+            }
+            if (receiver instanceof StreamFactory factory) {
+                if (!name.equals("new")) {
+                    throw new IllegalArgumentException("unknown Stream factory member " + name);
                 }
                 return (Invokable) factory::create;
             }
@@ -7544,7 +7643,8 @@ public final class OresEvalRootNode extends RootNode {
         private Object normalizeHostResult(Object value) {
             value = context.unwrapHostRuntimeValue(value);
             if (value == null) return new OptionValue(false, null);
-            if (value instanceof ChannelRuntime.Channel<?>) return value;
+            if (value instanceof ChannelRuntime.Channel<?>
+                    || value instanceof dev.oreslang.runtime.OresStream<?>) return value;
             if (value instanceof CompletionStage<?> stage) {
                 return OresFuture.from(stage);
             }
@@ -8703,6 +8803,7 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
+            if (name.equals("Stream")) return value instanceof dev.oreslang.runtime.OresStream<?>;
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
@@ -8732,6 +8833,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof ResultValue) return "Result";
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
             if (value instanceof ActorRuntime.ActorOutputStream<?>) return "ActorOutputStream";
+            if (value instanceof dev.oreslang.runtime.OresStream<?>) return "Stream";
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
             if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
@@ -9141,6 +9243,13 @@ public final class OresEvalRootNode extends RootNode {
             if (declared.name().equals("void")) {
                 if (value != null) throw returnTypeMismatch(callable, declared, value);
                 return null;
+            }
+            if (declared.name().equals("Stream")) {
+                if (declared.arguments().size() != 1
+                        || !(value instanceof dev.oreslang.runtime.OresStream<?>)) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                return value;
             }
 
             return value;
@@ -9788,6 +9897,13 @@ public final class OresEvalRootNode extends RootNode {
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
     }
+    private static final class StreamFactory {
+        private Object create(List<Object> args) {
+            requireOne(args, "Stream.new<T>");
+            return dev.oreslang.runtime.OresStream.fromGuestCapacity(args.getFirst());
+        }
+    }
+
     private static final class ChannelFactory {
         private Object create(List<Object> args) {
             requireOne(args, "Channel.new<T>");

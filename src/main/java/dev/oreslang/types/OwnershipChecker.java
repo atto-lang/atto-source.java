@@ -1397,6 +1397,17 @@ public final class OwnershipChecker {
                     : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.GpuRegionExpr) {
+            throw error("gpu { } requires device ownership and kernel admission; no CPU fallback");
+        }
+        if (expr instanceof Ast.CpuRegionExpr cpu) {
+            // Eager inline execution shares the caller's ownership scope.
+            // Its return is region-local, while outer moves and loans remain
+            // visible to the parent after the region completes.
+            Ast.TypeRef result = cpu.checkedResultType();
+            checkBlock(cpu.body(), scope, result);
+            return new ValueInfo(result, kindOfType(result), null);
+        }
         if (expr instanceof Ast.TaskExpr task) {
             if (scope.descendantsNonLexical()) {
                 throw error("nb Task cannot capture a non-lexical/unknown execution scope");
@@ -1473,6 +1484,25 @@ public final class OwnershipChecker {
                 }
             }
             return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr factoryCall
+                && factoryCall.receiver() instanceof Ast.NameExpr factory
+                && factory.name().equals("Stream")
+                && factoryCall.member().equals("new")
+                && scope.lookup("Stream") == null) {
+            // The type checker proves this is a compiler-owned intrinsic and
+            // that its payload is concrete Send data, not an arbitrary class
+            // constructor or thread-affine object. Preserve its exact type
+            // through the independent ownership/capture pass.
+            for (Ast.Expr argument : call.arguments()) {
+                checkExpr(argument, scope, false);
+            }
+            if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                throw error("Stream.new<T> requires an explicit payload type");
+            }
+            Ast.TypeRef streamType =
+                    new Ast.TypeRef("Stream", call.typeArguments(), false);
+            return new ValueInfo(streamType, ValueKind.COPY, null);
         }
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
@@ -2751,6 +2781,12 @@ public final class OwnershipChecker {
                 scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
             }
         }
+        else if (expr instanceof Ast.CpuRegionExpr cpu) {
+            // A synchronous region is not a closure/capture barrier: if an
+            // enclosing Task accesses x solely inside cpu { return x; },
+            // x still belongs to that Task's owned capture set.
+            scanStatements(cpu.body(), locals, outer, recursiveBinding, captures);
+        }
         else if (expr instanceof Ast.TaskExpr nested) {
             // A nested Task is a deferred closure, not a capture barrier.
             // Include its free variables transitively when proving ownership
@@ -3458,7 +3494,8 @@ public final class OwnershipChecker {
     private Ast.TypeRef channelElementType(Ast.TypeRef type) {
         if (type == null) return Ast.TypeRef.inferred();
         Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
-        if (concrete.name().equals("Channel") && concrete.arguments().size() == 1) {
+        if ((concrete.name().equals("Channel") || concrete.name().equals("Stream"))
+                && concrete.arguments().size() == 1) {
             return concrete.arguments().getFirst();
         }
         return Ast.TypeRef.inferred();
@@ -3772,7 +3809,7 @@ public final class OwnershipChecker {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex",
-                    "Channel","SelectCase","SelectSet","OptionUnwrapError" -> true;
+                    "Channel","Stream","SelectCase","SelectSet","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))

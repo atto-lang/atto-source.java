@@ -46,7 +46,7 @@ public final class TypeChecker {
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Mutex",
-            "SharedMutex", "Channel", "Future", "Task", "Fnc", "Function");
+            "SharedMutex", "Channel", "Stream", "Future", "Task", "Fnc", "Function");
 
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
@@ -103,8 +103,9 @@ public final class TypeChecker {
     private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
-    // Scoped collector, active only while checking an unannotated Task block.
+    // Scoped collector used by independently returning Task and CPU regions.
     private List<Type> inferredTaskReturnTypes;
+    private int synchronousCpuRegionDepth;
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
@@ -267,7 +268,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future", "Task",
+                "Mutex", "SharedMutex", "Channel", "Stream", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future", "Task",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -2184,7 +2185,7 @@ public final class TypeChecker {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
-                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+                    || name.name().equals("Channel") || name.name().equals("Stream") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -2444,6 +2445,9 @@ public final class TypeChecker {
                 return new Named("ActorRef", List.of(actorType));
             }
             if (runtime.operation().equals("cooperate")) {
+                if (synchronousCpuRegionDepth != 0) {
+                    throw new IllegalArgumentException("cpu { } cannot cooperatively suspend; use cpu task { }");
+                }
                 if (!runtime.arguments().isEmpty()) {
                     throw new IllegalArgumentException("rt cooperate takes no arguments");
                 }
@@ -2576,6 +2580,26 @@ public final class TypeChecker {
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
+            }
+            if (call.callee() instanceof Ast.MemberExpr channelCall
+                    && channelCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("Stream")
+                    && channelCall.member().equals("new")
+                    && env.lookup("Stream") == null) {
+                if (!isUnshadowedCompilerBuiltin("Stream")) {
+                    throw new IllegalArgumentException(
+                            "Stream.new requires compiler-owned Stream<T> intrinsic");
+                }
+                if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1
+                        || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Stream.new<T>(capacity) requires one explicit payload type and capacity");
+                }
+                requireAssignable(typeOf(call.arguments().getFirst(), env, generics, self),
+                        Primitive.INT, "Stream.new capacity");
+                Type payload = resolve(call.typeArguments().getFirst(), generics, self);
+                validateStreamPayloadType(payload, "Stream.new<T>");
+                return new Named("Stream", List.of(payload));
             }
             if (call.callee() instanceof Ast.MemberExpr channelCall
                     && channelCall.receiver() instanceof Ast.NameExpr factory
@@ -3418,7 +3442,8 @@ public final class TypeChecker {
             // Channels are actor-local capabilities, but their lifecycle can
             // be controlled by the owning source code without Java interop.
             if (sumReceiver instanceof Named channelType
-                    && channelType.name().equals("Channel")
+                    && (channelType.name().equals("Channel")
+                        || channelType.name().equals("Stream"))
                     && channelType.arguments().size() == 1) {
                 return switch (member.member()) {
                     case "close" -> new Function(List.of(), Primitive.VOID);
@@ -3779,6 +3804,9 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (synchronousCpuRegionDepth != 0) {
+                throw new IllegalArgumentException("cpu { } is synchronous: await requires a Task or async region");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
                     && (named.name().equals("Future") || named.name().equals("Task"))
@@ -3796,6 +3824,11 @@ public final class TypeChecker {
                     "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
+            if (synchronousCpuRegionDepth != 0
+                    && channelOp.mode() == Ast.WaitMode.BLOCKING) {
+                throw new IllegalArgumentException(
+                        "cpu { } cannot perform blocking channel I/O on a scheduler/actor carrier");
+            }
             Type element = channelElementType(
                     typeOf(channelOp.channel(), env, generics, self),
                     channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
@@ -3902,6 +3935,11 @@ public final class TypeChecker {
             }
         }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
+            if (synchronousCpuRegionDepth != 0
+                    && selected.mode() == Ast.WaitMode.BLOCKING) {
+                throw new IllegalArgumentException(
+                        "cpu { } cannot block on select; use a Task/async continuation");
+            }
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
             // remain Unknown until collection generic constraints are richer.
@@ -3987,6 +4025,14 @@ public final class TypeChecker {
             }
             return new Record(members, object.inferredStruct());
         }
+        if (expr instanceof Ast.GpuRegionExpr) {
+            throw new IllegalArgumentException(
+                    "gpu { } requires a verified device backend, typed launch geometry, "
+                    + "owned buffers and completion fences; CPU fallback is forbidden");
+        }
+        if (expr instanceof Ast.CpuRegionExpr cpu) {
+            return checkCpuRegion(cpu, Unknown.INSTANCE, env, generics, self);
+        }
         if (expr instanceof Ast.TaskExpr task) {
             return checkTaskBlock(task, Unknown.INSTANCE, env, generics, self);
         }
@@ -4036,14 +4082,28 @@ public final class TypeChecker {
         channel = deref(channel);
         if (channel == Unknown.INSTANCE) return Unknown.INSTANCE;
         if (channel instanceof Named named
-                && named.name().equals("Channel")
+                && (named.name().equals("Channel") || named.name().equals("Stream"))
                 && named.arguments().size() == 1) {
             Type element = named.arguments().getFirst();
-            validateChannelPayloadType(element, where);
+            if (named.name().equals("Stream")) {
+                validateStreamPayloadType(element, where);
+            } else {
+                validateChannelPayloadType(element, where);
+            }
             return element;
         }
         throw new IllegalArgumentException(
                 where + " requires Channel<T>; got " + channel);
+    }
+
+    private void validateStreamPayloadType(Type element, String where) {
+        validateChannelPayloadType(element, where);
+        if (!isSharedSafe(element, new LinkedHashSet<>(), Map.of())
+                || !isThreadSend(element)) {
+            throw new IllegalArgumentException(
+                    where + " requires concrete owned Send data-only payloads; "
+                            + "borrows, nested stream capabilities, functions and host objects are forbidden");
+        }
     }
 
     private void validateChannelPayloadType(Type element, String where) {
@@ -4281,12 +4341,74 @@ public final class TypeChecker {
     }
 
     /**
+     * A cpu block executes eagerly on the current CPU carrier. Returns and
+     * lexical locals belong to this region, not the surrounding callable.
+     * No await, rt cooperate, or suspension-required user call may cross
+     * the synchronous region.
+     */
+    private Type checkCpuRegion(Ast.CpuRegionExpr cpu, Type expected, Env env,
+                                Set<String> generics, Type self) {
+        Env child = new Env(env);
+        List<Type> previousInference = inferredTaskReturnTypes;
+        boolean previousMaySuspend = currentMaySuspend;
+        List<Type> discovered = expected == Unknown.INSTANCE ? new ArrayList<>() : null;
+        inferredTaskReturnTypes = discovered;
+        currentMaySuspend = false;
+        synchronousCpuRegionDepth++;
+        try {
+            checkCallableBlock(cpu.body(), child, generics, expected, self);
+        } finally {
+            synchronousCpuRegionDepth--;
+            currentMaySuspend = previousMaySuspend;
+            inferredTaskReturnTypes = previousInference;
+        }
+        Type result = expected;
+        if (result == Unknown.INSTANCE) {
+            if (discovered.isEmpty()) {
+                result = Primitive.VOID;
+            } else {
+                result = discovered.getFirst();
+                for (int i = 1; i < discovered.size(); i++) {
+                    Type joined = capabilitySafeEquivalentJoin(result, discovered.get(i));
+                    if (joined == null) {
+                        throw new IllegalArgumentException(
+                                "cpu { } has incompatible return types: "
+                                        + result + " and " + discovered.get(i));
+                    }
+                    result = joined;
+                }
+            }
+        }
+        if (result != Primitive.VOID && !definitelyReturns(cpu.body())) {
+            throw new IllegalArgumentException("cpu { } must return a value on every path");
+        }
+        if (result == Unknown.INSTANCE || containsUnknown(result)
+                || containsChannelBorrow(result, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException(
+                    "cpu { } cannot return an unproven or borrowed region-local value");
+        }
+        cpu.bindResultType(taskOwnershipResultRef(result));
+        return result;
+    }
+
+    /**
      * A Task runs after the enclosing function continues, so source analysis
      * cannot credit Task assignments toward parent definite initialization.
      * Neither can a child inherit constructor-only field write privileges.
      */
     private Type checkTaskBlock(Ast.TaskExpr task, Type expected, Env env,
                                 Set<String> generics, Type self) {
+        if (task.executionDomain() == Ast.TaskExpr.ExecutionDomain.GPU) {
+            throw new IllegalArgumentException(
+                    "gpu task requires verified device kernel lowering, owned device buffers "
+                    + "and asynchronous completion fences; GPU-to-CPU fallback is forbidden");
+        }
+        if (task.executionDomain() == Ast.TaskExpr.ExecutionDomain.CPU
+                && currentActorKind != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "cpu task cannot offload from an actor until isolated capture "
+                    + "and off-actor scheduling are verified; use the ordinary actor task form");
+        }
         Env child = new Env(env);
         Map<Env.Binding, Set<String>> initializedBefore = env.initializationSnapshot();
         Ast.ClassDecl previousClass = currentClassOwner;
@@ -4384,11 +4506,17 @@ public final class TypeChecker {
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.CpuRegionExpr cpu) {
+            return checkCpuRegion(cpu, expected, env, generics, self);
+        }
         if (expr instanceof Ast.TaskExpr task
                 && expected instanceof Named named
-                && named.name().equals("Task")
+                && (named.name().equals("Task") || named.name().equals("Future"))
                 && named.arguments().size() == 1) {
-            return checkTaskBlock(task, named.arguments().getFirst(), env, generics, self);
+            Type inferred = checkTaskBlock(task, named.arguments().getFirst(), env, generics, self);
+            // Source Task<T> and Future<T> share the checked OresFuture runtime ABI.
+            // Preserve the explicit expected handle type, never coerce the payload.
+            return named.name().equals("Future") ? expected : inferred;
         }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
@@ -5150,6 +5278,17 @@ public final class TypeChecker {
             boolean returnPosition,
             String where) {
         if (returnPosition && type == Primitive.VOID) return;
+        // Stream is a compiler-owned bounded transport. Its coordinator owns
+        // the buffer independently of the producing Task's activation; allow
+        // only an exact, unshadowed Stream<T> with Send/data-only payload.
+        if (type instanceof Named stream
+                && stream.name().equals("Stream")
+                && stream.arguments().size() == 1
+                && isUnshadowedCompilerBuiltin("Stream")
+                && isSharedSafe(stream.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                && isThreadSend(type)) {
+            return;
+        }
         // First prove transferable ownership independently from actor transport.
         // A class's nominal Send proof is deliberately restricted to the
         // existing transitively owned/data-only class analysis. Source-level
@@ -5166,9 +5305,12 @@ public final class TypeChecker {
         // an actor/mailbox capability. Async tasks may receive the handle when
         // its payload is concrete, owned and task-safe. Actor boundaries retain
         // their stricter rule and continue to reject Channel<T> entirely.
-        if (type instanceof Named named && named.name().equals("Channel")
+        if (type instanceof Named named
+                && (named.name().equals("Channel") || named.name().equals("Stream"))
                 && named.arguments().size() == 1
-                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                && isUnshadowedCompilerBuiltin(named.name())
+                && isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())
+                && isThreadSend(type)) {
             return;
         }
         if (type == Primitive.VOID
@@ -5221,7 +5363,7 @@ public final class TypeChecker {
 
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
+                || named.name().equals("Channel") || named.name().equals("Stream") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
@@ -5458,7 +5600,7 @@ public final class TypeChecker {
                     @Override
                     public boolean trustedIntrinsic(Named named) {
                         if (!Set.of(
-                                "Option", "Result", "Channel",
+                                "Option", "Result", "Channel", "Stream",
                                 "OptionUnwrapError", "IteratorResult")
                                 .contains(named.name())) {
                             return false;
@@ -5472,8 +5614,9 @@ public final class TypeChecker {
 
     private void validateDetachedTaskType(Type type, String where) {
         if (type instanceof Named named
-                && named.name().equals("Channel")
+                && (named.name().equals("Channel") || named.name().equals("Stream"))
                 && named.arguments().size() == 1
+                && isUnshadowedCompilerBuiltin(named.name())
                 && isSharedSafe(
                         named.arguments().getFirst(),
                         new LinkedHashSet<>(),
@@ -8470,6 +8613,14 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Mutex<T> requires an owned value type; borrowed payload types are invalid");
                 }
                 yield new Named("Mutex", List.of(element));
+            }
+            case "Stream" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Stream<T> requires exactly one explicit element type");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                validateStreamPayloadType(element, "Stream<T>");
+                yield new Named("Stream", List.of(element));
             }
             case "Channel" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {

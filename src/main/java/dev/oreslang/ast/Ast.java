@@ -875,7 +875,7 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, TaskExpr, CpuRegionExpr, GpuRegionExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -1163,14 +1163,58 @@ public final class Ast {
     }
 
     /**
-     * Lightweight Task expression (nb { ... }), returning Task<void>.
-     * Captures are proved at the ownership pass and materialized when
-     * execution is scheduled, not rebound to a physical Java carrier.
-     *
-     * The Phase-1 Task is void-returning. Scoped borrowed captures and
-     * value-returning Task<T> need additional checked lowering.
+     * Eager host-CPU execution region. Unlike TaskExpr, this executes inline
+     * and returns the block's explicit value without creating a Future.
+     * The compiler binds its checked result type before ownership/runtime use.
+     */
+    public static final class CpuRegionExpr implements Expr {
+        private final List<Stmt> body;
+        private volatile TypeRef checkedResultType;
+
+        public CpuRegionExpr(List<Stmt> body) {
+            this.body = List.copyOf(body);
+        }
+        public List<Stmt> body() { return body; }
+
+        public synchronized void bindResultType(TypeRef result) {
+            java.util.Objects.requireNonNull(result, "CPU region result");
+            if (checkedResultType != null && !checkedResultType.equals(result)) {
+                throw new IllegalStateException("CPU region result changed after checking");
+            }
+            checkedResultType = result;
+        }
+
+        public TypeRef checkedResultType() {
+            TypeRef type = checkedResultType;
+            if (type == null) {
+                throw new IllegalStateException("CPU region requires checked result type");
+            }
+            return type;
+        }
+    }
+
+    /**
+     * Eager GPU execution region, never a CPU callable. A real GPU compiler
+     * must prove device-safe effects, data ownership, launch and fences before
+     * this may execute. Presently every backend rejects this AST.
+     */
+    public record GpuRegionExpr(List<Stmt> body) implements Expr {
+        public GpuRegionExpr {
+            body = List.copyOf(body);
+        }
+    }
+
+    /**
+     * Typed Task expression: task/nb, or an explicitly placed cpu/gpu task.
+     * Captures and result are checked before any scheduling or ownership move.
+     * An unsupported GPU domain remains recorded and rejected fail-closed.
+     * Task handles are scheduler-independent logical continuations, not
+     * physical Java threads.
      */
     public static final class TaskExpr implements Expr {
+        /** Physical execution placement is a compiler-owned choice, not a capture capability. */
+        public enum ExecutionDomain { DEFAULT_CPU, CPU, GPU }
+        private final ExecutionDomain executionDomain;
         private final List<Stmt> body;
         // Bound only by the ownership pass, before lowering/execution. null
         // means an unchecked AST and MUST NOT be treated as empty captures.
@@ -1180,9 +1224,15 @@ public final class Ast {
         private volatile TypeRef checkedResultType;
 
         public TaskExpr(List<Stmt> body) {
-            this.body = List.copyOf(body);
+            this(body, ExecutionDomain.DEFAULT_CPU);
         }
 
+        public TaskExpr(List<Stmt> body, ExecutionDomain executionDomain) {
+            this.body = List.copyOf(body);
+            this.executionDomain = java.util.Objects.requireNonNull(executionDomain, "Task execution domain");
+        }
+
+        public ExecutionDomain executionDomain() { return executionDomain; }
         public List<Stmt> body() { return body; }
 
         public synchronized void bindCaptures(List<String> captures) {

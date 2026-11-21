@@ -46,7 +46,23 @@ public final class Parser {
         // graph exists, interpreting these markers as CPU expressions or
         // silently skipping their bodies would violate placement semantics.
         // A token preflight also covers paths not reached by the normal parser.
-        for (Token token : tokens) {
+        for (int i = 0; i < tokens.size(); i++) {
+            Token token = tokens.get(i);
+            // Only the exactly-delimited 'cpu task {' / 'gpu task {' syntax
+            // is admitted to the typed Task AST. GPU remains compiler-rejected
+            // until a real device backend can prove launch/ownership/fences.
+            if ((token.type() == CPU || token.type() == GPU)
+                    && i + 1 < tokens.size()
+                    && tokens.get(i + 1).type() == LBRACE) {
+                continue; // explicit eager host/device region ASTs
+            }
+            if ((token.type() == CPU || token.type() == GPU)
+                    && i + 2 < tokens.size()
+                    && tokens.get(i + 1).type() == IDENT
+                    && tokens.get(i + 1).lexeme().equals("task")
+                    && tokens.get(i + 2).type() == LBRACE) {
+                continue;
+            }
             if (token.type() == GPU || token.type() == CPU || token.type() == QUANTUM) {
                 throw error(token, "execution domain '" + token.lexeme()
                         + "' requires typed effect/ownership checking and explicit backend lowering;"
@@ -3277,6 +3293,25 @@ public final class Parser {
         if (match(TRAP)) return new Ast.TrapExpr(parseUnary());
         if (match(RT)) return parseRuntimeExpression();
 
+        if (check(CPU) && checkNext(LBRACE)) {
+            advance(); // synchronous CPU execution is an expression block, not a Task
+            return new Ast.CpuRegionExpr(parseBlock());
+        }
+        if (check(GPU) && checkNext(LBRACE)) {
+            advance(); // explicit device region; not an anonymous kernel callable
+            return new Ast.GpuRegionExpr(parseBlock());
+        }
+        if (check(CPU) || check(GPU)) {
+            Token placement = advance();
+            if (!isContextualIdentifier("task") || !checkNext(LBRACE)) {
+                throw error(placement, "'" + placement.lexeme()
+                        + "' execution regions are not enabled; use 'cpu task { ... }' "
+                        + "or 'gpu task { ... }' (GPU requires an executable device backend)");
+            }
+            advance(); // contextual 'task' after the reserved placement keyword
+            return new Ast.TaskExpr(parseBlock(), placement.type() == CPU
+                    ? Ast.TaskExpr.ExecutionDomain.CPU : Ast.TaskExpr.ExecutionDomain.GPU);
+        }
         if (check(IDENT) && peek().lexeme().equals("task") && checkNext(LBRACE)) {
             advance(); // contextual task keyword; ordinary 'task' identifiers still work
             return new Ast.TaskExpr(parseBlock());
