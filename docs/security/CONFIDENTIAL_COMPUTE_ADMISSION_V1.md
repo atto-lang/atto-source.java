@@ -45,6 +45,18 @@ No verifier or key-release provider is installed by this PR. No environment
 flag can opt in to an unverified TEE. See `docs/TENANT_VM_NAMING_V1.md`
 for the separate shared-process TenantVM security target.
 
+## Portable preflight and scope
+
+`ConfidentialAttestationPreflight` implements a one-shot, host-only
+challenge/policy state machine with defensive byte-array copies. Even a
+plausible fake quote can only reach `UNVERIFIED_CLAIMS_MATCH`; no key release
+or privileged VM admission is possible. The runtime rejects confidential
+requests independently of the preflight.
+
+Shared draft sources: [spec #193](https://github.com/atto-lang/atto-spec/pull/193),
+[conformance #543](https://github.com/atto-lang/atto-platform-conformance/pull/543),
+[profiles #25](https://github.com/atto-lang/atto-target-profiles/pull/25).
+
 ## Test
 
 `mvn -Dtest=TenantIsolateManagerTest test` (requires the repository toolchain).
