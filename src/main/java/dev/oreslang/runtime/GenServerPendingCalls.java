@@ -20,6 +20,32 @@ import java.util.concurrent.TimeoutException;
  * ReplyCapability and does not dispatch actor messages by itself.</p>
  */
 final class GenServerPendingCalls<R> implements AutoCloseable {
+    /**
+     * Cause-free terminal failure for registry/runtime shutdown. Only the
+     * bounded host exception class name crosses into caller Futures.
+     */
+    static final class GenServerCallClosedException extends RuntimeException {
+        private final String diagnosticType;
+
+        private GenServerCallClosedException(String diagnosticType) {
+            super("GenServer call closed: " + diagnosticType, null, false, false);
+            this.diagnosticType = diagnosticType;
+        }
+
+        String diagnosticType() {
+            return diagnosticType;
+        }
+    }
+
+    private static String boundedDiagnosticType(Throwable failure) {
+        String raw = failure.getClass().getName();
+        StringBuilder out = new StringBuilder(Math.min(raw.length(), 128));
+        for (int i = 0; i < raw.length() && out.length() < 128; ++i) {
+            char ch = raw.charAt(i);
+            out.append(ch >= 0x20 && ch <= 0x7e ? ch : '?');
+        }
+        return out.length() == 0 ? "unknown" : out.toString();
+    }
     static final class PendingCall<R> {
         private final GenServerPendingCalls<R> owner;
         private final GenServerReplyLedger.Ticket ticket;
@@ -99,6 +125,10 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
         }
     }
 
+    GenServerReplyLedger.Snapshot ledgerSnapshot() {
+        return ledger.snapshot();
+    }
+
     int closePending(Throwable failure) {
         Objects.requireNonNull(failure, "failure");
         List<PendingCall<R>> toFail = new ArrayList<>();
@@ -111,8 +141,10 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
             }
         }
 
+        String diagnosticType = boundedDiagnosticType(failure);
         for (PendingCall<R> call : toFail) {
-            if (!call.future.failFromRuntime(failure)) {
+            if (!call.future.failFromRuntime(
+                    new GenServerCallClosedException(diagnosticType))) {
                 throw new IllegalStateException(
                         "GenServer close won correlation but Future was already terminal");
             }
