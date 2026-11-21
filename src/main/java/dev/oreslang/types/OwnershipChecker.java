@@ -40,6 +40,7 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
+    private int actorStateLoanDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
 
@@ -599,6 +600,9 @@ public final class OwnershipChecker {
     }
 
     private void checkSuspensionBorrows(Scope scope, String operation) {
+        if (actorStateLoanDepth > 0) {
+            throw error("cannot " + operation + " while a critical actor state loan is live; finish handle_state before suspension");
+        }
         if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
             throw error("cannot " + operation + " while holding a MutexGuard; release the guard before suspension");
         }
@@ -1090,7 +1094,24 @@ public final class OwnershipChecker {
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
+    private boolean isBuiltinStdioCall(Ast.CallExpr call, Scope scope) {
+        if (scope.lookup("stdio") != null) return false;
+        Ast.Expr callee = call.callee();
+        if (!(callee instanceof Ast.MemberExpr)) return false;
+        while (callee instanceof Ast.MemberExpr member) callee = member.receiver();
+        return callee instanceof Ast.NameExpr namespace && namespace.name().equals("stdio");
+    }
+
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // A critical handle_state callback must not retain its state loan
+        // while synchronous console output may wait for a host pipe/terminal.
+        // Check this explicit builtin before dispatch; arbitrary unknown
+        // callees need trusted effect summaries in a later interprocedural
+        // verifier, not an optimistic no_block assumption.
+        if (actorStateLoanDepth > 0 && isBuiltinStdioCall(call, scope)) {
+            throw error("cannot invoke stdio while a critical actor state loan is live; "
+                    + "potential blocking/escaping I/O needs a trusted effect summary");
+        }
         // The sealed handle_state intrinsic is the only lexical boundary
         // allowed to create a mutable actor-state loan. A plain |s| lambda
         // must NOT become mutable when used anywhere else. The actor state
@@ -1119,7 +1140,12 @@ public final class OwnershipChecker {
             Ast.LambdaExpr checked = new Ast.LambdaExpr(
                     List.of(scoped), lambda.expressionBody(), lambda.blockBody(),
                     false, lambda.critical());
-            checkLambda(checked, scope, null);
+            actorStateLoanDepth++;
+            try {
+                checkLambda(checked, scope, null);
+            } finally {
+                actorStateLoanDepth--;
+            }
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (isBooleanIntrinsicCall(call, scope)) {

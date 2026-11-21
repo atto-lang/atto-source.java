@@ -367,3 +367,18 @@ this Java run. Native-image/AOT, stress/fuzz testing with concurrent
 HTTP requests, restart/interleaving under real network failures, and
 cross-backend executable fixtures remain release gates. Keep both PRs draft
 until corresponding backend and dependency gates are complete.
+
+## Ownership audit follow-up (2026-10-12)
+
+A sealed `handle_state` callback has a synchronous state loan. The ownership
+checker now rejects cooperation, await and blocking channel/select operations
+while that loan is active, even when no ordinary borrowed local was declared.
+Finishing the callback releases the checker's loan scope; later cooperation is
+permitted. This does not admit suspension-safe state loans.
+
+`requires no_alloc` and `requires no_block` are verified even without a `using`
+clause. Unknown calls cannot establish either guarantee without a trusted
+summary. Array, tuple, struct and closure construction contribute `alloc`;
+constructing a closure does not execute or infer effects from its body. Inline
+sealed state callbacks keep their existing intrinsic effect treatment. These
+are conservative source-level checks, not an allocation-free runtime certificate.
