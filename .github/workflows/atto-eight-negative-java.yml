@@ -2,9 +2,10 @@ name: AttoLang eight compiler-negative semantic gates (Java)
 on:
   pull_request:
     paths:
-      - 'contracts/atto-scalar-v1/negative/**'
+      - 'contracts/atto-scalar-v1/**'
       - 'tests/formal-policy-atto/negative/**'
       - 'src/test/java/dev/oreslang/AttoNegativeSemanticGateTest.java'
+      - 'src/test/java/dev/oreslang/launcher/AttoEightNegativeCliGateTest.java'
       - '.github/workflows/atto-eight-negative-java.yml'
   workflow_dispatch:
 permissions:
@@ -38,13 +39,16 @@ jobs:
       - name: Execute eight compiler-backed targeted negative checks
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=AttoNegativeSemanticGateTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=AttoNegativeSemanticGateTest,AttoEightNegativeCliGateTest -DfailIfNoTests=true test
           test -s target/surefire-reports/TEST-dev.oreslang.AttoNegativeSemanticGateTest.xml
+          test -s target/surefire-reports/TEST-dev.oreslang.launcher.AttoEightNegativeCliGateTest.xml
           echo 'ATTO_JAVA_NEGATIVE_SOURCE_ONLY; no AOT artifact or guest execution proven'
       - name: Retain actual JUnit reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: atto-eight-negative-java-junit
-          path: target/surefire-reports/*AttoNegativeSemanticGateTest*
+          name: atto-negative-cli-and-parser-java-junit
+          path: |
+            target/surefire-reports/*AttoNegativeSemanticGateTest*
+            target/surefire-reports/*AttoEightNegativeCliGateTest*
           if-no-files-found: warn
