@@ -9112,6 +9112,15 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof NominalEnumValue nominal) {
+                Ast.FunctionDecl enumMethod = findSingleFunction(nominal.enumName() + "$" + name);
+                if (enumMethod != null) return (Invokable) args -> {
+                    List<Object> bound = new ArrayList<>(args.size() + 1);
+                    bound.add(receiver);
+                    bound.addAll(args);
+                    return callFunction(enumMethod, bound);
+                };
+            }
             if (name.equals("to_string") && (receiver instanceof String
                     || receiver instanceof Boolean || receiver instanceof Long
                     || receiver instanceof Integer || receiver instanceof Short

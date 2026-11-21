@@ -689,6 +689,8 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "enums");
                     rejectCallableStructuralAnnotation(annotations, "enum declarations");
                     rootDeclarations.add(parseTaggedEnum());
+                    rootDeclarations.addAll(pendingEnumMethods);
+                    pendingEnumMethods.clear();
                     continue;
                 }
                 rejectUnimplementedInvertedAggregate();
@@ -2960,6 +2962,27 @@ public final class Parser {
      * Closed nominal enum declaration. Newlines, commas, or semicolons separate
      * cases. Tags are stable positive identities; omitted tags increase from 1.
      */
+    /** Methods declared in an enum body, lowered to `Enum$method(Enum self, ...)` functions. */
+    private final List<Ast.Decl> pendingEnumMethods = new ArrayList<>();
+
+    private void parseEnumMethod(String enumName, java.util.Set<String> names) {
+        Token start = consume(IDENT, "expected enum method name");
+        if (!names.add(start.lexeme())) {
+            throw error(start, "duplicate enum method and case identifier " + start.lexeme());
+        }
+        consume(LPAREN, "expected '(' after enum method name");
+        List<Ast.Param> params = new ArrayList<>();
+        params.add(new Ast.Param(Ast.TypeRef.simple(enumName), "self"));
+        params.addAll(parseParametersUntil(RPAREN));
+        consume(RPAREN, "expected ')' after enum method parameters");
+        Ast.TypeRef returns = match(COLON, FAT_ARROW) ? parseTypeRef() : Ast.TypeRef.simple("void");
+        List<Ast.Stmt> body = parseBlock();
+        match(SEMICOLON);
+        pendingEnumMethods.add(new Ast.FunctionDecl(enumName + "$" + start.lexeme(), Ast.CallableKind.FNC,
+                Ast.Visibility.PUBLIC, false, false, false, false, false, Ast.ActorKind.NONE, List.of(),
+                params, returns, List.of(), body));
+    }
+
     private Ast.EnumDecl parseTaggedEnum() {
         String name = consume(IDENT, "expected enum name").lexeme();
         consume(AS, "expected 'as' after enum name");
@@ -2968,6 +2991,10 @@ public final class Parser {
         java.util.Set<Integer> tags = new java.util.HashSet<>();
         int nextTag = 1;
         while (!check(END) && !check(EOF)) {
+            if (check(IDENT) && checkNext(LPAREN)) {
+                parseEnumMethod(name, names);
+                continue;
+            }
             Token start = consume(IDENT, "expected enum case name");
             if (!names.add(start.lexeme())) {
                 throw error(start, "duplicate enum case " + start.lexeme());

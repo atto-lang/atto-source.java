@@ -4483,6 +4483,20 @@ public final class TypeChecker {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
+                if (receiver instanceof Named enumReceiver && nominalEnums != null
+                        && nominalEnums.enums().containsKey(enumReceiver.name())) {
+                    // Enum body methods are lowered to `Enum$method(Enum self, ...)`.
+                    String lowered = enumReceiver.name() + "$" + member.member();
+                    if (findSingleFunction(lowered) == null) {
+                        throw new IllegalArgumentException("enum " + enumReceiver.name()
+                                + " has no method '" + member.member() + "'");
+                    }
+                    List<Ast.Expr> bound = new ArrayList<>();
+                    bound.add(member.receiver());
+                    bound.addAll(call.arguments());
+                    return typeOf(new Ast.CallExpr(new Ast.NameExpr(lowered), call.typeArguments(),
+                            call.typeArgumentsPresent(), bound, call.origin()), env, generics, self);
+                }
                 if (member.member().equals("unwrap_all")
                         && receiver instanceof Named outer
                         && outer.name().equals("Option")
