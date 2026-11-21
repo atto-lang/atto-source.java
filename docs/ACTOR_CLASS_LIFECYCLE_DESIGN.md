@@ -220,3 +220,60 @@ output, `self.send`, `self.end`, `self.endWithCleanup`, and `ready`/`done`
 are evaluator-lowered into `ActorRuntime` and covered by executable regression
 tests. Do not extend that claim to generalized stream merge/`for await` or
 cross-process/native machine-code sharing.
+
+## Hidden actor-core readiness and done signals
+
+Every source actor class has a **sealed, implicit actor-core base**. User actor
+declarations must not redeclare, override, or hide these methods or their names
+as fields:
+
+```ores
+// Conceptual core contract. This is compiler/runtime injected, not user code.
+async trap get_ready_signal(): bool
+async trap get_done_signal(): bool
+```
+
+The underlying ActorRuntime lifecycle barriers are still runtime-owned:
+`ready()` begins initialization on the actor's dispatcher, settles only after
+field initialization and `on_start`, and fails when initialization fails.
+`done()` settles only after finalization/turn exit. No Oreslang actor field
+named `ready` or `done` is created by this feature, no additional userland
+Channel is exposed, and neither barrier can be completed/cancelled by user code.
+
+The hidden methods are implemented as source-language intrinsics for actor
+`self`, and as corresponding `ActorRef<Actor>` methods for callers that
+possess an actor reference (as returned by `spawn Actor()`):
+
+```ores
+val worker = spawn Worker();
+val Option<bool> ready = await worker.get_ready_signal();
+worker.send("work");
+val Option<bool> done = await worker.get_done_signal();
+```
+
+Both methods have the effective call return type `Future<Option<bool>>`.
+Successful lifecycle completion yields `Some(true)`. An ordinary
+actor-initialization/termination exception yields `None`.
+Cancellation, security violations, panic, and fatal failures propagate as
+non-trappable Future failures. `await` strips only the `Future`.
+
+Actor `self.get_ready_signal()` is available after initialization; await from
+`receive` can safely observe already completed readiness. The compiler and
+runtime **reject `self.get_done_signal()` from an active actor turn**, even
+when the Future would be stored or awaited indirectly: an actor cannot
+observe its own finalization while it is still executing. An owning
+supervisor observes completion through `ActorRef.get_done_signal()` instead.
+
+Actor self identity is a runtime-owned, non-guest field checked against the
+admitted actor execution lane before any hidden self method can run. Merely
+holding an `OresObject` of an actor class never confers its lifecycle
+authority. A copied actor self is rejected at async ownership boundaries.
+
+These are **synthetic sealed methods**, not a publicly constructible
+`ActorBase` class. The compiler recognizes the builtins, while the runtime
+resolves the calling actor from the admitted execution lane. This preserves
+actor state isolation and avoids building a second independent lifecycle
+channel or relying on a mutable user field.
+
+The older `actorRef.ready` and `actorRef.done` Future<void> properties
+remain compatible; they do not change type or cancellation semantics.

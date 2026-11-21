@@ -880,7 +880,30 @@ public final class TypeChecker {
         // child to declare an explicit local override/hide for that slot.
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
+        // The synthetic actor base is sealed across the *entire* inheritance
+        // graph, not just methods/fields declared directly on this actor.
+        // Otherwise static dispatch and runtime actor-core dispatch disagree.
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            for (String name : List.of("get_ready_signal", "get_done_signal")) {
+                if (effectiveFieldNames.contains(name)) {
+                    throw new IllegalArgumentException(
+                            "actor field '" + klass.name() + "." + name
+                                    + "' shadows a sealed hidden actor-core lifecycle method");
+                }
+                if (effectiveInstanceMethodNames.contains(name)) {
+                    throw new IllegalArgumentException(
+                            "actor method '" + klass.name() + "." + name
+                                    + "' cannot override a sealed hidden actor-core lifecycle method");
+                }
+            }
+        }
+
         for (Ast.FieldDecl field : klass.fields()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE && isInheritedActorSignal(field.name())) {
+                throw new IllegalArgumentException(
+                        "actor field '" + klass.name() + "." + field.name()
+                                + "' shadows a sealed hidden actor-core lifecycle method");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
@@ -951,6 +974,11 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE && isInheritedActorSignal(method.name())) {
+                throw new IllegalArgumentException(
+                        "actor method '" + klass.name() + "." + method.name()
+                                + "' cannot override a sealed hidden actor-core lifecycle method");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && (method.name().equals("send")
@@ -2176,6 +2204,17 @@ public final class TypeChecker {
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
+                if (actorSelf && isInheritedActorSignal(member.member())) {
+                    if (call.typeArgumentsPresent() || !call.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "self." + member.member() + "() is a zero-argument inherited actor-core method");
+                    }
+                    if (member.member().equals("get_done_signal")) {
+                        throw new IllegalArgumentException(
+                                "actor cannot call self.get_done_signal(): its own completion cannot settle before finalization; observe through an ActorRef in a supervisor");
+                    }
+                    return inheritedActorSignalResult();
+                }
                 if (actorSelf && (member.member().equals("on_start")
                         || member.member().equals("receive"))) {
                     throw new IllegalArgumentException(
@@ -2282,6 +2321,13 @@ public final class TypeChecker {
                                                 + " expects no arguments");
                             }
                             yield Primitive.BOOL;
+                        }
+                        case "get_ready_signal", "get_done_signal" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member() + " expects no arguments");
+                            }
+                            yield inheritedActorSignalResult();
                         }
                         case "ready", "done", "outputs", "id", "kind" ->
                                 throw new IllegalArgumentException(
@@ -2544,6 +2590,23 @@ public final class TypeChecker {
                     }
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass != null) {
+                        // The synthetic actor base applies to the receiver's
+                        // nominal actor type, not only the literal spelling
+                        // "self". Aliases to self still receive the same type
+                        // and are checked against actor identity at runtime.
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && isInheritedActorSignal(member.member())) {
+                            if (call.typeArgumentsPresent() || !call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "actor-core " + member.member() + "() takes no arguments or type arguments");
+                            }
+                            if (member.member().equals("get_done_signal")
+                                    && currentActorKind != Ast.ActorKind.NONE) {
+                                throw new IllegalArgumentException(
+                                        "actor cannot call self.get_done_signal(): observe completion through an ActorRef in a supervisor");
+                            }
+                            return inheritedActorSignalResult();
+                        }
                         int methodArity = fixedCallArity(
                                 call.arguments(), env, generics, self,
                                 "method " + named.name() + "." + member.member());
@@ -2774,7 +2837,7 @@ public final class TypeChecker {
                             List.of(Unknown.INSTANCE));
                     case "id" -> new Named("ActorId", List.of());
                     case "kind" -> new Named("ActorKind", List.of());
-                    case "send", "stop", "cancel", "kill" ->
+                    case "send", "stop", "cancel", "kill", "get_ready_signal", "get_done_signal" ->
                             throw new IllegalArgumentException(
                                     "ActorRef." + member.member()
                                             + " is direct-call-only; invoke it with (...)");
@@ -3085,6 +3148,15 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && awaited.expression() instanceof Ast.CallExpr call
+                    && call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr name
+                    && name.name().equals("self")
+                    && member.member().equals("get_done_signal")) {
+                throw new IllegalArgumentException(
+                        "actor cannot await self.get_done_signal(): own done settles only after the actor finalizes");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
@@ -4043,6 +4115,18 @@ public final class TypeChecker {
             return new Record(members, record.readOnly());
         }
         return type;
+    }
+
+    /**
+     * Synthetic, sealed actor base API: no userland actor state or declaration
+     * supplies these methods. The value-facing ABI is Future<Option<bool>>.
+     */
+    private static boolean isInheritedActorSignal(String name) {
+        return name.equals("get_ready_signal") || name.equals("get_done_signal");
+    }
+
+    private static Type inheritedActorSignalResult() {
+        return new Named("Future", List.of(new Named("Option", List.of(Primitive.BOOL))));
     }
 
     private Type actorMailboxPayloadType(Named actorRef) {
