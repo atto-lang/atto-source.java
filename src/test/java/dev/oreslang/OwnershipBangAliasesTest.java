@@ -154,6 +154,51 @@ final class OwnershipBangAliasesTest {
     }
 
     @Test
+    void pubSubPublishArgumentCanonicalShareBangMatchesLegacyOwnershipAst() {
+        // Topic.try_publish guest lowering is independent of ownership spelling.
+        // This is a REAL production Parser AST equivalence gate, not a guest test.
+        String program = """
+                pub suspends fnc main(): void {
+                  val String event = "ready";
+                  val group = actor.group("payments");
+                  val topic = group.topic<String>("events", "reliable", 1);
+                  val receipt = topic.try_publish(%s)?;
+                  return;
+                }
+                """;
+        Ast.Program legacy = Parser.parse(program.formatted("rt share event"));
+        assertEquals(legacy, Parser.parse(program.formatted("share! event")));
+        assertEquals(legacy, Parser.parse(program.formatted("share!event")));
+        assertThrows(RuntimeException.class,
+                () -> Parser.parse(program.formatted("share !event")),
+                "whitespace between share and ! must not grant ownership authority");
+    }
+
+    @Test
+    void pubSubShareBangCannotBypassUnloweredTryPublishCompilerGate() {
+        // Unlowered try_publish must be rejected by the compiler, not silently
+        // aliased to async Topic.publish or recognized only by the parser.
+        String source = """
+                pub suspends fnc main(): void {
+                  val String event = "ready";
+                  val group = actor.group("payments");
+                  val topic = group.topic<String>("events", "reliable", 1);
+                  val receipt = topic.try_publish(%s);
+                  return;
+                }
+                """;
+        for (String spelling : new String[]{
+                "rt share event", "share! event", "share!event"}) {
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
+                    spelling);
+            assertTrue(denied.getMessage().contains("try_publish"),
+                    spelling + ": " + denied.getMessage());
+        }
+    }
+
+    @Test
     void bangCopyAndShareCannotCloneMoveOnlyOwners() {
         String source = """
                 define class Item as
