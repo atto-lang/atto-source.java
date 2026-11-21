@@ -78,8 +78,16 @@ final class ActorSupervisorRestartCircuitTest {
         assertEquals(4, c.snapshot(10).restartsInWindow());
         for (int i = 0; i < 4; ++i) assertTrue(c.restartPending(i));
 
-        // A fresh episode cannot sneak past the full budget.
+        // Physical sibling finalization is proved in reverse order;
+        // the failed child (index 2) was already quiesced by terminal CONTROL.
+        assertTrue(c.acknowledgeQuiesced(3, 4, 11));
+        assertTrue(c.acknowledgeQuiesced(1, 2, 11));
+        assertTrue(c.acknowledgeQuiesced(0, 1, 11));
+
+        // Replacements publish in declaration order.
         for (int i = 0; i < 4; ++i) c.admitGeneration(i, 10 + i, 20);
+
+        // A fresh episode cannot sneak past the full budget.
         var exhausted = c.onExit(
                 0, 10, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
                 Strategy.ONE_FOR_ONE, 21);
@@ -222,4 +230,131 @@ final class ActorSupervisorRestartCircuitTest {
         assertFalse(c.restartPending(1));
         assertEquals(0, c.snapshot(1).acceptedReplacementRestarts());
     }
+
+    @Test
+    void groupRestartRequiresPhysicalQuiescenceAndReverseStopOrder() {
+        var c = new ActorSupervisorRestartCircuit(
+                config(4, 16, 10_000, 0, 0, 0));
+        for (int i = 0; i < 4; ++i) c.admitGeneration(i, i + 1L, 0);
+
+        var plan = c.onExit(
+                1, 2, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
+                Strategy.ONE_FOR_ALL, 10);
+        assertEquals(DecisionKind.RESTART, plan.kind());
+        assertTrue(c.restartQuiesced(1),
+                "the failed child's terminal notice already proves finalization");
+        assertFalse(c.restartQuiesced(0));
+        assertFalse(c.restartQuiesced(2));
+        assertFalse(c.restartQuiesced(3));
+
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(0, 10, 11),
+                "replacement must not start before sibling quiescence");
+
+        assertThrows(IllegalStateException.class,
+                () -> c.acknowledgeQuiesced(2, 3, 11),
+                "child 3 must quiesce before child 2");
+
+        assertTrue(c.acknowledgeQuiesced(3, 4, 11));
+        assertTrue(c.acknowledgeQuiesced(2, 3, 11));
+        assertTrue(c.acknowledgeQuiesced(0, 1, 11));
+
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(2, 12, 12),
+                "replacement starts must follow declaration order");
+
+        c.admitGeneration(0, 10, 12);
+        c.admitGeneration(1, 11, 12);
+        c.admitGeneration(2, 12, 12);
+        c.admitGeneration(3, 13, 12);
+
+        var snapshot = c.snapshot(12);
+        assertEquals(0, snapshot.pendingReplacements());
+        assertEquals(0, snapshot.quiescedPendingReplacements());
+    }
+
+    @Test
+    void staleQuiescenceProofCannotUnlockReplacement() {
+        var c = new ActorSupervisorRestartCircuit(
+                config(3, 8, 1_000, 0, 0, 0));
+        for (int i = 0; i < 3; ++i) c.admitGeneration(i, i + 1L, 0);
+
+        c.onExit(
+                1, 2, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
+                Strategy.REST_FOR_ONE, 10);
+
+        assertFalse(c.acknowledgeQuiesced(2, 99, 11));
+        assertEquals(1, c.snapshot(11).staleQuiescenceAcks());
+        assertThrows(IllegalStateException.class,
+                () -> c.admitGeneration(2, 20, 12));
+
+        assertTrue(c.acknowledgeQuiesced(2, 3, 12));
+        c.admitGeneration(1, 20, 13);
+        c.admitGeneration(2, 21, 13);
+    }
+
+    @Test
+    void overlappingRestForOneEpisodesEscalateWithoutErasingFirstPlan() {
+        var c = new ActorSupervisorRestartCircuit(
+                config(5, 32, 10_000, 0, 0, 0));
+        for (int i = 0; i < 5; ++i) c.admitGeneration(i, i + 1L, 0);
+
+        var younger = c.onExit(
+                3, 4, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
+                Strategy.REST_FOR_ONE, 10);
+        assertEquals(DecisionKind.RESTART, younger.kind());
+        assertTrue(c.restartPending(3));
+        assertTrue(c.restartPending(4));
+
+        var older = c.onExit(
+                1, 2, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
+                Strategy.REST_FOR_ONE, 11);
+        assertEquals(DecisionKind.ESCALATE, older.kind());
+        assertEquals("overlapping-restart-episode", older.reason());
+        assertEquals(0, older.chargedRestarts());
+
+        var snapshot = c.snapshot(11);
+        assertEquals(1, snapshot.overlappingEpisodeEscalations());
+        assertEquals(2, snapshot.pendingReplacements(),
+                "escalation must not erase the already-admitted restart episode");
+        assertTrue(c.restartPending(3));
+        assertTrue(c.restartPending(4));
+    }
+
+    @Test
+    void longMinValueIsAValidMonotonicClockOrigin() {
+        var c = new ActorSupervisorRestartCircuit(
+                config(1, 2, 100, 0, 0, 0));
+        c.admitGeneration(0, 1, Long.MIN_VALUE);
+        assertEquals(0, c.snapshot(Long.MIN_VALUE).clockRegressions());
+
+        var plan = c.onExit(
+                0, 1, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
+                Strategy.ONE_FOR_ONE, Long.MIN_VALUE + 1);
+        assertEquals(DecisionKind.RESTART, plan.kind());
+        assertEquals(1, c.snapshot(Long.MIN_VALUE + 1).restartsInWindow());
+    }
+
+    @Test
+    void restartHistoryIsBoundedByConfiguredPrimitiveRingCapacity() {
+        var c = new ActorSupervisorRestartCircuit(
+                config(1, 2, 10, 0, 0, 0));
+
+        c.admitGeneration(0, 1, 0);
+        assertEquals(DecisionKind.RESTART, c.onExit(
+                0, 1, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
+                Strategy.ONE_FOR_ONE, 1).kind());
+        c.admitGeneration(0, 2, 2);
+        assertEquals(DecisionKind.RESTART, c.onExit(
+                0, 2, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
+                Strategy.ONE_FOR_ONE, 3).kind());
+
+        c.admitGeneration(0, 3, 20);
+        assertEquals(DecisionKind.RESTART, c.onExit(
+                0, 3, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
+                Strategy.ONE_FOR_ONE, 20).kind());
+        assertEquals(1, c.snapshot(20).restartsInWindow(),
+                "expired ring entries must be reclaimed before new admission");
+    }
+
 }

@@ -1,21 +1,20 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayDeque;
-import java.util.Arrays;
 import java.util.Objects;
 
 /**
  * Deterministic bounded restart-intensity circuit for one supervisor.
  *
- * <p>This class decides restart <em>admission</em>; it does not create actors,
- * sleep, schedule timers or invoke guest code. The caller must first observe a
- * generation-fenced terminal CONTROL notice, ask this circuit for a plan,
- * quiesce the selected old generations, wait the returned delay without
- * blocking a carrier, then publish replacement generations in declared order.</p>
+ * <p>This class decides restart <em>admission</em> and enforces the ordering
+ * proof around it; it does not create actors, sleep, schedule timers or invoke
+ * guest code. The caller must first observe a generation-fenced terminal
+ * CONTROL notice, ask this circuit for a plan, quiesce selected old generations
+ * in reverse declaration order, wait the returned delay without blocking a
+ * carrier, then publish replacements in declaration order.</p>
  *
  * <p>Restart budget is charged per replacement child, not merely per failure
- * episode. Thus one-for-all cannot bypass the intensity limit by restarting a
- * large subtree as one logical event.</p>
+ * episode. Restart history uses a fixed primitive ring buffer, so restart storms
+ * do not allocate boxed timestamps on the hot failure path.</p>
  */
 final class ActorSupervisorRestartCircuit {
     enum Strategy { ONE_FOR_ONE, ONE_FOR_ALL, REST_FOR_ONE }
@@ -82,9 +81,13 @@ final class ActorSupervisorRestartCircuit {
 
     record Snapshot(
             int restartsInWindow,
+            int pendingReplacements,
+            int quiescedPendingReplacements,
             long acceptedReplacementRestarts,
             long escalations,
+            long overlappingEpisodeEscalations,
             long staleNotices,
+            long staleQuiescenceAcks,
             long noRestartDecisions,
             long clockRegressions,
             long nextDecisionSequence) { }
@@ -94,18 +97,29 @@ final class ActorSupervisorRestartCircuit {
     private final long[] startedAtNanos;
     private final int[] consecutiveAttempts;
     private final boolean[] live;
+
     /**
-     * Old generations selected by a restart episode. A new generation may be
-     * admitted only after the runtime has physically quiesced the old one.
+     * Selected generations are logically fenced immediately. The failed child
+     * is already physically quiesced when its terminal CONTROL notice arrives;
+     * selected siblings must be acknowledged explicitly before replacement.
      */
     private final boolean[] restartPending;
-    private final ArrayDeque<Long> restartTimes = new ArrayDeque<>();
+    private final boolean[] restartQuiesced;
+    private final long[] restartEpisode;
 
-    private long lastNowNanos = Long.MIN_VALUE;
+    /** Fixed-capacity primitive ring: no Long boxing during a restart storm. */
+    private final long[] restartTimes;
+    private int restartHead;
+    private int restartSize;
+
+    private boolean hasNowNanos;
+    private long lastNowNanos;
     private long nextDecisionSequence = 1L;
     private long acceptedReplacementRestarts;
     private long escalations;
+    private long overlappingEpisodeEscalations;
     private long staleNotices;
+    private long staleQuiescenceAcks;
     private long noRestartDecisions;
     private long clockRegressions;
 
@@ -116,6 +130,9 @@ final class ActorSupervisorRestartCircuit {
         this.consecutiveAttempts = new int[config.childCount()];
         this.live = new boolean[config.childCount()];
         this.restartPending = new boolean[config.childCount()];
+        this.restartQuiesced = new boolean[config.childCount()];
+        this.restartEpisode = new long[config.childCount()];
+        this.restartTimes = new long[config.maxRestarts()];
     }
 
     synchronized void admitGeneration(
@@ -133,10 +150,58 @@ final class ActorSupervisorRestartCircuit {
         if (actorGeneration <= generation[childIndex]) {
             throw new IllegalStateException("replacement generation must increase");
         }
+
+        if (restartPending[childIndex]) {
+            if (!restartQuiesced[childIndex]) {
+                throw new IllegalStateException(
+                        "replacement cannot start before old generation physically quiesces");
+            }
+            long episode = restartEpisode[childIndex];
+            for (int i = 0; i < childIndex; ++i) {
+                if (restartPending[i] && restartEpisode[i] == episode) {
+                    throw new IllegalStateException(
+                            "replacement generations must start in declaration order");
+                }
+            }
+        }
+
         generation[childIndex] = actorGeneration;
         startedAtNanos[childIndex] = nowNanos;
         live[childIndex] = true;
-        restartPending[childIndex] = false;
+        clearRestartState(childIndex);
+    }
+
+    /**
+     * Record physical finalization of one selected old sibling. A duplicate or
+     * stale generation returns false; an out-of-order quiescence proof is a
+     * runtime orchestration bug and fails closed.
+     */
+    synchronized boolean acknowledgeQuiesced(
+            int childIndex,
+            long actorGeneration,
+            long nowNanos) {
+        requireChild(childIndex);
+        requireMonotonicTime(nowNanos);
+
+        if (!restartPending[childIndex]
+                || generation[childIndex] != actorGeneration
+                || restartQuiesced[childIndex]) {
+            staleQuiescenceAcks = saturatingIncrement(staleQuiescenceAcks);
+            return false;
+        }
+
+        long episode = restartEpisode[childIndex];
+        for (int i = childIndex + 1; i < config.childCount(); ++i) {
+            if (restartPending[i]
+                    && restartEpisode[i] == episode
+                    && !restartQuiesced[i]) {
+                throw new IllegalStateException(
+                        "selected old generations must quiesce in reverse declaration order");
+            }
+        }
+
+        restartQuiesced[childIndex] = true;
+        return true;
     }
 
     synchronized RestartPlan onExit(
@@ -154,7 +219,7 @@ final class ActorSupervisorRestartCircuit {
         long decisionSequence = nextDecisionSequence();
 
         if (!live[childIndex] || generation[childIndex] != actorGeneration) {
-            staleNotices++;
+            staleNotices = saturatingIncrement(staleNotices);
             return new RestartPlan(
                     DecisionKind.STALE,
                     childIndex,
@@ -166,14 +231,14 @@ final class ActorSupervisorRestartCircuit {
                     "stale-or-already-planned-generation");
         }
 
-        // The terminal event is now owned by this decision. A duplicate notice
-        // for the same generation becomes STALE and cannot consume budget.
+        // Terminal CONTROL is published only after physical finalization, so
+        // the failed generation itself is already quiesced at this boundary.
         live[childIndex] = false;
 
         if (!shouldRestart(policy, exitClass)) {
-            noRestartDecisions++;
+            noRestartDecisions = saturatingIncrement(noRestartDecisions);
             consecutiveAttempts[childIndex] = 0;
-            restartPending[childIndex] = false;
+            clearRestartState(childIndex);
             return new RestartPlan(
                     DecisionKind.NO_RESTART,
                     childIndex,
@@ -196,11 +261,31 @@ final class ActorSupervisorRestartCircuit {
         };
         int width = end - first;
 
+        // Never overwrite an already admitted restart episode. This can occur
+        // when REST_FOR_ONE has younger replacements pending and an older live
+        // child fails before that episode completes. Coalescing would require a
+        // new budget/order proof; fail closed by escalating instead.
+        for (int i = first; i < end; ++i) {
+            if (restartPending[i]) {
+                escalations = saturatingIncrement(escalations);
+                overlappingEpisodeEscalations =
+                        saturatingIncrement(overlappingEpisodeEscalations);
+                return new RestartPlan(
+                        DecisionKind.ESCALATE,
+                        first,
+                        end,
+                        0,
+                        0,
+                        0,
+                        decisionSequence,
+                        "overlapping-restart-episode");
+            }
+        }
+
         pruneWindow(nowNanos);
         if (width > config.maxRestarts()
-                || restartTimes.size() > config.maxRestarts() - width) {
-            escalations++;
-            Arrays.fill(restartPending, first, end, false);
+                || restartSize > config.maxRestarts() - width) {
+            escalations = saturatingIncrement(escalations);
             return new RestartPlan(
                     DecisionKind.ESCALATE,
                     first,
@@ -223,16 +308,18 @@ final class ActorSupervisorRestartCircuit {
         }
         consecutiveAttempts[childIndex] = attempt;
 
-        // Mark every selected old generation logically fenced before returning
-        // the plan. Runtime orchestration must still physically stop/quiesce
-        // live siblings before admitGeneration() of replacements.
+        // Fence the complete episode before returning the plan. The failed
+        // child is already quiesced; siblings are not.
         for (int i = first; i < end; ++i) {
             live[i] = false;
             restartPending[i] = true;
+            restartQuiesced[i] = i == childIndex;
+            restartEpisode[i] = decisionSequence;
         }
 
-        for (int i = 0; i < width; ++i) restartTimes.addLast(nowNanos);
-        acceptedReplacementRestarts += width;
+        for (int i = 0; i < width; ++i) addRestartTime(nowNanos);
+        acceptedReplacementRestarts =
+                saturatingAdd(acceptedReplacementRestarts, width);
 
         return new RestartPlan(
                 DecisionKind.RESTART,
@@ -250,6 +337,11 @@ final class ActorSupervisorRestartCircuit {
         return restartPending[childIndex];
     }
 
+    synchronized boolean restartQuiesced(int childIndex) {
+        requireChild(childIndex);
+        return restartQuiesced[childIndex];
+    }
+
     synchronized long generation(int childIndex) {
         requireChild(childIndex);
         return generation[childIndex];
@@ -258,11 +350,23 @@ final class ActorSupervisorRestartCircuit {
     synchronized Snapshot snapshot(long nowNanos) {
         requireMonotonicTime(nowNanos);
         pruneWindow(nowNanos);
+        int pending = 0;
+        int quiesced = 0;
+        for (int i = 0; i < config.childCount(); ++i) {
+            if (restartPending[i]) {
+                pending++;
+                if (restartQuiesced[i]) quiesced++;
+            }
+        }
         return new Snapshot(
-                restartTimes.size(),
+                restartSize,
+                pending,
+                quiesced,
                 acceptedReplacementRestarts,
                 escalations,
+                overlappingEpisodeEscalations,
                 staleNotices,
+                staleQuiescenceAcks,
                 noRestartDecisions,
                 clockRegressions,
                 nextDecisionSequence);
@@ -315,6 +419,15 @@ final class ActorSupervisorRestartCircuit {
         return z ^ (z >>> 31);
     }
 
+    private void addRestartTime(long nowNanos) {
+        if (restartTimes.length == 0 || restartSize >= restartTimes.length) {
+            throw new IllegalStateException("restart intensity ring overflow");
+        }
+        int tail = (restartHead + restartSize) % restartTimes.length;
+        restartTimes[tail] = nowNanos;
+        restartSize++;
+    }
+
     private void pruneWindow(long nowNanos) {
         long cutoff;
         try {
@@ -324,16 +437,21 @@ final class ActorSupervisorRestartCircuit {
         }
         // Half-open window [now-window, now]: a restart exactly at the cutoff
         // still counts, avoiding boundary-dependent intensity oscillation.
-        while (!restartTimes.isEmpty() && restartTimes.peekFirst() < cutoff) {
-            restartTimes.removeFirst();
+        while (restartSize != 0 && restartTimes[restartHead] < cutoff) {
+            restartHead = (restartHead + 1) % restartTimes.length;
+            restartSize--;
         }
+        if (restartSize == 0) restartHead = 0;
     }
 
     private void requireMonotonicTime(long nowNanos) {
-        if (lastNowNanos != Long.MIN_VALUE && nowNanos < lastNowNanos) {
-            clockRegressions++;
+        // nanoTime has an arbitrary signed origin. A separate presence bit
+        // avoids reserving Long.MIN_VALUE as an impossible timestamp.
+        if (hasNowNanos && nowNanos - lastNowNanos < 0) {
+            clockRegressions = saturatingIncrement(clockRegressions);
             throw new IllegalArgumentException("supervisor monotonic clock regressed");
         }
+        hasNowNanos = true;
         lastNowNanos = nowNanos;
     }
 
@@ -346,21 +464,37 @@ final class ActorSupervisorRestartCircuit {
         return value;
     }
 
+    private void clearRestartState(int childIndex) {
+        restartPending[childIndex] = false;
+        restartQuiesced[childIndex] = false;
+        restartEpisode[childIndex] = 0L;
+    }
+
     private static int incrementAttempt(int previous) {
         if (previous == Integer.MAX_VALUE) return Integer.MAX_VALUE;
         return previous + 1;
     }
 
     private static long nonNegativeElapsed(long now, long started) {
-        if (now < started) {
+        long elapsed = now - started;
+        if (elapsed < 0) {
             throw new IllegalStateException("child start time is in the future");
         }
-        return now - started;
+        return elapsed;
     }
 
     private void requireChild(int childIndex) {
         if (childIndex < 0 || childIndex >= config.childCount()) {
             throw new IndexOutOfBoundsException("child index out of range");
         }
+    }
+
+    private static long saturatingIncrement(long value) {
+        return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
+    }
+
+    private static long saturatingAdd(long value, long delta) {
+        if (delta <= 0) return value;
+        return value > Long.MAX_VALUE - delta ? Long.MAX_VALUE : value + delta;
     }
 }
