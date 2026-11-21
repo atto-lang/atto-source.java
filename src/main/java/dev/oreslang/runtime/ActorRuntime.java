@@ -60,6 +60,11 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
     private static final int MAX_ACTOR_GROUP_MEMBERSHIPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
+    // Separate from subscriptions and supervisor CONTROL: monitoring a group
+    // consumes finite credits owned by the actor incarnation, not a carrier.
+    private static final int MAX_MEMBERSHIP_MONITORS_PER_ACTOR = 16;
+    private static final int MAX_MEMBERSHIP_MONITORS_PER_GROUP = 1_024;
+    private static final int MAX_MEMBERSHIP_MONITOR_QUEUE = 256;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
@@ -607,6 +612,8 @@ public final class ActorRuntime implements AutoCloseable {
      */
     private final Object groupMembershipLock = new Object();
     private final Map<ActorId, Set<ActorGroupId>> groupMemberships = new java.util.HashMap<>();
+    /** Global per-actor monitor credits, guarded by groupMembershipLock. */
+    private final Map<ActorId, Integer> membershipMonitorCredits = new java.util.HashMap<>();
     /** Actor-created groups remain structurally owned even after creator leaves. */
     private final Map<ActorId, Set<ActorGroupId>> createdGroupsByActor =
             new java.util.HashMap<>();
@@ -3468,6 +3475,11 @@ public final class ActorRuntime implements AutoCloseable {
         // into a different supervisor before stop actually dispatches.
         private final Set<ActorId> stoppingWorkers = new java.util.HashSet<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
+        // Every mutation and monitor operation below is serialized on the
+        // owning runtime's groupMembershipLock, including snapshot + watch.
+        private final Map<Long, MembershipMonitor> membershipMonitors = new LinkedHashMap<>();
+        private long nextMembershipMonitorId;
+        private BigInteger membershipRevision = BigInteger.ZERO;
         // Runtime-owned, non-cancellable observer; actor retirement may outlive
         // group admission revocation and clearing managed-worker references.
         private final OresFuture<Void> closedWorkersDone =
@@ -3506,7 +3518,10 @@ public final class ActorRuntime implements AutoCloseable {
                             MAX_EVENT_TOPICS_PER_GROUP,
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
-            if (creator != null) members.add(creator);
+            if (creator != null) {
+                members.add(creator);
+                membershipRevision = BigInteger.ONE;
+            }
         }
 
         public ActorGroupId id() { return id; }
@@ -3540,6 +3555,230 @@ public final class ActorRuntime implements AutoCloseable {
         public Set<ActorId> memberIds() {
             requireObserver("inspect ActorGroup membership");
             return Set.copyOf(members);
+        }
+
+        /**
+         * Runtime-local pg-style membership control stream. Unlike Topic<T>
+         * and supervisor CONTROL, this holds no user payload or message-send
+         * authority. A snapshot and monitor registration linearize together
+         * under groupMembershipLock; never invoke callbacks under that lock.
+         *
+         * Guest lowering remains deliberately unsupported until the AttoLang
+         * type checker can enforce actor-affine monitor handle ownership.
+         */
+        public record MembershipSnapshot(String revision, List<ActorId> members) {
+            public MembershipSnapshot {
+                Objects.requireNonNull(revision, "revision");
+                members = List.copyOf(members);
+            }
+        }
+
+        public enum MembershipChangeKind { JOIN, LEAVE }
+
+        public record MembershipChange(
+                String revision, MembershipChangeKind kind, ActorId actorId) {
+            public MembershipChange {
+                Objects.requireNonNull(revision, "revision");
+                Objects.requireNonNull(kind, "kind");
+                Objects.requireNonNull(actorId, "actorId");
+            }
+        }
+
+        public enum MembershipPollStatus {
+            EVENT, EMPTY, OVERFLOW, INVALID_REVISION, REVISION_MISMATCH
+        }
+
+        public record MembershipPoll(
+                MembershipPollStatus status, MembershipChange event) {
+            public MembershipPoll {
+                Objects.requireNonNull(status, "status");
+                if ((status == MembershipPollStatus.EVENT) != (event != null)) {
+                    throw new IllegalArgumentException("event is required only for EVENT");
+                }
+            }
+        }
+
+        public final class MembershipMonitor implements AutoCloseable {
+            private final ActorId ownerId;
+            private final long registrationId;
+            private final int capacity;
+            private final ArrayDeque<MembershipChange> pending = new ArrayDeque<>();
+            // All fields, including logical revocation, guarded by groupMembershipLock.
+            private boolean retired;
+            private boolean overflow;
+
+            private MembershipMonitor(ActorId ownerId, long registrationId, int capacity) {
+                this.ownerId = ownerId;
+                this.registrationId = registrationId;
+                this.capacity = capacity;
+            }
+
+            private void requireOwner() {
+                requireCallerRuntimeAffinity("read ActorGroup membership monitor");
+                if (!ownerId.equals(currentActorId().orElse(null))) {
+                    throw new SecurityException(
+                            "UnauthorizedMonitor: monitor belongs to another actor incarnation");
+                }
+            }
+
+            public MembershipPoll poll() {
+                return poll(null);
+            }
+
+            /**
+             * With a non-null cursor, refuse any gap without consuming an
+             * event. Cursor parse is bounded and outside coordinator locks.
+             */
+            public MembershipPoll poll(String afterRevision) {
+                requireOwner();
+                BigInteger next = null;
+                if (afterRevision != null) {
+                    if (afterRevision.isEmpty() || afterRevision.length() > 256
+                            || (afterRevision.length() > 1
+                                    && afterRevision.charAt(0) == '0')) {
+                        return new MembershipPoll(MembershipPollStatus.INVALID_REVISION, null);
+                    }
+                    for (int i = 0; i < afterRevision.length(); i++) {
+                        char c = afterRevision.charAt(i);
+                        if (c < '0' || c > '9') {
+                            return new MembershipPoll(MembershipPollStatus.INVALID_REVISION, null);
+                        }
+                    }
+                    next = new BigInteger(afterRevision).add(BigInteger.ONE);
+                }
+                synchronized (groupMembershipLock) {
+                    requireActiveLocked();
+                    if (overflow) {
+                        return new MembershipPoll(MembershipPollStatus.OVERFLOW, null);
+                    }
+                    MembershipChange candidate = pending.peekFirst();
+                    if (candidate == null) {
+                        return new MembershipPoll(MembershipPollStatus.EMPTY, null);
+                    }
+                    if (next != null && !next.equals(new BigInteger(candidate.revision()))) {
+                        return new MembershipPoll(MembershipPollStatus.REVISION_MISMATCH, null);
+                    }
+                    return new MembershipPoll(MembershipPollStatus.EVENT, pending.removeFirst());
+                }
+            }
+
+            public MembershipSnapshot resync() {
+                requireOwner();
+                synchronized (groupMembershipLock) {
+                    requireActiveLocked();
+                    MembershipSnapshot snapshot = snapshotLocked();
+                    pending.clear();
+                    overflow = false;
+                    return snapshot;
+                }
+            }
+
+            private void requireActiveLocked() {
+                if (retired || groupClosed.get() || closed.get()
+                        || !members.contains(ownerId)) {
+                    throw new IllegalStateException("StaleMonitor: membership monitor revoked");
+                }
+            }
+
+            @Override
+            public void close() {
+                requireOwner();
+                synchronized (groupMembershipLock) {
+                    retireMonitorLocked(this);
+                }
+            }
+        }
+
+        /** Host and existing members may inspect a point-in-time view only. */
+        public MembershipSnapshot membershipSnapshot() {
+            requireObserver("snapshot ActorGroup membership");
+            // Observer preflight can race a manager-driven leave. Revalidate
+            // authority at the same lock used to capture the snapshot.
+            ActorId caller = currentActorId().orElse(null);
+            synchronized (groupMembershipLock) {
+                requireOpen();
+                if (caller != null && !members.contains(caller)) {
+                    throw new SecurityException(
+                            "ActorGroup membership revoked before snapshot");
+                }
+                return snapshotLocked();
+            }
+        }
+
+        private MembershipSnapshot snapshotLocked() {
+            List<ActorId> ids = new ArrayList<>(members);
+            ids.sort((a, b) -> a.value().compareTo(b.value()));
+            return new MembershipSnapshot(membershipRevision.toString(), ids);
+        }
+
+        /** Only the current actor may mint a monitor of its own membership. */
+        public MembershipMonitor monitorMembership(int capacity) {
+            ActorId owner = requireCurrentMember("monitor ActorGroup membership");
+            if (capacity < 1 || capacity > MAX_MEMBERSHIP_MONITOR_QUEUE) {
+                throw new IllegalArgumentException(
+                        "ActorGroup monitor capacity must be 1.."
+                                + MAX_MEMBERSHIP_MONITOR_QUEUE);
+            }
+            synchronized (groupMembershipLock) {
+                requireOpen();
+                if (!members.contains(owner)) {
+                    throw new SecurityException("UnauthorizedMonitor: membership revoked");
+                }
+                int held = membershipMonitorCredits.getOrDefault(owner, 0);
+                if (held >= MAX_MEMBERSHIP_MONITORS_PER_ACTOR
+                        || membershipMonitors.size() >= MAX_MEMBERSHIP_MONITORS_PER_GROUP
+                        || nextMembershipMonitorId == Long.MAX_VALUE) {
+                    throw new IllegalStateException("ActorGroup membership monitor quota exhausted");
+                }
+                MembershipMonitor monitor =
+                        new MembershipMonitor(owner, ++nextMembershipMonitorId, capacity);
+                membershipMonitors.put(monitor.registrationId, monitor);
+                membershipMonitorCredits.put(owner, held + 1);
+                return monitor;
+            }
+        }
+
+        /** Package-local non-authoritative quota observation for JUnit. */
+        int activeMembershipMonitorCount() {
+            synchronized (groupMembershipLock) {
+                return membershipMonitors.size();
+            }
+        }
+
+        private void retireMonitorLocked(MembershipMonitor monitor) {
+            if (monitor.retired) return;
+            monitor.retired = true;
+            monitor.pending.clear();
+            monitor.overflow = false;
+            membershipMonitors.remove(monitor.registrationId, monitor);
+            int held = membershipMonitorCredits.getOrDefault(monitor.ownerId, 0);
+            if (held <= 1) membershipMonitorCredits.remove(monitor.ownerId);
+            else membershipMonitorCredits.put(monitor.ownerId, held - 1);
+        }
+
+        private void revokeMonitorsForActorLocked(ActorId actorId) {
+            for (MembershipMonitor monitor : List.copyOf(membershipMonitors.values())) {
+                if (monitor.ownerId.equals(actorId)) retireMonitorLocked(monitor);
+            }
+        }
+
+        private void recordMembershipChangeLocked(
+                MembershipChangeKind kind, ActorId member) {
+            // BigInteger avoids unsafe unsigned-u64 wraparound in this Java
+            // runtime prototype. A bounded epoch/rollover ABI is required
+            // before shipping portable guest/Native Image monitor cursors.
+            membershipRevision = membershipRevision.add(BigInteger.ONE);
+            MembershipChange change =
+                    new MembershipChange(membershipRevision.toString(), kind, member);
+            for (MembershipMonitor monitor : membershipMonitors.values()) {
+                if (monitor.overflow) continue;
+                if (monitor.pending.size() >= monitor.capacity) {
+                    monitor.pending.clear();
+                    monitor.overflow = true;
+                } else {
+                    monitor.pending.addLast(change);
+                }
+            }
         }
 
         /**
@@ -4007,6 +4246,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (joined.isEmpty()) groupMemberships.remove(actorId);
                         throw new IllegalStateException("ActorGroup or actor closed during join");
                     }
+                    recordMembershipChangeLocked(MembershipChangeKind.JOIN, actorId);
                 }
             }
         }
@@ -4110,6 +4350,8 @@ public final class ActorRuntime implements AutoCloseable {
             ActorGroupColumnarEpoch revoked = null;
             synchronized (groupMembershipLock) {
                 if (!members.remove(actorId)) return;
+                revokeMonitorsForActorLocked(actorId);
+                recordMembershipChangeLocked(MembershipChangeKind.LEAVE, actorId);
                 Set<ActorGroupId> joined = groupMemberships.get(actorId);
                 if (joined != null) {
                     joined.remove(id);
@@ -4179,6 +4421,11 @@ public final class ActorRuntime implements AutoCloseable {
             // room close frees membership quota without stopping unrelated
             // members or tearing down their other room subscriptions.
             synchronized (groupMembershipLock) {
+                // Revoke monitor queues and per-actor credits before closing
+                // the cooperating group. No user callbacks run in this path.
+                for (MembershipMonitor monitor : List.copyOf(membershipMonitors.values())) {
+                    retireMonitorLocked(monitor);
+                }
                 for (ActorId member : members) {
                     Set<ActorGroupId> joined = groupMemberships.get(member);
                     if (joined != null) {
@@ -7623,6 +7870,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorGroup
                 || value instanceof ActorEventBus
                 || value instanceof ActorEventBus.Subscription<?>
+                || value instanceof ActorRuntime.ActorGroup.MembershipMonitor
                 || value instanceof ChannelRuntime.SelectSet
                 || value instanceof ChannelRuntime.SelectCase
                 || value instanceof ChannelRuntime.SelectPlan
@@ -7719,6 +7967,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
+                || value instanceof ActorRuntime.ActorGroup.MembershipMonitor
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>

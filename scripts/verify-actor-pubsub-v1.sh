@@ -33,11 +33,12 @@ suites=(
   dev.oreslang.ChannelCallableTransportTest
   dev.oreslang.runtime.ActorPubSubV1ContractTest
   dev.oreslang.runtime.ActorPubSubConcurrencyTest
+  dev.oreslang.runtime.ActorGroupMembershipMonitorTest
   dev.oreslang.runtime.ActorPubSubAdversarialAdmissionTest
   dev.oreslang.runtime.SourceActorPubSubTest
 )
 # Maven's selection is explicit, while reports are checked by full class name.
-selection="SourceActorPubSubExecutionTest,PubSubGuestIsolationGateTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
+selection="SourceActorPubSubExecutionTest,PubSubGuestIsolationGateTest,CanonicalSuspendsPubSubGuestTest,ChannelCallableTransportTest,ActorPubSubV1ContractTest,ActorPubSubConcurrencyTest,ActorGroupMembershipMonitorTest,ActorPubSubAdversarialAdmissionTest,SourceActorPubSubTest"
 mvn -B -ntp -Dores.runtime.carriers=native \
   "-Dtest=$selection" -Dsurefire.failIfNoSpecifiedTests=true test
 
@@ -68,6 +69,13 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 expected = {
+    "dev.oreslang.runtime.ActorGroupMembershipMonitorTest": {
+        "snapshotOverflowsResyncsAndFencesOldGrantAfterLeaveRejoin",
+        "otherMemberCannotUseMonitorAndGroupCloseReclaimsCredit",
+        "parallelMembershipChurnOverflowsButResyncReturnsExactRevision",
+        "monitorCreditsArePerActorAcrossIndependentGroups",
+        "monitorTokenAndNestedTokenCannotBeSentOrSharedAsData",
+    },
     "dev.oreslang.PubSubGuestIsolationGateTest": {
         "twoConcurrentGraalContextsWithSameGroupAndTopicNamesStayIsolated",
         "deniedActorAuthorizationDoesNotPoisonFreshPositiveGuestContext",
