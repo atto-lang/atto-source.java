@@ -202,20 +202,26 @@ final class SourceActorPubSubTest {
             assertEquals("1", first.orElseThrow().sequenceUnsignedString());
             assertEquals(1, first.orElseThrow().subscribers());
 
-            // The current HOST substrate permits one queued write plus one
-            // bounded pending writer at capacity=1 (outstanding limit 2).
-            // This is NOT the portable v1 strict queued+in-flight capacity.
+            assertTrue(first.orElseThrow().completion().isDone(),
+                    "a successful try_publish must not await a free channel slot");
             java.util.Optional<ActorEventBus.PublishReceipt> second =
-                    topic.tryPublishReliable("bounded-pending");
-            assertTrue(second.isPresent());
-            assertEquals("2", second.orElseThrow().sequenceUnsignedString());
+                    topic.tryPublishReliable("would-be-pending");
+            assertTrue(second.isEmpty(),
+                    "nonblocking try_publish must refuse pending writes at capacity one");
 
+            // The existing asynchronous publish() API retains its distinct
+            // bounded pending-writer semantics: this second publication
+            // commits sequence 2 but waits for the subscriber queue.
+            OresFuture<Void> legacyPending = topic.publish("queued-async");
+            assertFalse(legacyPending.isDone());
             java.util.Optional<ActorEventBus.PublishReceipt> rejected =
                     topic.tryPublishReliable("full");
             assertTrue(rejected.isEmpty(),
-                    "exhausted host outstanding credit cannot return a receipt");
+                    "try_publish cannot use asynchronous pending-writer credit");
 
             group.leave(actor);
+            assertTrue(legacyPending.isCompletedExceptionally(),
+                    "leaving closes the subscription and cancels pending delivery");
             java.util.Optional<ActorEventBus.PublishReceipt> afterLeave =
                     topic.tryPublishReliable("no-members");
             assertTrue(afterLeave.isPresent(),
