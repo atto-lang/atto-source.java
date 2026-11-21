@@ -22,6 +22,10 @@ public final class ProcessGroupRegistry implements AutoCloseable {
     private static final class Entry {
         private final ActorRuntime.ActorGroup group;
         private final ActorRuntime.ActorGroupJoinCapability join;
+        // Registry lock owns these epochs. Textual names or actor IDs alone
+        // must not authorize a cached handle after leave and later rejoin.
+        private final Map<ActorRuntime.ActorId, Long> memberEpochs = new LinkedHashMap<>();
+        private long lastEpoch;
 
         private Entry(
                 ActorRuntime.ActorGroup group,
@@ -29,21 +33,46 @@ public final class ProcessGroupRegistry implements AutoCloseable {
             this.group = group;
             this.join = join;
         }
+
+        private void pruneEpochs() {
+            memberEpochs.keySet().removeIf(actorId -> !group.runtimeContains(actorId));
+        }
+
+        private void requireEpochRoom(ActorRuntime.ActorId actorId, boolean wasMember) {
+            if ((!wasMember || !memberEpochs.containsKey(actorId))
+                    && lastEpoch == Long.MAX_VALUE) {
+                throw new IllegalStateException("pg membership generation exhausted");
+            }
+        }
+
+        private long epochForJoin(ActorRuntime.ActorId actorId, boolean wasMember) {
+            if (wasMember) {
+                Long current = memberEpochs.get(actorId);
+                if (current != null) return current;
+            }
+            // requireEpochRoom ran before physical membership admission.
+            long epoch = ++lastEpoch;
+            memberEpochs.put(actorId, epoch);
+            return epoch;
+        }
     }
 
     public final class Membership<M> implements AutoCloseable {
         private final Key key;
         private final ActorRuntime.ActorId actorId;
         private final ActorRuntime.ActorGroup group;
+        private final long membershipEpoch;
         private final AtomicBoolean left = new AtomicBoolean();
 
         private Membership(
                 Key key,
                 ActorRuntime.ActorId actorId,
-                ActorRuntime.ActorGroup group) {
+                ActorRuntime.ActorGroup group,
+                long membershipEpoch) {
             this.key = key;
             this.actorId = actorId;
             this.group = group;
+            this.membershipEpoch = membershipEpoch;
         }
 
         public String scope() { return key.scope(); }
@@ -53,16 +82,17 @@ public final class ProcessGroupRegistry implements AutoCloseable {
 
         public void leave() {
             if (!left.compareAndSet(false, true)) return;
-            ActorRuntime.ActorId current = ActorRuntime.currentActorId().orElseThrow(() ->
-                    new SecurityException("pg membership leave requires actor execution"));
-            if (!current.equals(actorId)) {
-                left.set(false);
-                throw new SecurityException(
-                        "pg membership may only be left by the actor that joined it");
-            }
             try {
-                leaveMembership(key, actorId, group);
+                ActorRuntime.ActorId current = ActorRuntime.currentActorId().orElseThrow(() ->
+                        new SecurityException("pg membership leave requires actor execution"));
+                if (!current.equals(actorId)) {
+                    throw new SecurityException(
+                            "pg membership may only be left by the actor that joined it");
+                }
+                leaveMembership(key, actorId, group, membershipEpoch);
             } catch (RuntimeException | Error failure) {
+                // Unauthorized callers must not consume a legitimate actor's
+                // revocable membership handle merely by invoking leave().
                 left.set(false);
                 throw failure;
             }
@@ -159,8 +189,11 @@ public final class ProcessGroupRegistry implements AutoCloseable {
         return withRegistryLock(retirements -> {
             Entry entry = entryForJoinLocked(key, retirements);
             try {
+                boolean wasMember = entry.group.runtimeContains(actorId);
+                entry.requireEpochRoom(actorId, wasMember);
                 entry.group.joinCurrent(entry.join);
-                return new Membership<M>(key, actorId, entry.group);
+                long epoch = entry.epochForJoin(actorId, wasMember);
+                return new Membership<M>(key, actorId, entry.group, epoch);
             } catch (RuntimeException | Error failure) {
                 reclaimIfEmptyLocked(key, entry, retirements);
                 throw failure;
@@ -177,7 +210,11 @@ public final class ProcessGroupRegistry implements AutoCloseable {
         withRegistryLock(retirements -> {
             Entry entry = entryForJoinLocked(key, retirements);
             try {
+                ActorRuntime.ActorId actorId = ref.id();
+                boolean wasMember = entry.group.runtimeContains(actorId);
+                entry.requireEpochRoom(actorId, wasMember);
                 entry.group.join(ref, entry.join);
+                entry.epochForJoin(actorId, wasMember);
             } catch (RuntimeException | Error failure) {
                 reclaimIfEmptyLocked(key, entry, retirements);
                 throw failure;
@@ -188,11 +225,14 @@ public final class ProcessGroupRegistry implements AutoCloseable {
 
     public void leaveCurrent(String scope, String name) {
         Key key = key(scope, name);
-        ActorRuntime.currentActorId().orElseThrow(() ->
+        ActorRuntime.ActorId actorId = ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("pg.leaveCurrent requires actor execution"));
         Entry entry = withRegistryLock(retirements -> {
             Entry found = existingLocked(key, retirements);
             if (found == null) throw new IllegalStateException("unknown pg group");
+            // Logical revocation precedes the callback-capable physical leave.
+            // Even a cached duplicate handle cannot cancel a later epoch.
+            found.memberEpochs.remove(actorId);
             return found;
         });
         // ActorGroup.leaveCurrent may settle Future callbacks; do not hold
@@ -294,7 +334,10 @@ public final class ProcessGroupRegistry implements AutoCloseable {
         requireOpen();
         pruneEmptyLocked(retirements);
         Entry existing = groups.get(key);
-        if (existing != null) return existing;
+        if (existing != null) {
+            existing.pruneEpochs();
+            return existing;
+        }
         if (groups.size() >= maxGroups) {
             throw new IllegalStateException(
                     "pg group limit exceeded: maximum " + maxGroups);
@@ -326,7 +369,8 @@ public final class ProcessGroupRegistry implements AutoCloseable {
     private void leaveMembership(
             Key key,
             ActorRuntime.ActorId actorId,
-            ActorRuntime.ActorGroup group) {
+            ActorRuntime.ActorGroup group,
+            long membershipEpoch) {
         ActorRuntime.ActorId current = ActorRuntime.currentActorId().orElseThrow(() ->
                 new SecurityException("pg membership leave requires actor execution"));
         if (!current.equals(actorId)) {
@@ -338,6 +382,8 @@ public final class ProcessGroupRegistry implements AutoCloseable {
             Entry found = groups.get(key);
             if (found == null || found.group != group || !group.runtimeContains(actorId))
                 return null; // stale duplicate handle: explicitly idempotent
+            if (!found.memberEpochs.remove(actorId, membershipEpoch))
+                return null; // a newer join owns a different epoch
             return found;
         });
         if (entry == null) return;

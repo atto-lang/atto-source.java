@@ -1,0 +1,57 @@
+name: pg membership epochs and teardown exact-head JUnit
+on:
+  push:
+    branches:
+      - hardening/pg-epoch-fence-20261109
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pg-security:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Validate source repository before checkout
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          EXACT_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          [[ "$EXACT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EVENT_NAME" = "push" -o "$EVENT_NAME" = "workflow_dispatch"
+      - name: Checkout exact source commit (same repository only)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Verify source commit
+        shell: bash
+        env:
+          EXACT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXACT_SHA"
+          test "$(git status --porcelain)" = ""
+      - name: Install JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Run exact-head pg and eventbus JUnit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dtest=ProcessGroupRegistryMembershipEpochTest,ProcessGroupRegistryRetirementTest,ProcessGroupRegistryTest,ActorEventBusTest -DfailIfNoTests=true test
+      - name: Preserve Surefire receipts on failure
+        if: always()
+        shell: bash
+        run: |
+          if [ -d target/surefire-reports ]; then
+            find target/surefire-reports -maxdepth 1 -name '*.xml' -print | sort
+          else
+            echo 'SUREFIRE_XML_MISSING_NOT_EXECUTED_OR_PRETEST_FAILURE'
+          fi
