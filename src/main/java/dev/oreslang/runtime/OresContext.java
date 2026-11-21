@@ -22,7 +22,14 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
 public final class OresContext implements AutoCloseable {
-    private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
+    private static final ContextReference<OresContext> REFERENCE =
+            ContextReference.create(OresLanguage.class);
+    /**
+     * Failed physical cleanup must keep the context and all owner graphs
+     * strongly reachable until an explicit retry proves retirement.
+     */
+    private static final java.util.Set<OresContext> QUARANTINED_CONTEXTS =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private final OresLanguage language;
     private final TruffleLanguage.Env env;
@@ -110,7 +117,8 @@ public final class OresContext implements AutoCloseable {
                     isolatePolicy,
                     ActorRuntime.DispatcherConfig.defaults(),
                     this::executeActorTurn,
-                    vm::executeControl);
+                    vm::executeControl,
+                    runtimePermissions);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             actors.setActorExitHook(gc::retireActorDomain);
@@ -179,6 +187,8 @@ public final class OresContext implements AutoCloseable {
             String api) {
         requireCapability(permission.capability(), api);
         runtimePermissions.require(permission, resource, api);
+        ActorRuntime.requireCurrentActorPermission(
+                permission, resource, api);
     }
 
     static void requireEffectiveCapability(
@@ -426,36 +436,123 @@ public final class OresContext implements AutoCloseable {
         return Map.copyOf(descriptor);
     }
 
-    @Override
-    public void close() {
-        nativeIo.close();
-        http.close();
-        RuntimeException failure = null;
+    /**
+     * Two-phase physical context retirement. Actor admission is sealed before
+     * native transport wakeup; actor STOP and I/O joins are then attempted
+     * independently. If native retirement releases the last actor lease, actor
+     * close is retried before any context/code/GC ownership is reclaimed.
+     */
+    static void joinActorsAndNativeIo(
+            ActorRuntime actors,
+            AsyncNativeIo nativeIo) {
+        java.util.Objects.requireNonNull(actors, "actor runtime");
+        java.util.Objects.requireNonNull(nativeIo, "native I/O runtime");
+
+        RuntimeException sealFailure = null;
+        RuntimeException revokeFailure = null;
+        RuntimeException actorFailure = null;
+        RuntimeException ioFailure = null;
+
         try {
-            asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
+            actors.sealShutdownAdmission();
+        } catch (RuntimeException failed) {
+            sealFailure = failed;
+        }
+        try {
+            nativeIo.requestShutdown();
+        } catch (RuntimeException failed) {
+            revokeFailure = failed;
         }
         try {
             actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
+        } catch (RuntimeException failed) {
+            actorFailure = failed;
+        }
+        try {
+            nativeIo.close();
+        } catch (RuntimeException failed) {
+            ioFailure = failed;
+        }
+
+        // Registered native resources may be the final actor physical leases.
+        // Retry only after native close proved its worker/resource join.
+        if (actorFailure != null
+                && ioFailure == null
+                && revokeFailure == null) {
+            try {
+                actors.close();
+                actorFailure = null;
+            } catch (RuntimeException retryFailure) {
+                if (retryFailure != actorFailure) {
+                    actorFailure.addSuppressed(retryFailure);
+                }
+            }
+        }
+
+        RuntimeException failure = null;
+        for (RuntimeException candidate : new RuntimeException[] {
+                sealFailure, revokeFailure, actorFailure, ioFailure }) {
+            if (candidate == null) continue;
+            if (failure == null) failure = candidate;
+            else if (candidate != failure) failure.addSuppressed(candidate);
+        }
+        if (failure != null) {
+            throw new IllegalStateException(
+                    "Oreslang actor and native I/O retirement incomplete",
+                    failure);
+        }
+    }
+
+    @Override
+    public void close() {
+        QUARANTINED_CONTEXTS.add(this);
+
+        try {
+            joinActorsAndNativeIo(actors, nativeIo);
+        } catch (RuntimeException incomplete) {
+            output.flush();
+            throw new IllegalStateException(
+                    "Oreslang context cleanup incomplete; physical state quarantined",
+                    incomplete);
+        }
+
+        RuntimeException failure = null;
+        try {
+            http.close();
+        } catch (RuntimeException httpFailure) {
+            failure = httpFailure;
+        }
+        try {
+            asyncRuntime.close();
+        } catch (RuntimeException asyncFailure) {
+            if (failure == null) failure = asyncFailure;
+            else if (failure != asyncFailure) {
+                failure.addSuppressed(asyncFailure);
+            }
         }
         try {
             vm.close();
         } catch (RuntimeException vmFailure) {
             if (failure == null) failure = vmFailure;
-            else failure.addSuppressed(vmFailure);
-        } finally {
-            synchronized (this) {
-                linkedCodeUnits.clear();
-                linkedImportResolutions.clear();
-                sharedCodeImages.close();
+            else if (failure != vmFailure) {
+                failure.addSuppressed(vmFailure);
             }
-            garbageCollector.close();
-            output.flush();
         }
-        if (failure != null) throw failure;
+
+        if (failure != null) {
+            output.flush();
+            throw new IllegalStateException(
+                    "Oreslang context auxiliary shutdown incomplete; context quarantined",
+                    failure);
+        }
+
+        synchronized (this) {
+            linkedCodeUnits.clear();
+            linkedImportResolutions.clear();
+            sharedCodeImages.close();
+        }
+        garbageCollector.close();
+        output.flush();
+        QUARANTINED_CONTEXTS.remove(this);
     }
 }

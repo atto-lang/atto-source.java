@@ -278,9 +278,31 @@ public final class NativeIo {
             socket.connect(new InetSocketAddress(host, port), 15_000);
             return new TcpConnection(context, endpoint, socket);
         } catch (Exception failure) {
-            context.nativeIo().unregister(socket);
-            try { socket.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
+            retireFailedConnect(context.nativeIo(), socket, failure);
             throw new IllegalStateException("network connection failed for " + endpoint + ": " + failure.getMessage(), failure);
+        }
+    }
+
+    /**
+     * Failed connect still owns its physical registration. Close the native
+     * handle first, then retire registration. If physical close cannot be
+     * proved, leave registration pinned for context-owned retry.
+     */
+    static void retireFailedConnect(
+            AsyncNativeIo io,
+            Socket socket,
+            Exception failure) {
+        try {
+            socket.close();
+        } catch (IOException cleanup) {
+            failure.addSuppressed(cleanup);
+            return;
+        }
+        if (!socket.isClosed()) return;
+        try {
+            io.unregister(socket);
+        } catch (RuntimeException retirementFailure) {
+            failure.addSuppressed(retirementFailure);
         }
     }
 

@@ -129,22 +129,28 @@ final class ScopedTaskTest {
     }
 
     @Test
-    void actorScopeIsRejectedStaticallyUntilActorIntegrationIsProven() {
-        IllegalArgumentException failure = assertThrows(
-                IllegalArgumentException.class,
-                () -> OresCompiler.parseAndTypeCheck("""
-                        actor fnc worker(): void {
-                            nb scope {
-                                let child = nb {
-                                    return;
-                                };
-                            }
+    void actorScopesAreAdmittedAfterPhysicalRetirementIntegration() {
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                actor fnc worker(): void {
+                    nb scope {
+                        let child = nb {
                             return;
-                        }
-                        """));
-        String message = failure.getMessage().toLowerCase();
-        assertTrue(message.contains("scope"));
-        assertTrue(message.contains("actor"));
+                        };
+                    }
+                    return;
+                }
+                """));
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                untrusted actor fnc worker(): void {
+                    nb scope {
+                        let child = nb {
+                            return;
+                        };
+                    }
+                    return;
+                }
+                """));
     }
 
 

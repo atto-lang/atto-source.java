@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -160,4 +161,56 @@ final class ActorUpgradeEpochGateTest {
             assertEquals(2, gate.epoch());
         }
     }
+
+    @Test
+    void sourceTaskPhysicalRetirementReleasesUpgradeEpochPinBeforePublication()
+            throws Exception {
+        try (var gate = new ActorUpgradeEpochGate(77, image('a'));
+             var scheduler = new OresScheduler(1)) {
+            var sourceEpoch = gate.pin();
+            var candidate = gate.prepare(image('b'));
+            CountDownLatch retirementHookEntered = new CountDownLatch(1);
+            AtomicReference<Runnable> releaseRetirement = new AtomicReference<>();
+
+            OresFuture<Integer> result = scheduler.start(
+                    new OresScheduler.Task<Integer>() {
+                        @Override
+                        public OresScheduler.Step<Integer> resume(
+                                OresScheduler.Resume resume) {
+                            return OresScheduler.done(7);
+                        }
+
+                        @Override
+                        public void afterCarrierQuiescent(Runnable retire) {
+                            assertTrue(releaseRetirement.compareAndSet(null, retire));
+                            retirementHookEntered.countDown();
+                        }
+                    },
+                    sourceEpoch::close);
+
+            assertTrue(retirementHookEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(gate.permits(sourceEpoch));
+            assertFalse(
+                    gate.publish(candidate),
+                    "new code epoch published while old source Task still pinned");
+            assertFalse(
+                    result.isDone(),
+                    "Task result must not publish before the epoch retirement callback");
+
+            Runnable retire = releaseRetirement.get();
+            assertNotNull(retire);
+            retire.run();
+
+            assertEquals(7, result.get(5, TimeUnit.SECONDS));
+            assertFalse(gate.permits(sourceEpoch));
+            assertEquals(0, gate.livePins());
+            assertTrue(
+                    gate.publish(candidate),
+                    "new code epoch should publish after physical source Task retirement");
+            assertEquals(2, gate.epoch());
+            assertEquals(image('b'), gate.image());
+        }
+    }
+
+
 }

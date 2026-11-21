@@ -26,5 +26,5 @@ jobs:
       - name: Runtime and language proof suite
         run: >
           mvn -B -Dores.runtime.carriers=java
-          -Dtest=OresVMTest,OresSchedulerTest,ChannelRuntimeTest,ActorEventBusTest,ChannelSelectSyntaxTest
+          -Dtest=OresVMTest,OresSchedulerTest,OresSchedulerPhysicalRetirementTest,PhysicalRetirementReceiptTest,TaskScopeTwoPhaseCancellationTest,TaskScopeCancellationAdmissionGateTest,ScopedTaskTest,ActorScopedTaskExecutionTest,ActorScopedTaskPhysicalRetirementTest,ActorSourceTaskLifetimeGateTest,ActorNativeIoPhysicalRetirementTest,AsyncNativeIoTest,ChannelRuntimeTest,ActorEventBusTest,ChannelSelectSyntaxTest
           test

@@ -67,6 +67,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
     private static final long UNTRUSTED_MIN_FUEL = 256L;
+    private static final AtomicLong NEXT_PHYSICAL_RETIREMENT_GENERATION = new AtomicLong();
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
@@ -83,6 +84,15 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<Boolean> ACTOR_GROUP_MAILMAN_CONTEXT_SEND =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
 
+    private static long nextPhysicalRetirementGeneration() {
+        long generation = NEXT_PHYSICAL_RETIREMENT_GENERATION.incrementAndGet();
+        if (generation <= 0) {
+            throw new IllegalStateException(
+                    "physical retirement generation space exhausted");
+        }
+        return generation;
+    }
+
     private record ActorGroupMailmanExecution(
             ActorRuntime runtime,
             ActorGroupId groupId) { }
@@ -92,7 +102,96 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId actorId,
             ActorKind kind,
             IsolatePolicy policy,
-            Object executionDomain) { }
+            Object executionDomain,
+            ActorPermissionScope permissionScope) { }
+
+    /**
+     * Runtime-minted permission identity carried to asynchronous native I/O.
+     * It conveys only resource authorization, never mailbox/state authority.
+     */
+    static final class NativeIoAuthority {
+        private final ActorRuntime runtime;
+        private final ActorId actorId;
+        private final IsolatePolicy coarsePolicy;
+        private final ActorPermissionScope scope;
+
+        private NativeIoAuthority(
+                ActorRuntime runtime,
+                ActorId actorId,
+                IsolatePolicy coarsePolicy,
+                ActorPermissionScope scope) {
+            this.runtime = runtime;
+            this.actorId = actorId;
+            this.coarsePolicy = coarsePolicy;
+            this.scope = scope;
+        }
+
+        ActorId actorId() { return actorId; }
+        ActorRuntime runtime() { return runtime; }
+
+        void requireActive(String operation) {
+            scope.requireActive(operation);
+        }
+
+        ActorPermissionScope.PhysicalLease acquirePhysicalLease(String operation) {
+            return scope.acquirePhysicalLease(operation);
+        }
+
+        void quarantinePhysicalDrain() {
+            scope.quarantinePhysicalDrain();
+        }
+
+        void requirePermission(
+                RuntimePermissions.Permission permission,
+                String resource,
+                String operation) {
+            coarsePolicy.require(permission.capability(), operation);
+            scope.require(permission, resource, operation);
+        }
+
+        void requireNetworkListen(String resource, String operation) {
+            coarsePolicy.require(IsolatePolicy.Capability.NETWORK, operation);
+            scope.requireNetworkListen(resource, operation);
+        }
+    }
+
+    private static final ThreadLocal<NativeIoAuthority>
+            CURRENT_NATIVE_IO_AUTHORITY = new ThreadLocal<>();
+
+    static NativeIoAuthority captureNativeIoAuthority() {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) {
+            return new NativeIoAuthority(
+                    turn.runtime(),
+                    turn.actorId(),
+                    turn.policy(),
+                    turn.permissionScope());
+        }
+        return CURRENT_NATIVE_IO_AUTHORITY.get();
+    }
+
+    static void enterNativeIoAuthority(NativeIoAuthority authority) {
+        if (authority == null) return;
+        if (CURRENT_ACTOR_EXECUTION.get() != null) {
+            throw new IllegalStateException(
+                    "native I/O authority cannot overwrite actor-turn authority");
+        }
+        NativeIoAuthority current = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (current != null && current != authority) {
+            throw new IllegalStateException(
+                    "nested native I/O authority mismatch");
+        }
+        CURRENT_NATIVE_IO_AUTHORITY.set(authority);
+    }
+
+    static void exitNativeIoAuthority(NativeIoAuthority authority) {
+        if (authority == null) return;
+        if (CURRENT_NATIVE_IO_AUTHORITY.get() != authority) {
+            throw new IllegalStateException(
+                    "native I/O authority retirement mismatch");
+        }
+        CURRENT_NATIVE_IO_AUTHORITY.remove();
+    }
 
     /**
      * Executes the actor turn synchronously on the calling scheduler worker.
@@ -156,7 +255,105 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static Optional<ActorId> currentActorId() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
-        return current == null ? Optional.empty() : Optional.of(current.actorId());
+        return current == null
+                ? Optional.empty()
+                : Optional.of(current.actorId());
+    }
+
+    static void requireCurrentActorPermission(
+            RuntimePermissions.Permission permission,
+            String resource,
+            String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) {
+            turn.permissionScope().require(permission, resource, operation);
+        }
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.requirePermission(permission, resource, operation);
+    }
+
+    static void requireCurrentActorNetworkListen(
+            String resource,
+            String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) {
+            turn.permissionScope().requireNetworkListen(resource, operation);
+        }
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.requireNetworkListen(resource, operation);
+    }
+
+    static void requireCurrentActorAuthorityActive(String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) turn.permissionScope().requireActive(operation);
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.requireActive(operation);
+    }
+
+    static ActorPermissionScope.PhysicalLease capturePermissionPhysicalLease(
+            String operation) {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) {
+            return turn.permissionScope().acquirePhysicalLease(operation);
+        }
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        return io == null ? null : io.acquirePhysicalLease(operation);
+    }
+
+    static void quarantineCurrentPermissionDrain() {
+        ActorExecutionContext turn = CURRENT_ACTOR_EXECUTION.get();
+        if (turn != null) turn.permissionScope().quarantinePhysicalDrain();
+        NativeIoAuthority io = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (io != null) io.quarantinePhysicalDrain();
+    }
+
+    /**
+     * Opaque runtime-owned physical lifetime token. Host workers may carry this
+     * off the actor carrier, but guest code must never receive it.
+     */
+    final class ActorPhysicalLease {
+        private final ActorCell<?> cell;
+        private final PhysicalRetirementReceipt.Lease lease;
+
+        private ActorPhysicalLease(
+                ActorCell<?> cell,
+                PhysicalRetirementReceipt.Lease lease) {
+            this.cell = cell;
+            this.lease = lease;
+        }
+
+        long generation() {
+            return lease.generation();
+        }
+
+        void retire() {
+            cell.retirePhysicalLifetime(lease);
+        }
+
+        void fail(Throwable failure) {
+            cell.failPhysicalLifetime(lease, failure);
+        }
+
+        ActorPhysicalLease fork(String kind) {
+            return new ActorPhysicalLease(
+                    cell,
+                    cell.forkPhysicalLifetime(lease, kind));
+        }
+    }
+
+    /**
+     * Capture a physical lifetime lease for host work admitted by the current
+     * actor turn. The returned token may retire on a different host thread.
+     */
+    ActorPhysicalLease acquireCurrentActorPhysicalLifetime(String kind) {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException(
+                    "actor physical lifetime admission requires an executing actor turn");
+        }
+        return new ActorPhysicalLease(
+                cell,
+                cell.acquirePhysicalLifetime(kind));
     }
 
     public static Object currentExecutionDomain() {
@@ -455,6 +652,8 @@ public final class ActorRuntime implements AutoCloseable {
             new java.util.HashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /** Separate from admission sealing so context shutdown can revoke I/O first. */
+    private final AtomicBoolean dispatchersShutdown = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
@@ -465,6 +664,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<ActorOutputStream<?>> actorOutputStreams =
             ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
+    private final RuntimePermissions permissionCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
@@ -529,12 +729,29 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             ControlDispatcher controlDispatcher) {
+        this(
+                policyCeiling,
+                dispatcherConfig,
+                turnExecutor,
+                controlDispatcher,
+                RuntimePermissions.fromCapabilities(
+                        Objects.requireNonNull(policyCeiling).capabilities()));
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            ControlDispatcher controlDispatcher,
+            RuntimePermissions permissionCeiling) {
         // Standalone ActorRuntime callers must not bypass OresVM's strict-GC
         // admission gate: the underlying JVM and direct-buffer cleaner still GC.
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
         long poolsPerf = CorePerf.start();
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
+        this.permissionCeiling = Objects.requireNonNull(
+                permissionCeiling, "permissionCeiling");
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
@@ -1683,17 +1900,67 @@ public final class ActorRuntime implements AutoCloseable {
     /** Invoked once the child has physically left its actor guest turn. */
     public <T> OresFuture<T> startActorTask(
             OresScheduler.Task<T> task, Runnable retireAfterPhysicalDone) {
+        return startActorTask(
+                task,
+                retireAfterPhysicalDone,
+                ignored -> { });
+    }
+
+    /**
+     * Structured actor Task admission. onTerminalReady runs after terminal
+     * authority is irrevocable but before ordinary Future subscribers, so a
+     * lexical TaskScope can revoke and account children without subscriber
+     * ordering races. Physical reclamation still waits for
+     * retireAfterPhysicalDone and the actor retirement receipt.
+     */
+    public <T> OresFuture<T> startActorTask(
+            OresScheduler.Task<T> task,
+            Runnable retireAfterPhysicalDone,
+            java.util.function.Consumer<OresFuture<T>> onTerminalReady) {
         Objects.requireNonNull(task, "task");
         Objects.requireNonNull(
                 retireAfterPhysicalDone, "physical Task retirement");
+        Objects.requireNonNull(onTerminalReady, "terminal-ready hook");
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
+        // Actor-owned memory, code epochs and final done publication must remain
+        // live until the scheduler has completed the full physical-retirement
+        // chain. A terminal/cancelled Future is not a reclamation witness.
+        PhysicalRetirementReceipt.Lease sourceTaskLease =
+                cell.acquirePhysicalLifetime("source-task");
         if (cell.kind != ActorKind.UNTRUSTED) {
-            return cell.sourceScheduler().startCompilerAdmittedTask(
-                    task, retireAfterPhysicalDone);
+            final OresScheduler scheduler;
+            try {
+                scheduler = cell.sourceScheduler();
+            } catch (RuntimeException | Error schedulerFailure) {
+                // No scheduler child could possibly own this lease.
+                cell.retirePhysicalLifetime(sourceTaskLease);
+                throw schedulerFailure;
+            }
+            OresFuture<T> future = scheduler.startCompilerAdmittedTask(
+                    task,
+                    () -> {
+                        try {
+                            retireAfterPhysicalDone.run();
+                            cell.retirePhysicalLifetime(sourceTaskLease);
+                        } catch (RuntimeException | Error retirementFailure) {
+                            // Failed physical retirement permanently
+                            // quarantines this actor generation: no receipt can
+                            // authorize arena/code reclamation.
+                            cell.failPhysicalLifetime(
+                                    sourceTaskLease, retirementFailure);
+                            throw retirementFailure;
+                        }
+                    },
+                    onTerminalReady);
+            // startActorTask is actor-owned by definition. Make the ownership
+            // registration intrinsic so direct runtime callers cannot orphan a
+            // suspended Task and deadlock shutdown behind its lifetime lease.
+            ownFuture(cell, future);
+            return future;
         }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
@@ -1701,47 +1968,53 @@ public final class ActorRuntime implements AutoCloseable {
         // Separate actor messages cannot defeat this rule while a source task
         // is still suspended.
         UntrustedLogicalQuota inheritedQuota = CURRENT_UNTRUSTED_QUOTA.get();
-        synchronized (cell.lifecycleLock) {
-            // Unlike the physical-cohort count, this remains charged while a
-            // terminal Future subscriber is blocked AFTER guest quiescence.
-            if (cell.activeUntrustedTimedAdmissions >=
-                    UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS) {
-                throw new RejectedExecutionException(
-                        "untrusted actor timed source-task admission is full");
-            }
-            if (inheritedQuota == null) {
-                if (cell.activeUntrustedSourceQuota != null) {
-                    throw new SecurityException(
-                            "untrusted actor already has an active logical source-task quota");
+        try {
+            synchronized (cell.lifecycleLock) {
+                // Unlike the physical-cohort count, this remains charged while a
+                // terminal Future subscriber is blocked AFTER guest quiescence.
+                if (cell.activeUntrustedTimedAdmissions >=
+                        UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS) {
+                    throw new RejectedExecutionException(
+                            "untrusted actor timed source-task admission is full");
                 }
-                long nowCpu = currentThreadCpuNanos();
-                long alreadyCpu = nowCpu >= 0 && cell.turnStartedCpuNanos >= 0
-                        ? Math.max(0L, nowCpu - cell.turnStartedCpuNanos) : 0L;
-                inheritedQuota = new UntrustedLogicalQuota(
-                        ActorRuntime.this,
-                        cell.ref.id(),
-                        cell.policy.maxWallTime().toNanos(),
-                        cell.untrustedFuelRemaining,
-                        cell.turnStartedWallNanos,
-                        alreadyCpu,
-                        System::nanoTime,
-                        ActorRuntime::currentThreadCpuNanos);
-                cell.activeUntrustedSourceQuota = inheritedQuota;
-            } else if (inheritedQuota != cell.activeUntrustedSourceQuota
-                    || !inheritedQuota.ownedBy(ActorRuntime.this, cell.ref.id())) {
-                throw new SecurityException(
-                        "untrusted source-task quota belongs to a different actor or runtime");
+                if (inheritedQuota == null) {
+                    if (cell.activeUntrustedSourceQuota != null) {
+                        throw new SecurityException(
+                                "untrusted actor already has an active logical source-task quota");
+                    }
+                    long nowCpu = currentThreadCpuNanos();
+                    long alreadyCpu = nowCpu >= 0 && cell.turnStartedCpuNanos >= 0
+                            ? Math.max(0L, nowCpu - cell.turnStartedCpuNanos) : 0L;
+                    inheritedQuota = new UntrustedLogicalQuota(
+                            ActorRuntime.this,
+                            cell.ref.id(),
+                            cell.policy.maxWallTime().toNanos(),
+                            cell.untrustedFuelRemaining,
+                            cell.turnStartedWallNanos,
+                            alreadyCpu,
+                            System::nanoTime,
+                            ActorRuntime::currentThreadCpuNanos);
+                    cell.activeUntrustedSourceQuota = inheritedQuota;
+                } else if (inheritedQuota != cell.activeUntrustedSourceQuota
+                        || !inheritedQuota.ownedBy(ActorRuntime.this, cell.ref.id())) {
+                    throw new SecurityException(
+                            "untrusted source-task quota belongs to a different actor or runtime");
+                }
+                // Task creation is not itself a source loop backedge. Without a
+                // count cap, nested spawn can retain arbitrarily many queued
+                // tasks (and eventually overflow the signed reference counter)
+                // before hitting a fuel safepoint.
+                if (cell.activeUntrustedSourceTaskCount >= INTERNAL_CONTINUATION_SLOTS) {
+                    throw new RejectedExecutionException(
+                            "untrusted actor logical source-task cohort is full");
+                }
+                cell.activeUntrustedSourceTaskCount++;
+                cell.activeUntrustedTimedAdmissions++;
             }
-            // Task creation is not itself a source loop backedge. Without a
-            // count cap, nested spawn can retain arbitrarily many queued
-            // tasks (and eventually overflow the signed reference counter)
-            // before hitting a fuel safepoint.
-            if (cell.activeUntrustedSourceTaskCount >= INTERNAL_CONTINUATION_SLOTS) {
-                throw new RejectedExecutionException(
-                        "untrusted actor logical source-task cohort is full");
-            }
-            cell.activeUntrustedSourceTaskCount++;
-            cell.activeUntrustedTimedAdmissions++;
+        } catch (RuntimeException | Error admissionFailure) {
+            // Quota admission failed before a scheduler child existed.
+            cell.retirePhysicalLifetime(sourceTaskLease);
+            throw admissionFailure;
         }
 
         UntrustedLogicalQuota quota = inheritedQuota;
@@ -1768,13 +2041,23 @@ public final class ActorRuntime implements AutoCloseable {
         AtomicBoolean released = new AtomicBoolean();
         Runnable retireOnce = () -> {
             if (released.compareAndSet(false, true)) {
-                retireUntrustedCompilerTransfer(
-                        retireAfterPhysicalDone,
-                        () -> releaseUntrustedSourceTask(cell, quota),
-                        () -> {
-                            physicalQuiescenceConfirmed.set(true);
-                            releaseTimedWhenSafe.run();
-                        });
+                try {
+                    retireUntrustedCompilerTransfer(
+                            retireAfterPhysicalDone,
+                            () -> releaseUntrustedSourceTask(cell, quota),
+                            () -> {
+                                physicalQuiescenceConfirmed.set(true);
+                                releaseTimedWhenSafe.run();
+                                // The unified actor receipt receives its source
+                                // Task retirement only after ownership, quota,
+                                // and scheduler physical quiescence all succeed.
+                                cell.retirePhysicalLifetime(sourceTaskLease);
+                            });
+                } catch (RuntimeException | Error retirementFailure) {
+                    cell.failPhysicalLifetime(
+                            sourceTaskLease, retirementFailure);
+                    throw retirementFailure;
+                }
             }
         };
         Runnable notificationsDrained = () -> {
@@ -1783,29 +2066,14 @@ public final class ActorRuntime implements AutoCloseable {
         };
         OresFuture<T> future;
         try {
-            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
-                UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
-                CURRENT_UNTRUSTED_QUOTA.set(quota);
-                boolean entered = false;
-                try {
-                    quota.enter();
-                    entered = true;
-                    quota.check();
-                    OresScheduler.Step<T> result = task.resume(resume);
-                    quota.check();
-                    return result;
-                } finally {
-                    try {
-                        if (entered) quota.leave();
-                    } finally {
-                        if (previous == null) CURRENT_UNTRUSTED_QUOTA.remove();
-                        else CURRENT_UNTRUSTED_QUOTA.set(previous);
-                    }
-                }
-            }, retireOnce, quota.remainingWallNanos(),
+            future = cell.sourceScheduler().startWithWallDeadline(
+                    wrapUntrustedTaskForQuota(task, quota),
+                    retireOnce,
+                    quota.remainingWallNanos(),
                     new UntrustedActorQuotaExceededException(
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                             "untrusted logical task exceeded wall-time budget while suspended"),
+                    onTerminalReady,
                     notificationsDrained);
         } catch (RuntimeException | Error failure) {
             // No task was admitted. Release the pre-reserved quota slot.
@@ -1821,7 +2089,49 @@ public final class ActorRuntime implements AutoCloseable {
         // A caller may cancel the Future while the source turn is still
         // executing. The scheduler invokes retireOnce ONLY after guest
         // carrier quiescence, not merely when the Future settles.
+        ownFuture(cell, future);
         return future;
+    }
+
+    static <T> OresScheduler.Task<T> wrapUntrustedTaskForQuota(
+            OresScheduler.Task<T> task,
+            UntrustedLogicalQuota quota) {
+        Objects.requireNonNull(task, "untrusted source Task");
+        Objects.requireNonNull(quota, "untrusted logical quota");
+        return new OresScheduler.Task<>() {
+            @Override
+            public OresScheduler.Step<T> resume(
+                    OresScheduler.Resume resume) throws Exception {
+                UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
+                CURRENT_UNTRUSTED_QUOTA.set(quota);
+                boolean entered = false;
+                try {
+                    quota.enter();
+                    entered = true;
+                    quota.check();
+                    OresScheduler.Step<T> result = task.resume(resume);
+                    quota.check();
+                    return result;
+                } finally {
+                    try {
+                        if (entered) quota.leave();
+                    } finally {
+                        if (previous == null) {
+                            CURRENT_UNTRUSTED_QUOTA.remove();
+                        } else {
+                            CURRENT_UNTRUSTED_QUOTA.set(previous);
+                        }
+                    }
+                }
+            }
+
+            @Override
+            public void afterCarrierQuiescent(Runnable retire) {
+                // Quota decoration must never erase a stronger SourceTask/
+                // TaskScope physical-retirement barrier.
+                task.afterCarrierQuiescent(retire);
+            }
+        };
     }
 
     static void retireUntrustedCompilerTransfer(
@@ -1866,7 +2176,11 @@ public final class ActorRuntime implements AutoCloseable {
             return false;
         }
 
-        cell.pendingOperations.add(future);
+        if (!cell.pendingOperations.add(future)) {
+            // Idempotent for compiler call sites that still explicitly invoke
+            // ownCurrentActorFuture() after startActorTask().
+            return true;
+        }
         if (cell.stopped.get() || cell.finalized || closed.get()) {
             cell.pendingOperations.remove(future);
             future.cancel(false);
@@ -3695,6 +4009,12 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void requireCallerRuntimeAffinity(String operation) {
         requireNoForceCancellationHookReentry(operation);
+        NativeIoAuthority nativeIo = CURRENT_NATIVE_IO_AUTHORITY.get();
+        if (nativeIo != null) {
+            throw new SecurityException(
+                    "native I/O authority cannot " + operation
+                            + "; I/O workers do not inherit actor/runtime coordination authority");
+        }
         ActorRuntime caller = currentActorRuntime();
         if (caller != null && caller != this) {
             throw new SecurityException(
@@ -3726,6 +4046,11 @@ public final class ActorRuntime implements AutoCloseable {
     private void requireSupervisorContext(String operation) {
         requireNoForceCancellationHookReentry(operation);
         requireNotActorGroupMailman(operation);
+        if (CURRENT_NATIVE_IO_AUTHORITY.get() != null) {
+            throw new SecurityException(
+                    "native I/O authority cannot " + operation
+                            + "; worker execution is not host/supervisor authority");
+        }
         if (inActorExecution()) {
             throw new SecurityException(
                     "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
@@ -3733,7 +4058,8 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void requireBlockingHostContext(String operation) {
-        if (inActorExecution()
+        if (CURRENT_NATIVE_IO_AUTHORITY.get() != null
+                || inActorExecution()
                 || inActorGroupMailmanExecution()
                 || OresScheduler.current() != null) {
             throw new SecurityException(
@@ -3814,6 +4140,129 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorKind.UNTRUSTED,
                 IsolatePolicy.untrustedActor(),
                 behaviorFactory);
+    }
+
+    /**
+     * Opaque one-shot authority to spawn a child with a narrower resource scope.
+     * The scope can only attenuate the issuing actor's permission chain.
+     */
+    public static final class PermissionDelegation {
+        private final ActorRuntime runtime;
+        private final ActorId parentId;
+        private final ActorPermissionScope scope;
+        private final AtomicBoolean consumed = new AtomicBoolean();
+
+        private PermissionDelegation(
+                ActorRuntime runtime,
+                ActorId parentId,
+                ActorPermissionScope scope) {
+            this.runtime = runtime;
+            this.parentId = parentId;
+            this.scope = scope;
+        }
+    }
+
+    public record PermissionDrainReceipt(long scopeSerial) { }
+
+    public PermissionDelegation delegatePermissions(
+            RuntimePermissions restrictions) {
+        requireCallerRuntimeAffinity("mint actor permission delegation");
+        requireNotActorGroupMailman("mint actor permission delegation");
+        ActorCell<?> parent = currentActor.get();
+        if (parent == null) {
+            throw new SecurityException(
+                    "only a currently executing actor may delegate permissions");
+        }
+
+        final PermissionDelegation delegation;
+        synchronized (parent.lifecycleLock) {
+            if (parent.stopped.get()
+                    || parent.finalized
+                    || parent.forceKillFenced) {
+                throw new SecurityException(
+                        "stopping actor cannot delegate permissions");
+            }
+            ActorPermissionScope scope = parent.permissionScope.attenuate(
+                    Objects.requireNonNull(restrictions, "restrictions"),
+                    parent::permissionScopeStateChanged);
+            delegation = new PermissionDelegation(
+                    this,
+                    parent.ref.id(),
+                    scope);
+            parent.issuedPermissionDelegations.add(delegation);
+        }
+        return delegation;
+    }
+
+    public Optional<PermissionDrainReceipt> tryPermissionDrainReceipt(
+            PermissionDelegation delegation) {
+        requireCallerRuntimeAffinity(
+                "inspect actor permission revocation drain");
+        requireNotActorGroupMailman(
+                "inspect actor permission revocation drain");
+        ActorCell<?> issuer = currentActor.get();
+        if (issuer == null
+                || delegation == null
+                || delegation.runtime != this
+                || !delegation.parentId.equals(issuer.ref.id())) {
+            throw new SecurityException(
+                    "only the issuing actor may inspect delegation drain");
+        }
+        return delegation.scope.tryDrainReceipt()
+                .map(receipt ->
+                        new PermissionDrainReceipt(receipt.scopeSerial()));
+    }
+
+    public boolean revokePermissions(PermissionDelegation delegation) {
+        requireCallerRuntimeAffinity(
+                "revoke actor permission delegation");
+        requireNotActorGroupMailman(
+                "revoke actor permission delegation");
+        ActorCell<?> issuer = currentActor.get();
+        if (issuer == null
+                || delegation == null
+                || delegation.runtime != this
+                || !delegation.parentId.equals(issuer.ref.id())) {
+            throw new SecurityException(
+                    "actor permission revocation requires its issuing actor");
+        }
+        return delegation.scope.revoke();
+    }
+
+    public <M> ActorHandle<M> spawnChild(
+            ActorKind kind,
+            IsolatePolicy policy,
+            PermissionDelegation delegation,
+            BehaviorFactory<M> behaviorFactory) {
+        requireCallerRuntimeAffinity("spawn delegated child actor");
+        requireNotActorGroupMailman("spawn delegated child actor");
+        ActorCell<?> parent = currentActor.get();
+        if (parent == null
+                || delegation == null
+                || delegation.runtime != this
+                || !delegation.parentId.equals(parent.ref.id())) {
+            throw new SecurityException(
+                    "actor permission delegation has a foreign issuer");
+        }
+        delegation.scope.requireActive(
+                "child permission delegation admission");
+        if (!delegation.consumed.compareAndSet(false, true)) {
+            throw new SecurityException(
+                    "actor permission delegation has already been consumed");
+        }
+        delegation.scope.requireActive(
+                "child permission delegation admission");
+
+        ActorRef<M> ref = spawnInternal(
+                kind,
+                policy,
+                behaviorFactory,
+                false,
+                null,
+                null,
+                null,
+                delegation.scope);
+        return new ActorHandle<>(ref, parent.ref.id());
     }
 
     private IsolatePolicy defaultSpawnPolicy() {
@@ -4244,6 +4693,26 @@ public final class ActorRuntime implements AutoCloseable {
             SharedCodeImageStore.CodeImage codeImage,
             ActorCodeExecutor codeExecutor,
             String codeActorType) {
+        return spawnInternal(
+                kind,
+                policy,
+                behaviorFactory,
+                trustedFactory,
+                codeImage,
+                codeExecutor,
+                codeActorType,
+                null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            SharedCodeImageStore.CodeImage codeImage,
+            ActorCodeExecutor codeExecutor,
+            String codeActorType,
+            ActorPermissionScope delegatedScope) {
         requireCallerRuntimeAffinity("spawn actors");
         requireNotActorGroupMailman("spawn actors");
         Objects.requireNonNull(kind);
@@ -4302,6 +4771,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         ActorCell<?> parent = currentActor.get();
+        if (delegatedScope != null && parent == null) {
+            throw new SecurityException(
+                    "permission delegation requires a current parent actor");
+        }
+        ActorPermissionScope actorPermissionScope = delegatedScope != null
+                ? delegatedScope
+                : parent == null
+                        ? ActorPermissionScope.root(permissionCeiling, () -> { })
+                        : parent.permissionScope;
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot();
@@ -4327,7 +4805,8 @@ public final class ActorRuntime implements AutoCloseable {
                         codeImage,
                         codeExecutor,
                         codeActorType,
-                        parent);
+                        parent,
+                        actorPermissionScope);
 
                 if (parent != null) {
                     synchronized (parent.lifecycleLock) {
@@ -5964,6 +6443,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
+                || value instanceof ActorRuntime.PermissionDelegation
                 || value instanceof ActorRuntime.ContinuationTarget
                 || value instanceof ChannelRuntime.Channel<?>) {
             throw new SecurityException(
@@ -6025,6 +6505,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
+                || value instanceof ActorRuntime.PermissionDelegation
                 || value instanceof ActorRuntime.ContinuationTarget) {
             throw new SecurityException(
                     "actor lifecycle capabilities are execution-domain local and cannot cross actor mailboxes");
@@ -6569,19 +7050,37 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorGroupId;
     }
 
+    /**
+     * Phase one of context shutdown. Reject new actor admission/messages and
+     * source/native root work without waiting for carriers. Existing physical
+     * leases remain live and may fork structured descendants required to finish
+     * already-admitted host work.
+     */
+    void sealShutdownAdmission() {
+        requireSupervisorContext("seal ActorRuntime admission");
+        final List<ActorCell<?>> snapshot;
+        synchronized (runtimeLifecycleLock) {
+            closed.set(true);
+            snapshot = List.copyOf(actors.values());
+        }
+        for (ActorCell<?> cell : snapshot) {
+            synchronized (cell.lifecycleLock) {
+                if (!cell.finalized) cell.sealing = true;
+            }
+        }
+    }
+
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
+        sealShutdownAdmission();
 
-        final boolean firstClose;
-        final List<ActorCell<?>> snapshot;
-        synchronized (runtimeLifecycleLock) {
-            firstClose = closed.compareAndSet(false, true);
-            snapshot = List.copyOf(actors.values());
-        }
+        final List<ActorCell<?>> snapshot = List.copyOf(actors.values());
         for (ActorCell<?> cell : snapshot) cell.stop();
 
-        if (firstClose) {
+        final boolean firstDispatcherShutdown =
+                dispatchersShutdown.compareAndSet(false, true);
+        if (firstDispatcherShutdown) {
             // Stop executor carriers so queued work is rejected/removed and
             // blocked host-side executor operations can wake. This interrupt is
             // backend shutdown mechanics only; it is never an actor
@@ -6763,6 +7262,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final int dispatchLane;
         private final IsolatePolicy policy;
+        private final ActorPermissionScope permissionScope;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
         /** Exact immutable source image whitelisted for this actor, if any. */
@@ -6776,6 +7276,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Delegated permission subtrees issued by this actor. */
+        private final Set<PermissionDelegation> issuedPermissionDelegations =
+                ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -6850,6 +7353,13 @@ public final class ActorRuntime implements AutoCloseable {
         private int activeUntrustedSourceTaskCount;
         /** Timed admission persists until both guest quiescence and terminal drain. */
         private int activeUntrustedTimedAdmissions;
+        /**
+         * Unified positive reclamation authority for actor-owned physical work.
+         * A valid receipt is impossible until shutdown seals admission and every
+         * admitted Task/worker/loan retirement chain has completed.
+         */
+        private final PhysicalRetirementReceipt physicalRetirement =
+                new PhysicalRetirementReceipt(nextPhysicalRetirementGeneration());
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -6861,12 +7371,15 @@ public final class ActorRuntime implements AutoCloseable {
                 SharedCodeImageStore.CodeImage codeImage,
                 ActorCodeExecutor codeExecutor,
                 String codeActorType,
-                ActorCell<?> parent) {
+                ActorCell<?> parent,
+                ActorPermissionScope permissionScope) {
             this.ref = ref;
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
             this.policy = policy;
+            this.permissionScope = Objects.requireNonNull(
+                    permissionScope, "permissionScope");
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
             this.codeImage = codeImage;
@@ -7125,6 +7638,59 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private PhysicalRetirementReceipt.Lease acquirePhysicalLifetime(
+                String kind) {
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized || closed.get()) {
+                    throw new RejectedExecutionException(
+                            "actor " + ref.id()
+                                    + " cannot admit physical work during shutdown");
+                }
+                return physicalRetirement.acquire(kind);
+            }
+        }
+
+        private PhysicalRetirementReceipt.Lease forkPhysicalLifetime(
+                PhysicalRetirementReceipt.Lease parent,
+                String kind) {
+            synchronized (lifecycleLock) {
+                return parent.fork(kind);
+            }
+        }
+
+        private void retirePhysicalLifetime(
+                PhysicalRetirementReceipt.Lease lease) {
+            synchronized (lifecycleLock) {
+                lease.close();
+                if (stopped.get()) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
+        private void failPhysicalLifetime(
+                PhysicalRetirementReceipt.Lease lease,
+                Throwable failure) {
+            synchronized (lifecycleLock) {
+                lease.fail(failure);
+                if (stopped.get()) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
+        private void permissionScopeStateChanged() {
+            synchronized (lifecycleLock) {
+                if (stopped.get()) finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
+        private boolean permissionDelegationsDrained() {
+            for (PermissionDelegation delegation : issuedPermissionDelegations) {
+                if (!delegation.scope.isDrained()) return false;
+            }
+            return true;
+        }
+
         private void finalizeStopLocked() {
             // External termination is not observable until the dispatcher has
             // fully crossed back out of the TurnExecutor boundary. For
@@ -7133,6 +7699,8 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
+                    || !physicalRetirement.hasValidReceipt()
+                    || !permissionDelegationsDrained()
                     || !children.isEmpty()) return;
             finalized = true;
             OresScheduler scheduler = sourceScheduler;
@@ -7473,7 +8041,12 @@ public final class ActorRuntime implements AutoCloseable {
             }
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
-                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
+                    ActorRuntime.this,
+                    ref.id(),
+                    kind,
+                    policy,
+                    executionDomain,
+                    permissionScope));
             boolean turnActive = false;
             try {
                 // Admission may throw on a single-writer lease violation.
@@ -7711,6 +8284,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            List<PermissionDelegation> permissionDelegations;
             List<DrainWaiter> failedDrainWaiters;
             synchronized (lifecycleLock) {
                 if (finalized) return;
@@ -7719,6 +8293,11 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 stopped.set(true);
                 sealing = true;
+                // A reclamation receipt can exist only after shutdown seals
+                // all actor-owned physical work admission. Existing Task,
+                // native-worker and registered-handle leases remain authoritative
+                // until their physical retirement callbacks succeed.
+                physicalRetirement.seal();
                 // Detach pending observers under the actor monitor. Settling an
                 // OresFuture invokes runtime callbacks inline, so never settle
                 // one while holding lifecycleLock.
@@ -7731,8 +8310,17 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
+                permissionDelegations =
+                        List.copyOf(issuedPermissionDelegations);
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
+            }
+
+            // Revoke every delegation issued by this actor without waiting.
+            // Scope drain callbacks retry actor finalization only after all
+            // pre-existing physical I/O leases have actually retired.
+            for (PermissionDelegation delegation : permissionDelegations) {
+                delegation.scope.revoke();
             }
 
             // Runtime Future callbacks can take other actor/lifecycle locks.

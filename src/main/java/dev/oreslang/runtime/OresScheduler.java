@@ -489,10 +489,37 @@ public final class OresScheduler implements AutoCloseable {
     <T> OresFuture<T> startWithWallDeadline(
             Task<T> task, Runnable onQuiescent, long remainingNanos,
             Throwable deadlineFailure, Runnable onNotificationDrained) {
+        return startWithWallDeadline(
+                task,
+                onQuiescent,
+                remainingNanos,
+                deadlineFailure,
+                ignored -> { },
+                onNotificationDrained);
+    }
+
+    /**
+     * Structured timed admission. The terminal-ready hook observes irrevocable
+     * terminal authority before ordinary Future subscribers, matching the
+     * untimed compiler-admitted path used by TaskScope registrations.
+     */
+    <T> OresFuture<T> startWithWallDeadline(
+            Task<T> task,
+            Runnable onQuiescent,
+            long remainingNanos,
+            Throwable deadlineFailure,
+            java.util.function.Consumer<OresFuture<T>> onTerminalReady,
+            Runnable onNotificationDrained) {
         Objects.requireNonNull(deadlineFailure, "deadlineFailure");
+        Objects.requireNonNull(onTerminalReady, "terminal-ready hook");
         Objects.requireNonNull(onNotificationDrained, "onNotificationDrained");
-        return startAdmitted(task, onQuiescent, ignored -> { }, deadlineFailure,
-                Math.max(0L, remainingNanos), onNotificationDrained);
+        return startAdmitted(
+                task,
+                onQuiescent,
+                onTerminalReady,
+                deadlineFailure,
+                Math.max(0L, remainingNanos),
+                onNotificationDrained);
     }
 
     private <T> OresFuture<T> startAdmitted(

@@ -1,0 +1,57 @@
+name: Actor source-task lifetime P0
+
+on:
+  push:
+    branches:
+      - fix/actor-source-task-lifetime-gate-20261025
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorPermissionScope.java'
+      - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
+      - 'src/main/java/dev/oreslang/runtime/TaskScope.java'
+      - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorSourceTaskLifetimeGateTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPermissionUnifiedRetirementTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorScopedTaskPhysicalRetirementTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OresSchedulerPhysicalRetirementTest.java'
+      - 'src/test/java/dev/oreslang/runtime/OresSchedulerQuiescenceTest.java'
+      - 'src/test/java/dev/oreslang/runtime/TaskScope*.java'
+      - '.github/workflows/actor-source-task-lifetime-p0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actor-source-task-lifetime-p0-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  physical-quiescence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Record exact source identity
+        run: |
+          echo "commit=$(git rev-parse HEAD)"
+          echo "tree=$(git rev-parse HEAD^{tree})"
+          java -version
+          mvn -version
+      - name: Prove actor source-task physical quiescence
+        run: >
+          mvn -B -ntp
+          -Dores.runtime.carriers=native
+          -Dtest=ActorSourceTaskLifetimeGateTest,ActorScopedTaskPhysicalRetirementTest,ActorPermissionUnifiedRetirementTest,ActorNativeIoPhysicalRetirementTest,OresSchedulerPhysicalRetirementTest,OresSchedulerQuiescenceTest,TaskScopeCancellationAdmissionGateTest,TaskScopeTwoPhaseCancellationTest,TaskScopeInvariantTest,TaskScopeTest
+          test
