@@ -672,6 +672,14 @@ public final class ActorEventBus implements AutoCloseable {
                         active.add(subscription);
                     }
                 }
+                // A saturated topic cannot claim transient Full: native
+                // uint64_t admission reports exhaustion before checking a
+                // queue's remaining capacity. Compute under deliveryLock
+                // before reserving credits, but COMMIT only after every
+                // RELIABLE subscriber can be admitted. Full still burns
+                // neither a sequence nor a reservation.
+                final long nextSequence = nextTopicSequenceUnsigned(
+                        topic.sequence.get());
                 // Reliable admission must reserve every participating credit
                 // BEFORE assigning a committed sequence, creating an event,
                 // or mutating reduction state. A rejected publication cannot
@@ -711,7 +719,7 @@ public final class ActorEventBus implements AutoCloseable {
                     // the 2^63 boundary. Java long is only the storage word:
                     // its negative values represent unsigned 2^63..2^64-1.
                     // A full u64 exhaustion must never roll over to zero.
-                    sequence = nextTopicSequenceUnsigned(topic.sequence.get());
+                    sequence = nextSequence;
                     Event<Object> created = new Event<>(
                             topic.name,
                             sequence,
