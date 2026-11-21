@@ -158,6 +158,53 @@ final class ReturnFirstBulletBodyParityTest {
     }
 
     @Test
+    void effectCommasSeparateKindsButNotGenericOrNominalTypeLists() {
+        for (String header : new String[] {
+                "throws Foo, raises Bar",
+                "throws Foo raises Bar",
+                "throws Foo, ParseError raises Bar",
+                "raises Foo, panics Fatal"
+        }) {
+            String program = "fnc int <- risky(int x)\n" + header
+                    + " ::\n  return x;\nend";
+            Ast.FunctionDecl fn = firstFunction(program);
+            assertEquals("int", fn.returnType().name(), program);
+            assertEquals(1, fn.body().size(), program);
+            assertFalse(fn.effects().isEmpty(), program);
+        }
+        Ast.FunctionDecl split = firstFunction(
+                "fnc int <- risky(int x)\nthrows Foo, ParseError, raises Bar ::\n  return x;\nend");
+        assertEquals(2, split.effects().throwsTypes().size());
+        assertEquals(1, split.effects().raisesTypes().size());
+
+        for (String header : new String[] {
+                "throws Foo, throws Bar",
+                "raises Bar, raises Foo",
+                "throws Foo, Foo",
+                "throws Foo,",
+                "raises Foo, ::"
+        }) {
+            String program = "fnc int <- risky(int x)\n" + header
+                    + " ::\n  return x;\nend";
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(program), program);
+        }
+    }
+
+    @Test
+    void exceptionalRaiseInJavaMustRejectUntilRuntimeLoweringExists() {
+        String program = """
+                fnc int <- risky(int x)
+                raises Foo ::
+                  raise! new Foo();
+                end
+                pub fnc main(): int { return risky(4); }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(program),
+                "Java cannot publish a runnable raise! guest without typed unwind/CONTROL lowering");
+    }
+
+    @Test
     void mixedArrowAndBulletNamesAreNotSeparateOverloads() {
         String source = """
                 int <- compute(int x) { return x; }
