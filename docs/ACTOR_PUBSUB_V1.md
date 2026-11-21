@@ -1,6 +1,6 @@
 # Actor Pub/Sub backend v1 draft
 
-Status: Java/Graal runtime draft. Portable-core equivalence is **NOT_EXECUTED** and must be measured against `oreslang-platform-conformance#305`; this document must not independently redefine the cross-backend core.
+Status: Java/Graal compiler/runtime draft, with a partial typed Result guest lowering slice. Portable Theater/Ensemble parity is **NOT_EXECUTED** and must be measured against the 11-backend 28-case `atto-platform-conformance#551` gate; this document must not redefine cross-backend core semantics.
 
 Oreslang pub/sub is a capability of actors, not a new actor declaration kind. Do
 not add `define publisher` or `define subscriber`. The source model is built
@@ -68,18 +68,35 @@ after full RELIABLE reservation preflight, empty only on bounded `Full`.
 `tryPublishReliableSystem` is an explicitly supervisor-checked host path.
 Non-RELIABLE policies, invalid/non-Sendable payloads, revoked memberships and
 closed topics do **not** become silent empty results: they fail distinctly.
-A successful receipt's `sequenceUnsignedString()` remains the lossless
-unsigned sequence representation. Its `completion()` may still be pending;
-admission is not handler acknowledgement.
+The host `tryPublishReliable` path now uses the topic's **physical queue
+capacity**, not the asynchronous pending-writer quota. A capacity-one
+subscriber with one unread delivery makes the next `tryPublishReliable`
+return `Optional.empty()` *without* allocating a sequence or pending write.
+An admitted receipt's completion future is already complete for its channel
+admission, but is **not** an actor-handler acknowledgement. Existing
+`publish()` retains bounded asynchronous pending-writer behavior. The
+`sequenceUnsignedString()` representation covers the full unsigned u64
+domain; signed `long` overflow at 2^63 is permitted, but reuse of zero
+after 2^64-1 is not.
 
-These Java methods are **host/runtime groundwork only**. The source compiler
-still rejects `Topic<T>.try_publish`, and no portable source
-`Result<PublishReceipt, PublishError>` ABI or unforgeable source-level
-membership capability has been implemented or verified by this patch. The
-equivalent LLVM native substrate returns a receipt with `backpressured`
-and sequence zero on failed RELIABLE admission; neither backend is certified
-for guest portable v1 until compiler lowering, exact-head execution and
-differential guest traces pass.
+### Java source/compiler slice (IMPLEMENTED ON DRAFT; NOT CI-VERIFIED)
+
+On the Java integration branch, `Topic<T>.try_publish(share! event)`
+is parsed, type-checked as `Result<PublishReceipt, PublishError>` and routed
+to the authenticated RELIABLE host admission primitive. `Ok` snapshots
+the sequence and recipient admission counts; bounded Full becomes typed
+`Err(PublishError{code="Full"})`. Non-RELIABLE policy, invalid payloads,
+revoked membership and closed topics are still distinct hard failures, not
+`Err(Full)`. The portable postfix `?` control-flow/cleanup path and
+complete PublishError algebra remain separate unverified work.
+
+The equivalent LLVM native substrate now has the V1 tagged Result ABI on
+stacked PR #590, which distinguishes OK/Full from invalid/stale calls,
+but **native compiler-generated Topic<T> lowering remains missing**.
+The Java `.atto` guest JUnit cases and LLVM C ABI/CTest cases are authored
+but do **not** have exact-head stepful CI execution. Neither backend can
+claim guest portable parity until target execution and independently
+authenticated conformance receipts pass.
 
 `LATEST` and `LOSSY` remain useful Java runtime policies, but they are
 **explicit backend extensions** outside portable-v1. They may not be used to
