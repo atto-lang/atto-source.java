@@ -139,7 +139,9 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+        private final Map<String, Ast.EnumDecl> enums = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        private final IdentityHashMap<Ast.EnumDecl, String> enumOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.MethodDecl, Ast.ClassDecl> methodOwners = new IdentityHashMap<>();
 
         private final Map<String, ImportedBinding> namedImports = new HashMap<>();
@@ -151,6 +153,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
         private final Set<String> ambiguousInterfaces = new LinkedHashSet<>();
         private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
+        private final Set<String> ambiguousEnums = new LinkedHashSet<>();
         // Root/non-actor executions retain process-root fairness state here.
         // Actor executions keep their cursor in ActorCell so shared immutable
         // code never implies shared mutable scheduler state.
@@ -170,6 +173,14 @@ public final class OresEvalRootNode extends RootNode {
             STATIC_FUNCTION_BODY,
             INVOKABLE
         }
+
+        private record EnumNamespace(String name) { }
+
+        private record EnumValue(
+                String enumName,
+                String caseName,
+                int tag,
+                Object payload) { }
 
         private record Invocation(
                 Evaluator owner,
@@ -286,7 +297,12 @@ public final class OresEvalRootNode extends RootNode {
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);
                     } else if (decl instanceof Ast.InterfaceDecl iface) {
                         index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
-                    } else if (decl instanceof Ast.TypeAliasDecl alias) index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
+                    } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                        index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
+                    } else if (decl instanceof Ast.EnumDecl enumeration) {
+                        index(enums, ambiguousEnums, module.name(), enumeration.name(), enumeration);
+                        enumOwners.put(enumeration, module.name());
+                    }
                 }
             }
         }
@@ -380,6 +396,28 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.TypeAliasDecl findTypeAlias(String name) {
             if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias " + name + "; qualify it with its module");
             return typeAliases.get(name);
+        }
+
+        private Ast.EnumDecl findEnum(String name) {
+            if (ambiguousEnums.contains(name)) {
+                throw new IllegalArgumentException(
+                        "ambiguous enum " + name + "; qualify it with its module");
+            }
+            return enums.get(name);
+        }
+
+        private Ast.EnumCase findEnumCase(Ast.EnumDecl enumeration, String caseName) {
+            for (Ast.EnumCase enumCase : enumeration.cases()) {
+                if (enumCase.name().equals(caseName)) return enumCase;
+            }
+            return null;
+        }
+
+        private String qualifiedEnumName(Ast.EnumDecl enumeration) {
+            String owner = enumOwners.get(enumeration);
+            return owner == null || owner.equals(Parser.ROOT_MODULE)
+                    ? enumeration.name()
+                    : owner + "." + enumeration.name();
         }
 
         private synchronized void link() {
@@ -5873,6 +5911,10 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.NameExpr name) {
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
+                Ast.EnumDecl enumeration = findEnum(name.name());
+                if (enumeration != null) {
+                    return new EnumNamespace(qualifiedEnumName(enumeration));
+                }
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("std")) return new StdFacade(context);
                 if (name.name().equals("fs") || name.name().equals("File")) return new FileSystemFacade(context);
@@ -6301,6 +6343,38 @@ public final class OresEvalRootNode extends RootNode {
         private Object member(Object receiver, String name, Env env) {
             if (receiver instanceof dev.oreslang.runtime.SealedActorState.Access stateAccess) {
                 return stateAccess.read(name);
+            }
+            if (receiver instanceof EnumNamespace namespace) {
+                Ast.EnumDecl enumeration = findEnum(namespace.name());
+                if (enumeration == null) {
+                    throw new IllegalArgumentException(
+                            "unknown enum namespace " + namespace.name());
+                }
+                Ast.EnumCase enumCase = findEnumCase(enumeration, name);
+                if (enumCase == null) {
+                    throw new IllegalArgumentException(
+                            "unknown enum case " + namespace.name() + "." + name);
+                }
+                return (Invokable) args -> {
+                    int expected = enumCase.payload() == null ? 0 : 1;
+                    if (args.size() != expected) {
+                        throw new IllegalArgumentException(
+                                "enum constructor " + namespace.name() + "." + name
+                                        + " expects " + expected + " argument(s)");
+                    }
+                    Object payload = expected == 0 ? null : args.getFirst();
+                    if (enumCase.payload() != null
+                            && !oresTypeMatches(payload, enumCase.payload())) {
+                        throw new IllegalArgumentException(
+                                "enum payload for " + namespace.name() + "." + name
+                                        + " does not match " + enumCase.payload());
+                    }
+                    return new EnumValue(
+                            qualifiedEnumName(enumeration),
+                            enumCase.name(),
+                            enumCase.tag(),
+                            payload);
+                };
             }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
@@ -7918,6 +7992,29 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.ConstructorPattern constructor) {
                 String name = constructor.constructor();
+                int dot = name.indexOf('.');
+                if (dot > 0) {
+                    String owner = name.substring(0, dot);
+                    String caseName = name.substring(dot + 1);
+                    Ast.EnumDecl enumeration = findEnum(owner);
+                    if (enumeration == null) return false;
+                    Ast.EnumCase enumCase = findEnumCase(enumeration, caseName);
+                    if (enumCase == null) return false;
+                    if (!(value instanceof EnumValue variant)
+                            || !variant.enumName().equals(qualifiedEnumName(enumeration))
+                            || !variant.caseName().equals(enumCase.name())
+                            || variant.tag() != enumCase.tag()) {
+                        return false;
+                    }
+                    if (enumCase.payload() == null) {
+                        return constructor.arguments().isEmpty();
+                    }
+                    return constructor.arguments().size() == 1
+                            && patternMatches(
+                                    constructor.arguments().getFirst(),
+                                    variant.payload(),
+                                    bindings);
+                }
                 if (name.equals("Some")) {
                     if (!(value instanceof OptionValue option) || !option.present() || constructor.arguments().size() != 1) return false;
                     return patternMatches(constructor.arguments().getFirst(), option.value(), bindings);
@@ -8085,6 +8182,12 @@ public final class OresEvalRootNode extends RootNode {
          * (directly or through the narrow JNI bridge), never JVM Class.isInstance/instanceof.
          */
         private boolean oresTypeMatches(Object value, Ast.TypeRef target) {
+            if (value instanceof EnumValue variant) {
+                Ast.EnumDecl enumeration = findEnum(target.name());
+                if (enumeration != null) {
+                    return variant.enumName().equals(qualifiedEnumName(enumeration));
+                }
+            }
             if (target.isUnion()) {
                 for (Ast.TypeRef option : target.arguments()) {
                     if (oresTypeMatches(value, option)) return true;
@@ -8142,6 +8245,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private String oresRuntimeTypeName(Object value) {
+            if (value instanceof EnumValue variant) return variant.enumName();
             if (value instanceof OresObject object) return object.klass.name();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
@@ -8279,6 +8383,19 @@ public final class OresEvalRootNode extends RootNode {
                         && right instanceof ActorRuntime.ActorRef<?> b
                         && a.kind() == b.kind()
                         && a.id().equals(b.id());
+            }
+
+            if (left instanceof EnumValue || right instanceof EnumValue) {
+                if (!(left instanceof EnumValue a) || !(right instanceof EnumValue b)) {
+                    return false;
+                }
+                if (!a.enumName().equals(b.enumName())
+                        || !a.caseName().equals(b.caseName())
+                        || a.tag() != b.tag()) {
+                    return false;
+                }
+                if (comparisonPairSeen(left, right, seen)) return true;
+                return valueEquals(a.payload(), b.payload(), seen);
             }
 
             if (left instanceof OptionValue || right instanceof OptionValue) {

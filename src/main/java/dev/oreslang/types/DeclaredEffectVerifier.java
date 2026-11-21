@@ -23,12 +23,31 @@ public final class DeclaredEffectVerifier {
             "prepare_scalar_publication",
             "publish_scalar_publication");
 
+    private static final ThreadLocal<Set<String>> ACTIVE_ENUMS =
+            ThreadLocal.withInitial(Set::of);
+
     private DeclaredEffectVerifier() { }
 
     public static void verify(Ast.Program program) {
+        Set<String> enumNames = new java.util.LinkedHashSet<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.EnumDecl enumeration) {
+                    enumNames.add(enumeration.name());
+                    enumNames.add(module.name() + "." + enumeration.name());
+                }
+            }
+        }
+        ACTIVE_ENUMS.set(Set.copyOf(enumNames));
+        try {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
+                    if (ACTIVE_ENUMS.get().contains(function.name())) {
+                        throw new IllegalArgumentException(
+                                "module function '" + function.name()
+                                        + "' shadows a nominal enum namespace");
+                    }
                     if (ML_SCALAR_INTRINSICS.contains(function.name())) {
                         throw new IllegalArgumentException(
                                 "module function '" + function.name()
@@ -55,6 +74,9 @@ public final class DeclaredEffectVerifier {
                     }
                 }
             }
+        }
+        } finally {
+            ACTIVE_ENUMS.remove();
         }
     }
 
@@ -137,6 +159,10 @@ public final class DeclaredEffectVerifier {
             throw new IllegalArgumentException(
                     callableName + " binds reserved sealed ML intrinsic name '"
                             + bound + "'");
+        }
+        if (bound != null && ACTIVE_ENUMS.get().contains(bound)) {
+            throw new IllegalArgumentException(
+                    callableName + " shadows nominal enum namespace '" + bound + "'");
         }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) {
@@ -263,6 +289,23 @@ public final class DeclaredEffectVerifier {
                     collect(call.arguments().get(1), effects, stateAccess, callableName, serial);
                     return;
                 }
+            }
+            if (call.callee() instanceof Ast.NameExpr sumConstructor
+                    && (sumConstructor.name().equals("Some")
+                            || sumConstructor.name().equals("Ok")
+                            || sumConstructor.name().equals("Err"))) {
+                // Built-in owned sum construction is pure. Payload
+                // expressions still contribute their own effects.
+                collect(call.arguments(), effects, stateAccess, callableName, serial);
+                return;
+            }
+            if (call.callee() instanceof Ast.MemberExpr enumMember
+                    && enumMember.receiver() instanceof Ast.NameExpr enumName
+                    && ACTIVE_ENUMS.get().contains(enumName.name())) {
+                // Enum construction is pure; payload expressions still
+                // contribute their own transitive effects.
+                collect(call.arguments(), effects, stateAccess, callableName, serial);
+                return;
             }
             if (call.callee() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr namespace

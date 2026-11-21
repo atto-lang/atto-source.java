@@ -20,9 +20,11 @@ import java.util.Set;
 public final class CapabilityChecker {
     private final Map<String, Ast.TypeAliasDecl> aliases = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.EnumDecl> enums = new HashMap<>();
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Set<String> ambiguousAliases = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousEnums = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Map<String, String> javaImports = new HashMap<>();
     private final Set<String> importedRoots = new HashSet<>();
@@ -60,6 +62,8 @@ public final class CapabilityChecker {
                     index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                 } else if (declaration instanceof Ast.FunctionDecl fn) {
                     index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                } else if (declaration instanceof Ast.EnumDecl enumeration) {
+                    index(enums, ambiguousEnums, module.name(), enumeration.name(), enumeration);
                 }
             }
         }
@@ -96,6 +100,10 @@ public final class CapabilityChecker {
 
     private Ast.ClassDecl findClass(String name) {
         return ambiguousClasses.contains(name) ? null : classes.get(name);
+    }
+
+    private Ast.EnumDecl findEnum(String name) {
+        return ambiguousEnums.contains(name) ? null : enums.get(name);
     }
 
     private Ast.FunctionDecl findFunction(String name) {
@@ -214,6 +222,12 @@ public final class CapabilityChecker {
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
                 } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     checkType(alias.target(), policy);
+                } else if (declaration instanceof Ast.EnumDecl enumeration) {
+                    for (Ast.EnumCase enumCase : enumeration.cases()) {
+                        if (enumCase.payload() != null) {
+                            checkType(enumCase.payload(), policy);
+                        }
+                    }
                 }
             }
         }
@@ -272,6 +286,19 @@ public final class CapabilityChecker {
                 checkType(alias.target(), policy);
             } finally {
                 typeExpansionStack.remove(alias);
+            }
+        }
+
+        Ast.EnumDecl enumeration = findEnum(type.name());
+        if (enumeration != null && typeExpansionStack.add(enumeration)) {
+            try {
+                for (Ast.EnumCase enumCase : enumeration.cases()) {
+                    if (enumCase.payload() != null) {
+                        checkType(enumCase.payload(), policy);
+                    }
+                }
+            } finally {
+                typeExpansionStack.remove(enumeration);
             }
         }
 

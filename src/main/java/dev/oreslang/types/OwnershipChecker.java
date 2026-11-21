@@ -46,9 +46,11 @@ public final class OwnershipChecker {
     private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.EnumDecl> enums = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousEnums = new HashSet<>();
     private int mutexCriticalSectionDepth;
     private int actorStateLoanDepth;
     private final java.util.ArrayDeque<String> actorStateLoanNames =
@@ -76,7 +78,11 @@ public final class OwnershipChecker {
                                 + "' is reserved by the sealed actor scalar publication API");
                     }
                     index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
-                } else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                } else if (decl instanceof Ast.EnumDecl enumeration) {
+                    index(enums, ambiguousEnums, module.name(), enumeration.name(), enumeration);
+                }
             }
         }
     }
@@ -1287,6 +1293,37 @@ public final class OwnershipChecker {
                     throw error("publish_scalar_publication requires a compiler-issued scalar publication");
                 }
                 return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+            }
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr enumMember
+                && enumMember.receiver() instanceof Ast.NameExpr enumName
+                && scope.lookup(enumName.name()) == null) {
+            Ast.EnumDecl enumeration = findEnum(enumName.name());
+            if (enumeration != null) {
+                Ast.EnumCase enumCase = findEnumCase(enumeration, enumMember.member());
+                if (enumCase == null) {
+                    throw error("unknown enum case "
+                            + enumName.name() + "." + enumMember.member());
+                }
+                int expected = enumCase.payload() == null ? 0 : 1;
+                if (call.arguments().size() != expected) {
+                    throw error("enum constructor "
+                            + enumName.name() + "." + enumMember.member()
+                            + " expects " + expected + " argument(s)");
+                }
+                for (Ast.Expr argument : call.arguments()) {
+                    ValueInfo payload = checkExpr(argument, scope, true);
+                    if (containsMutexGuardType(payload.type)
+                            || containsMlScalarCapabilityType(payload.type)
+                            || isBorrowValue(payload)) {
+                        throw error("enum payload must be an owned ordinary value");
+                    }
+                }
+                return new ValueInfo(
+                        Ast.TypeRef.simple(enumeration.name()),
+                        ValueKind.MOVE_ONLY,
+                        null);
             }
         }
 
@@ -2807,6 +2844,20 @@ public final class OwnershipChecker {
     private Ast.FunctionDecl findFunction(String name) {
         if (ambiguousFunctions.contains(name)) return null;
         return functions.get(name);
+    }
+
+    private Ast.EnumDecl findEnum(String name) {
+        if (ambiguousEnums.contains(name)) {
+            throw error("ambiguous enum name '" + name + "'; qualify it with its module");
+        }
+        return enums.get(name);
+    }
+
+    private Ast.EnumCase findEnumCase(Ast.EnumDecl enumeration, String name) {
+        for (Ast.EnumCase enumCase : enumeration.cases()) {
+            if (enumCase.name().equals(name)) return enumCase;
+        }
+        return null;
     }
 
     private Ast.ClassDecl findClass(String name) {
