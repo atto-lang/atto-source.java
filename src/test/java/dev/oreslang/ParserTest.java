@@ -774,10 +774,12 @@ final class ParserTest {
     void parsesSharedActorAndAllowsMailboxOwnedStateMutation() {
         String source = """
                 shared actor Account {
-                  let balance = 100;
+                  state { balance: int = 100; }
 
-                  pub fnc withdraw(int amount): void {
-                    self.balance = self.balance - amount;
+                  pub fnc withdraw(int amount): void with state.read, state.write {
+                    using state.write(critical |s| -> {
+                      s.balance = s.balance - amount;
+                    });
                     return;
                   }
                 }
@@ -845,10 +847,10 @@ final class ParserTest {
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 shared actor Account {
-                  let int balance = 100;
+                  state { balance: int = 100; }
 
-                  pub fnc read(): int {
-                    return self.balance;
+                  pub fnc read(): int with state.read {
+                    return using state.read(|s| -> s.balance);
                   }
                 }
 
@@ -888,7 +890,7 @@ final class ParserTest {
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
                     shared actor Account {
-                      let balance = 100;
+                      state { balance: int = 100; }
 
                       pub fnc leak(): Account {
                         return self;
@@ -901,7 +903,7 @@ final class ParserTest {
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
                     shared actor Account {
-                      let balance = 100;
+                      state { balance: int = 100; }
 
                       pub fnc leak(): &mut Account {
                         return &mut self;
@@ -914,7 +916,7 @@ final class ParserTest {
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
                     shared actor Account {
-                      let balance = 100;
+                      state { balance: int = 100; }
 
                       pub fnc leak(): &mut Account {
                         val alias = &mut self;
@@ -928,10 +930,10 @@ final class ParserTest {
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
                     shared actor Account {
-                      let Array<int> items = [1, 2, 3];
+                      state { items: Array<int> = [1, 2, 3]; }
 
-                      pub fnc leak(): Array<int> {
-                        return self.items;
+                      pub fnc leak(): Array<int> with state.read {
+                        return using state.read(|s| -> s);
                       }
                     }
                     """));
@@ -944,10 +946,10 @@ final class ParserTest {
         assertDoesNotThrow(() -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
                     shared actor Account {
-                      let balance = 100;
+                      state { balance: int = 100; }
 
-                      pub fnc current(): int {
-                        return self.balance;
+                      pub fnc current(): int with state.read {
+                        return using state.read(|s| -> s.balance);
                       }
                     }
                     """));
@@ -961,7 +963,7 @@ final class ParserTest {
                     }
 
                     shared actor Account {
-                      let balance = 100;
+                      state { balance: int = 100; }
 
                       pub fnc inspectSelf(): int {
                         return inspect(&self);

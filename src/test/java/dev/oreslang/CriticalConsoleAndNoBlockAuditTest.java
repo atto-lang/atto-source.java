@@ -23,13 +23,13 @@ final class CriticalConsoleAndNoBlockAuditTest {
                 "no_block");
         rejectEffect("fnc bad(): void requires no_block { stdio.print(1); return; }",
                 "no_block");
-        rejectEffect("fnc bad(): void using io { stdio.println(1); return; }",
+        rejectEffect("fnc bad(): void with io { stdio.println(1); return; }",
                 "effect block");
     }
 
     @Test void explicitIoAndBlockRowCanAdmitConsoleOutput() {
         var program = assertDoesNotThrow(() -> Parser.parse(
-                "fnc good(): void using io, block { stdio.println(1); return; }"));
+                "fnc good(): void with io, block { stdio.println(1); return; }"));
         assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(program));
     }
 
@@ -42,7 +42,7 @@ final class CriticalConsoleAndNoBlockAuditTest {
                     define actor Counter as
                       state { count: int = 0; }
                       pub probe(): void {
-                        self.handle_state(critical |s| -> {
+                        self.handle_state(critical write |s| -> {
                     """ + statement + """
                     
                           s.count = 1;
@@ -63,7 +63,7 @@ final class CriticalConsoleAndNoBlockAuditTest {
                 define actor Counter as
                   state { count: int = 0; }
                   pub probe(): void {
-                    self.handle_state(critical |s| -> { s.count = 1; });
+                    self.handle_state(critical write |s| -> { s.count = 1; });
                     stdio.println(1);
                     return;
                   }

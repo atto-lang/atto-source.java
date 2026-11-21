@@ -19,7 +19,7 @@ final class OwnershipEffectAuditTest {
                             define actor Counter as
                               state { count: int = 0; }
                               pub probe(): void {
-                                self.handle_state(critical |s| -> {
+                                self.handle_state(critical write |s| -> {
                                   val Channel<int> ch = Channel.new<int>(1);
                                   %s
                                   s.count = 1;
@@ -37,7 +37,7 @@ final class OwnershipEffectAuditTest {
                 define actor Counter as
                   state { count: int = 0; }
                   pub probe(): void {
-                    self.handle_state(critical |s| -> { s.count = 1; });
+                    self.handle_state(critical write |s| -> { s.count = 1; });
                     rt cooperate;
                     return;
                   }
@@ -54,9 +54,9 @@ final class OwnershipEffectAuditTest {
     }
     @Test void aggregateAndClosureConstructionRequireAllocEffect() {
         for (String expression : new String[]{"[1, 2]", "(1, 2)", "struct{n: int}{n: 1}", "|| -> 1"}) {
-            reject("fnc bad(): void using io { val value = " + expression + "; return; }", "alloc");
+            reject("fnc bad(): void with io { val value = " + expression + "; return; }", "alloc");
             assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(Parser.parse(
-                    "fnc good(): void using alloc { val value = " + expression + "; return; }")));
+                    "fnc good(): void with alloc { val value = " + expression + "; return; }")));
         }
     }
     @Test void deferredCleanupMustContributeItsExecutedBodyEffects() {
@@ -67,7 +67,7 @@ final class OwnershipEffectAuditTest {
                 }
                 """, "no_block");
         reject("""
-                fnc bad(Channel<int> ch): void using alloc, suspend {
+                fnc bad(Channel<int> ch): void with alloc, suspend {
                   defer || -> { val int n = readch ch; return; };
                   return;
                 }
@@ -79,7 +79,7 @@ final class OwnershipEffectAuditTest {
                 }
                 """, "trusted callee");
         assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(Parser.parse("""
-                fnc good(Channel<int> ch): void using alloc, suspend, block {
+                fnc good(Channel<int> ch): void with alloc, suspend, block {
                   defer || -> { val int n = readch ch; return; };
                   return;
                 }
@@ -95,6 +95,6 @@ final class OwnershipEffectAuditTest {
 
     @Test void allocatingCallableBodyIsNotExecutedByClosureCreation() {
         assertDoesNotThrow(() -> DeclaredEffectVerifier.verify(Parser.parse(
-                "fnc good(): void using alloc { val f = || -> { unknown(); return; }; return; }")));
+                "fnc good(): void with alloc { val f = || -> { unknown(); return; }; return; }")));
     }
 }

@@ -7,21 +7,49 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Conservative first-step effect admission for explicit `using` contracts.
+ * Conservative first-step effect admission for explicit `with` contracts.
  * It verifies syntactically proven operations only. Unknown calls fail closed
  * rather than manufacturing a safe effect summary. Eventually this will be
  * replaced by interprocedural typed effect inference in the shared IR.
  */
 public final class DeclaredEffectVerifier {
+    private static final Set<String> ML_SCALAR_INTRINSICS = Set.of(
+            "state_snapshot",
+            "snapshot_int",
+            "snapshot_bool",
+            "snapshot_string",
+            "snapshot_version",
+            "snapshot_revision",
+            "prepare_scalar_publication",
+            "publish_scalar_publication");
+
     private DeclaredEffectVerifier() { }
 
     public static void verify(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl function) {
+                    if (ML_SCALAR_INTRINSICS.contains(function.name())) {
+                        throw new IllegalArgumentException(
+                                "module function '" + function.name()
+                                        + "' is reserved by the sealed actor scalar publication API");
+                    }
+                    rejectReservedMlBindings(
+                            function.parameters(), function.name());
+                    rejectReservedMlBindings(
+                            function.body(), function.name());
                     check(function.name(), function.annotations(), function.body(), false);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.MethodDecl method : klass.methods()) {
+                        rejectReservedMlBindings(
+                                method.parameters(), klass.name() + "." + method.name());
+                        rejectReservedMlBindings(
+                                method.body(), klass.name() + "." + method.name());
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && method.isStatic() && containsStateLoan(method.body())) {
+                            throw new IllegalArgumentException(
+                                    "static actor method cannot acquire a sealed instance state loan");
+                        }
                         check(klass.name() + "." + method.name(), method.annotations(),
                                 method.body(), klass.serial() && !method.isStatic());
                     }
@@ -31,7 +59,7 @@ public final class DeclaredEffectVerifier {
     }
 
     private static void check(String name, List<Ast.Annotation> annotations, Object body, boolean serial) {
-        Ast.Annotation using = null;
+        Ast.Annotation with = null;
         for (Ast.Annotation annotation : annotations) {
             if (annotation.name().equals("$requires$")) {
                 for (Ast.TypeRef requirement : annotation.arguments()) {
@@ -41,16 +69,26 @@ public final class DeclaredEffectVerifier {
                     }
                 }
             }
-            if (annotation.name().equals("$using$")) {
-                if (using != null) throw new IllegalArgumentException("duplicate using effect declaration");
-                using = annotation;
+            if (annotation.name().equals("$using$"))
+                throw new IllegalArgumentException("legacy using effect declaration is forbidden; use with");
+            if (annotation.name().equals("$with$")) {
+                if (with != null) throw new IllegalArgumentException("duplicate with effect declaration");
+                with = annotation;
             }
         }
         boolean hasRequirements = annotations.stream()
                 .anyMatch(annotation -> annotation.name().equals("$requires$"));
-        if (using == null && !hasRequirements) return;
+        // A sealed actor-state loan cannot silently bypass a function
+        // effect contract by omitting 'with'. This is checked even when
+        // no 'requires' guarantee was declared.
+        if (with == null && !hasRequirements) {
+            if (containsStateLoan(body))
+                throw new IllegalArgumentException(name
+                        + " requires with state.read/write effect declaration");
+            return;
+        }
 
-        FunctionEffects allowed = using == null ? null : FunctionEffects.ofNames(using.arguments().stream()
+        FunctionEffects allowed = with == null ? null : FunctionEffects.ofNames(with.arguments().stream()
                 .map(Ast.TypeRef::name).toList());
         EnumSet<FunctionEffects.Effect> inferred =
                 EnumSet.noneOf(FunctionEffects.Effect.class);
@@ -75,9 +113,75 @@ public final class DeclaredEffectVerifier {
         for (FunctionEffects.Effect effect : inferred) {
             if (allowed != null && !allowed.contains(effect)) {
                 throw new IllegalArgumentException(name + " uses effect " + effect.sourceName()
-                        + " not permitted by its using signature");
+                        + " not permitted by its with signature");
             }
         }
+    }
+
+    private static void rejectReservedMlBindings(
+            Object node,
+            String callableName) {
+        if (node == null) return;
+        String bound = null;
+        if (node instanceof Ast.Param parameter) {
+            bound = parameter.name();
+        } else if (node instanceof Ast.BindingStmt binding) {
+            bound = binding.name();
+        } else if (node instanceof Ast.DestructureBinding binding
+                && !binding.isDiscard()) {
+            bound = binding.name();
+        } else if (node instanceof Ast.ForOfStmt loop) {
+            bound = loop.bindingName();
+        }
+        if (bound != null && ML_SCALAR_INTRINSICS.contains(bound)) {
+            throw new IllegalArgumentException(
+                    callableName + " binds reserved sealed ML intrinsic name '"
+                            + bound + "'");
+        }
+        if (node instanceof Iterable<?> items) {
+            for (Object item : items) {
+                rejectReservedMlBindings(item, callableName);
+            }
+            return;
+        }
+        if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    rejectReservedMlBindings(
+                            component.getAccessor().invoke(record),
+                            callableName);
+                } catch (ReflectiveOperationException e) {
+                    throw new IllegalStateException(
+                            "cannot inspect sealed ML intrinsic bindings", e);
+                }
+            }
+        }
+    }
+
+    private static boolean containsStateLoan(Object node) {
+        if (node == null) return false;
+        if (node instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr callee
+                && callee.receiver() instanceof Ast.NameExpr self
+                && self.name().equals("self") && callee.member().equals("handle_state"))
+            return true;
+        if (node instanceof Iterable<?> items) {
+            for (Object item : items)
+                if (containsStateLoan(item)) return true;
+            return false;
+        }
+        if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    if (containsStateLoan(component.getAccessor().invoke(record))) return true;
+                } catch (ReflectiveOperationException e) {
+                    throw new IllegalStateException("cannot inspect actor state effect declaration", e);
+                }
+            }
+        }
+        return false;
     }
 
     private static void collect(Object node, Set<FunctionEffects.Effect> effects,
@@ -93,14 +197,72 @@ public final class DeclaredEffectVerifier {
                         || callback.parameters().size() != 1) {
                     throw new IllegalArgumentException("invalid handle_state effect callback");
                 }
-                if ((!callback.critical() && !serial) || callback.nonLexical()) {
+                if (callback.nonLexical()) {
                     throw new IllegalArgumentException(
-                            "non-serial handle_state requires a critical lexical callback");
+                            "handle_state needs a lexical state callback");
                 }
                 String name = callback.parameters().getFirst().name();
-                collect(callback.expressionBody(), effects, name, callableName, serial);
-                collect(callback.blockBody(), effects, name, callableName, serial);
+                EnumSet<FunctionEffects.Effect> callbackEffects =
+                        EnumSet.noneOf(FunctionEffects.Effect.class);
+                collect(callback.expressionBody(), callbackEffects, name, callableName, serial);
+                collect(callback.blockBody(), callbackEffects, name, callableName, serial);
+                // Callback mode grants authority; WITH only constrains declared effects.
+                if ((callback.criticalMode() == Ast.CriticalMode.NONE
+                            || callback.criticalMode() == Ast.CriticalMode.READ)
+                        && callbackEffects.contains(FunctionEffects.Effect.STATE_WRITE)) {
+                    throw new IllegalArgumentException(
+                            "read-only handle_state cannot write state, regardless of declared with effects");
+                }
+                effects.addAll(callbackEffects);
                 return;
+            }
+            if (call.callee() instanceof Ast.NameExpr intrinsic) {
+                String name = intrinsic.name();
+                if (name.equals("state_snapshot")) {
+                    if (stateAccess == null
+                            || call.arguments().size() < 3
+                            || !(call.arguments().getFirst() instanceof Ast.NameExpr loan)
+                            || !loan.name().equals(stateAccess)) {
+                        throw new IllegalArgumentException(
+                                "state_snapshot requires the active lexical actor state loan");
+                    }
+                    effects.add(FunctionEffects.Effect.STATE_READ);
+                    effects.add(FunctionEffects.Effect.ALLOC);
+                    for (int i = 1; i < call.arguments().size(); i++) {
+                        collect(call.arguments().get(i), effects, stateAccess, callableName, serial);
+                    }
+                    return;
+                }
+                if (name.equals("snapshot_int")
+                        || name.equals("snapshot_bool")
+                        || name.equals("snapshot_string")
+                        || name.equals("snapshot_version")
+                        || name.equals("snapshot_revision")) {
+                    collect(call.arguments(), effects, stateAccess, callableName, serial);
+                    return;
+                }
+                if (name.equals("prepare_scalar_publication")) {
+                    if (stateAccess != null) {
+                        throw new IllegalArgumentException(
+                                "prepare_scalar_publication must run after the actor state loan is released");
+                    }
+                    effects.add(FunctionEffects.Effect.ALLOC);
+                    collect(call.arguments(), effects, stateAccess, callableName, serial);
+                    return;
+                }
+                if (name.equals("publish_scalar_publication")) {
+                    if (stateAccess == null
+                            || call.arguments().size() != 2
+                            || !(call.arguments().getFirst() instanceof Ast.NameExpr loan)
+                            || !loan.name().equals(stateAccess)) {
+                        throw new IllegalArgumentException(
+                                "publish_scalar_publication requires the active lexical actor state loan");
+                    }
+                    effects.add(FunctionEffects.Effect.STATE_READ);
+                    effects.add(FunctionEffects.Effect.STATE_WRITE);
+                    collect(call.arguments().get(1), effects, stateAccess, callableName, serial);
+                    return;
+                }
             }
             if (call.callee() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr namespace
@@ -117,7 +279,7 @@ public final class DeclaredEffectVerifier {
             // An unknown callee might suspend, allocate, perform I/O, or
             // mutate externally reachable memory. Require a trusted summary.
             throw new IllegalArgumentException(
-                    "cannot verify using effects of call in " + callableName
+                    "cannot verify with effects of call in " + callableName
                     + " without a trusted callee summary");
         }
         if (node instanceof Ast.AssignExpr assign) {

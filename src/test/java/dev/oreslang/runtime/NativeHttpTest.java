@@ -168,8 +168,8 @@ class NativeHttpTest {
             define serial actor Counter as
               state { count: int = 0; }
 
-              pub increment(): int using state.read, state.write {
-                return self.handle_state(|s| -> {
+              pub increment(): int with state.read, state.write {
+                return self.handle_state(critical |s| -> {
                   s.count = s.count + 1;
                   return s.count;
                 });
@@ -217,8 +217,8 @@ class NativeHttpTest {
         String output = run("""
             define serial actor Counter as
               state { count: int = 0; }
-              pub increment(): int using state.read, state.write {
-                return self.handle_state(|s| -> {
+              pub increment(): int with state.read, state.write {
+                return self.handle_state(critical |s| -> {
                   s.count = s.count + 1;
                   return s.count;
                 });

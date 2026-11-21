@@ -33,6 +33,21 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    private static final Set<String> ML_SCALAR_INTRINSICS = Set.of(
+            "state_snapshot",
+            "snapshot_int",
+            "snapshot_bool",
+            "snapshot_string",
+            "snapshot_version",
+            "snapshot_revision",
+            "prepare_scalar_publication",
+            "publish_scalar_publication");
+
+    private record ScalarStateTyping(
+            String binding,
+            Record schema,
+            Ast.CriticalMode mode) { }
+
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
             Ast.InterfaceDecl owner,
@@ -70,6 +85,8 @@ public final class TypeChecker {
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
+    private final java.util.ArrayDeque<ScalarStateTyping> scalarStateTyping =
+            new java.util.ArrayDeque<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
     public record TypeCheckResult(Ast.Program program, List<String> warnings) {
@@ -111,6 +128,7 @@ public final class TypeChecker {
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
                 "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
                 "self", "null"));
+        localNames.addAll(ML_SCALAR_INTRINSICS);
 
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
@@ -250,6 +268,12 @@ public final class TypeChecker {
                 category = "binding";
             } else {
                 continue; // interfaces and aliases occupy the type namespace
+            }
+
+            if (ML_SCALAR_INTRINSICS.contains(name)) {
+                throw new IllegalArgumentException(
+                        "module value member '" + module.name() + "." + name
+                                + "' is reserved by the sealed actor scalar publication API");
             }
 
             String previous = categories.putIfAbsent(name, category);
@@ -1866,6 +1890,10 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.BinaryExpr binary) {
             Type left = typeOf(binary.left(), env, generics, self);
+            if (containsMlScalarCapability(left)) {
+                throw new IllegalArgumentException(
+                        "compiler-issued actor scalar capabilities cannot be used with binary operators");
+            }
             if (binary.operator().equals("&&") || binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
                 Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
@@ -1877,6 +1905,10 @@ public final class TypeChecker {
                 return Primitive.BOOL;
             }
             Type right = typeOf(binary.right(), env, generics, self);
+            if (containsMlScalarCapability(right)) {
+                throw new IllegalArgumentException(
+                        "compiler-issued actor scalar capabilities cannot be used with binary operators");
+            }
             return switch (binary.operator()) {
                 case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -1963,6 +1995,11 @@ public final class TypeChecker {
                         "rt " + runtime.operation() + " expects exactly one argument");
             }
             Type operand = typeOf(runtime.arguments().getFirst(), env, generics, self);
+            if (containsMlScalarCapability(operand)) {
+                throw new IllegalArgumentException(
+                        "rt " + runtime.operation()
+                                + " cannot borrow/copy/take/share compiler-issued actor scalar capabilities");
+            }
             return switch (runtime.operation()) {
                 case "borrow" -> new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
@@ -1971,6 +2008,43 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            Type mlScalarIntrinsic =
+                    typeMlScalarIntrinsic(call, env, generics, self);
+            if (mlScalarIntrinsic != null) return mlScalarIntrinsic;
+
+            if (call.callee() instanceof Ast.MemberExpr stdioCall
+                    && stdioCall.receiver() instanceof Ast.NameExpr stdio
+                    && stdio.name().equals("stdio")
+                    && env.lookup("stdio") == null
+                    && (stdioCall.member().equals("print")
+                            || stdioCall.member().equals("println"))) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "stdio." + stdioCall.member() + " expects exactly one value");
+                }
+                Type value = typeOf(call.arguments().getFirst(), env, generics, self);
+                rejectMlCapabilityStorage(value, "stdio." + stdioCall.member());
+                return Primitive.VOID;
+            }
+            if (call.callee() instanceof Ast.MemberExpr stdoutCall
+                    && stdoutCall.receiver() instanceof Ast.MemberExpr stdout
+                    && stdout.receiver() instanceof Ast.NameExpr stdio
+                    && stdio.name().equals("stdio")
+                    && env.lookup("stdio") == null
+                    && stdout.member().equals("stdout")
+                    && (stdoutCall.member().equals("write")
+                            || stdoutCall.member().equals("println"))) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "stdio.stdout." + stdoutCall.member()
+                                    + " expects exactly one value");
+                }
+                Type value = typeOf(call.arguments().getFirst(), env, generics, self);
+                rejectMlCapabilityStorage(
+                        value, "stdio.stdout." + stdoutCall.member());
+                return Primitive.VOID;
+            }
+
             if (call.callee() instanceof Ast.MemberExpr intrinsic
                     && intrinsic.member().equals("handle_state")
                     && intrinsic.receiver() instanceof Ast.NameExpr receiverName
@@ -1982,9 +2056,9 @@ public final class TypeChecker {
                 if (call.typeArgumentsPresent() || call.arguments().size() != 1
                         || !(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda))
                     throw new IllegalArgumentException("self.handle_state requires one callback lambda");
-                if ((!lambda.critical() && !currentClassOwner.serial()) || lambda.nonLexical()) {
+                if (lambda.nonLexical()) {
                     throw new IllegalArgumentException(
-                            "sealed critical handle_state requires a critical lexical callback");
+                            "sealed handle_state requires a lexical read or critical write callback");
                 }
                 Type schemaType = resolve(ActorStateContract.keySchema(state), generics, self);
                 Type callbackResult =
@@ -2001,7 +2075,8 @@ public final class TypeChecker {
                     if (argument instanceof Ast.SpreadExpr spread) {
                         requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log spread");
                     } else {
-                        typeOf(argument, env, generics, self);
+                        Type value = typeOf(argument, env, generics, self);
+                        rejectMlCapabilityStorage(value, "stdio.stdout.log");
                     }
                 }
                 return Primitive.VOID;
@@ -2013,7 +2088,9 @@ public final class TypeChecker {
                 if (call.arguments().size() != 1 || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
                     throw new IllegalArgumentException("stdio.stdout.logList expects exactly one array/list/tuple argument");
                 }
-                requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
+                Type logged = typeOf(call.arguments().getFirst(), env, generics, self);
+                rejectMlCapabilityStorage(logged, "stdio.stdout.logList");
+                requireSpreadable(logged, "stdio.stdout.logList");
                 return Primitive.VOID;
             }
             if (call.callee() instanceof Ast.NameExpr name
@@ -2211,6 +2288,7 @@ public final class TypeChecker {
                 if (call.typeArgumentsPresent()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
                 Type element = typeOf(call.arguments().getFirst(), env, generics, self);
+                rejectMlCapabilityStorage(element, factory.name() + ".new");
                 if (element instanceof Borrow) {
                     throw new IllegalArgumentException(
                             factory.name() + "<T> requires owned data; borrowed values cannot become mutex state");
@@ -2229,7 +2307,9 @@ public final class TypeChecker {
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException(name.name() + " expects exactly one value");
                 }
-                Type value = widenCollectionElement(typeOf(call.arguments().getFirst(), env, generics, self));
+                Type rawValue = typeOf(call.arguments().getFirst(), env, generics, self);
+                rejectMlCapabilityStorage(rawValue, name.name());
+                Type value = widenCollectionElement(rawValue);
                 return switch (name.name()) {
                     case "Some" -> new Named("Option", List.of(value));
                     case "Ok" -> new Named("Result", List.of(value, Unknown.INSTANCE));
@@ -2351,6 +2431,14 @@ public final class TypeChecker {
                                                 + " expects no arguments");
                             }
                             yield Primitive.BOOL;
+                        }
+                        case "get_ready", "get_done" -> {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef." + member.member()
+                                                + " expects no arguments");
+                            }
+                            yield new Named("Future", List.of(Primitive.VOID));
                         }
                         case "ready", "done", "outputs", "id", "kind" ->
                                 throw new IllegalArgumentException(
@@ -3238,14 +3326,24 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
-            Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
+            Type first = typeOf(list.elements().getFirst(), env, generics, self);
+            rejectMlCapabilityStorage(first, "list literal");
+            Type element = widenCollectionElement(first);
             for (int i = 1; i < list.elements().size(); i++) {
-                element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
+                Type item = typeOf(list.elements().get(i), env, generics, self);
+                rejectMlCapabilityStorage(item, "list literal");
+                element = collectionElementJoin(element, widenCollectionElement(item));
             }
             return new ListType(element);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            List<Type> elements = new ArrayList<>();
+            for (Ast.Expr item : tuple.elements()) {
+                Type element = typeOf(item, env, generics, self);
+                rejectMlCapabilityStorage(element, "tuple literal");
+                elements.add(element);
+            }
+            return new Tuple(elements);
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.explicitStruct()) {
@@ -3275,6 +3373,9 @@ public final class TypeChecker {
                     }
                     Type actualField =
                             typeOf(field.value(), env, generics, self);
+                    rejectMlCapabilityStorage(
+                            actualField,
+                            "explicit struct field '" + field.name() + "'");
                     requireReadonlyCapabilityPreserved(
                             actualField,
                             expected,
@@ -3299,6 +3400,9 @@ public final class TypeChecker {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
+                rejectMlCapabilityStorage(
+                        exactValueType,
+                        "record/struct field '" + field.name() + "'");
                 if (members.putIfAbsent(
                         field.name(),
                         object.inferredStruct()
@@ -3345,6 +3449,248 @@ public final class TypeChecker {
             return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
+    }
+
+    private Type typeMlScalarIntrinsic(
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (!(call.callee() instanceof Ast.NameExpr name)
+                || !ML_SCALAR_INTRINSICS.contains(name.name())
+                || env.lookup(name.name()) != null) {
+            return null;
+        }
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(
+                    name.name() + " is a sealed compiler intrinsic and accepts no type arguments");
+        }
+        if (currentActorKind == Ast.ActorKind.NONE || currentClassOwner == null) {
+            throw new IllegalArgumentException(
+                    name.name() + " is only available inside an actor declaration");
+        }
+
+        return switch (name.name()) {
+            case "state_snapshot" -> typeStateSnapshot(call, env, generics, self);
+            case "snapshot_int" ->
+                    typeSnapshotScalar(call, env, generics, self, Primitive.INT, "snapshot_int");
+            case "snapshot_bool" ->
+                    typeSnapshotScalar(call, env, generics, self, Primitive.BOOL, "snapshot_bool");
+            case "snapshot_string" ->
+                    typeSnapshotScalar(call, env, generics, self, Primitive.STRING, "snapshot_string");
+            case "snapshot_version", "snapshot_revision" -> {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            name.name() + " expects exactly one scalar snapshot");
+                }
+                requireScalarSnapshot(
+                        typeOf(call.arguments().getFirst(), env, generics, self),
+                        name.name());
+                yield Primitive.INT;
+            }
+            case "prepare_scalar_publication" ->
+                    typePrepareScalarPublication(call, env, generics, self);
+            case "publish_scalar_publication" ->
+                    typePublishScalarPublication(call, env, generics, self);
+            default -> throw new AssertionError(name.name());
+        };
+    }
+
+    private Type typeStateSnapshot(
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (scalarStateTyping.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "state_snapshot requires the active lexical self.handle_state callback");
+        }
+        if (call.arguments().size() < 3) {
+            throw new IllegalArgumentException(
+                    "state_snapshot expects the state loan, version field, and at least one scalar field");
+        }
+        ScalarStateTyping state = scalarStateTyping.peek();
+        Ast.Expr loanExpr = call.arguments().getFirst();
+        if (!(loanExpr instanceof Ast.NameExpr loan)
+                || !loan.name().equals(state.binding())) {
+            throw new IllegalArgumentException(
+                    "state_snapshot first argument must be the active lexical state-loan parameter '"
+                            + state.binding() + "'");
+        }
+
+        String versionField = stringLiteralArgument(
+                call.arguments().get(1), env, generics, self, "state_snapshot version field");
+        Type versionType = state.schema().members().get(versionField);
+        if (versionType != Primitive.INT) {
+            throw new IllegalArgumentException(
+                    "state_snapshot version field '" + versionField + "' must be int");
+        }
+
+        Map<String, Type> captured = new LinkedHashMap<>();
+        for (int i = 2; i < call.arguments().size(); i++) {
+            String field = stringLiteralArgument(
+                    call.arguments().get(i), env, generics, self, "state_snapshot scalar field");
+            if (field.equals(versionField)) {
+                throw new IllegalArgumentException(
+                        "state_snapshot version field is implicit; do not capture it twice");
+            }
+            Type fieldType = state.schema().members().get(field);
+            if (fieldType == null) {
+                throw new IllegalArgumentException(
+                        "state_snapshot unknown actor state field '" + field + "'");
+            }
+            if (fieldType != Primitive.INT
+                    && fieldType != Primitive.BOOL
+                    && fieldType != Primitive.STRING) {
+                throw new IllegalArgumentException(
+                        "state_snapshot field '" + field
+                                + "' is not a supported immutable scalar");
+            }
+            if (captured.putIfAbsent(field, fieldType) != null) {
+                throw new IllegalArgumentException(
+                        "state_snapshot duplicate scalar field '" + field + "'");
+            }
+        }
+        return new Named(
+                "$ActorScalarSnapshot",
+                List.of(new Record(captured, true), new StringLiteral(versionField)));
+    }
+
+    private Type typeSnapshotScalar(
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self,
+            Type expected,
+            String intrinsic) {
+        if (call.arguments().size() != 2) {
+            throw new IllegalArgumentException(
+                    intrinsic + " expects a scalar snapshot and one literal field name");
+        }
+        Named snapshot = requireScalarSnapshot(
+                typeOf(call.arguments().getFirst(), env, generics, self), intrinsic);
+        Record captured = (Record) snapshot.arguments().getFirst();
+        String field = stringLiteralArgument(
+                call.arguments().get(1), env, generics, self, intrinsic + " field");
+        Type actual = captured.members().get(field);
+        if (actual == null) {
+            throw new IllegalArgumentException(
+                    intrinsic + " field '" + field + "' was not captured by state_snapshot");
+        }
+        requireAssignable(actual, expected, intrinsic + " field '" + field + "'");
+        requireAssignable(expected, actual, intrinsic + " field '" + field + "'");
+        return expected;
+    }
+
+    private Type typePrepareScalarPublication(
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (!scalarStateTyping.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "prepare_scalar_publication must run after the state loan is released");
+        }
+        if (call.arguments().size() < 3
+                || (call.arguments().size() - 1) % 2 != 0) {
+            throw new IllegalArgumentException(
+                    "prepare_scalar_publication expects snapshot followed by literal field/value pairs");
+        }
+        Named snapshot = requireScalarSnapshot(
+                typeOf(call.arguments().getFirst(), env, generics, self),
+                "prepare_scalar_publication");
+        Record captured = (Record) snapshot.arguments().getFirst();
+        String versionField = ((StringLiteral) snapshot.arguments().get(1)).value();
+        Set<String> seen = new LinkedHashSet<>();
+        boolean advancesVersion = false;
+        for (int i = 1; i < call.arguments().size(); i += 2) {
+            String field = stringLiteralArgument(
+                    call.arguments().get(i), env, generics, self,
+                    "prepare_scalar_publication replacement field");
+            if (!seen.add(field)) {
+                throw new IllegalArgumentException(
+                        "prepare_scalar_publication duplicate replacement field '" + field + "'");
+            }
+            Type expected;
+            if (field.equals(versionField)) {
+                expected = Primitive.INT;
+                advancesVersion = true;
+            } else {
+                expected = captured.members().get(field);
+                if (expected == null) {
+                    throw new IllegalArgumentException(
+                            "prepare_scalar_publication field '" + field
+                                    + "' was not captured by state_snapshot");
+                }
+            }
+            Type actual = typeOf(call.arguments().get(i + 1), env, generics, self);
+            requireAssignable(
+                    actual, expected,
+                    "prepare_scalar_publication replacement '" + field + "'");
+        }
+        if (!advancesVersion) {
+            throw new IllegalArgumentException(
+                    "prepare_scalar_publication must replace the snapshot version field '"
+                            + versionField + "'");
+        }
+        return new Named("$ActorScalarPublication", List.of());
+    }
+
+    private Type typePublishScalarPublication(
+            Ast.CallExpr call,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (scalarStateTyping.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "publish_scalar_publication requires the active lexical self.handle_state callback");
+        }
+        ScalarStateTyping state = scalarStateTyping.peek();
+        if (state.mode() != Ast.CriticalMode.WRITE
+                && state.mode() != Ast.CriticalMode.EXCLUSIVE) {
+            throw new IllegalArgumentException(
+                    "publish_scalar_publication requires a critical write state loan");
+        }
+        if (call.arguments().size() != 2
+                || !(call.arguments().getFirst() instanceof Ast.NameExpr loan)
+                || !loan.name().equals(state.binding())) {
+            throw new IllegalArgumentException(
+                    "publish_scalar_publication expects the active state-loan parameter and one publication");
+        }
+        Type publication = typeOf(call.arguments().get(1), env, generics, self);
+        if (!(publication instanceof Named named)
+                || !named.name().equals("$ActorScalarPublication")
+                || !named.arguments().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "publish_scalar_publication requires a compiler-issued scalar publication");
+        }
+        return Primitive.BOOL;
+    }
+
+    private Named requireScalarSnapshot(Type type, String where) {
+        if (!(type instanceof Named snapshot)
+                || !snapshot.name().equals("$ActorScalarSnapshot")
+                || snapshot.arguments().size() != 2
+                || !(snapshot.arguments().getFirst() instanceof Record)
+                || !(snapshot.arguments().get(1) instanceof StringLiteral)) {
+            throw new IllegalArgumentException(
+                    where + " requires a compiler-issued scalar state snapshot");
+        }
+        return snapshot;
+    }
+
+    private String stringLiteralArgument(
+            Ast.Expr expression,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String where) {
+        Type type = typeOf(expression, env, generics, self);
+        if (!(type instanceof StringLiteral literal)) {
+            throw new IllegalArgumentException(
+                    where + " must be a compile-time string literal");
+        }
+        return literal.value();
     }
 
     private Type channelElementType(Type channel, String where) {
@@ -4070,9 +4416,7 @@ public final class TypeChecker {
                                                   Env parent,
                                                   Set<String> generics,
                                                   Type self) {
-        if ((!lambda.critical() && (currentClassOwner == null
-                || !currentClassOwner.serial())) || lambda.parameters().size() != 1
-                || lambda.nonLexical()) {
+        if (lambda.parameters().size() != 1 || lambda.nonLexical()) {
             throw new IllegalArgumentException(
                     "sealed actor state requires one lexical critical state parameter");
         }
@@ -4085,28 +4429,38 @@ public final class TypeChecker {
         callbackEnv.define(parameter.name(), declared,
                 parameter.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         defineImplicitArguments(callbackEnv, List.of(declared));
-        if (lambda.expressionBody() != null) {
-            Type result = typeOf(lambda.expressionBody(), callbackEnv, generics, self);
+        if (!(schemaType instanceof Record stateSchema)) {
+            throw new IllegalArgumentException(
+                    "actor state callback requires a statically known record schema");
+        }
+        scalarStateTyping.push(new ScalarStateTyping(
+                parameter.name(), stateSchema, lambda.criticalMode()));
+        try {
+            if (lambda.expressionBody() != null) {
+                Type result = typeOf(lambda.expressionBody(), callbackEnv, generics, self);
+                if (result == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "critical state callback result type must be statically known");
+                }
+                return result;
+            }
+            if (lambda.blockBody() == null || lambda.blockBody().isEmpty()) {
+                return Primitive.VOID;
+            }
+            Ast.Stmt last = lambda.blockBody().getLast();
+            if (!(last instanceof Ast.ReturnStmt returned)) {
+                return Primitive.VOID;
+            }
+            if (returned.value() == null) return Primitive.VOID;
+            Type result = typeOf(returned.value(), callbackEnv, generics, self);
             if (result == Unknown.INSTANCE) {
                 throw new IllegalArgumentException(
-                        "critical state callback result type must be statically known");
+                        "critical state callback return type must be statically known");
             }
             return result;
+        } finally {
+            scalarStateTyping.pop();
         }
-        if (lambda.blockBody() == null || lambda.blockBody().isEmpty()) {
-            return Primitive.VOID;
-        }
-        Ast.Stmt last = lambda.blockBody().getLast();
-        if (!(last instanceof Ast.ReturnStmt returned)) {
-            return Primitive.VOID;
-        }
-        if (returned.value() == null) return Primitive.VOID;
-        Type result = typeOf(returned.value(), callbackEnv, generics, self);
-        if (result == Unknown.INSTANCE) {
-            throw new IllegalArgumentException(
-                    "critical state callback return type must be statically known");
-        }
-        return result;
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
@@ -4143,6 +4497,16 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         if (nonLexical) currentClassOwner = null;
+        boolean pushedScalarStateTyping = false;
+        if (allowCriticalStateCallback
+                && !lambda.parameters().isEmpty()
+                && expected.parameters().getFirst() instanceof Record stateSchema) {
+            scalarStateTyping.push(new ScalarStateTyping(
+                    lambda.parameters().getFirst().name(),
+                    stateSchema,
+                    lambda.criticalMode()));
+            pushedScalarStateTyping = true;
+        }
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4156,6 +4520,7 @@ public final class TypeChecker {
                 checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
             }
         } finally {
+            if (pushedScalarStateTyping) scalarStateTyping.pop();
             currentClassOwner = previousClassOwner;
         }
         if (lambda.blockBody() != null
@@ -7237,7 +7602,45 @@ public final class TypeChecker {
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
     }
 
+    private void rejectMlCapabilityStorage(Type type, String where) {
+        if (containsMlScalarCapability(type)) {
+            throw new IllegalArgumentException(
+                    where + " cannot store a compiler-issued actor scalar snapshot/publication capability");
+        }
+    }
+
+    private boolean containsMlScalarCapability(Type type) {
+        if (type instanceof Named named) {
+            if (named.name().equals("$ActorScalarSnapshot")
+                    || named.name().equals("$ActorScalarPublication")) {
+                return true;
+            }
+            return named.arguments().stream().anyMatch(this::containsMlScalarCapability);
+        }
+        if (type instanceof Borrow borrow) return containsMlScalarCapability(borrow.target());
+        if (type instanceof SelfType selfType) return containsMlScalarCapability(selfType.bound());
+        if (type instanceof ListType list) return containsMlScalarCapability(list.element());
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(this::containsMlScalarCapability);
+        }
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(this::containsMlScalarCapability);
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(this::containsMlScalarCapability);
+        }
+        if (type instanceof Function function) {
+            return function.parameters().stream().anyMatch(this::containsMlScalarCapability)
+                    || containsMlScalarCapability(function.result());
+        }
+        return false;
+    }
+
     private boolean assignable(Type actual, Type expected) {
+        if (containsMlScalarCapability(actual)
+                || containsMlScalarCapability(expected)) {
+            return actual.equals(expected);
+        }
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
@@ -7598,6 +8001,11 @@ public final class TypeChecker {
                 Type type,
                 Ast.BindingKind kind,
                 Set<String> uninitializedFields) {
+            if (ML_SCALAR_INTRINSICS.contains(name)) {
+                throw new IllegalArgumentException(
+                        "binding '" + name
+                                + "' is reserved by the sealed actor scalar publication API");
+            }
             if (bindings.putIfAbsent(name, new Binding(type, kind, uninitializedFields)) != null) {
                 throw new IllegalArgumentException("duplicate binding '" + name + "'");
             }

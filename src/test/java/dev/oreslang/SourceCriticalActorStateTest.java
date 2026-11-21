@@ -17,8 +17,8 @@ final class SourceCriticalActorStateTest {
                     count: int = 0;
                 }
 
-                pub increment(): int using state.read, state.write {
-                    return self.handle_state(critical |s| -> {
+                pub increment(): int with state.read, state.write {
+                    return self.handle_state(critical write |s| -> {
                         s.count = s.count + 1;
                         return s.count;
                     });

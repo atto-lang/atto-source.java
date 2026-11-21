@@ -88,23 +88,27 @@ final class SourceLoopSoftPreemptionTest {
             throws Exception {
         String output = run("""
                 define actor Worker as
-                  let int count;
+                  state { count: int = 0; }
 
-                  on_start(): void {
-                    self.count = 0;
+                  tick(): void with state.read, state.write {
+                    using state.write(critical |s| -> { s.count = s.count + 1; });
                     return;
+                  }
+
+                  count(): int with state.read {
+                    return using state.read(|s| -> s.count);
                   }
 
                   receive(ActorMail<String> mail): void {
                     if mail.value == "first"; do
                       for (let i = 0; i < 4000; i = i + 1) do
-                        self.count = self.count + 1;
+                        self.tick();
                       done
-                      self.send(self.count);
+                      self.send(self.count());
                       return;
                     fi
                     if mail.value == "second"; do
-                      self.send(self.count + 1);
+                      self.send(self.count() + 1);
                       self.end();
                     fi
                     return;

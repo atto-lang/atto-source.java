@@ -969,20 +969,32 @@ public final class Ast {
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
-    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical, boolean critical) implements Expr {
+    /** Critical admission mode; read/write permission is separate from using. */
+    public enum CriticalMode { NONE, EXCLUSIVE, READ, WRITE }
+
+    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical, CriticalMode criticalMode) implements Expr {
+        public boolean critical() { return criticalMode != CriticalMode.NONE; }
+        public boolean explicitStateMode() {
+            return criticalMode == CriticalMode.READ || criticalMode == CriticalMode.WRITE;
+        }
         public LambdaExpr {
             parameters = List.copyOf(parameters);
+            java.util.Objects.requireNonNull(criticalMode, "critical mode");
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
             if ((expressionBody == null) == (blockBody == null)) {
                 throw new IllegalArgumentException(
                         "lambda requires exactly one expression body or block body");
             }
         }
+        public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical, boolean critical) {
+            this(parameters, expressionBody, blockBody, nonLexical,
+                    critical ? CriticalMode.EXCLUSIVE : CriticalMode.NONE);
+        }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) {
-            this(parameters, expressionBody, blockBody, nonLexical, false);
+            this(parameters, expressionBody, blockBody, nonLexical, CriticalMode.NONE);
         }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
-            this(parameters, expressionBody, blockBody, false, false);
+            this(parameters, expressionBody, blockBody, false, CriticalMode.NONE);
         }
     }
 }

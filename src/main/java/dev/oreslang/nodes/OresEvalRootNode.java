@@ -3879,6 +3879,30 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (call.callee() instanceof Ast.NameExpr name
+                    && isMlScalarIntrinsicName(name.name())
+                    && env.lookup(name.name()) == Env.MISSING
+                    && !hasFunctionFamily(name.name())) {
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                                return;
+                            }
+                            try {
+                                continuation.accept(
+                                        t,
+                                        applyMlScalarIntrinsic(name.name(), values),
+                                        null);
+                            } catch (RuntimeException | Error intrinsicFailure) {
+                                continuation.accept(t, null, intrinsicFailure);
+                            }
+                        });
+                return;
+            }
+            if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
                 if (direct != null) {
@@ -5356,10 +5380,10 @@ public final class OresEvalRootNode extends RootNode {
             if (call.typeArgumentsPresent()
                     || call.arguments().size() != 1
                     || !(call.arguments().getFirst() instanceof Ast.LambdaExpr callback)
-                    || (!callback.critical() && !actor.klass.serial()) || callback.nonLexical()
+                    || callback.nonLexical()
                     || callback.parameters().size() != 1) {
                 throw new IllegalArgumentException(
-                        "critical handle_state expects exactly one inline lexical critical callback");
+                        "handle_state requires one inline lexical state callback (read by default; critical for write)");
             }
             Set<Object> seen = java.util.Collections.newSetFromMap(
                     new IdentityHashMap<>());
@@ -5371,7 +5395,9 @@ public final class OresEvalRootNode extends RootNode {
                 throw new UnsupportedOperationException(
                         "critical handle_state await/select requires resumable state-loan lowering");
             }
-            return invokableInvocation(ignored -> actor.actorState.critical(access -> {
+            return invokableInvocation(ignored -> actor.actorState.critical(
+                    callback.criticalMode() == Ast.CriticalMode.WRITE
+                            || callback.criticalMode() == Ast.CriticalMode.EXCLUSIVE, access -> {
                 Env local = new Env(env);
                 local.define(callback.parameters().getFirst().name(), access, Ast.BindingKind.VAL);
                 try {
@@ -5397,6 +5423,15 @@ public final class OresEvalRootNode extends RootNode {
                     && env.lookup("self") instanceof OresObject actor
                     && actor.actorState != null) {
                 return criticalStateInvocation(call, stateCall, env);
+            }
+            if (call.callee() instanceof Ast.NameExpr directName
+                    && isMlScalarIntrinsicName(directName.name())
+                    && env.lookup(directName.name()) == Env.MISSING
+                    && !hasFunctionFamily(directName.name())) {
+                List<Object> args = evaluateArguments(call.arguments(), env);
+                return invokableInvocation(
+                        ignored -> applyMlScalarIntrinsic(directName.name(), args),
+                        List.of());
             }
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
@@ -5578,6 +5613,136 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(values);
         }
 
+        private static boolean isMlScalarIntrinsicName(String name) {
+            return name.equals("state_snapshot")
+                    || name.equals("snapshot_int")
+                    || name.equals("snapshot_bool")
+                    || name.equals("snapshot_string")
+                    || name.equals("snapshot_version")
+                    || name.equals("snapshot_revision")
+                    || name.equals("prepare_scalar_publication")
+                    || name.equals("publish_scalar_publication");
+        }
+
+        private Object applyMlScalarIntrinsic(
+                String name,
+                List<Object> args) {
+            return switch (name) {
+                case "state_snapshot" -> {
+                    if (args.size() < 3
+                            || !(args.getFirst()
+                                    instanceof dev.oreslang.runtime.SealedActorState.Access access)
+                            || !(args.get(1) instanceof String versionField)) {
+                        throw new IllegalArgumentException(
+                                "state_snapshot expects active state loan, version field, and scalar fields");
+                    }
+                    String[] fields = new String[args.size() - 2];
+                    for (int i = 2; i < args.size(); i++) {
+                        if (!(args.get(i) instanceof String field)) {
+                            throw new IllegalArgumentException(
+                                    "state_snapshot field names must be strings");
+                        }
+                        fields[i - 2] = field;
+                    }
+                    yield access.snapshotScalars(versionField, fields);
+                }
+                case "snapshot_int" -> {
+                    requireTwo(args, "snapshot_int");
+                    var snapshot = requireScalarSnapshot(args.getFirst(), "snapshot_int");
+                    String field = requireString(args.get(1), "snapshot_int field");
+                    Object value = snapshot.scalar(field);
+                    if (!(value instanceof Byte
+                            || value instanceof Short
+                            || value instanceof Integer
+                            || value instanceof Long)) {
+                        throw new IllegalArgumentException(
+                                "snapshot_int field '" + field + "' is not int");
+                    }
+                    yield ((Number) value).longValue();
+                }
+                case "snapshot_bool" -> {
+                    requireTwo(args, "snapshot_bool");
+                    var snapshot = requireScalarSnapshot(args.getFirst(), "snapshot_bool");
+                    String field = requireString(args.get(1), "snapshot_bool field");
+                    Object value = snapshot.scalar(field);
+                    if (!(value instanceof Boolean)) {
+                        throw new IllegalArgumentException(
+                                "snapshot_bool field '" + field + "' is not bool");
+                    }
+                    yield value;
+                }
+                case "snapshot_string" -> {
+                    requireTwo(args, "snapshot_string");
+                    var snapshot = requireScalarSnapshot(args.getFirst(), "snapshot_string");
+                    String field = requireString(args.get(1), "snapshot_string field");
+                    Object value = snapshot.scalar(field);
+                    if (!(value instanceof String)) {
+                        throw new IllegalArgumentException(
+                                "snapshot_string field '" + field + "' is not string");
+                    }
+                    yield value;
+                }
+                case "snapshot_version" -> {
+                    requireOne(args, "snapshot_version");
+                    yield requireScalarSnapshot(args.getFirst(), "snapshot_version").version();
+                }
+                case "snapshot_revision" -> {
+                    requireOne(args, "snapshot_revision");
+                    yield requireScalarSnapshot(args.getFirst(), "snapshot_revision").revision();
+                }
+                case "prepare_scalar_publication" -> {
+                    if (args.size() < 3 || (args.size() - 1) % 2 != 0) {
+                        throw new IllegalArgumentException(
+                                "prepare_scalar_publication expects snapshot followed by field/value pairs");
+                    }
+                    var snapshot =
+                            requireScalarSnapshot(
+                                    args.getFirst(),
+                                    "prepare_scalar_publication");
+                    LinkedHashMap<String, Object> replacements =
+                            new LinkedHashMap<>();
+                    for (int i = 1; i < args.size(); i += 2) {
+                        String field =
+                                requireString(
+                                        args.get(i),
+                                        "prepare_scalar_publication field");
+                        if (replacements.putIfAbsent(
+                                field, args.get(i + 1)) != null) {
+                            throw new IllegalArgumentException(
+                                    "duplicate scalar publication field '" + field + "'");
+                        }
+                    }
+                    yield snapshot.preparePublication(replacements);
+                }
+                case "publish_scalar_publication" -> {
+                    requireTwo(args, "publish_scalar_publication");
+                    if (!(args.getFirst()
+                            instanceof dev.oreslang.runtime.SealedActorState.Access access)) {
+                        throw new IllegalArgumentException(
+                                "publish_scalar_publication requires active state loan");
+                    }
+                    if (!(args.get(1)
+                            instanceof dev.oreslang.runtime.SealedActorState.ScalarPublication publication)) {
+                        throw new IllegalArgumentException(
+                                "publish_scalar_publication requires compiler-issued publication");
+                    }
+                    yield access.publishScalars(publication);
+                }
+                default -> throw new IllegalArgumentException(
+                        "unknown sealed ML scalar intrinsic " + name);
+            };
+        }
+
+        private static dev.oreslang.runtime.SealedActorState.ScalarSnapshot
+                requireScalarSnapshot(Object value, String where) {
+            if (!(value
+                    instanceof dev.oreslang.runtime.SealedActorState.ScalarSnapshot snapshot)) {
+                throw new IllegalArgumentException(
+                        where + " requires compiler-issued scalar snapshot");
+            }
+            return snapshot;
+        }
+
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
             return booleanIntrinsicName(call, env) != null;
         }
@@ -5682,6 +5847,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object applyRuntimeOwnership(String operation, Object value) {
+            if (isMlScalarCapabilityValue(value)) {
+                throw new SecurityException(
+                        "rt " + operation
+                                + " cannot observe or transfer compiler-issued actor scalar capabilities");
+            }
             return switch (operation) {
                 // Borrow/take/share alter compiler ownership state, not the JVM handle.
                 case "borrow", "take", "share" -> value;
@@ -6541,6 +6711,14 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "ready" -> actorRef.ready();
                     case "done" -> actorRef.done();
+                    case "get_ready" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.get_ready");
+                        return actorRef.ready();
+                    };
+                    case "get_done" -> (Invokable) args -> {
+                        requireZero(args, "ActorRef.get_done");
+                        return actorRef.done();
+                    };
                     case "outputs" -> actorRef.outputs();
                     case "id" -> actorRef.id();
                     case "kind" -> actorRef.kind();
@@ -8046,6 +8224,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean identityEquals(Object left, Object right) {
+            rejectMlScalarCapabilityComparison(left, right, "identity comparison");
             if (left == right) return true;
             if (left == null || right == null) return false;
 
@@ -8070,6 +8249,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
+            rejectMlScalarCapabilityComparison(left, right, "equality comparison");
             if (left == right) return true;
             if (left == null || right == null) return false;
 
@@ -8474,7 +8654,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }
-        private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
+        private String display(Object value) {
+            rejectMlScalarCapabilityValue(value, "print");
+            return value instanceof Complex c ? c.toString() : String.valueOf(value);
+        }
     }
 
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
@@ -9072,6 +9255,7 @@ public final class OresEvalRootNode extends RootNode {
     private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
         requireOne(args, operation);
+        rejectMlScalarCapabilityValue(args.getFirst(), operation);
         String value = String.valueOf(args.getFirst());
         long started = dev.oreslang.runtime.CorePerf.start();
         try {
@@ -9095,7 +9279,10 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object log(List<Object> args){
             context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
-            for(Object arg:args)context.output().print(String.valueOf(arg));
+            for(Object arg:args){
+                rejectMlScalarCapabilityValue(arg,"stdio.stdout.log");
+                context.output().print(String.valueOf(arg));
+            }
             context.output().println();
             context.output().flush();
             return null;
@@ -9149,6 +9336,90 @@ public final class OresEvalRootNode extends RootNode {
         if(value instanceof Object[] array)return new ArrayList<>(java.util.Arrays.asList(array));
         throw new IllegalArgumentException(name+" requires an array/list/tuple value");
     }
+    private static boolean isMlScalarCapabilityValue(Object value) {
+        return containsMlScalarCapabilityValue(
+                value,
+                java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<>()));
+    }
+
+    private static boolean containsMlScalarCapabilityValue(
+            Object value,
+            Set<Object> seen) {
+        if (value instanceof dev.oreslang.runtime.SealedActorState.ScalarSnapshot
+                || value instanceof dev.oreslang.runtime.SealedActorState.ScalarPublication) {
+            return true;
+        }
+        if (value == null
+                || value instanceof String
+                || value instanceof Number
+                || value instanceof Boolean
+                || value instanceof Character
+                || value instanceof Enum<?>) {
+            return false;
+        }
+        if (!seen.add(value)) return false;
+
+        if (value instanceof OptionValue option) {
+            return option.present()
+                    && containsMlScalarCapabilityValue(option.value(), seen);
+        }
+        if (value instanceof ResultValue result) {
+            return containsMlScalarCapabilityValue(result.value(), seen);
+        }
+        if (value instanceof GeneratorRuntime.Step<?> step) {
+            return !step.done()
+                    && containsMlScalarCapabilityValue(step.value(), seen);
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                if (containsMlScalarCapabilityValue(item, seen)) return true;
+            }
+            return false;
+        }
+        if (value instanceof Object[] array) {
+            for (Object item : array) {
+                if (containsMlScalarCapabilityValue(item, seen)) return true;
+            }
+            return false;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (containsMlScalarCapabilityValue(entry.getKey(), seen)
+                        || containsMlScalarCapabilityValue(entry.getValue(), seen)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (value instanceof OresObject object) {
+            for (Object field : object.fields.values()) {
+                if (field != UNINITIALIZED_FIELD
+                        && containsMlScalarCapabilityValue(field, seen)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static void rejectMlScalarCapabilityValue(Object value, String operation) {
+        if (isMlScalarCapabilityValue(value)) {
+            throw new SecurityException(
+                    operation + " cannot observe compiler-issued actor scalar capabilities");
+        }
+    }
+
+    private static void rejectMlScalarCapabilityComparison(
+            Object left,
+            Object right,
+            String operation) {
+        if (isMlScalarCapabilityValue(left) || isMlScalarCapabilityValue(right)) {
+            throw new SecurityException(
+                    operation + " cannot observe compiler-issued actor scalar capabilities");
+        }
+    }
+
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
     private static void requireTwo(List<Object> args,String name){if(args.size()!=2)throw new IllegalArgumentException(name+" expects two arguments");}

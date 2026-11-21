@@ -14,6 +14,16 @@ import java.util.Set;
  * actor's ordinary member namespace or to an escaped closure/argument.
  */
 public final class ActorStateContract {
+    private static final Set<String> ML_SCALAR_INTRINSICS = Set.of(
+            "state_snapshot",
+            "snapshot_int",
+            "snapshot_bool",
+            "snapshot_string",
+            "snapshot_version",
+            "snapshot_revision",
+            "prepare_scalar_publication",
+            "publish_scalar_publication");
+
     private ActorStateContract() { }
 
     public static boolean isStateField(Ast.FieldDecl field) {
@@ -59,49 +69,90 @@ public final class ActorStateContract {
                     + "ownership is verified; use from/implements interfaces");
         }
         Ast.FieldDecl state = stateField(klass);
-        if (state == null) {
-            // Legacy scalar actor fields are not the one-state aggregate
-            // contract. Serial actors with no storage are valid, but serial
-            // actors with storage must declare precisely one state schema.
-            if (klass.serial() && !klass.fields().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "serial actor '" + klass.name()
-                        + "' must use one state { ... } aggregate; legacy fields are forbidden");
-            }
-            return;
-        } // migration: non-serial legacy actor fields retain old behavior
-        if (klass.fields().size() != 1) {
+        // Actors without state are legal, but their methods must still be
+        // checked: an early return here lets a state-less actor reference
+        // self.state or even define a counterfeit handle_state method.
+        if (state == null && !klass.fields().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name()
+                    + "' must use one state { ... } aggregate; legacy fields are forbidden");
+        }
+        if (state != null && klass.fields().size() != 1) {
             throw new IllegalArgumentException(
                     "actor '" + klass.name() + "' may declare only the state schema");
         }
-        Ast.TypeRef schema = keySchema(state);
-        if (!schema.isRecordType()) {
-            throw new IllegalArgumentException("actor state schema must declare typed keys");
-        }
-        Set<String> keys = schema.recordMembers().keySet();
-        // No continuation-bound alias may be smuggled into actor-state defaults.
-        if (state.initializer() instanceof Ast.ObjectExpr defaults) {
-            for (Ast.ObjectField def : defaults.fields()) {
-                if (!keys.contains(def.name())) {
-                    throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
+        // Null here intentionally means no state map, different from a
+        // declared map with zero keys. Both cases are still inspected.
+        Map<String, Ast.TypeRef> keys = null;
+        if (state != null) {
+            Ast.TypeRef schema = keySchema(state);
+            if (!schema.isRecordType()) {
+                throw new IllegalArgumentException("actor state schema must declare typed keys");
+            }
+            keys = schema.recordMembers();
+            // No continuation-bound alias may be smuggled into actor-state defaults.
+            if (state.initializer() instanceof Ast.ObjectExpr defaults) {
+                for (Ast.ObjectField def : defaults.fields()) {
+                    if (!keys.containsKey(def.name())) {
+                        throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
+                    }
+                    // A default initializer runs outside a proved actor-owned
+                    // loan. It cannot import an arbitrary heap reference into
+                    // the actor's sealed storage. Reference defaults need an
+                    // explicit verified fresh-allocation/move lowering.
+                    if (!isDetachedScalar(keys.get(def.name()))) {
+                        throw new IllegalArgumentException(
+                                "actor state reference default requires verified "
+                                + "actor-owned allocation or ownership transfer");
+                    }
+                    if (!isDetachedLiteralDefault(def.value())) {
+                        throw new IllegalArgumentException(
+                                "actor state default must be a detached scalar literal; "
+                                + "calls, external bindings and evaluated allocations "
+                                + "require verified actor-owned initialization lowering");
+                    }
                 }
             }
         }
         for (Ast.MethodDecl method : klass.methods()) {
+            for (Ast.Param parameter : method.parameters()) {
+                rejectReservedMlBinding(parameter.name(), klass.name() + "." + method.name());
+            }
             if (method.name().equals("handle_state")) {
                 throw new IllegalArgumentException("handle_state is a sealed actor intrinsic");
             }
             visit(method.body(), klass.name(), keys, null, false,
-                    klass.serial() && !method.isStatic());
+                    !method.isStatic(), Ast.CriticalMode.NONE);
         }
     }
 
-    private static void visit(Object node, String actor, Set<String> keys,
-                              String activeAccess, boolean nestedClosure, boolean serial) {
+    private static void visit(Object node, String actor, Map<String, Ast.TypeRef> keys,
+                              String activeAccess, boolean nestedClosure, boolean instanceMethod,
+                              Ast.CriticalMode accessMode) {
         if (node == null) return;
+        if (node instanceof Ast.BindingStmt binding) {
+            rejectReservedMlBinding(binding.name(), actor);
+        } else if (node instanceof Ast.DestructureBinding binding
+                && !binding.isDiscard()) {
+            rejectReservedMlBinding(binding.name(), actor);
+        } else if (node instanceof Ast.ForOfStmt loop) {
+            rejectReservedMlBinding(loop.bindingName(), actor);
+        } else if (node instanceof Ast.LambdaExpr lambda) {
+            for (Ast.Param parameter : lambda.parameters()) {
+                rejectReservedMlBinding(parameter.name(), actor);
+            }
+        }
         if (node instanceof Ast.CallExpr call
                 && call.callee() instanceof Ast.MemberExpr callee
                 && isSelf(callee.receiver()) && callee.member().equals("handle_state")) {
+            if (keys == null) {
+                throw new IllegalArgumentException(
+                        "actor '" + actor + "' has no state { ... } schema for handle_state");
+            }
+            if (!instanceMethod) {
+                throw new IllegalArgumentException(
+                        "static actor method cannot acquire an instance handle_state capability");
+            }
             if (nestedClosure) {
                 throw new IllegalArgumentException(
                         "deferred closure cannot acquire actor state without scheduler admission");
@@ -111,10 +162,17 @@ public final class ActorStateContract {
                     || lambda.parameters().size() != 1) {
                 throw new IllegalArgumentException("self.handle_state expects exactly one single-argument lambda");
             }
-            if (!lambda.critical() && !serial) {
-                throw new IllegalArgumentException(
-                        "non-serial self.handle_state requires a critical callback");
-            }
+            Ast.CriticalMode loanMode = switch (lambda.criticalMode()) {
+                case NONE, READ -> Ast.CriticalMode.READ;
+                case EXCLUSIVE, WRITE -> Ast.CriticalMode.WRITE;
+            };
+            // No nested state loan may reenter an already borrowed map,
+            // including read/read with a shadowed lambda parameter.
+            if (activeAccess != null)
+                throw new IllegalArgumentException("nested actor state loan is forbidden");
+            if (accessMode == Ast.CriticalMode.READ
+                    && loanMode == Ast.CriticalMode.WRITE)
+                throw new IllegalArgumentException("cannot upgrade an active read loan to write");
             if (lambda.nonLexical()) {
                 throw new IllegalArgumentException(
                         "critical handle_state callback must keep its lexical actor scope");
@@ -123,13 +181,251 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "outer actor state loan cannot be captured by nested handle_state");
             }
-            String variable = lambda.parameters().getFirst().name();
+            Ast.Param loanParameter = lambda.parameters().getFirst();
+            // The sealed intrinsic, not a user-specified lambda annotation,
+            // supplies the state capability type and its read/write mode.
+            // An explicit/structural/mutable parameter could counterfeit a
+            // wider view before the ownership checker synthesizes the loan.
+            if (loanParameter.structural() || loanParameter.mutable()
+                    || !loanParameter.type().name().equals("$infer$")
+                    || !loanParameter.type().arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "sealed actor state loan parameter must be untyped and "
+                        + "lexically inferred; use critical for exclusive write authority");
+            }
+            String variable = loanParameter.name();
             if (variable.equals("self")) {
                 throw new IllegalArgumentException("actor state access parameter cannot shadow self");
             }
-            visit(lambda.expressionBody(), actor, keys, variable, false, serial);
-            visit(lambda.blockBody(), actor, keys, variable, false, serial);
+            rejectReservedMlBinding(variable, actor + ".handle_state");
+            // A slim-arrow callback has an implicit return expression, not
+            // an Ast.ReturnStmt. Applying escape checks only to ReturnStmt
+            // silently exposes s.referenceField via |s| -> s.referenceField.
+            if (projectsReferenceState(lambda.expressionBody(), variable, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state reference projection cannot escape expression-bodied "
+                        + "state callback without verified detached snapshot lowering");
+            }
+            visit(lambda.expressionBody(), actor, keys, variable, false, instanceMethod, loanMode);
+            visit(lambda.blockBody(), actor, keys, variable, false, instanceMethod, loanMode);
             return;
+        }
+        // Two compiler-sealed ML intrinsics are the only calls allowed to
+        // receive the raw lexical state-loan parameter. They do not expose the
+        // loan itself: state_snapshot copies named detached scalar values into
+        // an issuer-bound capability, while publish_scalar_publication consumes
+        // a compiler-issued publication under the active WRITE loan. Keep this
+        // exception here, in the independent state-contract pass, instead of
+        // weakening the generic "loan name cannot be an argument" rule below.
+        if (activeAccess != null
+                && node instanceof Ast.CallExpr scalarIntrinsic
+                && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
+                && intrinsicName.name().equals("state_snapshot")) {
+            if (nestedClosure) {
+                throw new IllegalArgumentException(
+                        "state_snapshot cannot capture an actor state loan in a nested closure");
+            }
+            if (scalarIntrinsic.typeArgumentsPresent()
+                    || scalarIntrinsic.arguments().size() < 3
+                    || !(scalarIntrinsic.arguments().getFirst() instanceof Ast.NameExpr loan)
+                    || !loan.name().equals(activeAccess)) {
+                throw new IllegalArgumentException(
+                        "state_snapshot requires the exact active actor state loan, "
+                                + "a version field, and at least one scalar field");
+            }
+            for (int i = 1; i < scalarIntrinsic.arguments().size(); i++) {
+                Ast.Expr argument = scalarIntrinsic.arguments().get(i);
+                if (!(argument instanceof Ast.LiteralExpr literal)
+                        || !(literal.value() instanceof String)) {
+                    throw new IllegalArgumentException(
+                            "state_snapshot field names must be compile-time string literals");
+                }
+            }
+            return;
+        }
+        if (activeAccess != null
+                && node instanceof Ast.CallExpr scalarIntrinsic
+                && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
+                && intrinsicName.name().equals("publish_scalar_publication")) {
+            if (nestedClosure) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication cannot capture an actor state loan in a nested closure");
+            }
+            if (scalarIntrinsic.typeArgumentsPresent()
+                    || scalarIntrinsic.arguments().size() != 2
+                    || !(scalarIntrinsic.arguments().getFirst() instanceof Ast.NameExpr loan)
+                    || !loan.name().equals(activeAccess)) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication requires the exact active actor state loan "
+                                + "and one compiler-issued publication");
+            }
+            if (accessMode != Ast.CriticalMode.WRITE) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication requires a critical write actor state loan");
+            }
+            // The publication expression may contain ordinary detached values,
+            // but it must not smuggle the live loan as part of its expression.
+            if (referencesAccess(scalarIntrinsic.arguments().get(1), activeAccess)) {
+                throw new IllegalArgumentException(
+                        "publish_scalar_publication publication argument cannot contain the live state loan");
+            }
+            visit(
+                    scalarIntrinsic.arguments().get(1),
+                    actor,
+                    keys,
+                    activeAccess,
+                    nestedClosure,
+                    instanceMethod,
+                    accessMode);
+            return;
+        }
+        if (activeAccess != null
+                && node instanceof Ast.CallExpr scalarIntrinsic
+                && scalarIntrinsic.callee() instanceof Ast.NameExpr intrinsicName
+                && intrinsicName.name().equals("prepare_scalar_publication")) {
+            throw new IllegalArgumentException(
+                    "prepare_scalar_publication must run after the actor state loan is released");
+        }
+
+        if (activeAccess != null
+                && (node instanceof Ast.AwaitExpr || node instanceof Ast.SelectStmt
+                    || node instanceof Ast.DynamicSelectExpr || node instanceof Ast.ChannelOpExpr
+                    || node instanceof Ast.YieldStmt
+                    || (node instanceof Ast.RuntimeCallExpr op
+                        && op.operation().equals("cooperate")))) {
+            throw new IllegalArgumentException(
+                    "actor state loan cannot cross await, select, or suspension");
+        }
+        // Both iterator forms can suspend between iterations. A live sealed
+        // state loan cannot survive that scheduler boundary, regardless of
+        // whether the loop body contains an explicit await expression.
+        if (activeAccess != null
+                && ((node instanceof Ast.ForOfStmt loop && loop.asyncIteration())
+                    || (node instanceof Ast.ForOfDestructureStmt destructure
+                        && destructure.asyncIteration()))) {
+            throw new IllegalArgumentException(
+                    "actor state loan cannot cross async iteration or suspension");
+        }
+        // A for-of binding can reify an iterator over an actor-owned object
+        // and expose its elements under a fresh local name. Subsequent escape
+        // checks cannot recover that provenance from the bound name, so do
+        // not admit a reference-valued state projection as the iterable until
+        // iterator/lifetime ownership has been verified.
+        if (activeAccess != null && keys != null) {
+            Ast.Expr iterable = null;
+            if (node instanceof Ast.ForOfStmt loop) {
+                iterable = loop.iterable();
+            } else if (node instanceof Ast.ForOfDestructureStmt loop) {
+                iterable = loop.iterable();
+            }
+            if (iterable != null && projectsReferenceState(iterable, activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state reference projection cannot enter for-of iterator "
+                        + "without verified ownership and lifetime lowering");
+            }
+        }
+        // Match arms and refinement predicates can introduce implicit local
+        // bindings for their subject. A reference-backed state projection
+        // would then be reachable under a fresh name whose actor provenance
+        // is not tracked by the current AST-only contract. Even a wildcard
+        // pattern may dispatch through unverified structural/match effects.
+        // Keep all three entry points fail-closed for state-owned references
+        // until typed pattern provenance and effect lowering are proved.
+        if (activeAccess != null && keys != null) {
+            Ast.Expr matched = null;
+            if (node instanceof Ast.MatchStmt match) {
+                matched = match.subject();
+            } else if (node instanceof Ast.TypeTestExpr typeTest) {
+                matched = typeTest.value();
+            } else if (node instanceof Ast.PatternTestExpr patternTest) {
+                matched = patternTest.value();
+            }
+            if (matched != null && projectsReferenceState(matched, activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state reference projection cannot enter match or "
+                        + "pattern/type binding without verified ownership provenance");
+            }
+        }
+        // Nested member/index accesses and calls can mutate or materialize
+        // references to an object reachable through s.key. No typed graph
+        // ownership or method-effect summaries exist for these projections
+        // yet. Unlike direct scalar reads/writes, all nested reference
+        // operations must fail closed, including through a parenthesized
+        // receiver or a call that returns a nested reference.
+        if (activeAccess != null && keys != null) {
+            Object receiver = null;
+            if (node instanceof Ast.MemberExpr member) {
+                receiver = member.receiver();
+            } else if (node instanceof Ast.IndexExpr index) {
+                receiver = index.receiver();
+            } else if (node instanceof Ast.CallExpr call) {
+                receiver = call.callee();
+            }
+            if (receiver != null && projectsReferenceState(receiver, activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "nested actor state reference access requires verified "
+                        + "ownership and method effects");
+            }
+        }
+        // A critical WRITE grant proves exclusion, not that the right-hand
+        // side belongs to this actor's heap. Assigning a host/other-actor Map,
+        // class instance or arbitrary reference into state creates a mutable
+        // cross-actor alias. Until a typed move/fresh-allocation proof exists,
+        // reject replacement of reference-valued state fields entirely.
+        if (activeAccess != null && keys != null
+                && node instanceof Ast.AssignExpr assignment
+                && isDirectStateMember(assignment.target(), activeAccess)) {
+            Ast.MemberExpr member = (Ast.MemberExpr) assignment.target();
+            if (!isDetachedScalar(keys.get(member.member()))) {
+                throw new IllegalArgumentException(
+                        "actor state reference field replacement requires "
+                        + "verified actor-owned allocation or ownership transfer");
+            }
+        }
+        // A direct s.key read of an immutable scalar is a detached value,
+        // but a reference-valued projection aliases actor-owned heap storage.
+        // Until the compiler proves detached snapshots/linear transfers in
+        // both Java and LLVM, fail closed at every escape boundary.
+        if (activeAccess != null && keys != null) {
+            Object escaping = null;
+            if (node instanceof Ast.ReturnStmt ret) {
+                escaping = ret.value();
+            } else if (node instanceof Ast.BindingStmt binding) {
+                escaping = binding.initializer();
+            } else if (node instanceof Ast.DestructureStmt binding) {
+                escaping = binding.initializer();
+            } else if (node instanceof Ast.AssignExpr assign
+                    && !isDirectStateMember(assign.target(), activeAccess)) {
+                escaping = assign.value();
+            } else if (node instanceof Ast.CallExpr call) {
+                escaping = call.arguments();
+            } else if (node instanceof Ast.NewExpr created) {
+                // A constructor may retain its input in externally reachable
+                // storage even when its returned object is discarded.
+                escaping = created.arguments();
+            } else if (node instanceof Ast.RuntimeCallExpr runtime
+                    && !Set.of("borrow", "borrow_mut", "borrowMut", "take",
+                            "share", "copy").contains(runtime.operation())) {
+                // Unknown runtime intrinsics do not have a trusted effect or
+                // lifetime summary for references to actor-owned fields.
+                escaping = runtime.arguments();
+            }
+            if (escaping != null && projectsReferenceState(escaping, activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state reference projection cannot escape its lexical loan; "
+                        + "copy/snapshot lowering requires an explicit ownership proof");
+            }
+        }
+        // The state mode is a capability; using never upgrades read.
+        if (activeAccess != null && accessMode == Ast.CriticalMode.READ
+                && node instanceof Ast.AssignExpr assign
+                && referencesAccess(assign.target(), activeAccess)) {
+            throw new IllegalArgumentException("critical read cannot modify actor state");
+        }
+        if (activeAccess != null && accessMode == Ast.CriticalMode.READ
+                && node instanceof Ast.CallExpr call
+                && referencesAccess(call.callee(), activeAccess)) {
+            throw new IllegalArgumentException("critical read cannot call potentially mutating state methods");
         }
         if (node instanceof Ast.MemberExpr member
                 && isSelf(member.receiver()) && member.member().equals("state")) {
@@ -144,7 +440,7 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "actor state access capability cannot be captured by nested closures");
             }
-            if (!keys.contains(member.member())) {
+            if (!keys.containsKey(member.member())) {
                 throw new IllegalArgumentException("undeclared actor state key '" + member.member() + "'");
             }
             return; // scoped direct field operation, subject to normal type checking
@@ -163,19 +459,31 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "critical state callback may only appear inline in self.handle_state");
             }
-            visit(lambda.expressionBody(), actor, keys, activeAccess, true, serial);
-            visit(lambda.blockBody(), actor, keys, activeAccess, true, serial);
+            // A nested lambda parameter can shadow the enclosing state
+            // capability name. Its local references are not actor-state
+            // accesses; retaining activeAccess here rejects harmless local
+            // functions and obscures real capture diagnostics.
+            boolean shadowsLoan = activeAccess != null && lambda.parameters().stream()
+                    .anyMatch(parameter -> parameter.name().equals(activeAccess));
+            String nestedAccess = shadowsLoan ? null : activeAccess;
+            visit(lambda.expressionBody(), actor, keys, nestedAccess, true, instanceMethod, accessMode);
+            visit(lambda.blockBody(), actor, keys, nestedAccess, true, instanceMethod, accessMode);
             return;
         }
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
                 && (op.operation().equals("borrow") || op.operation().equals("borrow_mut")
-                    || op.operation().equals("borrowMut"))
+                    || op.operation().equals("borrowMut") || op.operation().equals("take")
+                    || op.operation().equals("share")
+                    || op.operation().equals("copy"))
                 && referencesAccess(op.arguments(), activeAccess)) {
+            // State-backed borrow/move/share/copy are not detached snapshots
+            // without typed ownership proof for the entire value graph.
+            // Reject even rt copy until both backends prove safe lowering.
             throw new IllegalArgumentException(
-                    "actor state-backed borrow requires continuation-aware loan lowering");
+                    "actor state-backed borrow/take/share/copy cannot escape its lexical loan");
         }
         if (node instanceof Iterable<?> items) {
-            for (Object item : items) visit(item, actor, keys, activeAccess, nestedClosure, serial);
+            for (Object item : items) visit(item, actor, keys, activeAccess, nestedClosure, instanceMethod, accessMode);
             return;
         }
         if (node instanceof java.lang.Record record
@@ -183,12 +491,100 @@ public final class ActorStateContract {
             for (RecordComponent component : record.getClass().getRecordComponents()) {
                 try {
                     visit(component.getAccessor().invoke(record),
-                            actor, keys, activeAccess, nestedClosure, serial);
+                            actor, keys, activeAccess, nestedClosure, instanceMethod, accessMode);
                 } catch (ReflectiveOperationException failure) {
                     throw new IllegalStateException("failed to validate actor state AST", failure);
                 }
             }
         }
+    }
+
+    private static void rejectReservedMlBinding(
+            String name,
+            String context) {
+        if (ML_SCALAR_INTRINSICS.contains(name)) {
+            throw new IllegalArgumentException(
+                    context + " binds reserved sealed ML intrinsic name '" + name + "'");
+        }
+    }
+
+    /**
+     * Actor defaults currently enter the scalar-only sealed storage at actor
+     * construction. Only context-free, immutable scalar literals have a
+     * checked lowering; even a well-typed function call may allocate, observe
+     * a foreign heap or run arbitrary code before actor ownership is bound.
+     */
+    private static boolean isDetachedLiteralDefault(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            return value instanceof String || value instanceof Boolean
+                    || value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Float || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal
+                    || value instanceof Character;
+        }
+        if (expression instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("-") || unary.operator().equals("+"))
+                && unary.operand() instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            return value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Float || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal;
+        }
+        return false;
+    }
+
+    private static boolean isDirectStateMember(Object node, String access) {
+        return node instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr name
+                && name.name().equals(access);
+    }
+
+    private static boolean isDetachedScalar(Ast.TypeRef type) {
+        if (type == null || !type.arguments().isEmpty()) return false;
+        // Immutable, by-value primitive representations only. A structural
+        // record, class, map, array, Option or user-defined type is not
+        // automatically a detached snapshot.
+        return Set.of("int", "i8", "i16", "i32", "i64", "u8", "u16",
+                "u32", "u64", "float", "double", "f32", "f64", "bool",
+                "byte", "short", "long", "char", "string", "String")
+                .contains(type.name());
+    }
+
+    private static boolean projectsReferenceState(Object node, String access,
+                                                    Map<String, Ast.TypeRef> keys) {
+        if (node == null) return false;
+        if (node instanceof Ast.MemberExpr member && isDirectStateMember(member, access)) {
+            return !isDetachedScalar(keys.get(member.member()));
+        }
+        if (node instanceof Ast.LambdaExpr lambda) {
+            // Shadowing does not grant access to the outer loan. An ordinary
+            // closure still undergoes the existing nestedClosure check.
+            if (lambda.parameters().stream().anyMatch(p -> p.name().equals(access))) return false;
+        }
+        if (node instanceof Iterable<?> items) {
+            for (Object child : items) {
+                if (projectsReferenceState(child, access, keys)) return true;
+            }
+            return false;
+        }
+        if (node instanceof java.lang.Record record
+                && node.getClass().getName().startsWith("dev.oreslang.ast.")) {
+            for (RecordComponent component : record.getClass().getRecordComponents()) {
+                try {
+                    if (projectsReferenceState(component.getAccessor().invoke(record),
+                            access, keys)) return true;
+                } catch (ReflectiveOperationException failure) {
+                    throw new IllegalStateException(
+                            "failed to check actor state projection for escaping references", failure);
+                }
+            }
+        }
+        return false;
     }
 
     private static boolean referencesAccess(Object node, String access) {

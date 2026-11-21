@@ -794,14 +794,22 @@ public final class Parser {
     private List<Ast.Annotation> parseSignatureEffects(List<Ast.Annotation> annotations) {
         List<Ast.Annotation> result = new ArrayList<>(annotations);
         if (match(USING)) {
+            throw error(previous(), "using acquires scoped capabilities; use 'with' for function effect declarations");
+        }
+        if (match(WITH)) {
             List<String> names = new ArrayList<>();
             do {
-                String name = consume(IDENT, "expected function effect after using").lexeme();
+                // 'block' is also a statement keyword; it remains a valid
+                // effect-row member in 'with io, block'.
+                if (!check(IDENT) && !check(BLOCK)) {
+                    throw error(peek(), "expected function effect after with");
+                }
+                String name = advance().lexeme();
                 if (match(DOT)) name += "." + consume(IDENT, "expected effect member after '.'").lexeme();
                 names.add(name);
             } while (match(COMMA));
             dev.oreslang.types.FunctionEffects.ofNames(names);
-            result.add(new Ast.Annotation("$using$", names.stream()
+            result.add(new Ast.Annotation("$with$", names.stream()
                     .map(Ast.TypeRef::simple).toList()));
         }
         if (matchContextualIdentifier("requires")) {
@@ -3082,6 +3090,35 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        // 'using' acquires a lexical capability; it never declares an
+        // effect row. Desugar scoped actor state into the one sealed
+        // handle_state intrinsic without introducing a guest-callable API.
+        if (match(USING)) {
+            String namespace = consume(IDENT, "using requires a scoped capability").lexeme();
+            if (!namespace.equals("state"))
+                throw error(previous(), "unsupported using capability namespace '" + namespace + "'");
+            consume(DOT, "using state requires .read or .write");
+            String capability = consume(IDENT, "using state requires read or write").lexeme();
+            if (!capability.equals("read") && !capability.equals("write"))
+                throw error(previous(), "unknown using state capability '" + capability + "'");
+            consume(LPAREN, "using state capability requires a callback");
+            Ast.Expr parameter = parseExpression();
+            consume(RPAREN, "using state callback requires closing ')'");
+            if (!(parameter instanceof Ast.LambdaExpr lambda))
+                throw error(previous(), "using state requires one inline lexical callback");
+            if (lambda.nonLexical())
+                throw error(previous(), "using state callback must be lexical");
+            if (capability.equals("read")
+                    && lambda.criticalMode() != Ast.CriticalMode.NONE
+                    && lambda.criticalMode() != Ast.CriticalMode.READ)
+                throw error(previous(), "using state.read cannot request write authority");
+            if (capability.equals("write")
+                    && lambda.criticalMode() != Ast.CriticalMode.EXCLUSIVE
+                    && lambda.criticalMode() != Ast.CriticalMode.WRITE)
+                throw error(previous(), "using state.write requires a critical callback");
+            return new Ast.CallExpr(new Ast.MemberExpr(
+                    new Ast.NameExpr("self"), "handle_state"), List.of(lambda));
+        }
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
@@ -3158,9 +3195,18 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         if (match(CRITICAL)) {
-            if (check(PIPE)) return parsePipeLambda(false, true);
-            if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, true);
-            throw error(previous(), "'critical' in expression position must prefix a callback lambda");
+            Ast.CriticalMode mode = Ast.CriticalMode.EXCLUSIVE;
+            // 'read' and 'write' are contextual identifiers, not reserved globally.
+            if (check(IDENT) && peek().lexeme().equals("read")) {
+                advance();
+                mode = Ast.CriticalMode.READ;
+            } else if (check(IDENT) && peek().lexeme().equals("write")) {
+                advance();
+                mode = Ast.CriticalMode.WRITE;
+            }
+            if (check(PIPE)) return parsePipeLambda(false, mode);
+            if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, mode);
+            throw error(previous(), "critical must prefix a lambda; handle_state needs critical read or critical write");
         }
         if (match(NLEX)) {
             if (check(PIPE)) return parsePipeLambda(true);
@@ -3238,22 +3284,22 @@ public final class Parser {
     }
 
     private Ast.LambdaExpr parseLambda(boolean nonLexical) {
-        return parseLambda(nonLexical, false);
+        return parseLambda(nonLexical, Ast.CriticalMode.NONE);
     }
 
-    private Ast.LambdaExpr parseLambda(boolean nonLexical, boolean critical) {
+    private Ast.LambdaExpr parseLambda(boolean nonLexical, Ast.CriticalMode criticalMode) {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
-        return parseLambdaBody(params, nonLexical, critical);
+        return parseLambdaBody(params, nonLexical, criticalMode);
     }
 
     private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
-        return parsePipeLambda(nonLexical, false);
+        return parsePipeLambda(nonLexical, Ast.CriticalMode.NONE);
     }
 
-    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical, boolean critical) {
+    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical, Ast.CriticalMode criticalMode) {
         consume(PIPE, "expected '|'");
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
@@ -3271,18 +3317,18 @@ public final class Parser {
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
-        return parseLambdaBody(params, nonLexical, critical);
+        return parseLambdaBody(params, nonLexical, criticalMode);
     }
 
-    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical, boolean critical) {
+    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical, Ast.CriticalMode criticalMode) {
         // Only an immediate '{' denotes the statement-block form. Everything
         // else starts a normal expression body. This is intentionally lexical:
         // future prefix expressions such as `struct{...}{...}` must remain
         // expression bodies rather than being confused with a lambda block.
         if (check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, critical);
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, criticalMode);
         }
-        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical, critical);
+        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical, criticalMode);
     }
 
     private boolean looksLikeLambda() {
