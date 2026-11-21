@@ -219,16 +219,17 @@ final class ActorPhysicalRetirementRegistryTest {
                 "failed real descriptor close may not be silently reported as retirement");
     }
 
-    @Test void actualAsyncFileReadCallbackMustExitAfterStopBeforeActorDone()
+    @Test void rawAsyncFileCallbackReturnCannotCertifyProviderPhysicalExit()
             throws Exception {
         var file = java.nio.file.Files.createTempFile("ores-actor-physical-", ".bin");
         java.nio.file.Files.write(file, new byte[] { 9, 8, 7, 6 });
         var callbackEntered = new CountDownLatch(1);
-        var allowCallbackExit = new CountDownLatch(1);
+        var allowCallbackReturn = new CountDownLatch(1);
+        var callbackReturned = new CountDownLatch(1);
         var callbackFailure = new AtomicReference<Throwable>();
-        try (var runtime = new ActorRuntime();
-             var channel = java.nio.channels.AsynchronousFileChannel.open(
-                     file, java.nio.file.StandardOpenOption.READ)) {
+        var runtime = new ActorRuntime();
+        try (var channel = java.nio.channels.AsynchronousFileChannel.open(
+                file, java.nio.file.StandardOpenOption.READ)) {
             var actor = runtime.<String>spawnShared(() -> (message, context) -> { });
             runtime.registerActorPhysicalChannelFromDriver(
                     actor, channel, ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE);
@@ -237,37 +238,42 @@ final class ActorPhysicalRetirementRegistryTest {
                         private void drain() {
                             callbackEntered.countDown();
                             try {
-                                if (!allowCallbackExit.await(5, TimeUnit.SECONDS)) {
+                                if (!allowCallbackReturn.await(5, TimeUnit.SECONDS)) {
                                     callbackFailure.set(new IllegalStateException(
-                                            "native read callback exit was withheld"));
+                                            "native read callback return was withheld"));
                                 }
                             } catch (InterruptedException interrupted) {
                                 Thread.currentThread().interrupt();
                                 callbackFailure.set(interrupted);
+                            } finally {
+                                callbackReturned.countDown();
                             }
                         }
                         @Override public void completed(Integer n, Void ignored) { drain(); }
                         @Override public void failed(Throwable t, Void ignored) { drain(); }
                     };
-            var receipt = runtime.<Integer, Void>registerActorIoCompletionFromDriver(
+            var callback = runtime.<Integer, Void>registerActorIoCompletionFromDriver(
                     actor, ActorPhysicalRetirementRegistry.Kind.OTHER, delegate);
             var bytes = java.nio.ByteBuffer.allocate(4);
-            channel.read(bytes, 0L, null, receipt);
+            channel.read(bytes, 0L, null, callback);
             try {
                 assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
                 assertTrue(actor.cancel());
                 assertFalse(actor.done().isDone(),
-                        "Channel.close is not an in-flight read callback exit");
+                        "Channel.close is not an in-flight provider callback exit");
                 assertEquals(Integer.valueOf(1),
                         actor.pendingPhysicalRetirementsByKind().get("OTHER"));
-                assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS));
             } finally {
-                allowCallbackExit.countDown();
+                allowCallbackReturn.countDown();
             }
-            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(callbackReturned.await(3, TimeUnit.SECONDS));
             assertNull(callbackFailure.get());
-            assertFalse(channel.isOpen());
-            assertTrue(actor.pendingPhysicalRetirementsByKind().isEmpty());
+            assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS),
+                    "raw JDK CompletionHandler return has no portable provider-exit witness");
+            assertEquals(Integer.valueOf(1),
+                    actor.pendingPhysicalRetirementsByKind().get("OTHER"));
+            assertThrows(IllegalStateException.class, runtime::close,
+                    "without a driver-owned exit witness the actor must stay quarantined");
         } finally {
             java.nio.file.Files.deleteIfExists(file);
         }
@@ -759,6 +765,47 @@ final class ActorPhysicalRetirementRegistryTest {
             assertEquals(1, registry.snapshot().pending());
             assertThrows(IllegalStateException.class, registry::retireVerified);
         }
+    }
+
+    @Test void driverExitWitnessIsRequiredAfterSuccessfulDelegateReturn() {
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 76L, () -> { }, () -> { });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        var callback = new ActorPhysicalIoCallbackLease<Integer, Void>(
+                receipt, new java.nio.channels.CompletionHandler<>() {
+                    @Override public void completed(Integer value, Void ignored) { }
+                    @Override public void failed(Throwable failure, Void ignored) { }
+                });
+        registry.seal();
+
+        callback.completed(1, null);
+        assertEquals(1, registry.snapshot().pending(),
+                "delegate return alone cannot release the native provider loan");
+        assertFalse(registry.snapshot().retired());
+        assertTrue(callback.providerExited());
+        assertFalse(callback.providerExited(), "provider exit witness is one-shot");
+        assertEquals(0, registry.snapshot().pending());
+        registry.retireVerified();
+        assertTrue(registry.snapshot().retired());
+    }
+
+    @Test void earlyDriverExitWitnessQuarantinesInsteadOfGuessingProviderExit() {
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 761L, () -> { }, () -> { });
+        var receipt = registry.register(
+                ActorPhysicalRetirementRegistry.Kind.NATIVE_IO_OPERATION, false);
+        var callback = new ActorPhysicalIoCallbackLease<Integer, Void>(
+                receipt, new java.nio.channels.CompletionHandler<>() {
+                    @Override public void completed(Integer value, Void ignored) { }
+                    @Override public void failed(Throwable failure, Void ignored) { }
+                });
+        registry.seal();
+
+        var failure = assertThrows(IllegalStateException.class, callback::providerExited);
+        assertSame(failure, registry.snapshot().failure());
+        assertEquals(1, registry.snapshot().pending());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
     }
 
     @Test void malformedNullNativeFailureMustQuarantineAndNeverReachDelegate() {

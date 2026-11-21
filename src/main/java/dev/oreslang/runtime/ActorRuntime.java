@@ -1882,9 +1882,12 @@ public final class ActorRuntime implements AutoCloseable {
 
     /**
      * Trusted host driver completion handler. The driver registers BEFORE
-     * calling an NIO asynchronous read/write and passes this handler directly
-     * to the native operation. Actor DONE joins the callback's physical exit,
-     * independently of descriptor close and logical Future cancellation.
+     * calling an asynchronous read/write. completed()/failed() prove only the
+     * delegated Java callback returned; the driver MUST separately invoke
+     * ActorPhysicalIoCallbackLease.providerExited() from outside the enclosing
+     * provider/native callback invocation. Actor DONE joins that explicit
+     * physical-exit witness independently of descriptor close and logical
+     * Future cancellation.
      */
     <V, A> ActorPhysicalIoCallbackLease<V, A> registerActorIoCompletionFromDriver(
             ActorRef<?> owner,
@@ -7714,10 +7717,9 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
             }
-            // Under lifecycleLock no new resource can be registered after
-            // STOP. This closes the physical receipt registry permanently.
-            physicalRetirement.retireVerified();
-            finalized = true;
+            // All fallible resource teardown remains PRECOMMIT. Under
+            // lifecycleLock STOP has sealed new physical admission, but the
+            // registry must not publish retired until these releases finish.
             sourceScheduler = null;
             // Cleanup admission never outlives this actor incarnation.
             sourceTaskMailbox.close();
@@ -7743,6 +7745,13 @@ public final class ActorRuntime implements AutoCloseable {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
             }
+
+            // Terminal physical-retirement publication is the last operation
+            // in the fallible cleanup phase. During a registry finalization
+            // handoff this is only PREPARED here; the registry commits the
+            // retired bit after this entire handoff returns successfully.
+            physicalRetirement.retireVerified();
+            finalized = true;
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
             Throwable terminal = ref.terminationCause.get();
