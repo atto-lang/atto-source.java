@@ -4,7 +4,10 @@ on:
   pull_request:
     paths:
       - "src/main/java/dev/oreslang/runtime/ActorStateRwLoans.java"
+      - "src/main/java/dev/oreslang/runtime/ActorStateSupervisorLoans.java"
+      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
       - "src/test/java/dev/oreslang/runtime/ActorStateRwLoansTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorStateSupervisorLoansTest.java"
       - "docs/ACTOR_STATE_RW_ALLOCATION_BOUND_AUDIT.md"
       - ".github/workflows/actor-state-rw-ownership.yml"
   workflow_dispatch:
@@ -15,7 +18,7 @@ permissions:
 jobs:
   actor-state-rw-junit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout exact PR head without persisted credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -46,30 +49,42 @@ jobs:
           set -euo pipefail
           java -version
           mvn -B -ntp -Dores.runtime.carriers=java \
-            -Dtest=ActorStateRwLoansTest -DfailIfNoTests=true test
-      - name: Verify exact focused Surefire evidence (25+ real tests)
+            -Dtest=ActorStateRwLoansTest,ActorStateSupervisorLoansTest -DfailIfNoTests=true test
+      - name: Verify exact focused Surefire evidence (26 base and 13 integration tests)
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import xml.etree.ElementTree as ET
           from pathlib import Path
-          path = Path("target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateRwLoansTest.xml")
-          if not path.is_file():
-              raise SystemExit("FAIL: mandatory focused Surefire XML absent")
-          suite = ET.parse(path).getroot()
-          total = int(suite.attrib.get("tests", "0"))
-          failed = int(suite.attrib.get("failures", "0"))
-          errors = int(suite.attrib.get("errors", "0"))
-          skipped = int(suite.attrib.get("skipped", "0"))
-          if total < 25 or failed or errors or skipped:
-              raise SystemExit(f"FAIL: invalid focused JUnit receipt: tests={total} failed={failed} errors={errors} skipped={skipped}")
-          print(f"RW_JUNIT_EXECUTED tests={total} failed={failed} errors={errors} skipped={skipped}")
+          base = Path("target/surefire-reports")
+          cases = {
+              "ActorStateRwLoansTest": 26,
+              "ActorStateSupervisorLoansTest": 13,
+          }
+          for class_name, minimum in cases.items():
+              path = base / f"TEST-dev.oreslang.runtime.{class_name}.xml"
+              if not path.is_file():
+                  raise SystemExit(f"FAIL: mandatory Surefire XML absent: {path}")
+              suite = ET.parse(path).getroot()
+              total = int(suite.attrib.get("tests", "0"))
+              failed = int(suite.attrib.get("failures", "0"))
+              errors = int(suite.attrib.get("errors", "0"))
+              skipped = int(suite.attrib.get("skipped", "0"))
+              if total < minimum or failed or errors or skipped:
+                  raise SystemExit(
+                      f"FAIL: invalid {class_name} receipt: tests={total} "
+                      f"failed={failed} errors={errors} skipped={skipped}")
+              print(
+                  f"RW_JUNIT_EXECUTED class={class_name} tests={total} "
+                  f"failed={failed} errors={errors} skipped={skipped}")
           PY
       - name: Preserve machine-readable JUnit receipts for independent review
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: actor-state-rw-junit-receipts
-          path: target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateRwLoansTest.xml
+          path: |
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateRwLoansTest.xml
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateSupervisorLoansTest.xml
           if-no-files-found: warn
