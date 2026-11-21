@@ -10,6 +10,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.Set;
@@ -36,7 +37,10 @@ public final class SharedCodeRegistry {
     private static final SharedCodeRegistry PROCESS = new SharedCodeRegistry();
 
     private final Map<Key, Entry> images = new HashMap<>();
-    private final Set<Key> adversarialShareAllowlist = new HashSet<>();
+    // Authority tokens are plain, manager-owned objects, compared by identity.
+    // Two tenants with identical source/path must not grant or revoke each other.
+    private final Map<Object, Set<Key>> adversarialShareAllowlist = new IdentityHashMap<>();
+    private static final int MAX_APPROVALS_PER_AUTHORITY = 64;
 
     /** This registry is owned by the supervisor, never exposed to guest code. */
     public static SharedCodeRegistry process() {
@@ -44,11 +48,12 @@ public final class SharedCodeRegistry {
     }
 
     /**
-     * Trusted-supervisor admission for sharing an exact immutable image with
-     * adversarial actors. Every code unit/import is approved independently.
+     * Trusted supervisor approval for one manager's opaque authority token.
+     * An IsolatePolicy is only a value configuration, not a tenant identity.
      */
-    public synchronized void approveForAdversarialSharing(
-            IsolatePolicy supervisorPolicy, String codeUnitId, String sourceText) {
+    synchronized void approveForAdversarialSharing(
+            IsolatePolicy supervisorPolicy, Object authority, String codeUnitId, String sourceText) {
+        Objects.requireNonNull(authority, "authority");
         requireIdentity(codeUnitId, sourceText);
         Objects.requireNonNull(supervisorPolicy, "supervisorPolicy");
         if (supervisorPolicy.adversarial()) {
@@ -57,14 +62,26 @@ public final class SharedCodeRegistry {
         supervisorPolicy.require(
                 IsolatePolicy.Capability.HOT_CODE_LOAD,
                 "approve adversarial shared code");
+        Set<Key> approvals = adversarialShareAllowlist.get(authority);
+        Key key = new Key(codeUnitId, digest(sourceText));
+        if (approvals != null && approvals.contains(key)) return;
+        if (approvals != null && approvals.size() >= MAX_APPROVALS_PER_AUTHORITY) {
+            throw new IllegalStateException(
+                    "adversarial shared-code approval limit exceeded: "
+                            + MAX_APPROVALS_PER_AUTHORITY);
+        }
         CapabilityChecker.check(
                 OresCompiler.parseAndTypeCheck(sourceText),
                 IsolatePolicy.untrustedActor());
-        adversarialShareAllowlist.add(new Key(codeUnitId, digest(sourceText)));
+        // Do not retain an authority token when admission fails.
+        adversarialShareAllowlist
+                .computeIfAbsent(authority, ignored -> new HashSet<>())
+                .add(key);
     }
 
-    public synchronized void revokeForAdversarialSharing(
-            IsolatePolicy supervisorPolicy, String codeUnitId, String sourceText) {
+    synchronized void revokeForAdversarialSharing(
+            IsolatePolicy supervisorPolicy, Object authority, String codeUnitId, String sourceText) {
+        Objects.requireNonNull(authority, "authority");
         requireIdentity(codeUnitId, sourceText);
         Objects.requireNonNull(supervisorPolicy, "supervisorPolicy");
         if (supervisorPolicy.adversarial()) {
@@ -73,14 +90,25 @@ public final class SharedCodeRegistry {
         supervisorPolicy.require(
                 IsolatePolicy.Capability.HOT_CODE_LOAD,
                 "revoke adversarial shared code");
-        adversarialShareAllowlist.remove(new Key(codeUnitId, digest(sourceText)));
+        Set<Key> approvals = adversarialShareAllowlist.get(authority);
+        if (approvals != null) {
+            approvals.remove(new Key(codeUnitId, digest(sourceText)));
+            if (approvals.isEmpty()) adversarialShareAllowlist.remove(authority);
+        }
     }
 
-    public synchronized boolean approvedForAdversarialSharing(
-            String codeUnitId, String sourceText) {
+    synchronized boolean approvedForAdversarialSharing(
+            Object authority, String codeUnitId, String sourceText) {
+        Objects.requireNonNull(authority, "authority");
         requireIdentity(codeUnitId, sourceText);
-        return adversarialShareAllowlist.contains(
+        Set<Key> approvals = adversarialShareAllowlist.get(authority);
+        return approvals != null && approvals.contains(
                 new Key(codeUnitId, digest(sourceText)));
+    }
+
+    /** Closing one manager revokes its authority without changing other grants. */
+    synchronized void revokeAllForAuthority(Object authority) {
+        adversarialShareAllowlist.remove(Objects.requireNonNull(authority, "authority"));
     }
 
     private static void requireIdentity(String codeUnitId, String sourceText) {

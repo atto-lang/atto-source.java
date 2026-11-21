@@ -119,37 +119,39 @@ final class SharedCodeRegistryTest {
     void adversarialSharingRequiresExactSupervisorApprovalPerCodeUnit() {
         SharedCodeRegistry registry = new SharedCodeRegistry();
         IsolatePolicy supervisor = IsolatePolicy.developer();
+        Object authority = new Object();
         String root = "pub routine main(): void { return; }";
         String changed = "pub routine main(): void { val n = 2; return; }";
 
-        assertFalse(registry.approvedForAdversarialSharing("root.ores", root));
-        registry.approveForAdversarialSharing(supervisor, "root.ores", root);
-        assertTrue(registry.approvedForAdversarialSharing("root.ores", root));
+        assertFalse(registry.approvedForAdversarialSharing(authority, "root.ores", root));
+        registry.approveForAdversarialSharing(supervisor, authority, "root.ores", root);
+        assertTrue(registry.approvedForAdversarialSharing(authority, "root.ores", root));
 
-        assertFalse(registry.approvedForAdversarialSharing("root.ores", changed),
+        assertFalse(registry.approvedForAdversarialSharing(authority, "root.ores", changed),
                 "approval is bound to the exact content hash");
-        assertFalse(registry.approvedForAdversarialSharing("dependency.ores", root),
+        assertFalse(registry.approvedForAdversarialSharing(authority, "dependency.ores", root),
                 "imports/dependencies require independent approval");
-        assertFalse(registry.approvedForAdversarialSharing("other-name.ores", root),
+        assertFalse(registry.approvedForAdversarialSharing(authority, "other-name.ores", root),
                 "approval is also bound to the code-unit identity");
 
-        registry.revokeForAdversarialSharing(supervisor, "root.ores", root);
-        assertFalse(registry.approvedForAdversarialSharing("root.ores", root));
+        registry.revokeForAdversarialSharing(supervisor, authority, "root.ores", root);
+        assertFalse(registry.approvedForAdversarialSharing(authority, "root.ores", root));
 
         assertThrows(SecurityException.class, () ->
                 registry.approveForAdversarialSharing(
-                        IsolatePolicy.untrustedActor(), "root.ores", root));
+                        IsolatePolicy.untrustedActor(), authority, "root.ores", root));
     }
 
     @Test
     void adversarialAllowlistCannotApproveCodeItsGuestPolicyRejects() {
         SharedCodeRegistry registry = new SharedCodeRegistry();
         String privileged = "pub routine main(): void { print(1); return; }";
+        Object authority = new Object();
         assertThrows(SecurityException.class, () ->
                 registry.approveForAdversarialSharing(
-                        IsolatePolicy.developer(), "privileged.ores", privileged));
+                        IsolatePolicy.developer(), authority, "privileged.ores", privileged));
         assertFalse(registry.approvedForAdversarialSharing(
-                "privileged.ores", privileged));
+                authority, "privileged.ores", privileged));
     }
 
     @Test
@@ -182,6 +184,11 @@ final class SharedCodeRegistryTest {
             first.approveGuestCodeSharing(codeUnitId, MINIMAL_PROGRAM);
             try {
                 var sharedA = first.load(codeUnitId, MINIMAL_PROGRAM);
+                var deniedB = second.load(codeUnitId, MINIMAL_PROGRAM);
+                assertFalse(deniedB.sharedCodeImage(),
+                        "one manager's approval must not authorize another manager");
+                second.retire(deniedB.id());
+                second.approveGuestCodeSharing(codeUnitId, MINIMAL_PROGRAM);
                 var sharedB = second.load(codeUnitId, MINIMAL_PROGRAM);
                 assertTrue(sharedA.sharedCodeImage());
                 assertTrue(sharedB.sharedCodeImage());
@@ -200,11 +207,61 @@ final class SharedCodeRegistryTest {
                 assertNotSame(sharedA.source(), renamed.source());
             } finally {
                 first.revokeGuestCodeSharing(codeUnitId, MINIMAL_PROGRAM);
+                second.revokeGuestCodeSharing(codeUnitId, MINIMAL_PROGRAM);
             }
         }
 
-        assertFalse(SharedCodeRegistry.process()
-                .approvedForAdversarialSharing(codeUnitId, MINIMAL_PROGRAM));
+        // Closing each manager revokes its scoped grant; no global allowlist remains.
+    }
+
+    @Test
+    void identicalSourceGrantsCannotCrossTenantAuthorities() {
+        SharedCodeRegistry registry = new SharedCodeRegistry();
+        Object tenantA = new Object();
+        Object tenantB = new Object();
+        String source = MINIMAL_PROGRAM;
+        IsolatePolicy supervisor = IsolatePolicy.developer();
+
+        registry.approveForAdversarialSharing(
+                supervisor, tenantA, "tenant-test.ores", source);
+        assertTrue(registry.approvedForAdversarialSharing(
+                tenantA, "tenant-test.ores", source));
+        assertFalse(registry.approvedForAdversarialSharing(
+                tenantB, "tenant-test.ores", source));
+
+        registry.approveForAdversarialSharing(
+                supervisor, tenantB, "tenant-test.ores", source);
+        registry.revokeForAdversarialSharing(
+                supervisor, tenantA, "tenant-test.ores", source);
+        assertFalse(registry.approvedForAdversarialSharing(
+                tenantA, "tenant-test.ores", source));
+        assertTrue(registry.approvedForAdversarialSharing(
+                tenantB, "tenant-test.ores", source),
+                "another tenant's independent grant must survive");
+        registry.revokeAllForAuthority(tenantB);
+        assertFalse(registry.approvedForAdversarialSharing(
+                tenantB, "tenant-test.ores", source));
+    }
+
+    @Test
+    void managerCloseRevokesOnlyItsOwnGrantAndIsTerminal() {
+        IsolatePolicy supervisor = IsolatePolicy.developer();
+        String codeUnit = "shutdown-tenant-boundary.ores";
+        try (HotReloadManager a = HotReloadManager.forUntrustedActors(
+                     supervisor, ExecutionProfile.serverJit());
+             HotReloadManager b = HotReloadManager.forUntrustedActors(
+                     supervisor, ExecutionProfile.serverJit())) {
+            a.approveGuestCodeSharing(codeUnit, MINIMAL_PROGRAM);
+            b.approveGuestCodeSharing(codeUnit, MINIMAL_PROGRAM);
+            a.close();
+            assertThrows(IllegalStateException.class,
+                    () -> a.approveGuestCodeSharing(codeUnit, MINIMAL_PROGRAM));
+            assertThrows(IllegalStateException.class,
+                    () -> a.revokeGuestCodeSharing(codeUnit, MINIMAL_PROGRAM));
+            // Closing one authority must not remove another manager's grant.
+            assertDoesNotThrow(() -> b.revokeGuestCodeSharing(codeUnit, MINIMAL_PROGRAM));
+            assertDoesNotThrow(() -> b.approveGuestCodeSharing(codeUnit, MINIMAL_PROGRAM));
+        }
     }
 
     @Test

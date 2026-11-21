@@ -13,6 +13,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.SharedCodeRegistry;
 import org.graalvm.polyglot.SandboxPolicy;
+import org.graalvm.polyglot.Context;
 
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
@@ -36,6 +37,23 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     public static final String ID = "ores";
     public static final String MIME_TYPE = "application/x-oreslang";
 
+    // A managed host shutdown may happen on a different supervisor thread
+    // from the one that last executed a guest turn. This permission is strictly
+    // scoped to Context.close(), not a general host/guest thread allowance.
+    private static final ThreadLocal<Boolean> SUPERVISOR_CLOSE = new ThreadLocal<>();
+
+    public static void closeManagedContext(Context context) {
+        java.util.Objects.requireNonNull(context, "context");
+        Boolean previous = SUPERVISOR_CLOSE.get();
+        SUPERVISOR_CLOSE.set(Boolean.TRUE);
+        try {
+            context.close();
+        } finally {
+            if (previous == null) SUPERVISOR_CLOSE.remove();
+            else SUPERVISOR_CLOSE.set(previous);
+        }
+    }
+
     @Override
     protected OresContext createContext(Env env) {
         return new OresContext(this, env);
@@ -52,6 +70,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
         return singleThreaded
+                || Boolean.TRUE.equals(SUPERVISOR_CLOSE.get())
                 || ActorRuntime.isActorCarrierThread()
                 || AsyncRuntime.isAsyncCarrierThread()
                 || OresScheduler.isSchedulerCarrierThread();

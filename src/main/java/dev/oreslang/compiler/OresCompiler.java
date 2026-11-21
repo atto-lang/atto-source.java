@@ -7,6 +7,8 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import dev.oreslang.types.OwnershipChecker;
 
+import java.util.Map;
+
 /** Trusted compiler front-end API for build systems and isolate admission. */
 public final class OresCompiler {
     private OresCompiler() { }
@@ -17,7 +19,18 @@ public final class OresCompiler {
 
     /** Runs the complete front-end admission policy on an already parsed program. */
     public static Ast.Program analyze(Ast.Program program) {
-        program = TypeChecker.checkTypes(program);
+        return analyze(program, Map.of());
+    }
+
+    /**
+     * Runs complete front-end admission with linker-supplied imported type
+     * metadata. Imported declarations participate in static resolution only;
+     * they are not injected into the local AST or runtime export graph.
+     */
+    public static Ast.Program analyze(
+            Ast.Program program,
+            Map<String, Ast.InterfaceDecl> importedInterfaces) {
+        program = TypeChecker.checkTypes(program, importedInterfaces);
         OwnershipChecker.check(program);
         return program;
     }

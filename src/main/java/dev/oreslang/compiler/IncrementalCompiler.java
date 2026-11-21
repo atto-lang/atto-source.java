@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 import dev.oreslang.parser.Parser;
 
 import java.nio.charset.StandardCharsets;
@@ -26,6 +27,10 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    // Import resolution is linker input, not source text. Cache its exact
+    // per-unit mapping separately from the dependency set: two import paths
+    // may swap targets while the set of dependencies remains unchanged.
+    private final Map<String, String> cachedImportResolutionDigests = new LinkedHashMap<>();
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -61,10 +66,32 @@ public final class IncrementalCompiler {
 
         Map<String, Map<String, String>> normalizedImportResolutions =
                 normalizeImportResolutions(importResolutions);
+        Map<String, String> importResolutionDigests = new LinkedHashMap<>();
+        for (String id : normalized.keySet()) {
+            importResolutionDigests.put(
+                    id,
+                    importResolutionDigest(normalizedImportResolutions.getOrDefault(id, Map.of())));
+        }
         ImportGraph.validateLinkedImports(parsed, normalizedImportResolutions);
         Map<String, Set<String>> dependencies =
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
+
+        // The exported ABI of a unit includes the identities and source ABIs of
+        // its resolved imports. In particular, remapping two import paths
+        // between the same dependency set must invalidate the importer's ABI
+        // and its reverse-import closure instead of merely rebuilding it.
+        Map<String, String> sourceAbiHashes = new LinkedHashMap<>(abiHashes);
+        for (String id : normalized.keySet()) {
+            abiHashes.put(
+                    id,
+                    linkedAbiDigest(
+                            id,
+                            parsed.get(id),
+                            normalized.keySet(),
+                            normalizedImportResolutions,
+                            sourceAbiHashes));
+        }
 
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
@@ -72,7 +99,11 @@ public final class IncrementalCompiler {
             CompiledUnit previous = cache.get(id);
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
-            if (sourceChanged || depsChanged) dirty.add(id);
+            boolean resolutionsChanged = previous == null
+                    || !java.util.Objects.equals(
+                            cachedImportResolutionDigests.get(id),
+                            importResolutionDigests.get(id));
+            if (sourceChanged || depsChanged || resolutionsChanged) dirty.add(id);
             if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
         }
 
@@ -104,7 +135,9 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            Map<String, Ast.InterfaceDecl> importedContracts = linkedImportedContracts(
+                    id, parsed.get(id), parsed, normalizedImportResolutions);
+            Ast.Program checked = OresCompiler.analyze(parsed.get(id), importedContracts);
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -120,6 +153,8 @@ public final class IncrementalCompiler {
 
         cache.keySet().retainAll(normalized.keySet());
         cache.putAll(next);
+        cachedImportResolutionDigests.keySet().retainAll(normalized.keySet());
+        cachedImportResolutionDigests.putAll(importResolutionDigests);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
@@ -129,20 +164,189 @@ public final class IncrementalCompiler {
 
     public synchronized void clear() {
         cache.clear();
+        cachedImportResolutionDigests.clear();
+    }
+
+    private static String importResolutionDigest(Map<String, String> resolutions) {
+        StringBuilder canonical = new StringBuilder("ores-import-resolution-v1\n");
+        resolutions.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> {
+                    appendLengthPrefixed(canonical, entry.getKey());
+                    appendLengthPrefixed(canonical, entry.getValue());
+                });
+        return digest(canonical.toString());
+    }
+
+    private static void appendLengthPrefixed(StringBuilder target, String value) {
+        target.append(value.length()).append(':').append(value).append('\n');
+    }
+
+    /**
+     * Resolves named cross-file contract imports into type-only linker metadata.
+     * Foreign declarations are deliberately not spliced into the local AST.
+     * Imported inheritance and unproven nominal types fail closed until the
+     * linker carries explicit parent/type provenance.
+     */
+    private static Map<String, Ast.InterfaceDecl> linkedImportedContracts(
+            String unitId,
+            Ast.Program program,
+            Map<String, Ast.Program> programs,
+            Map<String, Map<String, String>> importResolutions) {
+        LinkedHashMap<String, Ast.InterfaceDecl> result = new LinkedHashMap<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() != Ast.ImportKind.CONTRACT) continue;
+            if (imported.wildcard()) {
+                // Namespace-qualified contracts need first-class nominal metadata.
+                continue;
+            }
+
+            String targetId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, programs.keySet(), importResolutions);
+            if (targetId == null) continue;
+            Ast.Program target = programs.get(targetId);
+
+            for (String sourceName : imported.names()) {
+                Ast.InterfaceDecl match = null;
+                for (Ast.ModuleDecl module : target.modules()) {
+                    for (Ast.Decl declaration : module.declarations()) {
+                        if (declaration instanceof Ast.InterfaceDecl iface
+                                && iface.moduleContract()
+                                && iface.visibility() == Ast.Visibility.PUBLIC
+                                && iface.name().equals(sourceName)) {
+                            if (match != null) {
+                                throw new IllegalArgumentException(
+                                        "import contract '" + sourceName + "' from '" + imported.path()
+                                                + "' is ambiguous in '" + targetId + "'");
+                            }
+                            match = iface;
+                        }
+                    }
+                }
+                if (match == null) {
+                    throw new IllegalArgumentException(
+                            "import contract '" + sourceName + "' from '" + imported.path()
+                                    + "' does not resolve to an exported module contract");
+                }
+                if (!match.parents().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "imported module contract '" + sourceName
+                                    + "' extends another contract; cross-file inherited contract metadata "
+                                    + "is not yet linkable without explicit parent provenance");
+                }
+                validatePortableImportedContract(match, targetId);
+
+                String localName = ImportRules.localName(imported, sourceName);
+                Ast.InterfaceDecl previous = result.putIfAbsent(localName, match);
+                if (previous != null && previous != match) {
+                    throw new IllegalArgumentException(
+                            "duplicate imported contract metadata for local name '" + localName + "'");
+                }
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    private static final Set<String> LINKABLE_CONTRACT_TYPES = Set.of(
+            "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
+            "Object", "List", "Map", "Tuple", "FixedArray", "Option", "Result", "Future",
+            "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
+            "Channel", "SelectCase", "SelectSet", "SelectResult", "Fnc");
+
+    private static void validatePortableImportedContract(
+            Ast.InterfaceDecl contract,
+            String targetId) {
+        Set<String> contractGenerics = Set.copyOf(contract.genericParameters());
+        for (Ast.InterfaceMember member : contract.members()) {
+            if (member instanceof Ast.InterfaceFieldDecl field) {
+                validatePortableContractType(
+                        field.type(), contractGenerics, targetId, contract.name() + "." + field.name());
+            } else if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                LinkedHashSet<String> generics = new LinkedHashSet<>(contractGenerics);
+                generics.addAll(fn.genericParameters());
+                for (Ast.Param param : fn.parameters()) {
+                    validatePortableContractType(
+                            param.type(), generics, targetId, contract.name() + "." + fn.name());
+                }
+                validatePortableContractType(
+                        fn.returnType(), generics, targetId, contract.name() + "." + fn.name());
+            }
+        }
+    }
+
+    private static void validatePortableContractType(
+            Ast.TypeRef ref,
+            Set<String> generics,
+            String targetId,
+            String member) {
+        if (ref == null) {
+            throw new IllegalArgumentException(
+                    "imported module contract member '" + member + "' from '" + targetId
+                            + "' has an inferred type; linked contract ABI requires explicit types");
+        }
+        if (ref.isStringLiteral()) return;
+        String name = ref.name();
+        if (!generics.contains(name) && !LINKABLE_CONTRACT_TYPES.contains(name)) {
+            throw new IllegalArgumentException(
+                    "imported module contract member '" + member + "' from '" + targetId
+                            + "' references nominal type '" + name + "' without linker provenance; "
+                            + "imported contract conformance fails closed until nominal type identities are linked");
+        }
+        for (Ast.TypeRef argument : ref.arguments()) {
+            validatePortableContractType(argument, generics, targetId, member);
+        }
+    }
+
+    private static String linkedAbiDigest(
+            String unitId,
+            Ast.Program program,
+            Set<String> availableUnits,
+            Map<String, Map<String, String>> importResolutions,
+            Map<String, String> sourceAbiHashes) {
+        StringBuilder canonical = new StringBuilder("ores-linked-abi-v1\\n");
+        appendLengthPrefixed(canonical, sourceAbiHashes.get(unitId));
+
+        List<String> importEntries = new ArrayList<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            StringBuilder entry = new StringBuilder();
+            appendLengthPrefixed(entry, imported.kind().name());
+            appendLengthPrefixed(entry, imported.path());
+            appendLengthPrefixed(entry, Boolean.toString(imported.wildcard()));
+            appendLengthPrefixed(entry, imported.namespace() == null ? "" : imported.namespace());
+            for (String name : imported.names()) {
+                appendLengthPrefixed(entry, name);
+                appendLengthPrefixed(entry, ImportRules.localName(imported, name));
+            }
+
+            String targetId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, availableUnits, importResolutions);
+            appendLengthPrefixed(entry, targetId == null ? "<external>" : targetId);
+            if (targetId != null) {
+                appendLengthPrefixed(entry, sourceAbiHashes.getOrDefault(targetId, "<missing-abi>"));
+            }
+            importEntries.add(entry.toString());
+        }
+
+        importEntries.stream().sorted().forEach(entry -> appendLengthPrefixed(canonical, entry));
+        return digest(canonical.toString());
     }
 
     private static String abiDigest(Ast.Program program) {
-        StringBuilder abi = new StringBuilder("ores-abi-v2\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v3\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
-            for (Ast.Annotation annotation : module.annotations()) {
-                if (annotation.name().equals("AdheresTo")) {
-                    abi.append(" module-annotation AdheresTo:");
-                    for (Ast.TypeRef arg : annotation.arguments()) abi.append(typeRef(arg)).append(',');
-                    abi.append('\n');
-                }
+            // Module conformance is part of the exported ABI. A hot-loaded
+            // generation may only replace a module against the same declared
+            // contract surface (or an explicitly checked migration).
+            if (!module.contracts().isEmpty()) {
+                abi.append(" conforms ");
+                module.contracts().stream()
+                        .map(IncrementalCompiler::typeRef)
+                        .sorted()
+                        .forEach(ref -> abi.append(ref).append(','));
+                abi.append('\n');
             }
             for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
         }
@@ -209,7 +413,8 @@ public final class IncrementalCompiler {
             return;
         }
         if (decl instanceof Ast.InterfaceDecl iface) {
-            abi.append("interface ").append(iface.visibility()).append(' ').append(iface.name());
+            abi.append(iface.moduleContract() ? "contract " : "interface ")
+                    .append(iface.visibility()).append(' ').append(iface.name());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : iface.parents()) abi.append(typeRef(parent)).append(',');
@@ -219,7 +424,13 @@ public final class IncrementalCompiler {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
                     memberEntries.add(interfaceFunctionAbi(fn));
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                    memberEntries.add(" iface-field " + field.name() + ":" + typeRef(field.type()) + "\n");
+                    String bindingRequirement = iface.moduleContract()
+                            ? (field.bindingKind() == null
+                                    ? "readable "
+                                    : field.bindingKind().name().toLowerCase(java.util.Locale.ROOT) + " ")
+                            : "";
+                    memberEntries.add(" iface-field " + bindingRequirement
+                            + field.name() + ":" + typeRef(field.type()) + "\n");
                 }
             }
             memberEntries.stream().sorted().forEach(abi::append);

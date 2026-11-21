@@ -41,4 +41,19 @@ final class OreslangActorIsolationExampleTest {
         assertDoesNotThrow(() ->
                 CapabilityChecker.check(program, IsolatePolicy.developer()));
     }
+
+    @Test
+    void unresolvedNominalStateCannotEnterSharedMutexWithoutImportProvenance() {
+        String unresolved = """
+                shared actor UnsafeCounter {
+                  let SharedMutex<UnlinkedState> state =
+                      SharedMutex.new(10);
+                }
+                """;
+        IllegalArgumentException rejection = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(unresolved)));
+        assertTrue(rejection.getMessage().contains("shared-safe type"),
+                "unlinked nominal state must not bypass shared-memory safety checks");
+    }
 }

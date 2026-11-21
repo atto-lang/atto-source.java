@@ -42,6 +42,10 @@ public final class OresContext implements AutoCloseable {
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    // Root completion can be signaled before its scheduler carrier finishes
+    // TruffleContext.leave. A host must not close that Context in the gap.
+    private final Object rootTurnQuiescence = new Object();
+    private int activeRootGuestTurns;
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
     // Per-actor mutable heaps/closures are never published into this store.
@@ -347,11 +351,41 @@ public final class OresContext implements AutoCloseable {
                 if (turn != null) turn.run();
             }
         }
-        return task.join();
+        try {
+            return task.join();
+        } finally {
+            // A completed scheduler Future is not proof the TruffleContext
+            // has been exited by the carrier. Wait for the actual leave edge.
+            awaitRootTurnQuiescence();
+        }
+    }
+
+    private void awaitRootTurnQuiescence() {
+        synchronized (rootTurnQuiescence) {
+            while (activeRootGuestTurns != 0) {
+                try {
+                    rootTurnQuiescence.wait();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "interrupted while waiting for root guest turns to exit", interrupted);
+                }
+            }
+        }
     }
 
     private void executeRootTurn(Runnable turn) {
-        executeGuestTurn(turn, isolatePolicy.adversarial());
+        synchronized (rootTurnQuiescence) {
+            activeRootGuestTurns++;
+        }
+        try {
+            executeGuestTurn(turn, isolatePolicy.adversarial());
+        } finally {
+            synchronized (rootTurnQuiescence) {
+                activeRootGuestTurns--;
+                if (activeRootGuestTurns == 0) rootTurnQuiescence.notifyAll();
+            }
+        }
     }
 
     private void executeActorTurn(Runnable turn) {
