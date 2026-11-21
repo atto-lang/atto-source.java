@@ -231,11 +231,15 @@ def exact_resume_comment(incident, heads, source_commit, source_tree, reviewer):
     return events[-1][2]
 
 def active_rows(path):
-    text = Path(path).read_text(encoding="utf-8")
-    # Preserve active-row bytes (except line terminators). Stripping or
-    # splitting would normalize unauthorized whitespace into a valid policy.
-    return [line for line in text.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")]
+    # Only ASCII LF is a ledger separator. Python str.splitlines() also splits
+    # U+0085/U+2028/U+2029 and several invisible control characters, silently
+    # turning a noncanonical authorization file into accepted rows.
+    raw = Path(path).read_bytes()
+    if len(raw) > 65536 or any((byte < 32 and byte != 10) or byte > 126
+                               for byte in raw):
+        raise Denied("private CI ledger contains noncanonical bytes")
+    return [line for line in raw.decode("ascii").split("\n")
+            if line and not line.startswith("#")]
 
 def parse_destination_entry(destination_file):
     rows = active_rows(destination_file)
