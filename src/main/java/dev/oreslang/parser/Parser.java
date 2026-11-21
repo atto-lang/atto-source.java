@@ -6917,6 +6917,609 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
+        // '_' discards one argument slot; two underscores are independent,
+        // never a duplicate lexical binding. Private '
+        // declare the same result. Do not reinterpret ':' as a parameter
+        // delimiter after the closing pipe, or silently drop the result.
+        if (match(COLON)) {
+            Ast.TypeRef declared = parseTypeRef();
+            consume(ARROW, "expected '->' after the lambda return type");
+            if (!check(LBRACE)) {
+                throw error(peek(), "explicit colon-annotated lambda return type requires a braced block");
+            }
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, declared);
+        }
+        consume(ARROW, "lambdas use the slim arrow '->'");
+        return parseLambdaBody(params, nonLexical, inlinePipelineStage);
+    }
+
+    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
+        return parseLambdaBody(params, nonLexical, false);
+    }
+
+    private Ast.LambdaExpr parseLambdaBody(
+            List<Ast.Param> params, boolean nonLexical, boolean inlinePipelineStage) {
+        // Immediate '{' denotes an inferred block. Preserve expression-bodied
+        // lambdas, while recognizing an explicitly typed *braced* block:
+        //   || -> void { cleanup(); }
+        //   |x: int| -> int { return x + 1; }
+        if (check(LBRACE)) {
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        }
+        // Speculate only on the return type plus a following block opener.
+        // A failed type probe cannot consume an expression-bodied lambda.
+        int start = current;
+        Ast.TypeRef resultType = null;
+        try {
+            resultType = parseTypeRef();
+        } catch (IllegalArgumentException ignored) {
+            // Not a type header: parse the existing expression-body grammar.
+        }
+        if (resultType != null && check(LBRACE)) {
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, resultType);
+        }
+        // Scalar type names are contextual IDENTs, so '|| -> int;' would
+        // otherwise be accepted as an expression-bodied lambda returning an
+        // identifier named 'int'. Refuse an unambiguous bare scalar type
+        // followed by an expression terminator: typed lambdas need '{...}'.
+        // Do not reject '|| -> int + 1' or any other legitimate expression.
+        if (resultType != null
+                && resultType.arguments().isEmpty()
+                && !resultType.inferArguments()
+                && isBareScalarReturnType(resultType.name())
+                && (check(SEMICOLON) || check(COMMA) || check(RPAREN)
+                    || check(RBRACE) || check(EOF))) {
+            throw error(peek(), "explicit lambda result type requires a braced body");
+        }
+        current = start;
+        // The lambda's body is an ordinary value expression. However when it
+        // appears unparenthesized immediately after |>, a following top-level
+        // |> belongs to the enclosing pipeline. Group (x |> inner) explicitly
+        // to request a nested pipeline inside the lambda.
+        return new Ast.LambdaExpr(
+                params, inlinePipelineStage ? parseConditional() : parseExpression(),
+                null, nonLexical);
+    }
+
+    private static boolean isBareScalarReturnType(String name) {
+        return switch (name) {
+            case "int", "uint", "i8", "i16", "i32", "i64",
+                    "u8", "u16", "u32", "u64",
+                    "bool", "boolean", "string", "float",
+                    "f32", "f64", "decimal", "bigint" -> true;
+            default -> false;
+        };
+    }
+
+    private boolean looksLikeLambda() {
+        if (matchGuardStartToken >= 0 && current >= matchGuardStartToken) {
+            // At the guard's own lexical depth a following '->' belongs to
+            // the match arm. Preserve real nested lambdas in calls/groups:
+            // their parentheses are at positive depth from the guard start.
+            int depth = 0;
+            for (int i = matchGuardStartToken; i < current; i++) {
+                Token.Type type = tokens.get(i).type();
+                if (type == LPAREN || type == LBRACKET || type == LBRACE) depth++;
+                else if (type == RPAREN || type == RBRACKET || type == RBRACE) depth--;
+            }
+            if (depth == 0) return false;
+        }
+        // An arm's slim arrow may follow a parenthesized expression, e.g.
+        // 'when await (nb readch gate) -> { ... }'. A closing ')' followed
+        // by '->' is not sufficient evidence of a lambda declaration:
+        // lambda parameters require declaration syntax, never these
+        // expression-only prefix operators.
+        if (current + 1 < tokens.size()) {
+            Token.Type first = tokens.get(current + 1).type();
+            if (first == NB || first == AWAIT || first == READCH
+                    || first == WRITECH || first == RT || first == TRAP
+                    || first == TRY || first == SELECT || first == BANG) {
+                return false;
+            }
+        }
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            else if (type == RPAREN) {
+                depth--;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+            }
+        }
+        return false;
+    }
+
+    private List<Ast.Expr> parseCallArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> args = new ArrayList<>();
+        java.util.Set<String> seenLabels = new java.util.LinkedHashSet<>();
+        boolean namedStarted = false;
+        do {
+            if (check(terminator)) throw error(peek(), "empty call argument");
+            if (match(ELLIPSIS)) {
+                if (namedStarted) {
+                    throw error(previous(),
+                            "positional spread arguments cannot follow named arguments");
+                }
+                args.add(new Ast.SpreadExpr(parseExpression()));
+                continue;
+            }
+            if (check(IDENT) && checkNext(COLON)) {
+                namedStarted = true;
+                String name = advance().lexeme();
+                consume(COLON, "expected ':' after named argument");
+                if (!seenLabels.add(name)) {
+                    throw error(previous(), "duplicate named argument '" + name + "'");
+                }
+                args.add(new Ast.NamedArgExpr(name, parseExpression()));
+                continue;
+            }
+            if (namedStarted) {
+                throw error(peek(), "positional arguments cannot follow named arguments");
+            }
+            args.add(parseExpression());
+        } while (match(COMMA));
+        return List.copyOf(args);
+    }
+
+    private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> args = new ArrayList<>();
+        do args.add(parseExpression()); while (match(COMMA));
+        return args;
+    }
+
+    private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
+        if (match(SEMICOLON) || check(structuralTerminator)) return;
+        throw error(peek(), message);
+    }
+
+    private void consumeClassFieldTerminator(String message) {
+        if (match(SEMICOLON)) return;
+        // An implicit separator is a newline, never adjacent tokens on the
+        // same source line. In particular a modifier such as 'pub' must not
+        // bypass the same-line guard that already applies to bare 'mtd'.
+        // Preserve the historical terminal 'end' spelling for the class.
+        if (!check(END) && current > 0 && previous().line() >= peek().line()) {
+            throw error(peek(), message + " (use ';' or a new line between class members)");
+        }
+        if (check(AT) || check(END) || check(PUB) || check(PRIVATE)
+                || check(STATIC) || check(ABSTRACT) || check(ASYNC) || check(SUSPENDS) || check(LBRACKET)
+                || isBindingKind(peek().type())
+                || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))
+                || isNextContextualMemberLine()) return;
+        throw error(peek(), message);
+    }
+
+    // A field without a semicolon can be followed by the new contextual
+    // declaration spellings, but only on a *new* source line. Never treat
+    // arbitrary same-line tokens as an implicit field terminator.
+    private boolean isNextContextualMemberLine() {
+        if (current == 0 || previous().line() >= peek().line()) return false;
+        if (check(FNC)) return true;
+        if (check(MUT)) return looksLikeTypeFirstClassField();
+        if (!check(IDENT)) return false;
+        String word = peek().lexeme();
+        // Keep this boundary consistent with matchExplicitMethodMarker:
+        // keyword-named methods (mtd select(), mtd do()) and symbol methods
+        // may follow a semicolon-free field on a separate source line.
+        Token.Type following = current + 1 < tokens.size()
+                ? tokens.get(current + 1).type() : EOF;
+        boolean markedMethod = (word.equals("method") || word.equals("mtd"))
+                && (following == IDENT || following == LBRACKET
+                    || isReservedCallableName(following)
+                    || isContextualStatementCallableName(following)
+                    || following == TRUE || following == FALSE);
+        return markedMethod
+                || ((word.equals("suspend") || word.equals("method") || word.equals("mtd")
+                        || word.equals("final") || word.equals("critical"))
+                    && (checkNext(IDENT) || checkNext(MUT) || checkNext(FNC) || checkNext(LPAREN)))
+                || looksLikeTypeFirstClassField();
+    }
+
+    private boolean hasAnnotation(List<Ast.Annotation> annotations, String name) {
+        for (Ast.Annotation annotation : annotations) if (annotation.name().equals(name)) return true;
+        return false;
+    }
+
+    private record CallableStructural(boolean enabled, List<Ast.Annotation> annotations) { }
+
+    private boolean isCallableStructuralAnnotation(Ast.Annotation annotation) {
+        return annotation.name().equals("structural") || annotation.name().equals("Structural");
+    }
+
+    private CallableStructural normalizeCallableStructural(
+            List<Ast.Annotation> annotations,
+            boolean modifierStructural) {
+        boolean annotationStructural = false;
+        List<Ast.Annotation> remaining = new ArrayList<>(annotations.size());
+        for (Ast.Annotation annotation : annotations) {
+            if (!isCallableStructuralAnnotation(annotation)) {
+                remaining.add(annotation);
+                continue;
+            }
+            if (!annotation.arguments().isEmpty()) {
+                throw error(previous(), "@structural does not take arguments");
+            }
+            if (annotationStructural) {
+                throw error(previous(), "duplicate @structural callable annotation");
+            }
+            annotationStructural = true;
+        }
+        if (modifierStructural && annotationStructural) {
+            throw error(previous(), "duplicate structural callable modifier; use either 'structural' or '@structural', not both");
+        }
+        return new CallableStructural(modifierStructural || annotationStructural, List.copyOf(remaining));
+    }
+
+    /** Only recognized, zero-argument copy policies can annotate a class. */
+    private void validateCopyPolicyClassAnnotations(List<Ast.Annotation> annotations) {
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Ast.Annotation annotation : annotations) {
+            String name = annotation.name();
+            if (!List.of("NoCopy", "WarnOnCopy", "Copyable").contains(name)) {
+                throw error(previous(), "@" + name + " on class declarations would be silently discarded; unsupported annotation");
+            }
+            if (!annotation.arguments().isEmpty() || !seen.add(name)) {
+                throw error(previous(), "E_COPY_ANNOTATION: invalid or duplicate @" + name + " on class declaration");
+            }
+        }
+        if (seen.contains("NoCopy") && (seen.contains("Copyable") || seen.contains("WarnOnCopy"))) {
+            throw error(previous(), "E_COPY_ANNOTATION: conflicting copy policies on class");
+        }
+    }
+
+    /**
+     * Fail closed until these declaration nodes preserve typed annotation metadata.
+     * Silently dropping metadata can bypass compile-time macro, ABI and safety contracts.
+     * Module, function, method and field annotations have AST storage and are unaffected.
+     */
+    private void rejectDiscardedDeclarationAnnotations(List<Ast.Annotation> annotations, String target) {
+        if (!annotations.isEmpty()) {
+            throw error(previous(), "@" + annotations.getFirst().name() + " on " + target
+                    + " would be silently discarded; declaration annotation storage is not implemented");
+        }
+    }
+
+    /** A return-type annotation must never survive on non-callable AST slots. */
+    private void rejectNonCallableReturnAnnotation(List<Ast.Annotation> annotations, String target) {
+        for (Ast.Annotation annotation : annotations) {
+            if (annotation.name().equals("Ret")) {
+                throw error(previous(), "@Ret is only valid on callable return signatures, not " + target);
+            }
+        }
+    }
+
+    private void rejectCallableStructuralAnnotation(List<Ast.Annotation> annotations, String target) {
+        for (Ast.Annotation annotation : annotations) {
+            if (isCallableStructuralAnnotation(annotation)) {
+                throw error(previous(), "@structural is compile-time callable metadata and is not valid on " + target);
+            }
+        }
+    }
+
+    private void consumeExpressionStatementTerminator(Ast.Expr expression, String message) {
+        if (containsExpressionBodyLambda(expression)) {
+            consume(SEMICOLON, "expression-bodied lambda statements require an explicit ';'");
+            return;
+        }
+        consumeStatementTerminator(message);
+    }
+
+    private void consumeExpressionClassFieldTerminator(Ast.Expr expression, String message) {
+        if (containsExpressionBodyLambda(expression)) {
+            consume(SEMICOLON, "expression-bodied lambda statements require an explicit ';'");
+            return;
+        }
+        consumeClassFieldTerminator(message);
+    }
+
+    private boolean containsExpressionBodyLambda(Ast.Expr expression) {
+        if (expression == null) return false;
+        if (expression instanceof Ast.LambdaExpr lambda) {
+            return lambda.expressionBody() != null;
+        }
+        if (expression instanceof Ast.BinaryExpr binary) {
+            return containsExpressionBodyLambda(binary.left()) || containsExpressionBodyLambda(binary.right());
+        }
+        if (expression instanceof Ast.TrapExpr trapped) {
+            // A call-site trap must never hide an expression-bodied lambda
+            // from the required explicit statement/class-field terminator.
+            return containsExpressionBodyLambda(trapped.expression());
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return containsExpressionBodyLambda(unary.operand());
+        }
+        if (expression instanceof Ast.AssignExpr assign) {
+            return containsExpressionBodyLambda(assign.target()) || containsExpressionBodyLambda(assign.value());
+        }
+        if (expression instanceof Ast.ConditionalExpr conditional) {
+            return containsExpressionBodyLambda(conditional.condition())
+                    || containsExpressionBodyLambda(conditional.whenTrue())
+                    || containsExpressionBodyLambda(conditional.whenFalse());
+        }
+        if (expression instanceof Ast.TypeTestExpr typeTest) {
+            return containsExpressionBodyLambda(typeTest.value());
+        }
+        if (expression instanceof Ast.PatternTestExpr patternTest) {
+            return containsExpressionBodyLambda(patternTest.value());
+        }
+        if (expression instanceof Ast.CaptureExpr capture) {
+            return containsExpressionBodyLambda(capture.value());
+        }
+        if (expression instanceof Ast.CastExpr cast) {
+            return containsExpressionBodyLambda(cast.value());
+        }
+        if (expression instanceof Ast.SpreadExpr spread) {
+            return containsExpressionBodyLambda(spread.expression());
+        }
+        if (expression instanceof Ast.CallExpr call) {
+            if (containsExpressionBodyLambda(call.callee())) return true;
+            return call.arguments().stream().anyMatch(this::containsExpressionBodyLambda);
+        }
+        if (expression instanceof Ast.RuntimeCallExpr runtime) {
+            return runtime.arguments().stream().anyMatch(this::containsExpressionBodyLambda);
+        }
+        if (expression instanceof Ast.MemberExpr member) {
+            return containsExpressionBodyLambda(member.receiver());
+        }
+        if (expression instanceof Ast.IndexExpr index) {
+            return containsExpressionBodyLambda(index.receiver()) || containsExpressionBodyLambda(index.index());
+        }
+        if (expression instanceof Ast.NewExpr created) {
+            return created.arguments().stream().anyMatch(this::containsExpressionBodyLambda);
+        }
+        if (expression instanceof Ast.AwaitExpr awaited) {
+            return containsExpressionBodyLambda(awaited.expression());
+        }
+        if (expression instanceof Ast.ChannelOpExpr channel) {
+            return containsExpressionBodyLambda(channel.channel())
+                    || containsExpressionBodyLambda(channel.value());
+        }
+        if (expression instanceof Ast.DynamicSelectExpr select) {
+            return containsExpressionBodyLambda(select.cases());
+        }
+        if (expression instanceof Ast.ListExpr list) {
+            return list.elements().stream().anyMatch(this::containsExpressionBodyLambda);
+        }
+        if (expression instanceof Ast.TupleExpr tuple) {
+            return tuple.elements().stream().anyMatch(this::containsExpressionBodyLambda);
+        }
+        if (expression instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (containsExpressionBodyLambda(field.value())) return true;
+            }
+        }
+        return false;
+    }
+
+    private void consumeStatementTerminator(String message) {
+        if (match(SEMICOLON) || isSafeStatementBoundary() || isImplicitNewlineTerminator()) return;
+        throw error(peek(), message);
+    }
+
+    private boolean isImplicitNewlineTerminator() {
+        if (current == 0 || check(EOF)) return false;
+        return previous().line() < peek().line();
+    }
+
+    private boolean isSafeStatementBoundary() {
+        return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
+                || check(CATCH) || check(FINALLY) || isBareDoneDelimiter() || check(EOF);
+    }
+
+    private Ast.BindingKind parseBindingKind() {
+        if (match(CONST)) return Ast.BindingKind.CONST;
+        if (match(VAL)) return Ast.BindingKind.VAL;
+        if (match(LET)) return Ast.BindingKind.LET;
+        throw error(peek(), "expected const, val, or let");
+    }
+
+    private boolean parseReferentMutability(Ast.BindingKind kind) {
+        if (kind == Ast.BindingKind.VAL) {
+            if (match(MUT)) {
+                throw error(previous(), "'val' already means 'const mut'; 'val mut' is a duplicate mutability qualifier");
+            }
+            return true;
+        }
+        return match(MUT);
+    }
+
+    private Ast.BindingKind parseForOfBindingKind() {
+        return parseBindingKind();
+    }
+
+    private void requireForOfBindingKind(Ast.BindingKind kind) {
+        if (kind == null) throw error(peek(), "for-of binding kind is required");
+    }
+
+    private IllegalArgumentException forOfUndeclaredBindingError() {
+        String subject = check(IDENT) ? " '" + peek().lexeme() + "'" : "";
+        return error(peek(),
+                "variable used before declared" + subject
+                        + "; for-of bindings require an explicit const/val/let declaration");
+    }
+
+    private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
+
+    private boolean matchContextualStructuralModifier() {
+        if (!check(IDENT) || !peek().lexeme().equals("structural")) return false;
+        // Preserve ordinary identifiers such as:
+        //   structural(): int { ... }
+        //   structural<T>(T value): T { ... }
+        //   structural: int
+        // The modifier spelling is only consumed when it is not already
+        // syntactically the member/declaration name.
+        if (checkNext(LPAREN) || checkNext(LT) || checkNext(COLON)) return false;
+        advance();
+        return true;
+    }
+
+    // 'suspend' is an alias of 'suspends' only in modifier position; preserve
+    // instance methods actually named suspend(...).
+    private boolean matchContextualSuspendModifier() {
+        if (!isContextualIdentifier("suspend")) return false;
+        if (!checkNext(IDENT) && !checkNext(FNC)) return false;
+        advance();
+        return true;
+    }
+
+    // Both 'method' and 'mtd' are contextual class/actor markers, not global
+    // reserved tokens (the separate named-alias extension syntax also uses
+    // 'mtd'). Keep a member literally named method(...) or mtd(...) legal.
+    private boolean matchExplicitMethodMarker() {
+        if (!isContextualIdentifier("method") && !isContextualIdentifier("mtd")) return false;
+        // Permit the same callable names after a marker as bare methods, e.g.
+        // mtd select(), mtd do(), mtd mtd(), and [Symbol.iterator]().
+        // Otherwise adding an optional marker would change admissible names.
+        Token.Type nextType = current + 1 < tokens.size()
+                ? tokens.get(current + 1).type() : EOF;
+        if (nextType != IDENT && nextType != LBRACKET && nextType != STATIC
+                && !isReservedCallableName(nextType)
+                && !isContextualStatementCallableName(nextType)
+                && nextType != TRUE && nextType != FALSE) return false;
+        advance();
+        return true;
+    }
+
+    private boolean isAdjacentCompoundKeyword(String first, String second) {
+        if (current + 2 >= tokens.size()) return false;
+        Token left = tokens.get(current);
+        Token dash = tokens.get(current + 1);
+        Token right = tokens.get(current + 2);
+        return left.type() == IDENT && left.lexeme().equals(first)
+                && dash.type() == MINUS && right.type() == IDENT
+                && right.lexeme().equals(second)
+                && adjacent(left, dash) && adjacent(dash, right);
+    }
+
+    private boolean matchContextualShared() {
+        if (match(SHARED)) return true;
+        if (check(IDENT) && peek().lexeme().equals("shared")) {
+            advance();
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Matches words that are keywords only in a specific grammar position.
+     *
+     * <p>{@code case} and {@code when} intentionally lex as IDENT so they remain
+     * legal variable/parameter names. Grammar productions opt into their keyword
+     * meaning explicitly at switch/select arms and match guards.</p>
+     */
+    private boolean matchContextualKeyword(String... keywords) {
+        if (!check(IDENT)) return false;
+        String lexeme = peek().lexeme();
+        for (String keyword : keywords) {
+            if (lexeme.equals(keyword)) {
+                advance();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isIdentifierLikeToken(Token.Type type) {
+        return type == IDENT || type == SHARED || type == UNTRUSTED;
+    }
+
+    private boolean match(Token.Type... types) {
+        for (Token.Type type : types) {
+            if (check(type)) { advance(); return true; }
+        }
+        return false;
+    }
+
+    private boolean matchAdjacentBangEqKeyword() {
+        if (current + 1 >= tokens.size()) return false;
+        Token bang = tokens.get(current);
+        Token eq = tokens.get(current + 1);
+        if (bang.type() != BANG || eq.type() != EQ || !adjacent(bang, eq)) return false;
+        advance();
+        advance();
+        return true;
+    }
+
+    private Token consume(Token.Type type, String message) {
+        if (check(type)) return advance();
+        throw error(peek(), message);
+    }
+
+    private boolean check(Token.Type type) {
+        return type == IDENT
+                ? isIdentifierLikeToken(peek().type())
+                : peek().type() == type;
+    }
+    private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
+
+    private boolean adjacent(Token left, Token right) {
+        return left.line() == right.line() && right.column() == left.column() + left.lexeme().length();
+    }
+
+    private boolean checkAdjacentPair(Token.Type type) {
+        return current + 1 < tokens.size()
+                && tokens.get(current).type() == type
+                && tokens.get(current + 1).type() == type
+                && adjacent(tokens.get(current), tokens.get(current + 1));
+    }
+
+    private boolean matchAdjacentPair(Token.Type type) {
+        if (!checkAdjacentPair(type)) return false;
+        advance();
+        advance();
+        return true;
+    }
+
+    private boolean matchAdjacentTriple(Token.Type type) {
+        if (current + 2 >= tokens.size()) return false;
+        Token first = tokens.get(current);
+        Token second = tokens.get(current + 1);
+        Token third = tokens.get(current + 2);
+        if (first.type() != type || second.type() != type || third.type() != type
+                || !adjacent(first, second) || !adjacent(second, third)) return false;
+        advance();
+        advance();
+        advance();
+        return true;
+    }
+
+    private boolean matchSingleOperator(Token.Type type) {
+        if (!check(type) || checkAdjacentPair(type)) return false;
+        advance();
+        return true;
+    }
+    private boolean isLegacyFnSpelling() {
+        return check(IDENT) && peek().lexeme().equals("fn");
+    }
+
+    private boolean checkNextLexeme(String lexeme) {
+        return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals(lexeme);
+    }
+    private Token advance() { if (!check(EOF)) current++; return previous(); }
+    private Token peek() { return tokens.get(current); }
+    private Token previous() { return tokens.get(current - 1); }
+
+    private IllegalArgumentException error(Token token, String message) {
+        return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
+    }
+
+    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean generatorStarred, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
+}
+
+ names cannot be
+        // written by source users and preserve positional call ABI/arity.
+        // Leave named parameters unchanged so existing duplicate rejection
+        // and contextual type inference retain their behavior.
+        for (int i = 0; i < params.size(); i++) {
+            Ast.Param param = params.get(i);
+            if (param.name().equals("_")) {
+                params.set(i, new Ast.Param(param.type(),
+                        "$ignored_lambda_" + i, param.structural(), param.mutable()));
+            }
+        }
         // Both |params| -> void { ... } and |params| : void -> { ... }
         // declare the same result. Do not reinterpret ':' as a parameter
         // delimiter after the closing pipe, or silently drop the result.
