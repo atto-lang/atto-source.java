@@ -54,21 +54,38 @@ public final class OresTaskScope implements AutoCloseable {
         void bindChild(CompilerScopeEpoch scopeEpoch, OresTask<?> child);
 
         /**
-         * No provisional runtime child was ever created. This edge is valid
-         * only before bindChild and carries no authority for a child that
-         * already has an exact runtime identity.
+         * Bind the scope-owned provisional owner to the exact runtime-minted
+         * scheduler child. This is the final live authority transition before
+         * executable admission.
          */
+        void bindSchedulerChild(
+                CompilerScopeEpoch scopeEpoch,
+                OresTask<?> child,
+                OresScheduler.CompilerTaskHandle<?> schedulerChild);
+
+        /** No provisional owner binding ever committed. */
         void retireBeforeChildBound(CompilerScopeEpoch scopeEpoch);
 
         /**
-         * An exact provisional child exists, but executable scheduler
-         * admission never happened. The exact child identity is mandatory.
+         * The provisional owner exists, but scheduler-child binding never
+         * committed. This cannot retire a scheduler-bound loan.
          */
-        void retireNeverStarted(
+        void retireBeforeSchedulerChildBound(
                 CompilerScopeEpoch scopeEpoch, OresTask<?> child);
 
+        /**
+         * Exact scheduler child was bound, but registration/admission failed.
+         * Both owner and scheduler identities are required.
+         */
+        void retireNeverStarted(
+                CompilerScopeEpoch scopeEpoch,
+                OresTask<?> child,
+                OresScheduler.CompilerTaskHandle<?> schedulerChild);
+
         void retireAfterPhysicalQuiescence(
-                CompilerScopeEpoch scopeEpoch, OresTask<?> child);
+                CompilerScopeEpoch scopeEpoch,
+                OresTask<?> child,
+                OresScheduler.CompilerTaskHandle<?> schedulerChild);
     }
 
     private static final CompilerLoanRetirement NO_COMPILER_LOAN =
@@ -76,12 +93,22 @@ public final class OresTaskScope implements AutoCloseable {
                 @Override public void bindScope(CompilerScopeEpoch scopeEpoch) { }
                 @Override public void bindChild(
                         CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
+                @Override public void bindSchedulerChild(
+                        CompilerScopeEpoch scopeEpoch,
+                        OresTask<?> child,
+                        OresScheduler.CompilerTaskHandle<?> schedulerChild) { }
                 @Override public void retireBeforeChildBound(
                         CompilerScopeEpoch scopeEpoch) { }
+                @Override public void retireBeforeSchedulerChildBound(
+                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
                 @Override public void retireNeverStarted(
-                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
+                        CompilerScopeEpoch scopeEpoch,
+                        OresTask<?> child,
+                        OresScheduler.CompilerTaskHandle<?> schedulerChild) { }
                 @Override public void retireAfterPhysicalQuiescence(
-                        CompilerScopeEpoch scopeEpoch, OresTask<?> child) { }
+                        CompilerScopeEpoch scopeEpoch,
+                        OresTask<?> child,
+                        OresScheduler.CompilerTaskHandle<?> schedulerChild) { }
             };
 
     // All members of one owned tree share a strict admission/plan monitor.
@@ -254,38 +281,44 @@ public final class OresTaskScope implements AutoCloseable {
         try {
             loanRetirement.bindScope(compilerScopeEpoch);
         } catch (RuntimeException | Error bindingFailure) {
-            // A trusted lifecycle object may fail after partially accepting
-            // this exact runtime epoch. Retain its identity even though no
-            // provisional Task owner exists yet.
             poisonCompilerLoan(loanRetirement, bindingFailure);
             throw bindingFailure;
         }
 
-        // Reserve the owner before executable dispatch, but never run a
-        // scheduler, guest turn or code-image release under admission locks.
+        // Reserve the scope-owned provisional owner before scheduler admission.
+        // This identity is bookkeeping authority, not physical-execution proof.
         OresFuture<Void> pendingFence = null;
         OresTask<T> pendingOwner = null;
         OwnershipSlot pendingSlot = null;
+        boolean loanChildBindAttempted = false;
         boolean loanChildBound = false;
         try {
             pendingFence = new OresFuture<>();
             pendingOwner = OresTask.provisional(pendingFence);
-            loanRetirement.bindChild(compilerScopeEpoch, pendingOwner);
-            loanChildBound = true;
+            loanChildBindAttempted = true;
+            try {
+                loanRetirement.bindChild(compilerScopeEpoch, pendingOwner);
+                loanChildBound = true;
+            } catch (RuntimeException | Error childBindingFailure) {
+                // A trusted capability may throw after partially accepting
+                // the owner identity. Earlier rollback edges cannot safely
+                // prove that partial authority was not retained.
+                poisonCompilerLoan(loanRetirement, childBindingFailure);
+                throw childBindingFailure;
+            }
             pendingSlot = new OwnershipSlot();
             pendingSlot.task = pendingOwner;
             synchronized (treeAdmissionGate) {
                 synchronized (gate) {
                     ensureAdmitting();
-                    if (!tasks.add(pendingSlot))
-                        throw new IllegalStateException("duplicate Task ownership slot");
+                    if (!tasks.add(pendingSlot)) {
+                        throw new IllegalStateException(
+                                "duplicate Task ownership slot");
+                    }
                     pendingSlot.registered = true;
                 }
             }
         } catch (RuntimeException | Error preparationFailure) {
-            // External/code cleanup may still use borrowed memory, so it must
-            // retire before the compiler loan. Only after BOTH trusted
-            // authorities retire may a provisional owner slot disappear.
             Throwable releaseFailure = null;
             try {
                 onPhysicalExit.run();
@@ -293,26 +326,34 @@ public final class OresTaskScope implements AutoCloseable {
                 releaseFailure = failure;
                 poisonPhysicalExitAndDependentLoan(
                         onPhysicalExit, loanRetirement, failure);
-                if (failure != preparationFailure)
+                if (failure != preparationFailure) {
                     preparationFailure.addSuppressed(failure);
+                }
             }
             if (releaseFailure == null) {
-                try {
-                    if (!loanChildBound) {
-                        loanRetirement.retireBeforeChildBound(
-                                compilerScopeEpoch);
-                    } else {
-                        loanRetirement.retireNeverStarted(
-                                compilerScopeEpoch,
-                                Objects.requireNonNull(
-                                        pendingOwner,
-                                        "bound provisional Task child"));
+                if (loanChildBindAttempted && !loanChildBound) {
+                    // bindChild itself failed. Its partial state is unknowable,
+                    // so the poisoned capability remains the reclamation pin.
+                    releaseFailure = preparationFailure;
+                } else {
+                    try {
+                        if (!loanChildBindAttempted) {
+                            loanRetirement.retireBeforeChildBound(
+                                    compilerScopeEpoch);
+                        } else {
+                            loanRetirement.retireBeforeSchedulerChildBound(
+                                    compilerScopeEpoch,
+                                    Objects.requireNonNull(
+                                            pendingOwner,
+                                            "bound provisional Task owner"));
+                        }
+                    } catch (RuntimeException | Error failure) {
+                        releaseFailure = failure;
+                        poisonCompilerLoan(loanRetirement, failure);
+                        if (failure != preparationFailure) {
+                            preparationFailure.addSuppressed(failure);
+                        }
                     }
-                } catch (RuntimeException | Error failure) {
-                    releaseFailure = failure;
-                    poisonCompilerLoan(loanRetirement, failure);
-                    if (failure != preparationFailure)
-                        preparationFailure.addSuppressed(failure);
                 }
             }
 
@@ -320,27 +361,29 @@ public final class OresTaskScope implements AutoCloseable {
             if (releaseFailure == null && pendingSlot != null) {
                 try {
                     synchronized (gate) {
-                        // A sealed scope can reject before insertion. Do NOT
-                        // invoke a hostile removal hook for a never-owned slot.
-                        // An insert-then-throw collection is still detected
-                        // by contains() when registered is false.
-                        if (pendingSlot.registered || tasks.contains(pendingSlot)) {
-                            if (!tasks.remove(pendingSlot))
+                        if (pendingSlot.registered
+                                || tasks.contains(pendingSlot)) {
+                            if (!tasks.remove(pendingSlot)) {
                                 throw new IllegalStateException(
                                         "provisional Task owner rollback did not remove reserved slot");
+                            }
                         }
                     }
                 } catch (RuntimeException | Error failure) {
                     bookkeepingFailure = failure;
-                    if (failure != preparationFailure)
+                    if (failure != preparationFailure) {
                         preparationFailure.addSuppressed(failure);
+                    }
                 }
             }
             if (pendingFence != null) {
                 Throwable fenceFailure = releaseFailure != null
                         ? releaseFailure : bookkeepingFailure;
-                if (fenceFailure == null) pendingFence.completeFromRuntime(null);
-                else pendingFence.failFromRuntime(fenceFailure);
+                if (fenceFailure == null) {
+                    pendingFence.completeFromRuntime(null);
+                } else {
+                    pendingFence.failFromRuntime(fenceFailure);
+                }
             }
             throw preparationFailure;
         }
@@ -348,56 +391,113 @@ public final class OresTaskScope implements AutoCloseable {
         final OwnershipSlot ownedSlot = pendingSlot;
         final OresFuture<Void> exitFence = pendingFence;
         final OresTask<T> ownedChild = pendingOwner;
+        final java.util.concurrent.atomic.AtomicReference<
+                OresScheduler.CompilerTaskHandle<?>> schedulerChild =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        final java.util.concurrent.atomic.AtomicBoolean schedulerBindAttempted =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        final java.util.concurrent.atomic.AtomicBoolean neverStartedWitness =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        OresScheduler.CompilerChildLifecycle schedulerLifecycle =
+                new OresScheduler.CompilerChildLifecycle() {
+                    @Override
+                    public synchronized void bind(
+                            OresScheduler.CompilerTaskHandle<?> child) {
+                        Objects.requireNonNull(
+                                child, "compiler scheduler child");
+                        if (schedulerChild.get() != null
+                                || !schedulerBindAttempted.compareAndSet(
+                                        false, true)) {
+                            throw new IllegalStateException(
+                                    "compiler scheduler child bound more than once");
+                        }
+                        try {
+                            loanRetirement.bindSchedulerChild(
+                                    compilerScopeEpoch, ownedChild, child);
+                        } catch (RuntimeException | Error bindingFailure) {
+                            // Do not regress to an owner-only rollback edge:
+                            // the capability may have partially accepted this
+                            // exact scheduler identity before throwing.
+                            poisonCompilerLoan(
+                                    loanRetirement, bindingFailure);
+                            throw bindingFailure;
+                        }
+                        schedulerChild.set(child);
+                    }
+
+                    @Override
+                    public synchronized void neverStarted(
+                            OresScheduler.CompilerTaskHandle<?> child) {
+                        if (schedulerChild.get() != child) {
+                            throw new IllegalStateException(
+                                    "never-started witness belongs to a different scheduler child");
+                        }
+                        if (!neverStartedWitness.compareAndSet(false, true)) {
+                            throw new IllegalStateException(
+                                    "scheduler child reported never-started more than once");
+                        }
+                    }
+
+                    @Override
+                    public synchronized void physicallyQuiescent(
+                            OresScheduler.CompilerTaskHandle<?> child) {
+                        if (schedulerChild.get() != child) {
+                            throw new IllegalStateException(
+                                    "physical witness belongs to a different scheduler child");
+                        }
+                        if (neverStartedWitness.get()) {
+                            throw new IllegalStateException(
+                                    "never-started scheduler child cannot report physical quiescence");
+                        }
+
+                        // Dependency order is deliberate:
+                        // physical guest exit -> code/FFI/resource cleanup ->
+                        // memory-loan return -> owner-slot removal -> done fence.
+                        try {
+                            onPhysicalExit.run();
+                        } catch (RuntimeException | Error releaseFailure) {
+                            poisonPhysicalExitAndDependentLoan(
+                                    onPhysicalExit, loanRetirement,
+                                    releaseFailure);
+                            exitFence.failFromRuntime(releaseFailure);
+                            return;
+                        }
+                        try {
+                            loanRetirement.retireAfterPhysicalQuiescence(
+                                    compilerScopeEpoch, ownedChild, child);
+                        } catch (RuntimeException | Error loanFailure) {
+                            poisonCompilerLoan(
+                                    loanRetirement, loanFailure);
+                            exitFence.failFromRuntime(loanFailure);
+                            return;
+                        }
+                        try {
+                            synchronized (gate) {
+                                if (!tasks.remove(ownedSlot)) {
+                                    throw new IllegalStateException(
+                                            "physical Task owner slot missing at retirement");
+                                }
+                            }
+                            exitFence.completeFromRuntime(null);
+                        } catch (RuntimeException | Error bookkeepingFailure) {
+                            exitFence.failFromRuntime(bookkeepingFailure);
+                        }
+                    }
+                };
+
         final OresFuture<T> completion;
         try {
-            completion = scheduler.start(resume -> {
-                // Cancellation between reservation and Future binding seals
-                // admission to new guest turns, not the physical carrier.
-                if (isCancelRequested()) {
-                    throw new java.util.concurrent.CancellationException(
-                            "Task scope cancelled before guest turn");
-                }
-                return frame.resume(resume);
-            }, () -> {
-                // Retire the code pin once, AFTER the final carrier turn.
-                // Do not discard a failed pin. Prune owner bookkeeping
-                // before completing the quiescence Future, because generic
-                // Future observers swallow callback exceptions.
-                // The memory loan is the LAST external authority returned
-                // after guest exit. Code/FFI/resource cleanup may still rely on
-                // the borrowed allocation, and a failed cleanup must preserve
-                // both the loan and the owner slot as reclamation pins.
-                try {
-                    onPhysicalExit.run();
-                } catch (RuntimeException | Error releaseFailure) {
-                    poisonPhysicalExitAndDependentLoan(
-                            onPhysicalExit, loanRetirement, releaseFailure);
-                    exitFence.failFromRuntime(releaseFailure);
-                    return;
-                }
-                try {
-                    loanRetirement.retireAfterPhysicalQuiescence(
-                            compilerScopeEpoch, ownedChild);
-                } catch (RuntimeException | Error loanFailure) {
-                    poisonCompilerLoan(loanRetirement, loanFailure);
-                    exitFence.failFromRuntime(loanFailure);
-                    return;
-                }
-                try {
-                    synchronized (gate) {
-                        if (!tasks.remove(ownedSlot))
-                            throw new IllegalStateException(
-                                    "physical Task owner slot missing at retirement");
-                    }
-                    exitFence.completeFromRuntime(null);
-                } catch (RuntimeException | Error bookkeepingFailure) {
-                    exitFence.failFromRuntime(bookkeepingFailure);
-                }
-            });
+            completion = scheduler.startCompilerAdmittedTask(
+                    resume -> {
+                        if (isCancelRequested()) {
+                            throw new java.util.concurrent.CancellationException(
+                                    "Task scope cancelled before guest turn");
+                        }
+                        return frame.resume(resume);
+                    },
+                    schedulerLifecycle);
         } catch (RuntimeException | Error rejectedBeforeDispatch) {
-            // Scheduler.start threw before TaskRunner registration. Preserve
-            // the same dependency ordering as physical exit: code/FFI/resource
-            // cleanup first, then memory-loan return, then owner-slot removal.
             Throwable releaseFailure = null;
             try {
                 onPhysicalExit.run();
@@ -405,43 +505,66 @@ public final class OresTaskScope implements AutoCloseable {
                 releaseFailure = failure;
                 poisonPhysicalExitAndDependentLoan(
                         onPhysicalExit, loanRetirement, failure);
-                if (failure != rejectedBeforeDispatch)
+                if (failure != rejectedBeforeDispatch) {
                     rejectedBeforeDispatch.addSuppressed(failure);
+                }
             }
+
             if (releaseFailure == null) {
                 try {
-                    loanRetirement.retireNeverStarted(
-                            compilerScopeEpoch, ownedChild);
+                    OresScheduler.CompilerTaskHandle<?> exact =
+                            schedulerChild.get();
+                    if (exact == null
+                            && schedulerBindAttempted.get()) {
+                        // bindSchedulerChild itself failed. Its partial state
+                        // is unknowable and was poisoned by bind(); preserve
+                        // the owner slot and exact failed authority.
+                        releaseFailure = rejectedBeforeDispatch;
+                    } else if (exact == null) {
+                        loanRetirement.retireBeforeSchedulerChildBound(
+                                compilerScopeEpoch, ownedChild);
+                    } else if (!neverStartedWitness.get()) {
+                        throw new IllegalStateException(
+                                "scheduler rejected an exact child without a never-started witness");
+                    } else {
+                        loanRetirement.retireNeverStarted(
+                                compilerScopeEpoch, ownedChild, exact);
+                    }
                 } catch (RuntimeException | Error failure) {
                     releaseFailure = failure;
                     poisonCompilerLoan(loanRetirement, failure);
-                    if (failure != rejectedBeforeDispatch)
+                    if (failure != rejectedBeforeDispatch) {
                         rejectedBeforeDispatch.addSuppressed(failure);
+                    }
                 }
             }
+
             Throwable bookkeepingFailure = null;
             if (releaseFailure == null) {
                 try {
                     synchronized (gate) {
-                        if (!tasks.remove(ownedSlot))
+                        if (!tasks.remove(ownedSlot)) {
                             throw new IllegalStateException(
                                     "physical Task owner slot missing at retirement");
+                        }
                     }
                 } catch (RuntimeException | Error failure) {
                     bookkeepingFailure = failure;
-                    if (failure != rejectedBeforeDispatch)
+                    if (failure != rejectedBeforeDispatch) {
                         rejectedBeforeDispatch.addSuppressed(failure);
+                    }
                 }
             }
             Throwable fenceFailure = releaseFailure != null
                     ? releaseFailure : bookkeepingFailure;
-            if (fenceFailure == null) exitFence.completeFromRuntime(null);
-            else exitFence.failFromRuntime(fenceFailure);
+            if (fenceFailure == null) {
+                exitFence.completeFromRuntime(null);
+            } else {
+                exitFence.failFromRuntime(fenceFailure);
+            }
             throw rejectedBeforeDispatch;
         }
 
-        // Cancellation may have sealed this scope while the scheduler was
-        // admitting the Task. The owner replays it without scope locks.
         ownedChild.attachCompletion(completion);
         return ownedChild;
     }
