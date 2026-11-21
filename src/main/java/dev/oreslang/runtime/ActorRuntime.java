@@ -7370,7 +7370,8 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorCell<?> parent) {
             this.ref = ref;
             this.physicalRetirement = new ActorPhysicalRetirementRegistry(
-                    ref.id(), ref.generation(), this::sourceTaskCleanupQuiesced);
+                    ref.id(), ref.generation(),
+                    this::physicalRetirementObserved, this::sourceTaskCleanupQuiesced);
             this.kind = kind;
             this.dispatchLane = dispatcherFor(kind) instanceof ActorAffinityDispatcher lanes
                     ? lanes.reserveLane() : -1;
@@ -7668,7 +7669,9 @@ public final class ActorRuntime implements AutoCloseable {
                                 physical.failure()));
                 return;
             }
-            if (physical.pending() != 0 || physical.inFlightNotifications() != 0
+            if ((physical.finalizationHandoffInFlight()
+                        && !physicalRetirement.isCurrentFinalizationHandoffThread())
+                    || physical.pending() != 0 || physical.inFlightNotifications() != 0
                     || !physicalChannelLeases.isEmpty()) {
                 // Keep ActorCell, arena and all shared/native loans alive.
                 // Removing the last receipt from pending is not enough while
@@ -7756,6 +7759,17 @@ public final class ActorRuntime implements AutoCloseable {
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
+        }
+
+        /**
+         * Physical receipt notifier: diagnostics only, never finalization.
+         * The registry calls sourceTaskCleanupQuiesced separately only AFTER
+         * the last physical notifier has fully returned and been accounted.
+         */
+        private void physicalRetirementObserved() {
+            synchronized (lifecycleLock) {
+                lifecycleLock.notifyAll();
+            }
         }
 
         private void sourceTaskCleanupQuiesced() {

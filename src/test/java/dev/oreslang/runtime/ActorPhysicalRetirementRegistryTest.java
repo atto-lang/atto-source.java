@@ -300,7 +300,7 @@ final class ActorPhysicalRetirementRegistryTest {
 
     @Test void exhaustedHostCloseQueueQuarantinesInsteadOfFreeingNativeLease() {
         var registry = new ActorPhysicalRetirementRegistry(
-                ActorRuntime.ActorId.create(), 8L, () -> { });
+                ActorRuntime.ActorId.create(), 8L, () -> { }, () -> { });
         var ticket = registry.register(
                 ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
         java.nio.channels.Channel channel = new java.nio.channels.Channel() {
@@ -498,7 +498,7 @@ final class ActorPhysicalRetirementRegistryTest {
         var signals = new AtomicInteger();
         var owner = ActorRuntime.ActorId.create();
         var registry = new ActorPhysicalRetirementRegistry(owner, 22,
-                signals::incrementAndGet);
+                signals::incrementAndGet, () -> { });
         var ticket = registry.register(
                 ActorPhysicalRetirementRegistry.Kind.MUTEX_HANDOFF, false);
         assertEquals(owner, ticket.actorId());
@@ -525,8 +525,8 @@ final class ActorPhysicalRetirementRegistryTest {
         assertEquals(1, registry.snapshot().pending());
         assertThrows(IllegalStateException.class, registry::retireVerified,
                 "the failed native loan must keep the arena quarantined");
-        assertEquals(3, signals.get(),
-                "failed release notifies once; successful receipt also wakes after callback retirement");
+        assertEquals(2, signals.get(),
+                "one notifier per physical event; finalization handoff is independent");
     }
 
     @Test void removedTicketCannotRetireWhileHostNotificationIsBlocked()
@@ -547,7 +547,7 @@ final class ActorPhysicalRetirementRegistryTest {
                         Thread.currentThread().interrupt();
                         throw new IllegalStateException(interrupted);
                     }
-                });
+                }, () -> { });
         var ticket = registry.register(
                 ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
         registry.seal();
@@ -572,7 +572,7 @@ final class ActorPhysicalRetirementRegistryTest {
         assertFalse(settler.isAlive());
         assertNull(failure.get());
         assertEquals(0, registry.snapshot().inFlightNotifications());
-        assertEquals(2, notifications.get(), "last receipt must recheck after callback exit");
+        assertEquals(1, notifications.get(), "physical notifier must not be invoked twice");
         registry.retireVerified();
         assertTrue(registry.snapshot().retired());
     }
@@ -580,7 +580,7 @@ final class ActorPhysicalRetirementRegistryTest {
     @Test void throwingHostNotificationFailsClosedInsteadOfHidingAReleaseFailure() {
         var failure = new IllegalStateException("native retirement notifier failed");
         var registry = new ActorPhysicalRetirementRegistry(
-                ActorRuntime.ActorId.create(), 1, () -> { throw failure; });
+                ActorRuntime.ActorId.create(), 1, () -> { throw failure; }, () -> { });
         var ticket = registry.register(
                 ActorPhysicalRetirementRegistry.Kind.OTHER, false);
         registry.seal();
@@ -595,7 +595,7 @@ final class ActorPhysicalRetirementRegistryTest {
 
     @Test void concurrentlySettledPhysicalTicketCannotUnderflow() throws Exception {
         var registry = new ActorPhysicalRetirementRegistry(
-                ActorRuntime.ActorId.create(), 1, () -> { });
+                ActorRuntime.ActorId.create(), 1, () -> { }, () -> { });
         var ticket = registry.register(ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE,
                 false);
         var entered = new CountDownLatch(2);
@@ -636,7 +636,7 @@ final class ActorPhysicalRetirementRegistryTest {
         var rejected = new java.util.concurrent.RejectedExecutionException(
                 "close executor queue is saturated");
         var broken = new ActorPhysicalRetirementRegistry(
-                ActorRuntime.ActorId.create(), 1, () -> { throw notifierFailure; });
+                ActorRuntime.ActorId.create(), 1, () -> { throw notifierFailure; }, () -> { });
         var brokenReceipt = broken.register(
                 ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
         java.nio.channels.Channel stuck = new java.nio.channels.Channel() {
@@ -649,7 +649,7 @@ final class ActorPhysicalRetirementRegistryTest {
                 ignored -> { });
 
         var good = new ActorPhysicalRetirementRegistry(
-                ActorRuntime.ActorId.create(), 2, () -> { });
+                ActorRuntime.ActorId.create(), 2, () -> { }, () -> { });
         var goodReceipt = good.register(
                 ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
         var actuallyClosed = new java.util.concurrent.atomic.AtomicBoolean();
@@ -708,7 +708,7 @@ final class ActorPhysicalRetirementRegistryTest {
     @Test void throwingCloseNotifierMustPreserveOriginalIoFailure() {
         var observerFailure = new IllegalStateException("owner notifier");
         var registry = new ActorPhysicalRetirementRegistry(
-                ActorRuntime.ActorId.create(), 9, () -> { throw observerFailure; });
+                ActorRuntime.ActorId.create(), 9, () -> { throw observerFailure; }, () -> { });
         var receipt = registry.register(
                 ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
         var kernelFailure = new java.io.IOException("close failed");
@@ -734,7 +734,7 @@ final class ActorPhysicalRetirementRegistryTest {
             var observerFailure = new IllegalStateException("retirement observer failed");
             var registry = new ActorPhysicalRetirementRegistry(
                     ActorRuntime.ActorId.create(), 77L,
-                    () -> { throw observerFailure; });
+                    () -> { throw observerFailure; }, () -> { });
             var receipt = registry.register(
                     ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
             java.nio.channels.CompletionHandler<Integer, Void> broken =
@@ -764,7 +764,7 @@ final class ActorPhysicalRetirementRegistryTest {
     @Test void malformedNullNativeFailureMustQuarantineAndNeverReachDelegate() {
         var invoked = new AtomicInteger();
         var registry = new ActorPhysicalRetirementRegistry(
-                ActorRuntime.ActorId.create(), 78L, () -> { });
+                ActorRuntime.ActorId.create(), 78L, () -> { }, () -> { });
         var receipt = registry.register(
                 ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
         java.nio.channels.CompletionHandler<Integer, Void> delegate =
@@ -790,7 +790,7 @@ final class ActorPhysicalRetirementRegistryTest {
         var observerFailure = new IllegalStateException("retirement observer failed");
         var registry = new ActorPhysicalRetirementRegistry(
                 ActorRuntime.ActorId.create(), 79L,
-                () -> { throw observerFailure; });
+                () -> { throw observerFailure; }, () -> { });
         var receipt = registry.register(
                 ActorPhysicalRetirementRegistry.Kind.OTHER, false);
         var callback = new ActorPhysicalIoCallbackLease<Integer, Void>(
@@ -821,7 +821,7 @@ final class ActorPhysicalRetirementRegistryTest {
             }
         };
         var registry = new ActorPhysicalRetirementRegistry(
-                ActorRuntime.ActorId.create(), 12, () -> { });
+                ActorRuntime.ActorId.create(), 12, () -> { }, () -> { });
         var receipt = registry.register(
                 ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
         var observedClose = new java.util.concurrent.atomic.AtomicReference<
@@ -858,7 +858,7 @@ final class ActorPhysicalRetirementRegistryTest {
             @Override public void close() { open.set(false); }
         };
         var registry = new ActorPhysicalRetirementRegistry(
-                ActorRuntime.ActorId.create(), 13, () -> { });
+                ActorRuntime.ActorId.create(), 13, () -> { }, () -> { });
         var receipt = registry.register(
                 ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
         var lease = new ActorPhysicalChannelLease(underlying, receipt,
@@ -961,7 +961,7 @@ final class ActorPhysicalRetirementRegistryTest {
             var delegateCalls = new AtomicInteger();
             var threadFailure = new AtomicReference<Throwable>();
             var registry = new ActorPhysicalRetirementRegistry(
-                    ActorRuntime.ActorId.create(), useFailedPath ? 81L : 80L, () -> { });
+                    ActorRuntime.ActorId.create(), useFailedPath ? 81L : 80L, () -> { }, () -> { });
             var receipt = registry.register(
                     ActorPhysicalRetirementRegistry.Kind.OTHER, false);
             java.nio.channels.CompletionHandler<Integer, Void> delegate =
@@ -1074,6 +1074,201 @@ final class ActorPhysicalRetirementRegistryTest {
         assertEquals(1, callbackCount.get(), "duplicate callback cannot reenter delegate");
         assertFalse(actor.done().isDone());
         assertThrows(IllegalStateException.class, runtime::close);
+    }
+
+
+    @Test void finalPhysicalNotifierMustExitBeforeFinalizationHandoff() throws Exception {
+        var entered = new CountDownLatch(1);
+        var allowExit = new CountDownLatch(1);
+        var notifierActive = new java.util.concurrent.atomic.AtomicBoolean();
+        var notifications = new AtomicInteger();
+        var finalizations = new AtomicInteger();
+        var registryRef = new AtomicReference<ActorPhysicalRetirementRegistry>();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 910L,
+                () -> {
+                    notifierActive.set(true);
+                    notifications.incrementAndGet();
+                    entered.countDown();
+                    try {
+                        assertTrue(allowExit.await(5, TimeUnit.SECONDS));
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    } finally {
+                        notifierActive.set(false);
+                    }
+                },
+                () -> {
+                    assertFalse(notifierActive.get(),
+                            "DONE handoff may not overlap the last physical notifier");
+                    registryRef.get().retireVerified();
+                    finalizations.incrementAndGet();
+                });
+        registryRef.set(registry);
+        var ticket = registry.register(ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
+        registry.seal();
+        var failure = new AtomicReference<Throwable>();
+        Thread driver = Thread.ofVirtual().start(() -> {
+            try { assertTrue(ticket.completeAfterPhysicalRelease()); }
+            catch (Throwable thrown) { failure.set(thrown); }
+        });
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertEquals(1, registry.snapshot().inFlightNotifications());
+            assertEquals(0, registry.snapshot().pending());
+            assertThrows(IllegalStateException.class, registry::retireVerified);
+            assertEquals(0, finalizations.get());
+        } finally {
+            allowExit.countDown();
+        }
+        driver.join(3_000);
+        assertFalse(driver.isAlive());
+        assertNull(failure.get());
+        assertEquals(1, notifications.get(), "never notify twice");
+        assertEquals(1, finalizations.get(), "exactly one post-exit handoff");
+        assertTrue(registry.snapshot().retired());
+    }
+
+    @Test void notifierFailureBeforeLastHandoffMustQuarantine() {
+        var notifierFailure = new IllegalStateException("notifier failed before exit");
+        var finalizations = new AtomicInteger();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 911L,
+                () -> { throw notifierFailure; },
+                finalizations::incrementAndGet);
+        var ticket = registry.register(ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
+        registry.seal();
+        assertSame(notifierFailure, assertThrows(IllegalStateException.class,
+                ticket::completeAfterPhysicalRelease));
+        assertSame(notifierFailure, registry.snapshot().failure());
+        assertEquals(0, registry.snapshot().inFlightNotifications());
+        assertEquals(0, finalizations.get(), "failed notifier cannot authorize DONE");
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
+    @Test void competingPhysicalNotifiersWaitForBothExits() throws Exception {
+        var entered = new CountDownLatch(2);
+        var release = new CountDownLatch(1);
+        var active = new AtomicInteger();
+        var finalizations = new AtomicInteger();
+        var registryRef = new AtomicReference<ActorPhysicalRetirementRegistry>();
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 912L,
+                () -> {
+                    active.incrementAndGet();
+                    entered.countDown();
+                    try {
+                        assertTrue(release.await(5, TimeUnit.SECONDS));
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    } finally {
+                        active.decrementAndGet();
+                    }
+                },
+                () -> {
+                    assertEquals(0, active.get(),
+                            "last physical callback must exit before finalization");
+                    registryRef.get().retireVerified();
+                    finalizations.incrementAndGet();
+                });
+        registryRef.set(registry);
+        var first = registry.register(ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
+        var second = registry.register(ActorPhysicalRetirementRegistry.Kind.TCP_HTTP_HANDLE, false);
+        registry.seal();
+        var failure = new AtomicReference<Throwable>();
+        Thread a = Thread.ofVirtual().start(() -> {
+            try { assertTrue(first.completeAfterPhysicalRelease()); }
+            catch (Throwable thrown) { failure.compareAndSet(null, thrown); }
+        });
+        Thread b = Thread.ofVirtual().start(() -> {
+            try { assertTrue(second.completeAfterPhysicalRelease()); }
+            catch (Throwable thrown) { failure.compareAndSet(null, thrown); }
+        });
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertEquals(2, registry.snapshot().inFlightNotifications());
+            assertEquals(0, finalizations.get());
+        } finally {
+            release.countDown();
+        }
+        a.join(3_000);
+        b.join(3_000);
+        assertFalse(a.isAlive());
+        assertFalse(b.isAlive());
+        assertNull(failure.get());
+        assertEquals(1, finalizations.get());
+        assertTrue(registry.snapshot().retired());
+    }
+
+    @Test void failingFinalizationHandoffDoesNotClaimCleanRetirement() {
+        var failure = new IllegalStateException("finalization handoff rejected");
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 913L,
+                () -> { },
+                () -> { throw failure; });
+        var ticket = registry.register(ActorPhysicalRetirementRegistry.Kind.OTHER, false);
+        registry.seal();
+        assertSame(failure, assertThrows(IllegalStateException.class,
+                ticket::completeAfterPhysicalRelease));
+        assertSame(failure, registry.snapshot().failure());
+        assertFalse(registry.snapshot().retired());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
+    }
+
+
+    @Test void concurrentStopCannotOvertakeFailedFinalizationHandoff()
+            throws Exception {
+        var handoffEntered = new CountDownLatch(1);
+        var allowHandoffFailure = new CountDownLatch(1);
+        var failure = new IllegalStateException("finalization handoff failed");
+        var registry = new ActorPhysicalRetirementRegistry(
+                ActorRuntime.ActorId.create(), 914L,
+                () -> { },
+                () -> {
+                    handoffEntered.countDown();
+                    try {
+                        assertTrue(allowHandoffFailure.await(5, TimeUnit.SECONDS));
+                    } catch (InterruptedException interruption) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interruption);
+                    }
+                    throw failure;
+                });
+        var receipt = registry.register(ActorPhysicalRetirementRegistry.Kind.FFI_LOAN, false);
+        registry.seal();
+        var actualFailure = new AtomicReference<Throwable>();
+        Thread worker = Thread.ofVirtual().start(() -> {
+            try {
+                receipt.completeAfterPhysicalRelease();
+            } catch (Throwable throwable) {
+                actualFailure.set(throwable);
+            }
+        });
+        try {
+            assertTrue(handoffEntered.await(3, TimeUnit.SECONDS));
+            var snapshot = registry.snapshot();
+            assertEquals(0, snapshot.pending());
+            assertEquals(0, snapshot.inFlightNotifications(),
+                    "physical notifier exited before the handoff began");
+            assertTrue(snapshot.finalizationHandoffInFlight(),
+                    "the finalization handoff must remain reserved");
+            assertFalse(registry.isCurrentFinalizationHandoffThread(),
+                    "a foreign STOP caller must not impersonate the handoff owner");
+            assertThrows(IllegalStateException.class, registry::retireVerified,
+                    "a second STOP must not publish DONE before handoff failure");
+            assertFalse(registry.snapshot().retired());
+        } finally {
+            allowHandoffFailure.countDown();
+        }
+        worker.join(3_000);
+        assertFalse(worker.isAlive());
+        assertSame(failure, actualFailure.get());
+        assertSame(failure, registry.snapshot().failure());
+        assertFalse(registry.snapshot().finalizationHandoffInFlight());
+        assertFalse(registry.snapshot().retired());
+        assertThrows(IllegalStateException.class, registry::retireVerified);
     }
 
 }
