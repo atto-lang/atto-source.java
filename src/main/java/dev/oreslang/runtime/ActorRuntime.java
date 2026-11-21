@@ -146,6 +146,15 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? Optional.empty() : Optional.of(current.actorId());
     }
 
+    // A bare ActorId is identification, not authority to erase persistent
+    // actor state. Only the quiesced runtime finalizer installs this
+    // thread-bound, non-guest-visible retirement permit.
+    private static final ThreadLocal<ActorId> STATE_RETIREMENT_AUTHORITY = new ThreadLocal<>();
+
+    static boolean authorizesActorStateRetirement(ActorId owner) {
+        return owner != null && owner.equals(STATE_RETIREMENT_AUTHORITY.get());
+    }
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current.executionDomain();
@@ -6320,7 +6329,20 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!retiringState.ownerActorId().equals(ref.id())) {
                         throw new SecurityException("foreign source actor state in lifecycle finalization");
                     }
-                    retiringState.retireFromRuntime();
+                    // Finalization can run outside the actor's guest turn.
+                    // Authenticate this trusted lifecycle boundary rather than
+                    // accepting a caller-supplied ActorId as a capability.
+                    ActorId priorRetirement = STATE_RETIREMENT_AUTHORITY.get();
+                    STATE_RETIREMENT_AUTHORITY.set(ref.id());
+                    try {
+                        retiringState.retireFromRuntime();
+                    } finally {
+                        if (priorRetirement == null) {
+                            STATE_RETIREMENT_AUTHORITY.remove();
+                        } else {
+                            STATE_RETIREMENT_AUTHORITY.set(priorRetirement);
+                        }
+                    }
                 } catch (VirtualMachineError | ThreadDeath fatal) {
                     throw fatal;
                 } catch (Throwable finalizationFailure) {

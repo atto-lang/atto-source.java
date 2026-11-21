@@ -1,0 +1,22 @@
+name: Actor sealed-state authority model
+on:
+  push:
+    paths:
+      - 'scripts/verify_actor_state_authority.mjs'
+      - 'docs/formal/ACTOR_STATE_AUTHORITY.md'
+      - '.github/workflows/actor-state-authority.yml'
+  pull_request:
+    paths:
+      - 'scripts/verify_actor_state_authority.mjs'
+      - 'docs/formal/ACTOR_STATE_AUTHORITY.md'
+      - '.github/workflows/actor-state-authority.yml'
+permissions:
+  contents: read
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check all reachable transitions and security mutants
+        run: node scripts/verify_actor_state_authority.mjs

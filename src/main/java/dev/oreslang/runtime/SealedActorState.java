@@ -33,8 +33,10 @@ public final class SealedActorState {
                             Map<String, Object> defaults) {
         this.owner = Objects.requireNonNull(owner, "actor identity");
         this.schema = new LinkedHashMap<>(Objects.requireNonNull(schema, "schema"));
-        if (this.schema.isEmpty() || this.schema.size() > MAX_FIELDS) {
-            throw new IllegalArgumentException("actor state requires 1..256 typed fields");
+        // An explicit `state { }` has a sealed zero-key schema. It is not
+        // an open map: no unlisted key may ever be added.
+        if (this.schema.size() > MAX_FIELDS) {
+            throw new IllegalArgumentException("actor state supports 0..256 typed fields");
         }
         this.values = new LinkedHashMap<>();
         for (var item : this.schema.entrySet()) {
@@ -181,11 +183,16 @@ public final class SealedActorState {
     /**
      * Called once by ActorRuntime after the actor's execution turn has fully
      * quiesced, not by arbitrary guest code. The owner ID fences accidental
-     * cross-actor finalization or stale actor incarnation references.
+     * cross-actor finalization or stale actor incarnation references; the
+     * separate non-forgeable runtime retirement permit authorizes the wipe.
      */
     public void retireFromRuntime(ActorRuntime.ActorId confirmedOwner) {
         if (!owner.equals(confirmedOwner)) {
             throw new SecurityException("cannot retire state for a foreign actor");
+        }
+        if (!ActorRuntime.authorizesActorStateRetirement(owner)) {
+            throw new SecurityException(
+                    "actor state retirement requires trusted runtime finalization authority");
         }
         if (current != null) {
             throw new IllegalStateException("cannot retire actor state with live critical loan");
