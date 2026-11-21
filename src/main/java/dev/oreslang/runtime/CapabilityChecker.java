@@ -308,7 +308,8 @@ public final class CapabilityChecker {
                 if (path.equals("native_net") || path.startsWith("native_net.")) {
                     require(policy, IsolatePolicy.Capability.NETWORK, path);
                     require(policy, IsolatePolicy.Capability.NETWORK_RAW, path);
-                } else if (path.startsWith("network.") || path.startsWith("net.") || path.startsWith("http.")) {
+                } else if (path.startsWith("network.") || path.startsWith("net.")
+                        || path.startsWith("http.")) {
                     require(policy, IsolatePolicy.Capability.NETWORK, path);
                 }
                 if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);

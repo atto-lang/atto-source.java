@@ -18,6 +18,7 @@ final class NativeSocketBridgeTest {
         assertTrue(Arrays.stream(addresses).allMatch(value -> !value.isBlank()));
     }
 
+
     @Test
     void rejectsNegativeConnectTimeoutBeforeBlocking() {
         Exception error = assertThrows(
@@ -70,6 +71,25 @@ final class NativeSocketBridgeTest {
         assertFalse(server.isAlive(), "buffer validation server did not terminate");
         if (serverFailure.get() != null) {
             fail("server failed", serverFailure.get());
+        }
+    }
+
+    @Test
+    void staleAndForgedSocketHandlesFailClosed() throws Exception {
+        long first = NativeSocketBridge.listen("127.0.0.1", 0, 8, true);
+        NativeSocketBridge.close(first);
+
+        assertThrows(java.io.IOException.class, () -> NativeSocketBridge.localPort(first));
+        assertThrows(java.io.IOException.class, () -> NativeSocketBridge.close(first));
+        assertThrows(java.io.IOException.class, () -> NativeSocketBridge.available(1L));
+
+        long second = NativeSocketBridge.listen("127.0.0.1", 0, 8, true);
+        try {
+            assertNotEquals(first, second, "a reused registry slot must receive a fresh cookie");
+            assertThrows(java.io.IOException.class, () -> NativeSocketBridge.localPort(first));
+            assertTrue(NativeSocketBridge.localPort(second) > 0);
+        } finally {
+            NativeSocketBridge.close(second);
         }
     }
 

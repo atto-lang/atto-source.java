@@ -10,6 +10,10 @@ import java.nio.file.Path;
  * This class deliberately does not use java.net.Socket, ServerSocket,
  * SocketChannel, or java.net.http. All transport I/O crosses directly into the
  * platform socket API through liboresnet.
+ *
+ * The long values exposed here are opaque liboresnet capability handles, not
+ * operating-system file-descriptor numbers. liboresnet resolves each handle
+ * through a randomized slot registry and rejects stale/revoked handles.
  */
 public final class NativeSocketBridge {
     private static final String LIBRARY = "oresnet";
@@ -39,32 +43,32 @@ public final class NativeSocketBridge {
 
     public static native long connect(String host, int port, int timeoutMillis) throws IOException;
     public static native long listen(String host, int port, int backlog, boolean reuseAddress) throws IOException;
-    public static native long accept(long fd) throws IOException;
+    public static native long accept(long handle) throws IOException;
 
-    public static native int read(long fd, byte[] bytes, int offset, int length) throws IOException;
-    public static native int write(long fd, byte[] bytes, int offset, int length) throws IOException;
-    public static native int available(long fd) throws IOException;
+    public static native int read(long handle, byte[] bytes, int offset, int length) throws IOException;
+    public static native int write(long handle, byte[] bytes, int offset, int length) throws IOException;
+    public static native int available(long handle) throws IOException;
 
-    public static native void shutdownInput(long fd) throws IOException;
-    public static native void shutdownOutput(long fd) throws IOException;
-    public static native void close(long fd) throws IOException;
+    public static native void shutdownInput(long handle) throws IOException;
+    public static native void shutdownOutput(long handle) throws IOException;
+    public static native void close(long handle) throws IOException;
 
-    public static native String remoteAddress(long fd) throws IOException;
-    public static native String localAddress(long fd) throws IOException;
-    public static native int remotePort(long fd) throws IOException;
-    public static native int localPort(long fd) throws IOException;
+    public static native String remoteAddress(long handle) throws IOException;
+    public static native String localAddress(long handle) throws IOException;
+    public static native int remotePort(long handle) throws IOException;
+    public static native int localPort(long handle) throws IOException;
     public static native String[] resolveAll(String host) throws IOException;
 
-    public static native void setTcpNoDelay(long fd, boolean enabled) throws IOException;
-    public static native boolean getTcpNoDelay(long fd) throws IOException;
-    public static native void setKeepAlive(long fd, boolean enabled) throws IOException;
-    public static native boolean getKeepAlive(long fd) throws IOException;
-    public static native void setReuseAddress(long fd, boolean enabled) throws IOException;
-    public static native boolean getReuseAddress(long fd) throws IOException;
-    public static native void setReceiveBufferSize(long fd, int bytes) throws IOException;
-    public static native int getReceiveBufferSize(long fd) throws IOException;
-    public static native void setSendBufferSize(long fd, int bytes) throws IOException;
-    public static native int getSendBufferSize(long fd) throws IOException;
-    public static native void setSoTimeout(long fd, int timeoutMillis) throws IOException;
-    public static native int getSoTimeout(long fd) throws IOException;
+    public static native void setTcpNoDelay(long handle, boolean enabled) throws IOException;
+    public static native boolean getTcpNoDelay(long handle) throws IOException;
+    public static native void setKeepAlive(long handle, boolean enabled) throws IOException;
+    public static native boolean getKeepAlive(long handle) throws IOException;
+    public static native void setReuseAddress(long handle, boolean enabled) throws IOException;
+    public static native boolean getReuseAddress(long handle) throws IOException;
+    public static native void setReceiveBufferSize(long handle, int bytes) throws IOException;
+    public static native int getReceiveBufferSize(long handle) throws IOException;
+    public static native void setSendBufferSize(long handle, int bytes) throws IOException;
+    public static native int getSendBufferSize(long handle) throws IOException;
+    public static native void setSoTimeout(long handle, int timeoutMillis) throws IOException;
+    public static native int getSoTimeout(long handle) throws IOException;
 }
