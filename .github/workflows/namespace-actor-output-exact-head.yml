@@ -1,7 +1,7 @@
-name: Namespace actor output exact-head full-tree verification
+name: Namespace actor checked output + Truffle action nodes full-tree gate
 on:
   pull_request:
-    branches: [feat/namespace-actor-unleased-spawn-v0-20261112]
+    branches: [feat/namespace-actor-unleased-spawn-v0-20261112, feat/namespace-actor-checked-output-abi-v1-20261112]
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
@@ -58,10 +58,12 @@ jobs:
           set -euo pipefail
           mvn -B -ntp '-P!native-thread-unix' -DfailIfNoTests=true clean test
           test -s target/surefire-reports/TEST-dev.oreslang.compiler.NamespaceActorCriticalOutputTest.xml
+          test -s target/surefire-reports/TEST-dev.oreslang.compiler.NamespaceActorTruffleActionNodesTest.xml
           test -s target/surefire-reports/TEST-dev.oreslang.compiler.NamespaceActorCriticalIrCompilerTest.xml
           test -s target/surefire-reports/TEST-dev.oreslang.NamespaceActorUnleasedSpawnV0Test.xml
           for spec in \
             dev.oreslang.compiler.NamespaceActorCriticalOutputTest:5 \
+            dev.oreslang.compiler.NamespaceActorTruffleActionNodesTest:4 \
             dev.oreslang.compiler.NamespaceActorCriticalIrCompilerTest:11 \
             dev.oreslang.NamespaceActorUnleasedSpawnV0Test:7; do
             clazz="${spec%%:*}"
@@ -87,6 +89,7 @@ jobs:
             printf '%s' "$suite" | grep -Eq 'skipped="0"'
           done
           echo ATTO_ACTOR_SOURCE_FULL_TREE_JUNIT=PASS
+          echo ATTO_ACTOR_CLOSED_WORLD_TRUFFLE_ACTION_NODES=TESTED_SUBSET
           echo ATTO_ACTOR_GENERAL_GUEST_LOWERING=NOT_PROVEN
           echo ATTO_ACTOR_NATIVE_IMAGE_AOT=NOT_EXECUTED
           echo ATTO_ACTOR_LLVM_NET_PARITY=NOT_EXECUTED
