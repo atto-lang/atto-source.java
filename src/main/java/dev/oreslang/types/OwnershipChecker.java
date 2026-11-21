@@ -188,12 +188,10 @@ public final class OwnershipChecker {
     }
 
     private Ast.ClassDecl initializingClass;
-    // A deliberately conservative one-write constructor ledger. A later CFG
-    // refinement may permit mutually exclusive writes, but this checker must
-    // never permit a fixed slot to be assigned twice along a path.
-    private Set<String> constructorFixedFieldWrites;
 
     private void checkClass(Ast.ClassDecl klass) {
+        // Enforce constructor flow even when ownership checks are run standalone.
+        ConstructorValInitialization.check(klass);
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
             if (fieldType != null && fieldType.isBorrow()) {
@@ -258,14 +256,11 @@ public final class OwnershipChecker {
             }
             defineImplicitArguments(scope, constructor.parameters());
             Ast.ClassDecl previousInitializingClass = initializingClass;
-            Set<String> previousFixedWrites = constructorFixedFieldWrites;
             initializingClass = klass;
-            constructorFixedFieldWrites = new HashSet<>();
             try {
                 checkBlock(constructor.body(), scope, Ast.TypeRef.simple("void"));
             } finally {
                 initializingClass = previousInitializingClass;
-                constructorFixedFieldWrites = previousFixedWrites;
             }
             scope.close();
         }
@@ -2099,16 +2094,12 @@ public final class OwnershipChecker {
                     boolean initializingFixedSlot =
                             field.initializer() == null
                             && klass == initializingClass
+                            && klass.fields().stream().anyMatch(declared -> declared == field)
                             && member.receiver() instanceof Ast.NameExpr name
                             && name.name().equals("self");
                     if (!initializingFixedSlot) {
                         throw error("field '" + klass.name() + "." + member.member()
                                 + "' is immutable; declare the field with let to permit mutation");
-                    }
-                    if (constructorFixedFieldWrites == null
-                            || !constructorFixedFieldWrites.add(member.member())) {
-                        throw error("field '" + klass.name() + "." + member.member()
-                                + "' is immutable; constructor must initialize it at most once");
                     }
                 }
             }

@@ -84,6 +84,40 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void mutableBlankFieldIsDefinitelyInitializedAndMayBeReassigned() throws Exception {
+        String output = run("""
+                define class MutableCounter as
+                  let int count;
+                  constructor(int n) {
+                    self.count = 1;
+                    self.count = n;
+                  }
+                  pub get(): int { return self.count; }
+                end
+                pub routine main(): void {
+                  val counter = new MutableCounter(42);
+                  stdio.stdout.write(counter.get());
+                  return;
+                }
+                """);
+        assertEquals("42", output);
+    }
+
+    @Test
+    void missingMutableBlankFieldFailsAtTypeCheckRatherThanRuntime() {
+        var model = Parser.parse("""
+                define class Broken as
+                  let int count;
+                  constructor() { return; }
+                end
+                """);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.checkTypes(model));
+        assertTrue(failure.getMessage().contains("did not initialize field 'count'"),
+                failure.getMessage());
+    }
+
+    @Test
     void overloadsResolveByArityNotParameterTypes() throws Exception {
         String source = """
                 define class Sample as
@@ -114,6 +148,33 @@ final class ClassConstructorHardeningTest {
         assertEquals(2, klass.constructorForArity(2).arity());
         assertNull(klass.constructorForArity(3));
         assertEquals("1|20|42", run(source));
+    }
+
+    @Test
+    void constructorValBranchInitializationExecutesWithBothOutcomes() throws Exception {
+        String output = run("""
+                define class Counter as
+                    val int count;
+                    constructor(int n) {
+                        if n > 0 then
+                            self.count = n;
+                        else
+                            self.count = 0;
+                        fi
+                        return;
+                    }
+                    pub get(): int { return self.count; }
+                end
+                pub routine main(): void {
+                    val first = new Counter(-1);
+                    val second = new Counter(42);
+                    stdio.stdout.write(first.get());
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(second.get());
+                    return;
+                }
+                """);
+        assertEquals("0|42", output);
     }
 
     @Test
