@@ -2079,11 +2079,22 @@ public final class ActorRuntime implements AutoCloseable {
                                 privateDispatcher.execute(() ->
                                         failRemainingStages(stage, cause));
                             } catch (RejectedExecutionException unavailable) {
-                                if (!closed.get()) {
-                                    done.failFromRuntime(new IllegalStateException(
-                                            "ActorStream supervision dispatcher rejected terminal propagation",
-                                            unavailable));
-                                }
+                                // Rejection is NOT physical completion. The
+                                // failed stage may already be done while other
+                                // actor stages are still executing guest code.
+                                // Never settle getDone() from this catch: the
+                                // normal pendingDone==0 barrier below is the
+                                // only authorized terminal publication point.
+                                //
+                                // Preserve the dispatch failure for diagnosis
+                                // without invoking sibling callbacks inline
+                                // under an actor lifecycle monitor. An owned
+                                // termination lane/retry is still required to
+                                // guarantee eventual physical sibling exit.
+                                cause.addSuppressed(new IllegalStateException(
+                                        "ActorStream supervision dispatch rejected; "
+                                                + "sibling termination remains pending",
+                                        unavailable));
                             }
                         }
                     }
