@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Runtime-owned immutable authorization chain. A child scope keeps a
@@ -16,6 +17,8 @@ final class ActorPermissionScope {
     private final ActorPermissionScope parent;
     private final RuntimePermissions restrictions;
     private final int depth;
+    /** Monotonic revocation, visible to actor turns and async native-I/O workers. */
+    private final AtomicBoolean revoked = new AtomicBoolean();
 
     private ActorPermissionScope(ActorPermissionScope parent, RuntimePermissions restrictions) {
         this.parent = parent;
@@ -34,17 +37,40 @@ final class ActorPermissionScope {
         return new ActorPermissionScope(this, requested);
     }
 
-    void requireNetworkListen(String resource, String operation) {
-        // Listener admission must satisfy every parent restriction too.
+    boolean revoke() {
+        // Only the specific delegated node is revoked. Independent sibling
+        // branches sharing a parent remain unaffected.
+        return revoked.compareAndSet(false, true);
+    }
+
+    void requireActive(String operation) {
         for (ActorPermissionScope layer = this; layer != null; layer = layer.parent) {
-            layer.restrictions.requireNetworkListen(resource, operation);
+            if (layer.revoked.get()) {
+                throw new SecurityException(
+                        "revoked actor permission delegation for " + operation);
+            }
         }
     }
 
+    void requireNetworkListen(String resource, String operation) {
+        // Recheck at each actual boundary, including async worker callbacks.
+        requireActive(operation);
+        for (ActorPermissionScope layer = this; layer != null; layer = layer.parent) {
+            layer.restrictions.requireNetworkListen(resource, operation);
+        }
+        // Recheck after policy matching; final admission still races later revoke.
+        requireActive(operation);
+    }
+
     void require(RuntimePermissions.Permission permission, String resource, String operation) {
+        requireActive(operation);
         // No recursive stack growth, even with adversarial nested delegation.
         for (ActorPermissionScope layer = this; layer != null; layer = layer.parent) {
             layer.restrictions.require(permission, resource, operation);
         }
+        // Recheck after policy matching to reduce the revocation race window.
+        // This is NOT a linearizable OS-operation fence and cannot roll back
+        // operations that have already passed authorization.
+        requireActive(operation);
     }
 }

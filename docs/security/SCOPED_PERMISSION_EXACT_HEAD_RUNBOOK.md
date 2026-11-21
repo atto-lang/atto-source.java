@@ -8,7 +8,10 @@ Stacked draft PRs:
 - #2269: adversarial isolate capability ceiling
 - #2277: actor-local immutable restriction chains and native-I/O authority
 - #2286: wildcard/IPv4/IPv6 network validation and exact resource identity
-- follow-on listener-port-zero PR: outbound network authorization denies port 0; explicit HTTP listener authorization can request OS-assigned port 0
+- #2287 listener-port-zero PR: outbound network authorization denies port 0; explicit HTTP listener authorization can request OS-assigned port 0
+- revocable-delegation follow-on draft: issuer-only, monotonic child-scope revocation; all subsequent actor/native-I/O resource authorization must deny after revocation (not preemptive syscall cancellation)
+
+**Revocation semantics:** revoking a token means no *subsequent* source actor or native-worker permission check may authorize the affected subtree. It does NOT synchronously kill the actor, stop an already-entered native OS syscall, undo prior file writes, or guarantee that an authorization/check-to-use race is closed. Full physical I/O retirement and OS-boundary fencing require separate design and runtime tests; do not count this as complete revocation or arbitrary host capability quarantine.
 
 The checked-in 44-case `contracts/v1/scoped-permissions-v1.json` oracle is unchanged. Its
 `endpoint-invalid-port` case MUST remain `deny`. Never rewrite the pinned v1
@@ -41,7 +44,7 @@ git rev-parse HEAD^{tree}
 java -version        # must report GraalVM JDK 25
 mvn -version
 mvn -B -ntp -Dores.runtime.carriers=native \
-  -Dtest=AdversarialPermissionCeilingTest,ActorScopedPermissionDelegationTest,RuntimePermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsIdentityHardeningTest,RuntimePermissionsPortZeroContractTest,ScopedPermissionInteropTest \
+  -Dtest=AdversarialPermissionCeilingTest,ActorScopedPermissionDelegationTest,ActorPermissionRevocationTest,RuntimePermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsIdentityHardeningTest,RuntimePermissionsPortZeroContractTest,ScopedPermissionInteropTest \
   test
 mvn -B -ntp -Dores.runtime.carriers=native verify
 mvn -B -ntp -Pnative-aot -DskipTests package
