@@ -57,6 +57,30 @@ evidence in a weak identity side table keyed by the exact AST expression.
 There is intentionally no raw "set proof" API and generic AST metadata copying
 does not transfer this evidence.
 
+### Static compiler-provenance hardening (2026-10-29)
+
+The experimental host-only `ConstraintValidationBridge` now records
+evidence **only** for a canonical signed-i64 `Ast.LiteralExpr` whose actual
+boxed integral value equals the proposed predicate operand. Passing a
+different numeric value for an ineligible AST node, or passing a name,
+floating-point literal, string, Boolean or arbitrary numeric wrapper, fails
+before any evidence is recorded. Evidence holder construction is private,
+and proof consumption requires both the exact original expression node
+**and exact catalog object identity**, in addition to descriptor fingerprint,
+qualified name, schema version and required validation status. A second
+compilation with an equivalent fingerprint cannot replay the first
+compilation's AST ledger.
+
+The host API remains **experimental**: public source AST and catalog helpers
+do not authenticate external source provenance, a Java reflection/plugin
+attacker is outside this API's current trust model, and the global weak
+identity ledger is not a runtime security capability. In particular the
+host-only static literal path does not establish a guest checked-conversion
+operation for a dynamically evaluated value, nor does it freeze mutable
+storage, bridge actor/FFI data, or authorize an `i64` alias. Those facilities
+require a compiler-owned construction intrinsic and trusted catalog/generation
+scope, with exact-head source-local executable negative testing.
+
 This is **not yet guest checked-conversion syntax or runtime admission**.
 `CONSTRAINT_VALIDATION_BRIDGE_REQUIRED` remains in the normal value-type
 resolution path until every construction/import/serialization/extension route
