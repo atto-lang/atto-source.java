@@ -735,3 +735,459 @@ expression variants fail closed instead of silently skipping cleanup checks.
 The checker regression methods establish expected safety behavior in source.
 They do **not** prove actual Maven/JUnit, compiler or runtime execution until
 an executing CI runner validates the exact Git tree.
+
+
+### Mandatory explicit function returns and value-match arrow expressions
+
+Every non-`void`, non-generator function or concrete method must explicitly
+`return` a value on every reachable completion path. The last expression in
+a function body is **not** an implicit return. Returning a value-producing
+`match` uses a callable-level `return match ... end`.
+
+A `match` expression may use concise arrow expressions: `on Some(x) -> x`.
+Those arm expressions produce the value of the `match` expression; they
+**do not** return from the enclosing function on their own. Existing braced
+`on Some(x) -> { return x; }` value arms remain compatible; their
+`return` is scoped to the match expression and is never a function return.
+`do match` is procedural and cannot appear as a returned expression.
+
+```ores
+pub fnc greet(string? name): string {
+    return match name over
+        on Some(n) -> n
+        on None -> "anonymous"
+    end
+}
+```
+
+The syntax above is a **parsing contract only** while optional `T?`
+parameters are still staged. Type-checking and execution remain denied
+until the typed Option ABI and ownership admission are implemented.
+
+
+## Parser-owned local literal candidate preview (2026-10-18)
+
+`OptionalCallLiteralStage.prepareSingleModuleLiteralCandidate(program, call)`
+derives a candidate function's formal parameters from an **actual parsed**
+single-module `Ast.Program` instead of accepting caller-supplied formal
+metadata. The compiler-only result combines a parsed `FunctionDecl` with
+the independently typed scalar-literal ABI/evaluation preview.
+
+Admission is intentionally narrower than eventual language semantics:
+programs with imports or multiple modules, annotated/contracted modules,
+same-name field collisions, overloaded names, unknown labels, generic call
+application, effectful/nonliteral arguments, callable generics, async,
+suspending, generator, nonlexical, trapped, actor-owned and annotated
+functions are rejected. All candidate formal value types are additionally
+restricted to exact `int`, `float`, `bool`, or `string` scalar types;
+structural, mutable, borrowed, unresolved nominal, generic and required
+`Option<T>` formals cannot acquire a fabricated literal proof. These exclusions may later be relaxed only after
+the real type/lexical/ownership resolver proves them. The helper does not
+inspect or authenticate the lexical call-site location: a local variable
+may still shadow a module function, and merely matching a parsed direct
+name does **not** establish resolution, accessibility or authority.
+
+This is **not** a compiled call, an executable IR token, or a replacement
+for `TypeChecker` / `OwnershipChecker`. The Java interpreter and native
+backends continue rejecting staged calls and `T?` formals. A compiler
+integration must authenticate lexical owner, declaration identity,
+overload family, generic substitutions, source expressions, effects,
+loans/moves and checked Option<T> ABI before enabling invocation.
+
+New JUnit regression *source* covers a named reordered call with explicit
+omission and direct parsed declaration identity, plus duplicate/same-name
+declarations, imports, annotations, async, unknown names/labels, generic
+calls and nonliteral effects. The source organization Actions jobs are
+still failing before recording execution steps, so no green JUnit claim
+can be made on this branch.
+
+The protected `main` private-source export allowlist remains empty.
+Security approval PR #1326 remains draft and CODEOWNER-reviewed approval
+is a prerequisite for any cross-organization private source mirroring.
+Alternate private destination's previously successful synthetic workflows
+are *not* evidence of compilation; recent checked destination jobs also
+failed with zero recorded steps. No source transfer was performed.
+
+## Staged owner-bound module invocation plan (2026-10-18)
+
+`BoundInvocation.bindModuleFunction` now binds a named/omitted call to an
+**original parsed function declaration object** from the supplied module.
+The result retains the owner, declaration ordinal, immutable source-first
+invocation preview and formal-order ABI slot mapping. The candidate family
+comes from the parsed module rather than an arbitrary name-to-signature
+dictionary. The conservative optional-arity overlap policy is applied before
+choosing a declaration. Both local names and precisely module-qualified
+names have static shape support. The companion `bindClassMethod` and
+`bindClassConstructor` factories record original directly-declared methods
+and explicit non-actor constructors with the same immutable source/ABI plan.
+These class-specific previews reject generic classes, inheritance, actor
+construction, synthesized field-order constructors and targets not belonging
+to the supplied parsed owner. Actual receiver typing and constructor field
+initialization still require compiler proofs. Indirect calls and unproved
+generics/actors are rejected.
+
+This is **not a trusted executable IR**. Caller-supplied
+`assertedSourceTypes` do not prove types; lexical import/visibility, effect,
+ownership, receiver evaluation, coercions and `Option<T>` lowering remain
+unimplemented. `requireExecutable()` always throws; existing independent
+TypeChecker/OwnershipChecker/interpreter stage admission remains fail-closed.
+JUnit test methods are committed, but passing JDK25 Maven or Graal/LLVM
+guest-language runs is not yet established.
+
+### Hardened shape-only admission (2026-10-18)
+
+Additional fail-closed conditions prevent the preview from claiming that
+effectful/async/generator/routine functions or annotated functions already
+have a verified invocation contract. Class method previews now reject
+static or abstract methods, explicit/specialized self receivers, structural
+methods, async/suspending methods and methods with annotations until receiver,
+dispatch, effect and `@CallableBy` authorization are proved. Annotated
+constructors also require a separate authorization check. The direct-class
+preview continues to reject abstract class construction, synthetic
+constructor ABI and unlowered constructor `self` receiver erasure.
+
+These checks narrow planning admission; they do **not** enable calls.
+This IR still cannot establish caller lexical scope or trusted source types,
+and `requireExecutable()` remains an unconditional error.
+
+### Branch reconciliation and checked literal-only source types (2026-10-18)
+
+The owner-bound invocation branch (Java PR #1397, stacked on #1335) now
+preserves both histories in non-force merge commits, retaining #1335's
+canonical `OptionalCallEvaluationSchedule` and its raw-call-item
+`SourceBinding` provenance. The `BoundInvocation` constructor rebinds
+against the *original* staged call items and selected declaration. Every
+recorded ABI slot must agree with the formal name/type, dense expression
+source index, and original omitted/supplied raw call-item position. Its
+schedule is a single immutable source-first/ABI-second snapshot.
+
+The public `bindModuleFunction`, `bindClassMethod`, and
+`bindClassConstructor` factories still take **asserted**, untrusted source
+types for structural/diagnostic planning only. No executable authorization
+is derived from these values. Narrow companion `bindLiteral*` factories
+instead derive exact primitive (`int`, `float`, `bool`, `string`) facts
+directly from top-level literal-expression AST values; bare `None`, variable
+references, calls, spreads, null and unsupported literals fail closed.
+Even this narrow provenance is **not** sufficient for access, ownership,
+effects, alias/generic substitution or runtime Option ABI proof.
+
+Both paths return `SHAPE_ONLY` and `requireExecutable()` always throws.
+The next authorization gate must be issued by the lexical TypeChecker and
+OwnershipChecker after selected-owner visibility, receiver, generic,
+borrowing/moving, effects, constructor initialization, and type adaptations
+are checked together. Only then can compiler-owned temporary lowering be
+enabled. Neither this stage nor the textual JUnit tests establish executable
+guest-language parity; exact-tree JDK25/GraalVM/LLVM runs are still required.
+
+Source-org Actions jobs have failed without recorded runner steps or logs.
+Private cross-organization mirror transfer remains disallowed until separate
+CODEOWNER/security approval on protected branch under PR #1326.
+
+## Compiler-only literal lexical witness and receiver temps (2026-10-18)
+
+The stacked Java #1397 branch now supplies two additional NON-EXECUTABLE
+handoffs. They are not authorization to execute or a replacement for
+TypeChecker, OwnershipChecker, native lowering, or a real JDK25 test run.
+
+`OptionalCallTempLowering.from(BoundInvocation)` produces an immutable
+recipe separating:
+
+- Static module function: compile-time declaration selection, **no guest
+  target-expression temporary**.
+- Instance method: **one receiver expression temporary before all argument
+  temps**, without pretending the method MemberExpr itself is a callable
+  guest value.
+- Explicit class constructor: no guest receiver or callee-expression temp.
+
+Each evaluated lexical *occurrence* (not each AST object identity) creates
+its own argument temporary, indexed by dense evaluated-source order with
+its original raw call-item index. A supplied source maps to exactly one
+formal ABI slot; full formal slots materialize only after every argument
+temp and are annotated `PASS_REQUIRED`, `WRAP_SOME`, `PASS_OPTION` or
+`INJECT_NONE`. Injected None has no source temporary, even when it
+originated at an explicit `_` call item. The factory derives the mapping
+from the immutable bound schedule; callers cannot fabricate executable
+recipes through a public constructor.
+
+`SameModuleLiteralInvocation.inspect(program, caller, call)` is a second,
+narrow **lexical-origin preview**. It insists on original AST identity:
+the calling declaration belongs to exactly one source module in the
+supplied program and the call occurs exactly once as a direct top-level
+statement, return, or binding initializer inside it. Only same-module
+static direct/qualified calls are considered. Imported scopes, actor,
+async/suspending/generator/routine/generic/annotated calling contexts,
+parameter/module/local/destructure name shadowing and nonliteral
+arguments fail closed. Its helper derives primitive source types from
+actual literal AST nodes, not user-supplied claims.
+
+A passed preview still lacks path-sensitive lexical binding in general,
+visibility to other modules, trust for receiver/argument expression
+effects, borrows/moves, constructor initialization, and executable
+`Option<T>` layout. `requireExecutable()` remains an unconditional
+exception. Full compiler-issued type/ownership/effect proof and backend
+code generation remain distinct, mandatory future steps.
+
+Regression methods are committed for lexical origin/forgeries,
+receiver-before-argument ordering, distinct temporaries for repeated
+AST object identities, explicit omissions, Option adaptations, imported
+and shadowed names, and disabled guest execution. They are not passing
+JUnit evidence until an actual runner executes them.
+
+## Compiler-only hardening against lexical body reuse and phase confusion (2026-10-18)
+
+Two additional **non-executable** audit gates now apply on stacked Java
+PR #1397:
+
+1. `SameModuleLiteralInvocation.inspect` no longer infers a unique lexical
+   occurrence merely from finding the staged call directly in one statement.
+   Because the narrow helper does not recursively establish CFG/effects, it
+   refuses other complex statements and any other nonliteral expressions in
+   the caller body. This prevents a second nested occurrence of the identical
+   AST object, a prior side effect, or deferred work from being silently
+   admitted as a trustworthy direct-call witness. Rejected shapes must go
+   through the actual lexical TypeChecker/OwnershipChecker pipeline.
+
+2. `OptionalCallTempLowering.Recipe.steps()` now exposes a separate immutable
+   lowering-phase sequence: `CAPTURE_RECEIVER` (only a directly selected
+   instance method), `CAPTURE_ARGUMENT` once per lexical source occurrence,
+   `MATERIALIZE_ABI_SLOT` in formal order (including typed omission slots),
+   and `INVOKE_SELECTED`. Statically selected module functions do NOT
+   evaluate a guest callable object, and explicit class construction has no
+   guest receiver evaluation. It is wrong to execute the general preview's
+   `EVALUATE_CALLEE` as an actual member-expression value read in this
+   specialized lowering. All phase indexes are checked and the step list is
+   immutable.
+
+These additions remain `SHAPE_ONLY`: the apparent `INVOKE_SELECTED`
+operation is an IR ordering placeholder, not permission to call. Public
+`requireExecutable()` still rejects every invocation. Added committed JUnit
+sources test nested AST reuse, rejected unverified side effects/defer, static
+versus method capture ordering, and invalid phase indexes. Source-org GitHub
+Actions continues failing before test steps; the tests have not passed a
+real JDK25/GraalVM/LLVM run.
+
+The separately confirmed `sagitta-stack/sagitta-infra` GitHub Actions runner
+has passed **source-free synthetic canaries** only. Protected `main` lists
+no approved private CI destination, and security-review PR #1326 remains
+draft. No private compiler source may be mirrored there before the policy is
+reviewed and approved.
+
+
+## Static scalar context witness
+
+TypeChecker.inspectStagedScalarInvocation returns a non-executable CheckedScalarInvocationWitness. It derives literal value types from the original AST, selects an exact same-module declaration, checks a narrow scalar/void result-context contract, and rejects unverified caller signatures. The proof keeps BoundInvocation and OptionalCallTempLowering source-order mappings. It accepts no arbitrary claimed types.
+
+This is a SHAPE_ONLY preview: requireExecutable() always throws, and full compiler/runtime gates stay closed until semantic, ownership, effect, and Option ABI lowering are verified. Tests are committed but have not passed JDK25 Maven CI. See CheckedScalarInvocationWitnessTest.
+
+
+## Checker-issued scalar witness: deliberately checked callee body
+
+`CheckedScalarInvocationWitness` must not interpret an AST-declared scalar
+return type as proof that the selected implementation has that type. As a
+strictly non-executable interim guard, issuance now requires the selected
+ordinary module function to have exactly one return statement, containing
+either an exact matching primitive literal or an unmodified required scalar
+formal with exactly matching declared return type. A `void` callee must have
+a single bare `return;`. A `T?`/Option-valued formal, computed return,
+recursive call, other statements, incorrect return literal or non-returning
+body requires the full semantic/effect checker and fails this preview.
+
+This is **not** a general Oreslang function-body type checker or a runtime
+execution authorization. It cannot establish generic substitution, borrow
+lifetimes, effect safety, complete lexical scope, or an executable `Option<T>`
+ABI. `readiness()` stays `SHAPE_ONLY` and `requireExecutable()` rejects.
+The Java TypeChecker, OwnershipChecker and interpreter retain their separate
+fail-closed staged-call gates. The added source JUnit methods do not
+constitute a green executable test suite until real CI executes them.
+
+The stacked PR was merged with the latest parent to pick up checks rejecting
+class/interface/type-alias collisions in the parser-owned candidate preview.
+
+
+## Caller-side scalar witness hardening (2026-10-18)
+
+A scalar declaration/signature preview is not proof that its **caller** is
+type-correct. In a narrow, linear same-module literal-call preview, issuance
+must reject a non-void caller without an explicit reachable return, a bare
+return from a non-void caller, a scalar return contradicting the caller's
+declared result type, a value return from a void caller, and an unrelated
+literal binding with contradictory declared type. The issuer also checks
+caller and selected-callee formal-name uniqueness before making lexical
+type claims. These checks are intentionally scoped to the literal-only
+`CheckedScalarInvocationWitness`; ordinary recursive semantic/ownership
+analysis remains required for all richer expression and control-flow forms.
+
+The resulting witness remains `SHAPE_ONLY`. Neither a locally verified
+callee body nor these caller checks establish complete effects, borrow/move
+authority or the `Option<T>` runtime ABI. `requireExecutable()` continues
+throwing; staged guest calls remain disabled. The committed source regressions
+must not be called passing JUnit tests until a runner executes the exact tree.
+
+
+## Concrete scalar-literal Option ABI preview (non-executable)
+
+`CheckedLiteralOptionAbi.materialize(CheckedScalarInvocationWitness)`
+materializes an independently checked **literal-only** source capture vector
+and declaration-order typed argument vector. Its possible values are
+`RequiredValue(CapturedScalar)`, `SomeValue(T, CapturedScalar)`, and
+`NoneValue(T)`. The scalar source type is rechecked against the original
+literal AST; no guest expression is executed. Named argument permutations
+cannot permute callee ABI positions; omitted optional formals inject an
+explicitly typed `None<T>` without allocating a source temporary.
+
+The `PASS_OPTION` action is purposely **not** materialized by this preview:
+a source spelling like `None` is not proof of a real `Option<T>` value.
+It requires full nominal type and ownership analysis. Static module
+functions only; the preview does not evaluate a guest method receiver.
+`readiness()` remains `SHAPE_ONLY` and `requireExecutable()` fails.
+Do **not** feed these Java records to the Oreslang runtime as if they were
+verified guest ABI values. Full compiler-owned type/effect/borrow checking,
+runtime representation compatibility, and executable tests are still needed.
+
+Seven JUnit source tests cover positional ABI preservation under six named
+permutations, explicit/implicit omission, supplied Some wrapping,
+immutability, invalid source types and required omissions, and refusal of
+unverified existing Option values. No actual repository JUnit pass is
+established until a funded runner executes the exact Git tree.
+
+
+## Non-finite scalar values require independent source/type proof
+
+The narrow `OptionalCallLiteralStage.exactScalarLiteralType` AST oracle and
+its downstream `CheckedLiteralOptionAbi` value envelopes accept Java `Double`
+payloads as source `float` values **only when finite**. This is a
+fail-closed source-origin restriction: an arbitrary Java caller can construct
+`Ast.LiteralExpr(Double.NaN)` or either infinity without demonstrating a
+corresponding Oreslang literal spelling or type/effect proof.
+
+This is **not** a language-wide prohibition of IEEE-754 NaN/infinity results
+from verified arithmetic or library operations. Those semantics require the
+real compiler and runtime, not these literal-only previews. Finite values,
+including `+0.0` and `-0.0`, remain admitted by the scalar oracle. The
+`CheckedLiteralOptionAbi` and direct literal-call planner JUnit regressions
+are committed but unexecuted pending JDK25 Maven Actions capacity.
+
+
+## Full compiler-issued ordinary-call baseline (2026-10-18)
+
+`VerifiedDirectModuleCall.analyzeAndIssue(source, module, caller)` is a
+deliberately narrow **ordinary positional call** proof boundary. Unlike
+`BoundInvocation` and `CheckedScalarInvocationWitness`, its private
+constructor can only be reached after `OresCompiler.analyze` has run the
+actual TypeChecker and OwnershipChecker against a freshly parsed source
+program. It retains original checked AST identities for the unique same-module
+function, calling function and immediate `Ast.CallExpr`. The issuer denies
+imports, complex calling bodies, effectful or optional signatures, name
+shadowing, ambiguous module/call-target namespaces, unproved recursion and
+staged `StagedCallExpr`/`StagedNewExpr` source syntax.
+
+This narrow identity is a baseline for integrating compiler-derived target
+selection with runtime invocation. **It is not a generic authorization to
+execute `T?` calls**, is not transferable to another program, and does not
+replace trusted checked ownership/effects or the actual runtime Option ABI.
+An ordinary `CallExpr` is already executable via the existing interpreter;
+a new GraalVM regression uses identical source for full admission and
+normal guest runtime execution, expecting output `42`. All seven source JUnit
+methods remain unverified until the exact-head suite runs on a real runner.
+
+
+### Direct-call proof excludes generic applications and spreads
+
+The compiler-issued `VerifiedDirectModuleCall` baseline is intentionally
+limited to a monomorphic, fixed-slot, positional `Ast.CallExpr`. Even after
+the real TypeChecker and OwnershipChecker succeed, an explicit generic
+application (`typeArgumentsPresent`, including an explicit empty marker)
+and an argument `Ast.SpreadExpr` require *separate* source-to-formal
+instantiation, pack-expansion, and ownership evidence.
+
+`requirePlainPositionalCallShape` therefore rejects those AST shapes
+before issuing the ordinary-call identity. A package-local JUnit source
+suite covers normal positional arguments, explicit type applications and
+spread/mixed argument items. This is a conservative limitation of this
+proof, not a language-wide ban on generic calls or spreads. The staged
+named/optional path remains non-executable.
+
+A local **source-free** Java 21 stand-in smoke reproduced the guard and
+passed 50,000 seeded generated shapes (6,206 admitted and 43,794 rejected).
+It is not compiled JDK25 project source, Maven/JUnit, or a compiler runtime
+conformance result. The exact-tree suite remains pending a working,
+independently authorized private Actions destination.
+
+
+## Experimental real-checker scalar optional-call rewrite (October 2026)
+
+The **opt-in** `LiteralOptionalCallCompiler.lowerAndAnalyze(source, module, caller)`
+API now bridges a narrow, original-AST named/optional call into the existing
+ordinary `CallExpr` pipeline. Unlike shape previews, it constructs a fresh
+`Ast.Program` whose selected `T?` formals are explicit `Option<T>`
+formals, replacing each supplied scalar literal with exactly one `Some<T>`
+call, each omitted optional slot with `None`, and required scalars with their
+original literal ASTs. Slots are in formal order; literal inputs have no guest
+side effects to reorder. The entire rewritten program is then submitted
+to **both real front-end checkers** using `OresCompiler.analyze`; a
+private-constructor result is returned only after success and source-binding
+identity checks.
+
+The experimental boundary rejects imported/multi-module programs, unverified
+qualified or dynamic targets, constructors/methods/actors, nonliteral effects,
+spreads, generics, annotations, borrowed/mutable formals, incorrect scalar
+types, user-defined Some/None constructors, inferred non-scalar optional
+payload types, and existing Option<T> values without full ownership proof.
+It currently handles an **explicitly named or omitted staged call** in a
+single narrow linear function body, including `name: _`. Ordinary
+`greet()` without a staged source marker remains unsupported by this
+experimental API.
+
+**This does not enable general source-language optional calls.** The default
+`OresCompiler`, TypeChecker, OwnershipChecker and direct runtime admission
+remain fail-closed on original unlowered `T?`/`StagedCallExpr` source.
+The verified result is an AST intended for future authenticated runtime
+handoff, not a guest invocation. The JUnit methods include original
+`return match`, omission, named-order and negative type cases; **they
+have not passed** until actual Maven/GraalVM Actions execute on the exact
+Git tree. Do not promote this into the default compiler until provenance,
+effect order, nested expressions, receiver and async ownership are proven.
+
+
+## Experimental implicit empty-call bridge (opt-in; not default execution)
+
+`LiteralOptionalCallCompiler.lowerImplicitAndAnalyze(source, moduleName,
+callerName)` is a **separate opt-in API**, not a relaxation of the default
+parser, TypeChecker, OwnershipChecker, or runtime staged-call rejection. It
+parses untrusted text fresh, requires one unimported undecorated module and an
+ordinary caller, identifies exactly one immediate **original** `CallExpr` of
+the form `greet()`, and rejects type application, supplied arguments,
+overloaded targets, recursion, missing targets, and zero-formal/required-formal
+targets. Every selected target formal must be `T?` with an exact scalar
+`T` (int/float/bool/string).
+
+Only after checking that source occurrence does this opt-in bridge create a
+single intermediate `StagedCallExpr` with no supplied items; it then reuses
+`SameModuleLiteralInvocation`, the checked formal-order ABI slot plan,
+`Option<T>` substitution and `OresCompiler.analyze` (real TypeChecker
+**and** OwnershipChecker). Thus a call with multiple optional formals yields
+one independent typed `None` per formal, without an invented source
+expression, missing required value or evaluation-order effect.
+
+The existing `lowerAndAnalyze` API still requires an original staged
+named/omitted call, and the normal production compiler still rejects
+unlowered `T?` formals. The opt-in return object is checked **AST**, not a
+guest-executable capability: no arbitrary source or AST can skip compilation,
+and no public guest program automatically obtains this lowering yet. Target
+body/return correctness still depends on both real checkers and needs actual
+JDK25/JUnit and runtime test evidence before any integration.
+
+The new JUnit source regressions cover successful `greet()`, multiple
+optional parameters, explicit/default gate separation, and negatives for
+required or zero-formal signatures, ambiguity, generic type application,
+and nonempty calls. They are committed but **not claimed green** until a
+funded runner executes the exact source tree.
+
+
+## Literal-only Option ABI reference frame
+
+The Java compiler now contains `OptionalCallScalarAbiFrame.from(CheckedScalarInvocationWitness)`: an intentionally **non-executable** semantic reference for same-module, literal-only staged calls. It constructs immutable, declaration-ordered records representing three distinct typed cases: `Required(T value)`, `Some(Option<T>, T value)`, and `None(Option<T>)`. For both `Some(0)` and `Some(false)` the payload is preserved; omission has no evaluated source index and is not encoded as null, zero or false. Each ABI slot retains the original raw call-item index, including explicit positional/named `omit` and `_`; implicit omissions have index `-1`.
+
+Only the original checker-issued lexical and scalar-type witness can yield a complete `Frame`, whose constructor is private. This reference is deliberately narrower than execution: a supplied `Option<T>` (including `None` used as an expression), effectful expressions, borrowed values, imports, generics, methods, constructors, actors, and dynamic calls remain unsupported by the scalar frame. `Frame.requireExecutable()` throws, and the existing full compiler, ownership and Truffle runtime gates remain unchanged.
+
+This is **backend conformance scaffolding**, not an Oreslang runtime `Some`/`None` implementation, not full `TypeChecker`/ownership validation, and not guest-language execution. `OptionalCallScalarAbiFrameTest` supplies seven JUnit regression cases; merge acceptance still requires actual JDK25 Maven/JUnit and GraalVM/LLVM backend runs from an approved runner.

@@ -136,6 +136,18 @@ public final class TypeChecker {
         return checked.program();
     }
 
+    /**
+     * Static compiler-owned preview for exact, same-module scalar literals.
+     * This does NOT call checkTypes(): staged calls and T? formals deliberately
+     * fail executable admission there. It proves only the original lexical
+     * source and a narrow result-context type, not ownership/effects or an
+     * executable Option<T> ABI; never use it to bypass checkTypes()/check().
+     */
+    public static CheckedScalarInvocationWitness inspectStagedScalarInvocation(
+            Ast.Program program, Ast.FunctionDecl caller, Ast.StagedCallExpr call) {
+        return CheckedScalarInvocationWitness.issueFromTypeChecker(program, caller, call);
+    }
+
     /** Type analysis only; executable admission must use OresCompiler.analyze. */
     public static Ast.Program checkTypes(Ast.Program program) {
         return checkTypesWithDiagnostics(program).program();

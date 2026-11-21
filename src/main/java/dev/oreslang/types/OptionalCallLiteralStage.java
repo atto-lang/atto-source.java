@@ -189,10 +189,20 @@ public final class OptionalCallLiteralStage {
         }
     }
 
-    private static Ast.TypeRef exactScalarLiteralType(Ast.LiteralExpr literal) {
+    static Ast.TypeRef exactScalarLiteralType(Ast.LiteralExpr literal) {
         Object value = literal.value();
         if (value instanceof Long) return Ast.TypeRef.simple("int");
-        if (value instanceof Double) return Ast.TypeRef.simple("float");
+        if (value instanceof Double floating) {
+            // LiteralExpr(Object) is publicly constructible. NaN and infinities
+            // can be injected directly as Java values without a corresponding
+            // verified Oreslang scalar source literal. Leave special IEEE-754
+            // values to the real checker/runtime, not this narrow AST oracle.
+            if (!Double.isFinite(floating)) {
+                throw new IllegalArgumentException(
+                        "non-finite float requires checked source literal semantics");
+            }
+            return Ast.TypeRef.simple("float");
+        }
         if (value instanceof Boolean) return Ast.TypeRef.simple("bool");
         if (value instanceof String) return Ast.TypeRef.simple("string");
         // In particular, null is never an Option<T>.None value.

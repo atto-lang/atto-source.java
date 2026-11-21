@@ -284,6 +284,32 @@ final class OptionalCallLiteralStageTest {
     }
 
     @Test
+    void scalarCallPlansRejectSyntheticNonFiniteFloatsWithoutRejectingFiniteValues() {
+        var formals = List.of(new Ast.Param(Ast.TypeRef.simple("float"), "weight"));
+        for (double special : new double[] {
+                Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY
+        }) {
+            var call = new Ast.StagedCallExpr(
+                    new Ast.NameExpr("weightOnly"), List.of(), false,
+                    List.of(Ast.CallArgument.named(
+                            "weight", new Ast.LiteralExpr(special))));
+            assertThrows(IllegalArgumentException.class,
+                    () -> OptionalCallLiteralStage.prepareDirectLiteralCall(
+                            call, formals));
+        }
+        for (double finite : new double[] { 0.0, -0.0, 2.5, -100.75 }) {
+            var call = new Ast.StagedCallExpr(
+                    new Ast.NameExpr("weightOnly"), List.of(), false,
+                    List.of(Ast.CallArgument.named(
+                            "weight", new Ast.LiteralExpr(finite))));
+            var candidate = OptionalCallLiteralStage.prepareDirectLiteralCall(
+                    call, formals);
+            assertEquals(List.of(Ast.TypeRef.simple("float")),
+                    candidate.independentlyDerivedTypes());
+        }
+    }
+
+    @Test
     void directScalarsRejectIncorrectClaimedTypeInGeneralAbiPreview() {
         var params = List.of(new Ast.Param(INT, "x"));
         var call = List.of(Ast.CallArgument.named("x", new Ast.LiteralExpr(7L)));
