@@ -1195,6 +1195,8 @@ public final class OresEvalRootNode extends RootNode {
             // never inherited across child Task boundaries.
             private dev.oreslang.runtime.TraceContextV1 logicalTraceContext =
                     dev.oreslang.runtime.TraceContinuationContextV1.current();
+            /** One compiler-owned span per logical callable, never per carrier turn. */
+            private dev.oreslang.runtime.AutoFunctionTraceV1.Scope autoFunctionTraceScope;
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             // The reduction counter and clock belong to the heap-owned
@@ -1277,7 +1279,49 @@ public final class OresEvalRootNode extends RootNode {
                         dev.oreslang.runtime.TraceContinuationContextV1.install(
                                 logicalTraceContext);
                 try {
-                    return resumeTurn(resume);
+                    dev.oreslang.runtime.AutoFunctionTraceV1 autoTrace =
+                            context.autoFunctionTrace();
+                    if (resume.initial() && blockBody == null && autoTrace.enabled()) {
+                        // These declarations come from the checked compiler AST.
+                        // No guest-controlled dynamic call name or span handle.
+                        String symbol = function != null ? function.name() : method.name();
+                        int arity = function != null
+                                ? function.parameters().size() : method.parameters().size();
+                        int siteId = dev.oreslang.runtime.AutoFunctionTraceV1.sourceSiteId(
+                                codeUnitId, symbol, arity);
+                        autoFunctionTraceScope =
+                                autoTrace.begin(siteId, logicalTraceContext);
+                    } else if (!resume.initial() && autoFunctionTraceScope != null) {
+                        autoTrace.resume(autoFunctionTraceScope);
+                    }
+                    if (autoFunctionTraceScope != null) {
+                        dev.oreslang.runtime.TraceContinuationContextV1.install(
+                                autoFunctionTraceScope.context());
+                    }
+                    OresScheduler.Step<Object> step = resumeTurn(resume);
+                    if (autoFunctionTraceScope != null) {
+                        if (step instanceof OresScheduler.Done<?>) {
+                            autoTrace.finish(autoFunctionTraceScope,
+                                    cancellationUnwinding, false);
+                            dev.oreslang.runtime.TraceContinuationContextV1.install(
+                                    autoFunctionTraceScope.parent());
+                            autoFunctionTraceScope = null;
+                        } else {
+                            // Await and Cooperate both relinquish the carrier;
+                            // neither creates another function span.
+                            autoTrace.suspend(autoFunctionTraceScope);
+                        }
+                    }
+                    return step;
+                } catch (RuntimeException | Error failure) {
+                    if (autoFunctionTraceScope != null) {
+                        context.autoFunctionTrace().finish(autoFunctionTraceScope,
+                                cancellationUnwinding, true);
+                        dev.oreslang.runtime.TraceContinuationContextV1.install(
+                                autoFunctionTraceScope.parent());
+                        autoFunctionTraceScope = null;
+                    }
+                    throw failure;
                 } finally {
                     // Rebind BOTH immutable context snapshots to this heap-owned
                     // task before restoring the carrier's previous task/trace

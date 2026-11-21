@@ -86,6 +86,8 @@ public final class OresContext implements AutoCloseable {
     private final RuntimePermissions runtimePermissions;
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
+    /** Trusted host-only auto-function probe substrate, disabled by default. */
+    private final AutoFunctionTraceV1 autoFunctionTrace;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
@@ -119,6 +121,8 @@ public final class OresContext implements AutoCloseable {
         this.input = new BufferedReader(new InputStreamReader(env.in(), StandardCharsets.UTF_8));
         this.output = new PrintWriter(new OutputStreamWriter(env.out(), StandardCharsets.UTF_8), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
+        this.autoFunctionTrace = AutoFunctionTraceV1.fromApplicationArguments(
+                env.getApplicationArguments(), isolatePolicy.adversarial());
         // No host workflow service may enter an adversarial VM context.
         // Consume a one-shot provision even when forbidden so it cannot leak
         // into a later trusted context on this embedding thread.
@@ -201,6 +205,7 @@ public final class OresContext implements AutoCloseable {
     public RuntimePermissions runtimePermissions() { return runtimePermissions; }
     public PermissionCheckMode permissionCheckMode() { return permissionCheckMode; }
     public ExecutionProfile executionProfile() { return executionProfile; }
+    public AutoFunctionTraceV1 autoFunctionTrace() { return autoFunctionTrace; }
 
     public Object lookupHostSymbol(String className) {
         requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java host import " + className);
