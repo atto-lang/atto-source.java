@@ -45,6 +45,12 @@ public final class OresContext implements AutoCloseable {
             if (nioContextClosed || !vmNioListeners.contains(listener))
                 throw new SecurityException("foreign or closed nonblocking TCP listener: " + operation);
         }
+        Object actorOwner = listener.actorOwnerDomain();
+        if (actorOwner != null) {
+            actors.requireCurrentActorNioOwner(actorOwner);
+        } else if (ActorRuntime.inActorExecution()) {
+            throw new SecurityException("supervisor TCP listener is not owned by this actor");
+        }
         requireCapability(IsolatePolicy.Capability.NETWORK, operation);
     }
 
@@ -54,12 +60,33 @@ public final class OresContext implements AutoCloseable {
 
     public VmNioTcpListener listenNioLoopback(
             String host, int port, int backlog, int maxConnections, int maxPending) {
-        if (ActorRuntime.inActorExecution())
-            throw new SecurityException("nonblocking TCP listeners are supervisor-only");
+        return listenNioLoopbackImpl(host, port, backlog, maxConnections, maxPending, false);
+    }
+
+    /**
+     * Actor-local SO_REUSEPORT listener. Each worker opens its own independent
+     * socket. This is NOT a shared FD, nor supervisor-driven accept dispatch.
+     * Trusted SHARED actor admission is required until private-heap transport
+     * lifetime integration and untrusted sandboxing are proven.
+     */
+    public VmNioTcpListener listenNioReusePort(
+            String host, int port, int backlog, int maxConnections, int maxPending) {
+        return listenNioLoopbackImpl(host, port, backlog, maxConnections, maxPending, true);
+    }
+
+    private VmNioTcpListener listenNioLoopbackImpl(
+            String host, int port, int backlog, int maxConnections,
+            int maxPending, boolean reusePort) {
+        boolean insideActor = ActorRuntime.inActorExecution();
+        if (insideActor) {
+            if (!reusePort || ActorRuntime.currentActorRuntime() != actors
+                    || ActorRuntime.currentActorKind() != ActorRuntime.ActorKind.SHARED)
+                throw new SecurityException("TCP listener bind requires a trusted shared worker");
+        }
         if (!"127.0.0.1".equals(host))
             throw new SecurityException("experimental nonblocking TCP only binds loopback");
         requirePermission(RuntimePermissions.Permission.NET, host + ":" + port,
-                "network.listen_nonblocking");
+                reusePort ? "network.listen_reuseport" : "network.listen_nonblocking");
         synchronized (nioLifecycle) {
             if (nioContextClosed)
                 throw new IllegalStateException("cannot create TCP listener in closed context");
@@ -70,8 +97,11 @@ public final class OresContext implements AutoCloseable {
         }
         VmNioTcpListener listener;
         try {
-            listener = VmNioTcpListener.loopback(
-                    vm.nioReadiness(), port, backlog, maxConnections, maxPending);
+            listener = reusePort
+                    ? VmNioTcpListener.loopbackReusePort(
+                            vm.nioReadiness(), port, backlog, maxConnections, maxPending)
+                    : VmNioTcpListener.loopback(
+                            vm.nioReadiness(), port, backlog, maxConnections, maxPending);
         } catch (java.io.IOException failure) {
             synchronized (nioLifecycle) {
                 --nioOpening;
@@ -95,6 +125,16 @@ public final class OresContext implements AutoCloseable {
             }
             vmNioListeners.add(listener);
             nioLifecycle.notifyAll();
+        }
+        if (insideActor) {
+            try {
+                actors.registerCurrentActorNioListener(listener);
+            } catch (RuntimeException | Error denial) {
+                // A concurrent STOP cannot orphan the newly bound FD. It was
+                // not published to source and must be closed before rethrowing.
+                listener.close();
+                throw denial;
+            }
         }
         return listener;
     }

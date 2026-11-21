@@ -187,6 +187,41 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.executionDomain();
     }
 
+    /**
+     * Host-only listener ownership admission. It deliberately does not return
+     * an ActorRef, actor ID, FD or transferable capability to guest source.
+     * The executionDomain is unique to this actor incarnation and cannot be
+     * recovered by an unrelated actor turn.
+     */
+    void registerCurrentActorNioListener(VmNioTcpListener listener) {
+        Objects.requireNonNull(listener, "listener");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || currentActorRuntime() != this
+                || cell.kind != ActorKind.SHARED) {
+            throw new SecurityException("TCP listener requires a trusted shared actor turn");
+        }
+        synchronized (cell.lifecycleLock) {
+            if (closed.get() || cell.stopped.get() || cell.finalized || cell.forceKillFenced)
+                throw new IllegalStateException("actor stopped during TCP listener admission");
+            if (cell.ownedNioListeners.size() >= 4)
+                throw new RejectedExecutionException("actor TCP listener quota exhausted");
+            listener.bindActorOwner(cell.executionDomain);
+            cell.ownedNioListeners.add(listener);
+        }
+    }
+
+    /** Authorize every actor-side listener/connection operation, not just bind. */
+    void requireCurrentActorNioOwner(Object exactDomain) {
+        ActorCell<?> cell = currentActor.get();
+        if (exactDomain == null || cell == null
+                || currentActorRuntime() != this || cell.executionDomain != exactDomain)
+            throw new SecurityException("TCP listener belongs to a different actor incarnation");
+        synchronized (cell.lifecycleLock) {
+            if (closed.get() || cell.stopped.get() || cell.finalized || cell.forceKillFenced)
+                throw new IllegalStateException("TCP listener actor owner has stopped");
+        }
+    }
+
     public enum ActorKind { PRIVATE, SHARED, UNTRUSTED }
 
     /**
@@ -7203,6 +7238,11 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
+        /** Host-only listener roots. Bound to this exact incarnation, never mailbox-sendable. */
+        private final Set<VmNioTcpListener> ownedNioListeners = new java.util.HashSet<>();
+        /** Guarded by lifecycleLock. DONE waits for all listener close Futures. */
+        private boolean nioShutdownStarted;
+        private int nioShutdownPending;
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
          * AST/evaluator. Keys are immutable shared code-site identities.
@@ -7600,6 +7640,7 @@ public final class ActorRuntime implements AutoCloseable {
             // fully crossed back out of the TurnExecutor boundary. For
             // Truffle-backed runtimes that boundary owns context enter/leave.
             if (finalized
+                    || nioShutdownPending != 0
                     || activeTurns != 0
                     || scheduled.get()
                     || carrierActive
@@ -8281,6 +8322,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            List<VmNioTcpListener> nioListenersToClose;
             boolean scheduleTeardown;
             List<DrainWaiter> failedDrainWaiters;
             synchronized (lifecycleLock) {
@@ -8312,12 +8354,35 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
+                if (!nioShutdownStarted) {
+                    nioShutdownStarted = true;
+                    nioListenersToClose = List.copyOf(ownedNioListeners);
+                    nioShutdownPending = nioListenersToClose.size();
+                } else {
+                    nioListenersToClose = List.of();
+                }
                 finalizeStopLocked();
                 scheduleTeardown = gracefulTeardownPending
                         && activeTurns == 0 && !scheduled.get();
                 lifecycleLock.notifyAll();
             }
             if (scheduleTeardown) schedule();
+
+            // Close native listeners outside the actor lifecycle monitor.
+            // Descriptor closure alone is insufficient: retain the actor's
+            // retirement barrier until every read/accept/write and callback
+            // associated with each listener has quiesced.
+            for (VmNioTcpListener listener : nioListenersToClose) {
+                listener.closeAsync().whenCompleteRuntime((ignored, failure) -> {
+                    synchronized (lifecycleLock) {
+                        if (failure != null) recordFinalizationFailure(failure);
+                        if (!ownedNioListeners.remove(listener) || nioShutdownPending <= 0)
+                            throw new IllegalStateException("duplicate actor TCP listener retirement");
+                        --nioShutdownPending;
+                        if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                    }
+                });
+            }
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.

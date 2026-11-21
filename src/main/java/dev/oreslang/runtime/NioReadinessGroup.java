@@ -73,6 +73,43 @@ public final class NioReadinessGroup implements AutoCloseable {
             new IdentityHashMap<>();
     private final IdentityHashMap<SocketChannel, OresFuture<Integer>> writeLeases =
             new IdentityHashMap<>();
+    /** A single host retirement observer per socket: not a guest Future API. */
+    private final IdentityHashMap<SelectableChannel, OresFuture<Void>> channelIdleWaiters =
+            new IdentityHashMap<>();
+
+    private boolean channelIdleLocked(SelectableChannel channel) {
+        return !ownership.containsKey(channel)
+                && !acceptLeases.containsKey(channel)
+                && !readLeases.containsKey(channel)
+                && !writeLeases.containsKey(channel);
+    }
+
+    /**
+     * Complete only after a socket's watch and accept/read/write lease have
+     * retired. The public operation Future may settle earlier than its kernel
+     * readiness callback returns; public close alone is not physical proof.
+     * Multiple callers observe one non-cancellable host retirement Future.
+     */
+    OresFuture<Void> whenChannelIdle(SelectableChannel channel) {
+        Objects.requireNonNull(channel, "channel");
+        synchronized (lifecycle) {
+            if (channelIdleLocked(channel)) return OresFuture.completed(null);
+            return channelIdleWaiters.computeIfAbsent(
+                    channel, ignored -> new OresFuture<>(() -> false, () -> { }));
+        }
+    }
+
+    /** Call only from off-selector notification/completion stacks. */
+    private void signalChannelIdle(SelectableChannel channel) {
+        if (onReactorThread())
+            throw new IllegalStateException("channel retirement callback on selector");
+        OresFuture<Void> idle;
+        synchronized (lifecycle) {
+            if (!channelIdleLocked(channel)) return;
+            idle = channelIdleWaiters.remove(channel);
+        }
+        if (idle != null) idle.completeFromRuntime(null);
+    }
     private final AtomicInteger pending = new AtomicInteger();
     // Includes selector watches that have retired but whose terminal Future
     // callbacks are still queued or running. Protects against unbounded
@@ -464,6 +501,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                     if (inFlight.get() == 0 && acceptLeases.get(listener) == accepted)
                         acceptLeases.remove(listener);
                 }
+                signalChannelIdle(listener);
             }
 
             void arm() {
@@ -590,6 +628,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                     if (inFlight.get() == 0 && readLeases.get(channel) == received)
                         readLeases.remove(channel);
                 }
+                signalChannelIdle(channel);
             }
 
             void arm() {
@@ -721,6 +760,7 @@ public final class NioReadinessGroup implements AutoCloseable {
                     if (inFlight.get() == 0 && writeLeases.get(channel) == written)
                         writeLeases.remove(channel);
                 }
+                signalChannelIdle(channel);
             }
 
             void arm() {
@@ -956,6 +996,11 @@ public final class NioReadinessGroup implements AutoCloseable {
                         }
                     } finally {
                         releaseNotificationReservation();
+                        // The selector has already removed ownership. Once
+                        // the high-level lease also retires, wake the close
+                        // barrier off-reactor (never invoke guest callbacks
+                        // from the reactor stack).
+                        signalChannelIdle(watch.channel);
                     }
                 });
             } catch (RuntimeException | Error publicationFailure) {

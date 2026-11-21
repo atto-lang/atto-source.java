@@ -64,8 +64,11 @@ that ignores interruption may still finish after context closure. Await outstand
 writes when their completion matters; closing a socket interrupts its pending read.
 Close TCP sockets explicitly when finished; context shutdown is a fallback.
 
-The server-side HTTP API already returns futures for accept, body reads, response
-writes and graceful shutdown. Listener setup and synchronous abort/close control
+The experimental std/net reuse-port path additionally permits trusted shared
+actors to create independent loopback listeners and await accept asynchronously;
+it is not portable or strict carrier-free bind/listen yet. The server-side HTTP
+API already returns futures for accept, body reads, response writes and graceful
+shutdown. Listener setup and synchronous abort/close control
 remain separate operations. Stdout/console export and stdin are not migrated by
 this change. This implementation does not add physical actor heap isolation.
 

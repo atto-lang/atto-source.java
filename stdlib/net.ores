@@ -1,10 +1,20 @@
 // Oreslang-owned TCP source facade over the minimal kernel readiness ABI.
-// Experimental loopback/supervisor-only initial slice; never Java HTTP.
+// Experimental loopback-only; ordinary listeners remain supervisor-only.
+// Independent SO_REUSEPORT listeners can be owned by trusted shared actors.
 define module net_core as
   pub fnc listen_loopback(int port, int backlog, int max_connections,
                           int max_pending): NioTcpListener {
     return network.listen_nonblocking("127.0.0.1", port, backlog,
                                       max_connections, max_pending);
+  }
+
+  // Each trusted shared actor owns an independent listener socket.
+  // Linux SO_REUSEPORT permits four worker sockets bound to the same port.
+  // No FD or listener ownership is transmitted through actor mailboxes.
+  pub fnc listen_reuseport(int port, int backlog, int max_connections,
+                            int max_pending): NioTcpListener {
+    return network.listen_reuseport("127.0.0.1", port, backlog,
+                                    max_connections, max_pending);
   }
 
   pub fnc accept(borrow NioTcpListener listener): Future<NioTcpConnection> {
