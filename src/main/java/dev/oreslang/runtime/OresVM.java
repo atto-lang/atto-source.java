@@ -2,6 +2,9 @@ package dev.oreslang.runtime;
 
 import java.util.Objects;
 import java.util.List;
+import java.util.Set;
+import java.io.IOException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -104,6 +107,8 @@ public final class OresVM implements AutoCloseable {
     private final ThreadPoolExecutor physicalStopExecutor;
     private final OresScheduler rootScheduler;
     private final NioReadinessGroup nioReadiness;
+    private final Set<VmNioTcpListener> nioTcpListeners =
+            ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -294,6 +299,43 @@ public final class OresVM implements AutoCloseable {
         return nioReadiness.reactorCount();
     }
 
+    /**
+     * Runtime-only descriptor admission after OresContext has checked NET
+     * capability/permission. The close race is fenced without a VM monitor:
+     * a listener created just before CLOSED is observed closes itself again.
+     */
+    VmNioTcpListener openNioTcpLoopback(
+            int port, int backlog, int maxConnections, int maxPending)
+            throws IOException {
+        if (!started() || closed.get()) {
+            throw new RejectedExecutionException("Oreslang VM is not running");
+        }
+        AtomicReference<VmNioTcpListener> owner = new AtomicReference<>();
+        VmNioTcpListener listener = VmNioTcpListener.openOwned(
+                nioReadiness,
+                port,
+                backlog,
+                maxConnections,
+                maxPending,
+                () -> {
+                    VmNioTcpListener terminated = owner.get();
+                    if (terminated != null) nioTcpListeners.remove(terminated);
+                });
+        owner.set(listener);
+        nioTcpListeners.add(listener);
+        if (!started() || closed.get()) {
+            listener.close();
+            nioTcpListeners.remove(listener);
+            throw new RejectedExecutionException(
+                    "Oreslang VM closed during TCP listener admission");
+        }
+        return listener;
+    }
+
+    int nioTcpListenerCount() {
+        return nioTcpListeners.size();
+    }
+
     public OresScheduler rootScheduler() {
         if (!started()) {
             throw new IllegalStateException(
@@ -382,17 +424,32 @@ public final class OresVM implements AutoCloseable {
      * VM-owned executors are still retired even when NIO quiescence fails.
      */
     private RuntimeException closeNioReadiness() {
+        List<VmNioTcpListener> listeners = List.copyOf(nioTcpListeners);
+        for (VmNioTcpListener listener : listeners) listener.close();
         nioReadiness.close();
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         try {
-            if (!nioReadiness.awaitStopped(5, TimeUnit.SECONDS)) {
+            long left = deadline - System.nanoTime();
+            if (left <= 0 || !nioReadiness.awaitStopped(
+                    left, TimeUnit.NANOSECONDS)) {
                 return new IllegalStateException(
                         "Oreslang NIO reactor did not terminate before CONTROL shutdown");
             }
+            for (VmNioTcpListener listener : listeners) {
+                left = deadline - System.nanoTime();
+                if (left <= 0 || !listener.awaitTerminated(
+                        left, TimeUnit.NANOSECONDS)) {
+                    return new IllegalStateException(
+                            "Oreslang TCP listener did not retire before CONTROL shutdown");
+                }
+            }
+            nioTcpListeners.removeAll(listeners);
             return null;
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             return new IllegalStateException(
-                    "interrupted while closing Oreslang NIO reactor", interrupted);
+                    "interrupted while closing Oreslang NIO resources", interrupted);
         }
     }
 
