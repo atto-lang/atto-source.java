@@ -32,6 +32,7 @@ final class ReturnFirstBulletBodyParityTest {
                 "{ return 42; }",
                 "begin return 42; end",
                 "return 42; end",
+                "::\n return 42;\nend",
                 "begin\n return 42;\nend.",
                 "begin\n return 42;\nend;"
         };
@@ -56,7 +57,8 @@ final class ReturnFirstBulletBodyParityTest {
             for (String body : new String[] {
                     "{ return x * 2; }",
                     "begin return x * 2; end",
-                    "return x * 2; end"
+                    "return x * 2; end",
+                    "::\n return x * 2;\nend"
             }) {
                 String source = "define class C as " + header + " " + body + " end";
                 Ast.Program program = Parser.parse(source);
@@ -103,6 +105,9 @@ final class ReturnFirstBulletBodyParityTest {
                 fnc int • bullet_begin(int x) begin return x + 1; end
                 int• bullet_bare(int x) return x + 1; end
                 fnc int <- arrow_inline_begin(int x) begin return x + 1; end
+                fnc int • bullet_colon(int x) ::
+                    return x + 1;
+                end
                 pub fnc main(): void {
                     stdio.stdout.write(arrow_brace(41));
                     stdio.stdout.write("|");
@@ -111,6 +116,8 @@ final class ReturnFirstBulletBodyParityTest {
                     stdio.stdout.write(bullet_bare(41));
                     stdio.stdout.write("|");
                     stdio.stdout.write(arrow_inline_begin(41));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(bullet_colon(41));
                     return;
                 }
                 """;
@@ -121,7 +128,33 @@ final class ReturnFirstBulletBodyParityTest {
             ctx.eval(Source.newBuilder(OresLanguage.ID, program, "return-first-bullet.atto")
                     .mimeType(OresLanguage.MIME_TYPE).buildLiteral());
         }
-        assertEquals("42|42|42|42", output.toString(StandardCharsets.UTF_8));
+        assertEquals("42|42|42|42|42", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void checkedReturnFirstEffectHeadersRequireAnExplicitBodyBoundary() {
+        for (String header : new String[] {
+                "fnc int <- twice(int x)\nraises Foo",
+                "fnc int • twice(int x)\nthrows Foo",
+                "int• twice(int x) raises Foo"
+        }) {
+            for (String boundary : new String[] { "begin\n", "::\n" }) {
+                String program = header + "\n" + boundary + "return x * 2;\nend";
+                Ast.FunctionDecl fn = firstFunction(program);
+                assertEquals("int", fn.returnType().name(), program);
+                assertEquals(1, fn.body().size(), program);
+                assertFalse(fn.effects().isEmpty(), program);
+            }
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(header + "\nreturn x * 2;\nend"),
+                    "unmarked effects must not consume the body");
+        }
+        for (String source : new String[] {
+                "int <- twice(int x) :: return x * 2; end",
+                "int <- twice(int x) ::\n{ return x * 2; }"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
     }
 
     @Test
