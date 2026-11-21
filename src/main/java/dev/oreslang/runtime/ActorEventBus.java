@@ -37,6 +37,33 @@ public final class ActorEventBus implements AutoCloseable {
         MAX
     }
 
+    /**
+     * A synchronous error after one or more subscriber writes were started
+     * cannot undo an already-committed mailbox delivery. Callers must not
+     * mistake this for an all-or-nothing refusal or blindly retry the event.
+     */
+    public static final class EventPartialAdmissionException extends IllegalStateException {
+        private final String topic;
+        private final int previouslyStartedWrites;
+        private final int intendedRecipients;
+
+        private EventPartialAdmissionException(
+                String topic, int previouslyStartedWrites, int intendedRecipients,
+                Throwable cause) {
+            super("ActorGroup event may be partially admitted on topic " + topic
+                    + ": priorWrites=" + previouslyStartedWrites
+                    + ", recipients=" + intendedRecipients
+                    + "; do not retry without an idempotency key", cause);
+            this.topic = topic;
+            this.previouslyStartedWrites = previouslyStartedWrites;
+            this.intendedRecipients = intendedRecipients;
+        }
+
+        public String topic() { return topic; }
+        public int previouslyStartedWrites() { return previouslyStartedWrites; }
+        public int intendedRecipients() { return intendedRecipients; }
+    }
+
     public static final class EventBackpressureException extends IllegalStateException {
         private final String topic;
         private final ActorRuntime.ActorId subscriber;
@@ -455,6 +482,7 @@ public final class ActorEventBus implements AutoCloseable {
             Runnable commitState) {
         Event<Object> event = null;
         List<Subscription<?>> detached = new ArrayList<>();
+        Throwable admissionFailure = null;
         try {
             synchronized (topic.deliveryLock) {
                 requireOpen();
@@ -471,6 +499,13 @@ public final class ActorEventBus implements AutoCloseable {
                             "ActorGroup event topic is no longer registered: " + topic.name);
                 }
 
+                // All sequence allocations and rollback occur under this
+                // topic's admission lock. Never wrap into a negative sequence
+                // (and never retain a frozen payload on overflow).
+                if (topic.sequence.get() == Long.MAX_VALUE) {
+                    throw new IllegalStateException(
+                            "ActorGroup event topic sequence exhausted: " + topic.name);
+                }
                 long sequence = topic.sequence.incrementAndGet();
                 @SuppressWarnings("unchecked")
                 Event<Object> created = new Event<>(
@@ -516,22 +551,29 @@ public final class ActorEventBus implements AutoCloseable {
                 if (topic.policy == DeliveryPolicy.RELIABLE) {
                     List<Subscription<?>> reserved =
                             new ArrayList<>(active.size());
-                    for (Subscription<?> subscription : active) {
-                        if (!subscription.reserveReliableEvent()) {
-                            for (Subscription<?> admitted : reserved) {
-                                admitted.releaseReliableEvent();
+                    try {
+                        for (Subscription<?> subscription : active) {
+                            if (!subscription.reserveReliableEvent()) {
+                                throw new EventBackpressureException(
+                                        topic.name,
+                                        subscription.subscriber,
+                                        subscription.reliableOutstandingLimit);
                             }
-                            // No delivery has been admitted or written. Sequence
-                            // allocation above occurs under this same topic lock;
-                            // a rejected RELIABLE publish must not consume a
-                            // sequence number that no subscriber can observe.
-                            topic.sequence.decrementAndGet();
-                            throw new EventBackpressureException(
-                                    topic.name,
-                                    subscription.subscriber,
-                                    subscription.reliableOutstandingLimit);
+                            reserved.add(subscription);
                         }
-                        reserved.add(subscription);
+                    } catch (RuntimeException | Error failure) {
+                        // No Channel writes have started: always unwind every
+                        // reservation, not just the ordinary backpressure case.
+                        // A failing cleanup must never mask the first error.
+                        for (Subscription<?> admission : reserved) {
+                            try {
+                                admission.releaseReliableEvent();
+                            } catch (RuntimeException | Error cleanup) {
+                                if (cleanup != failure) failure.addSuppressed(cleanup);
+                            }
+                        }
+                        topic.sequence.decrementAndGet();
+                        throw failure;
                     }
 
                     List<OresFuture<Void>> writes =
@@ -545,12 +587,31 @@ public final class ActorEventBus implements AutoCloseable {
                             writes.add(
                                     subscription.writeReliableReserved(event));
                         }
-                    } catch (Throwable failure) {
+                    } catch (RuntimeException | Error failure) {
+                        // Some earlier writes may have already committed to
+                        // subscriber channels. Cancel pending sends, but never
+                        // claim atomic rollback of completed deliveries.
+                        // Every cleanup attempt must execute, even if a
+                        // cancellation hook itself fails or reenters.
                         for (OresFuture<Void> write : writes) {
-                            if (!write.isDone()) write.cancel(false);
+                            try {
+                                if (!write.isDone()) write.cancel(false);
+                            } catch (RuntimeException | Error cleanup) {
+                                if (cleanup != failure) failure.addSuppressed(cleanup);
+                            }
                         }
+                        // The current write helper owns its own reservation on
+                        // throw; only *unstarted* subscribers are left for us.
                         for (int i = started + 1; i < reserved.size(); i++) {
-                            reserved.get(i).releaseReliableEvent();
+                            try {
+                                reserved.get(i).releaseReliableEvent();
+                            } catch (RuntimeException | Error cleanup) {
+                                if (cleanup != failure) failure.addSuppressed(cleanup);
+                            }
+                        }
+                        if (started > 0 && failure instanceof RuntimeException) {
+                            throw new EventPartialAdmissionException(
+                                    topic.name, started, reserved.size(), failure);
                         }
                         throw failure;
                     }
@@ -601,6 +662,9 @@ public final class ActorEventBus implements AutoCloseable {
                         coalesced,
                         OresFuture.completed(List.of()));
             }
+        } catch (RuntimeException | Error failure) {
+            admissionFailure = failure;
+            throw failure;
         } finally {
             Throwable cleanupFailure = null;
             try {
@@ -624,7 +688,17 @@ public final class ActorEventBus implements AutoCloseable {
                 else if (failure != cleanupFailure) cleanupFailure.addSuppressed(failure);
             }
 
-            if (cleanupFailure != null) rethrowCleanupFailure(cleanupFailure);
+            if (cleanupFailure != null) {
+                // Releasing a reservation or closing a pruned subscription
+                // must not erase the original admission/partial-write error.
+                if (admissionFailure != null) {
+                    if (cleanupFailure != admissionFailure) {
+                        admissionFailure.addSuppressed(cleanupFailure);
+                    }
+                } else {
+                    rethrowCleanupFailure(cleanupFailure);
+                }
+            }
         }
     }
 
@@ -871,8 +945,10 @@ public final class ActorEventBus implements AutoCloseable {
         }
 
         private OresFuture<Void> writeReliableReserved(Event<T> event) {
-            event.retainDelivery();
+            boolean retained = false;
             try {
+                event.retainDelivery();
+                retained = true;
                 if (subscriptionClosed.get()) {
                     event.releaseDelivery();
                     releaseReliableEvent();
@@ -887,9 +963,22 @@ public final class ActorEventBus implements AutoCloseable {
                     }
                 });
                 return write;
-            } catch (Throwable failure) {
-                event.releaseDelivery();
-                releaseReliableEvent();
+            } catch (RuntimeException | Error failure) {
+                // If retention itself fails, the subscription still owns a
+                // previously reserved RELIABLE capacity slot. Release it.
+                // Never decrement a delivery ref that was not acquired.
+                if (retained) {
+                    try {
+                        event.releaseDelivery();
+                    } catch (RuntimeException | Error cleanup) {
+                        if (cleanup != failure) failure.addSuppressed(cleanup);
+                    }
+                }
+                try {
+                    releaseReliableEvent();
+                } catch (RuntimeException | Error cleanup) {
+                    if (cleanup != failure) failure.addSuppressed(cleanup);
+                }
                 throw failure;
             }
         }

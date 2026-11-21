@@ -5,6 +5,7 @@ on:
       - hardening/pg-epoch-fence-20261109
       - hardening/pg-atomic-detach-eventbus-20261109
       - hardening/pubsub-admission-revocation-races-20261109
+      - hardening/pubsub-partial-admission-unwind-20261109
   workflow_dispatch:
 permissions:
   contents: read
@@ -47,7 +48,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Dtest=ActorEventBusAdmissionRevocationTest,ActorEventBusShutdownStressTest,ProcessGroupAtomicDetachRaceTest,ActorEventBusTeardownLockTest,ProcessGroupRegistryMembershipEpochTest,ProcessGroupRegistryRetirementTest,ProcessGroupRegistryTest,ActorEventBusTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=ActorEventBusReliableUnwindTest,ActorEventBusAdmissionRevocationTest,ActorEventBusShutdownStressTest,ProcessGroupAtomicDetachRaceTest,ActorEventBusTeardownLockTest,ProcessGroupRegistryMembershipEpochTest,ProcessGroupRegistryRetirementTest,ProcessGroupRegistryTest,ActorEventBusTest -DfailIfNoTests=true test
       - name: Preserve Surefire receipts on failure
         if: always()
         shell: bash
