@@ -85,4 +85,35 @@ final class SuspendsContractLanguageTest {
                 }
                 """);
     }
+
+    @Test
+    void nativeOreslangSuspendsAwaitValueExecutesThroughGraalFrontend() throws Exception {
+        // Genuine Oreslang parser/typechecker and Polyglot guest execution,
+        // not a host-only OresScheduler mock. Because the producer returns
+        // immediately this does NOT prove pending actor-await lowering.
+        String source = """
+                suspends fnc fetch(): int {
+                    return 41;
+                }
+                suspends fnc compute(): int {
+                    let int value = await fetch();
+                    return value + 1;
+                }
+                pub fnc main(): void {
+                    stdio.stdout.write(await compute());
+                    return;
+                }
+                """;
+        accepts(source);
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source,
+                    "continuation-locality-guest.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("42", output.toString().trim(),
+                "compiled guest must return the shared scalar 42");
+    }
+
 }

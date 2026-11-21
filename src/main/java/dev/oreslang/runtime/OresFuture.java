@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.lang.ref.WeakReference;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
@@ -49,6 +50,14 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public interface Callback<T> {
         void resolve(T value);
+        /**
+         * Atomically publish a resource-bearing result. False means consumer
+         * cancellation won and caller must retire the unpublished resource.
+         */
+        default boolean tryResolve(T value) {
+            resolve(value);
+            return true;
+        }
         void reject(Throwable failure);
         void cancel();
         boolean isDone();
@@ -227,39 +236,65 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public static <T> OresFuture<T> fromCallback(
             Consumer<? super Callback<T>> registrar) {
+        return fromCallback(registrar, () -> { });
+    }
+
+    /**
+     * External async operation adapter with an exact-once physical
+     * cancellation hook. A NIO socket operation closes the owning channel
+     * when its future is cancelled, rather than leaving a dangling read/write.
+     * Late completion is ignored by the same single-shot callback gate.
+     */
+    public static <T> OresFuture<T> fromCallback(
+            Consumer<? super Callback<T>> registrar, Runnable cancelHook) {
         Objects.requireNonNull(registrar, "registrar");
-        OresFuture<T> future = new OresFuture<>();
+        Objects.requireNonNull(cancelHook, "cancelHook");
+        OresFuture<T> future = new OresFuture<>(cancelHook);
         AtomicBoolean callbackClaimed = new AtomicBoolean();
 
+        // The registrar may keep this capability forever, even when the
+        // Oreslang observer is cancelled and abandoned. Do not let that
+        // foreign registration pin the Future or its actor/task owner graph.
+        // The caller holding the returned Future keeps it strongly live.
+        WeakReference<OresFuture<T>> observerRef = new WeakReference<>(future);
         Callback<T> completion = new Callback<>() {
-            private boolean claim(String operation) {
+            private OresFuture<T> claim(String operation) {
                 if (!callbackClaimed.compareAndSet(false, true)) {
                     throw new AlreadySettledException(
                             "callback Future already settled; duplicate " + operation);
                 }
 
-                // Consumer cancellation may legitimately win before a foreign
-                // callback arrives. The first late producer callback is then a
-                // no-op rather than an exception escaping onto the producer's
-                // thread. Marking the callback claimed still diagnoses any
-                // subsequent duplicate callback invocation.
-                return !future.isCancelled();
+                // Claim exactly once even if the Future was cancelled or
+                // collected. A first late invocation becomes a no-op, but a
+                // subsequent invocation still fails as a duplicate. Retain
+                // the observer strongly on this stack only while settling.
+                OresFuture<T> observer = observerRef.get();
+                return observer == null || observer.isCancelled() ? null : observer;
             }
 
             @Override
             public void resolve(T value) {
-                if (!claim("resolve")) return;
-                if (!future.completeFromRuntime(value) && !future.isCancelled()) {
+                tryResolve(value);
+            }
+
+            @Override
+            public boolean tryResolve(T value) {
+                OresFuture<T> observer = claim("resolve");
+                if (observer == null) return false;
+                boolean accepted = observer.completeFromRuntime(value);
+                if (!accepted && !observer.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before resolve");
                 }
+                return accepted;
             }
 
             @Override
             public void reject(Throwable failure) {
                 Objects.requireNonNull(failure, "failure");
-                if (!claim("reject")) return;
-                if (!future.failFromRuntime(failure) && !future.isCancelled()) {
+                OresFuture<T> observer = claim("reject");
+                if (observer == null) return;
+                if (!observer.failFromRuntime(failure) && !observer.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before reject");
                 }
@@ -267,8 +302,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
             @Override
             public void cancel() {
-                if (!claim("cancel")) return;
-                if (!future.cancel(false) && !future.isCancelled()) {
+                OresFuture<T> observer = claim("cancel");
+                if (observer == null) return;
+                if (!observer.cancel(false) && !observer.isCancelled()) {
                     throw new AlreadySettledException(
                             "callback Future was already settled before cancel");
                 }
@@ -276,7 +312,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
             @Override
             public boolean isDone() {
-                return callbackClaimed.get() || future.isDone();
+                OresFuture<T> observer = observerRef.get();
+                return callbackClaimed.get() || observer == null || observer.isDone();
             }
         };
 
@@ -316,39 +353,57 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     public static <T> OresFuture<T> from(CompletionStage<? extends T> stage) {
         Objects.requireNonNull(stage, "stage");
-        Runnable cancelHook = stage instanceof Future<?> cancellable
-                ? () -> cancellable.cancel(true)
-                : () -> { };
-        OresFuture<T> result = new OresFuture<>(cancelHook);
+        // CompletionStage is a borrowed producer. Cancelling this adapter
+        // revokes only the observer, never the host stage or its own consumers.
+        // An explicitly owned Task/operation must cancel through its separate
+        // owner capability; observing a CompletionStage grants no authority.
+        OresFuture<T> result = new OresFuture<>();
+        // A foreign CompletionStage has no general unsubscribe API.
+        // Some host stages retain completion callbacks indefinitely while
+        // pending. Capture this observer weakly so cancelling/dropping the
+        // adapted Future cannot pin its actor/task state through the host.
+        WeakReference<OresFuture<T>> observerRef = new WeakReference<>(result);
         try {
             stage.whenComplete((value, failure) -> {
+                OresFuture<T> observer = observerRef.get();
+                if (observer == null || observer.isDone()) return;
                 if (failure == null) {
-                    result.completeFromRuntime(value);
+                    observer.completeFromRuntime(value);
                     return;
                 }
 
                 Throwable terminalFailure = unwrap(failure);
                 final boolean cancelled;
                 try {
-                    // A host may convey cancellation through the terminal
-                    // error even when its Future.isCancelled() flag is false.
-                    // Conversely, an inconsistent host may throw from its
-                    // cancellation probe. Neither may strand this adapter.
-                    cancelled = terminalFailure instanceof CancellationException
-                            || (stage instanceof Future<?> hostFuture
-                                    && hostFuture.isCancelled());
+                    // Always consult the host's cancellation probe so an
+                    // inconsistent host that throws from it fails this
+                    // adapter instead of stranding it (main's contract).
+                    // A CancellationException delivered directly as this
+                    // stage's own outcome is cancellation, even when the
+                    // host flag is inconsistent. A CancellationException
+                    // merely propagated from a dependency (wrapped in a
+                    // CompletionException) counts only if the host also
+                    // reports cancellation, and a spurious host flag never
+                    // turns an ordinary failure into cancellation. This is
+                    // still only a HOST signal, not an Oreslang-owned
+                    // cancellation capability.
+                    boolean hostCancelled = stage instanceof Future<?> hostFuture
+                            && hostFuture.isCancelled();
+                    cancelled = failure instanceof CancellationException
+                            || (hostCancelled
+                                    && terminalFailure instanceof CancellationException);
                 } catch (Throwable observationFailure) {
                     if (observationFailure instanceof VirtualMachineError fatal) throw fatal;
                     if (observationFailure instanceof ThreadDeath fatal) throw fatal;
                     if (observationFailure instanceof LinkageError fatal) throw fatal;
-                    result.failFromRuntime(unwrap(observationFailure));
+                    observer.failFromRuntime(unwrap(observationFailure));
                     return;
                 }
 
                 if (cancelled) {
-                    result.cancel(false);
+                    observer.cancel(false);
                 } else {
-                    result.failFromRuntime(terminalFailure);
+                    observer.failFromRuntime(terminalFailure);
                 }
             });
         } catch (Throwable failure) {

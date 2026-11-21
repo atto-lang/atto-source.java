@@ -1,0 +1,9 @@
+import * as db from "std/db_pool.atto";
+pub routine main(): void {
+  let budget = db.admission_budget(2, 6, 4);
+  stdio.println(budget.try_acquire(4));
+  stdio.println(budget.try_acquire(3));
+  stdio.println(budget.release(4));
+  stdio.println(budget.active());
+  return;
+}

@@ -2,7 +2,7 @@ name: Typed Oreslang AST to SMT core proof
 on:
   pull_request:
     paths:
-      - 'stdlib/core.ores'
+      - 'stdlib/core.atto'
       - 'src/main/java/dev/oreslang/compiler/TypedScalarSmt.java'
       - 'src/test/java/dev/oreslang/compiler/TypedScalarSmtTest.java'
       - 'scripts/check_core_math_guest.mjs'
@@ -26,7 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
-          test "$(git hash-object stdlib/core.ores)" = "d2cd9b8e0cd3e3bb3ee6a5f9cebf9ab3312c44f4"
+          test "$(git hash-object stdlib/core.atto)" = "d2cd9b8e0cd3e3bb3ee6a5f9cebf9ab3312c44f4"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
         with:
           version: '25.3'
@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           mkdir -p target/formal-typed-scalar
           git rev-parse HEAD > target/formal-typed-scalar/commit-sha.txt
-          git hash-object stdlib/core.ores > target/formal-typed-scalar/source-git-blob.txt
+          git hash-object stdlib/core.atto > target/formal-typed-scalar/source-git-blob.txt
           java -version 2> target/formal-typed-scalar/java-version.txt
           z3 -version > target/formal-typed-scalar/z3-version.txt
           sha256sum "$(command -v z3)" > target/formal-typed-scalar/z3-binary-sha256.txt
@@ -108,7 +108,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
-          test "$(git hash-object stdlib/core.ores)" = "d2cd9b8e0cd3e3bb3ee6a5f9cebf9ab3312c44f4"
+          test "$(git hash-object stdlib/core.atto)" = "d2cd9b8e0cd3e3bb3ee6a5f9cebf9ab3312c44f4"
           test "$(git hash-object formal/typed-scalar/core-math-i64-v1.json)" = "58d2b64a137ede4700593f855e1f0504ff744f90"
           test "$(git hash-object examples/native-core-math-24.ores)" = "2d12b8632ad77c8dee34235ecfacfca6a0fa553f"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
