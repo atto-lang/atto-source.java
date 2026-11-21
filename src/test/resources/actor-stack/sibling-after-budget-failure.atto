@@ -1,0 +1,41 @@
+fnc blow_stack(int n): int {
+  if n == 0; do
+    return 0;
+  else
+    return 1 + blow_stack(n - 1);
+  fi
+}
+
+define actor ExhaustingWorker as
+  receive(ActorMail<String> mail): void {
+    self.send("starting");
+    val int unreachable = blow_stack(100000);
+    self.send(unreachable);
+    self.end();
+    return;
+  }
+end
+
+define actor SurvivingWorker as
+  receive(ActorMail<String> mail): void {
+    self.send("alive");
+    self.end();
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val broken = spawn ExhaustingWorker();
+  val healthy = spawn SurvivingWorker();
+  await broken.get_ready();
+  await healthy.get_ready();
+  broken.send("start");
+  val first = (await broken.outputs.next()).value.unwrap();
+  healthy.send("run");
+  val second = (await healthy.outputs.next()).value.unwrap();
+  stdio.stdout.write(first.value);
+  stdio.stdout.write("|");
+  stdio.stdout.write(second.value);
+  await healthy.get_done();
+  return;
+}
