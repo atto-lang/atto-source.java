@@ -577,6 +577,10 @@ public final class OresEvalRootNode extends RootNode {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
             }
             OresObject object = new OresObject(this, klass, fields);
+            // Runtime-minted owner identity, never copied from guest input.
+            // This object can be used by a sealed state loan only on this
+            // actor's execution turn (including startup and teardown).
+            object.actorOwnerId = actorContext.self().id();
 
             // Field initializers are actor-local state construction. They run
             // only after ActorRuntime has installed this actor's execution
@@ -590,7 +594,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env initializerEnv =
                         new Env(null, false, fieldOwner, object);
                 initializerEnv.define("self", object, Ast.BindingKind.VAL, fieldOwner);
-                fields.put(
+                object.fields.put(
                         field.name(),
                         eval(field.initializer(), initializerEnv));
             }
@@ -607,7 +611,9 @@ public final class OresEvalRootNode extends RootNode {
                 executeActorStartup(object, startup);
             }
 
-            for (Map.Entry<String, Object> field : fields.entrySet()) {
+            // Startup state-loan commit may replace the constructor map:
+            // validate the published snapshot, not a stale local reference.
+            for (Map.Entry<String, Object> field : object.fields.entrySet()) {
                 if (field.getValue() == UNINITIALIZED_FIELD) {
                     throw new IllegalStateException(
                             "actor '" + klass.name()
@@ -930,10 +936,26 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "self.handle_state expects exactly one inline state callback");
             }
-            ActorStateLoanView view = ActorStateLoanView.open(actorObject, writable);
+            final boolean writeLoan = writable;
             return invokableInvocation(
                     ignored -> {
+                        // Check at execution, not when an invocation object is
+                        // constructed: a previously prepared call must not
+                        // retain authority after a turn or generation change.
+                        if (actorObject.actorOwnerId == null
+                                || ActorRuntime.currentActorRuntime() != context.actors()
+                                || !ActorRuntime.currentActorId()
+                                        .filter(actorObject.actorOwnerId::equals).isPresent()) {
+                            throw new SecurityException(
+                                    "sealed actor state loan requires the current owning actor turn");
+                        }
+                        if (!actorObject.stateLoanActive.compareAndSet(false, true)) {
+                            throw new SecurityException(
+                                    "nested or overlapping actor state loans are forbidden");
+                        }
+                        ActorStateLoanView view = null;
                         try {
+                            view = ActorStateLoanView.open(actorObject, writeLoan);
                             Object result = invoke(
                                     invokableInvocation(
                                             callback,
@@ -946,9 +968,14 @@ public final class OresEvalRootNode extends RootNode {
                                 throw new IllegalArgumentException(
                                         "self.handle_state callback must return void");
                             }
+                            // Publish all state-field writes in one map swap.
+                            // A failed callback or failed copy never publishes
+                            // even the first staged field.
+                            view.commit();
                             return null;
                         } finally {
-                            view.revoke();
+                            if (view != null) view.revoke();
+                            actorObject.stateLoanActive.set(false);
                         }
                     },
                     List.of());
@@ -5099,6 +5126,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            Ast.CallExpr resolved = bareHandleStateCall(call, env);
+            if (resolved != null) {
+                evalSuspendableCall(task, resolved, env, continuation);
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -6981,7 +7013,25 @@ public final class OresEvalRootNode extends RootNode {
             return Parser.ROOT_MODULE;
         }
 
+        // Dispatch is lexical and direct-call-only. Never reify an actor
+        // state capability or dynamically search another actor's methods.
+        private Ast.CallExpr bareHandleStateCall(Ast.CallExpr call, Env env) {
+            if (call.origin() != Ast.CallOrigin.DIRECT
+                    || !(call.callee() instanceof Ast.NameExpr name)
+                    || !name.name().equals("handle_state")
+                    || env.lookup("handle_state") != Env.MISSING
+                    || !isActorLexicalBoundary(env.accessClass())) return null;
+            Object receiver = env.lookup("self");
+            if (!(receiver instanceof OresObject object)
+                    || object.klass.actorKind() == Ast.ActorKind.NONE) return null;
+            return call.rewrite(
+                    new Ast.MemberExpr(new Ast.NameExpr("self"), "handle_state"),
+                    call.typeArguments(), call.typeArgumentsPresent(), call.arguments());
+        }
+
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            Ast.CallExpr resolved = bareHandleStateCall(call, env);
+            if (resolved != null) return prepareInvocation(resolved, env);
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
@@ -11017,6 +11067,7 @@ public final class OresEvalRootNode extends RootNode {
         private boolean active = true;
 
         private final boolean writable;
+        private final Map<String, Object> staged = new LinkedHashMap<>();
 
         private ActorStateLoanView(OresObject object, Set<String> fields, boolean writable) {
             this.object = Objects.requireNonNull(object, "actor state object");
@@ -11060,24 +11111,20 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object get(String name) {
             requireField(name);
-            Object value = object.fields.get(name);
+            Object value = staged.containsKey(name)
+                    ? staged.get(name) : object.fields.get(name);
             if (value == Evaluator.UNINITIALIZED_FIELD) {
                 throw new IllegalArgumentException(
                         "actor state field '" + object.klass.name() + "." + name
                                 + "' is read before initialization");
             }
-            if (!writable && value != null
-                    && !(value instanceof String || value instanceof Boolean
-                        || value instanceof Character || value instanceof Byte
-                        || value instanceof Short || value instanceof Integer
-                        || value instanceof Long || value instanceof Float
-                        || value instanceof Double
-                        || value instanceof java.math.BigInteger
-                        || value instanceof java.math.BigDecimal)) {
-                // Composite values may contain mutable aliases. Fail closed
-                // until a provably immutable/snapshot view is implemented.
+            if (!isImmutableStateScalar(value)) {
+                // Writable loans must reject composites too: handing a mutable
+                // object to the callback would let it mutate the published
+                // snapshot without going through the staged write set.
                 throw new IllegalArgumentException(
-                        "critical[read] state loan only supports scalar state values");
+                        "sealed actor state loan only supports immutable scalar values;"
+                                + " composite snapshot lowering is not implemented");
             }
             return value;
         }
@@ -11093,11 +11140,62 @@ public final class OresEvalRootNode extends RootNode {
                         "actor state field '" + object.klass.name() + "." + name
                                 + "' is immutable");
             }
-            object.fields.put(name, value);
+            if (!isImmutableStateScalar(value)) {
+                throw new IllegalArgumentException(
+                        "sealed actor state loan cannot stage a mutable composite value");
+            }
+            // Defense in depth against unchecked/untyped AST execution:
+            // never let a scalar field's runtime shape change on publication.
+            String target = field.type().name();
+            boolean compatible = switch (target) {
+                case "int" -> value instanceof Byte || value instanceof Short
+                        || value instanceof Integer || value instanceof Long
+                        || (value instanceof java.math.BigInteger integer
+                            && integer.bitLength() <= 63);
+                case "bool" -> value instanceof Boolean;
+                case "string", "String" -> value instanceof String;
+                case "char" -> value instanceof Character;
+                case "float", "double", "f32", "f64" ->
+                        value instanceof Float || value instanceof Double;
+                default -> false;
+            };
+            if (!compatible) {
+                throw new IllegalArgumentException(
+                        "sealed actor state field '" + name
+                                + "' requires a checked scalar of type " + target);
+            }
+            staged.put(name, value);
+        }
+
+        private static boolean isImmutableStateScalar(Object value) {
+            return value instanceof String || value instanceof Boolean
+                    || value instanceof Character || value instanceof Byte
+                    || value instanceof Short || value instanceof Integer
+                    || value instanceof Long || value instanceof Float
+                    || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal;
+        }
+
+        private void commit() {
+            requireActive();
+            if (staged.isEmpty()) return;
+            if (!writable) {
+                throw new SecurityException("read-only actor state loan cannot commit writes");
+            }
+            // Copy before publication; an allocation or validation failure
+            // leaves the old actor-state snapshot intact. The actor mailbox
+            // enforces the single-writer turn; volatile reference assignment
+            // is the only publication of these sealed-field changes.
+            Map<String, Object> next = new LinkedHashMap<>(object.fields);
+            next.putAll(staged);
+            object.fields = next;
+            staged.clear();
         }
 
         private void revoke() {
             active = false;
+            staged.clear();
         }
 
         @Override public String toString() {
@@ -11108,7 +11206,12 @@ public final class OresEvalRootNode extends RootNode {
     private static final class OresObject implements OresMutex.SharedState {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
-        private final Map<String,Object> fields;
+        // Atomic staged-state publication replaces the whole field snapshot;
+        // never mutate this map in place from a sealed state-loan callback.
+        private volatile Map<String,Object> fields;
+        private ActorRuntime.ActorId actorOwnerId;
+        private final java.util.concurrent.atomic.AtomicBoolean stateLoanActive =
+                new java.util.concurrent.atomic.AtomicBoolean();
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
             this.klass = klass;

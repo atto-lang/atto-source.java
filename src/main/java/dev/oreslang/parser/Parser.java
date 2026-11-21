@@ -4120,8 +4120,10 @@ public final class Parser {
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
                 List<Ast.Expr> args;
-                if (expr instanceof Ast.MemberExpr member
-                        && member.member().equals("handle_state")
+                if (((expr instanceof Ast.MemberExpr member
+                        && member.member().equals("handle_state"))
+                        || (expr instanceof Ast.NameExpr bare
+                        && bare.name().equals("handle_state")))
                         && check(IDENT) && peek().lexeme().equals("critical")) {
                     // Canonical explicit state access mode:
                     // self.handle_state(critical[read|write] |state| -> {...}).
