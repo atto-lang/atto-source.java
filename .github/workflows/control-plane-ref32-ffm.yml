@@ -1,0 +1,32 @@
+name: Control-plane Ref32 FFM host (not guest)
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ControlPlaneArena32.java'
+      - 'src/test/java/dev/oreslang/runtime/ControlPlaneArena32Test.java'
+      - '.github/workflows/control-plane-ref32-ffm.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-host-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Compile standalone native FFM host arena with all warnings fatal
+        shell: bash
+        run: |
+          set -euo pipefail
+          temp="$(mktemp -d)"
+          trap 'rm -rf "$temp"' EXIT
+          javac -Xlint:all -Werror -d "$temp"             src/main/java/dev/oreslang/runtime/ControlPlaneArena32.java             src/test/java/dev/oreslang/runtime/ControlPlaneArena32Test.java
+          java -cp "$temp" dev.oreslang.runtime.ControlPlaneArena32Test
+      - name: Scope of test
+        run: echo 'HOST-ONLY Java FFM control heap test; not guest compilation, integrated scheduler, zero managed allocations, or full process zero GC'
