@@ -196,6 +196,15 @@ public record IsolatePolicy(
                 .arguments(OresLanguage.ID, applicationArguments(profile, permissions, permissionCheckMode));
 
         /*
+         * Trusted/private actor contexts with no Java host imports share one
+         * explicit process Engine. Adversarial contexts and differing HostAccess
+         * configurations keep separate Engine boundaries.
+         */
+        if (!adversarial && hostClasses.isEmpty()) {
+            builder.engine(ProcessCodeEngine.shared());
+        }
+
+        /*
          * Graal's engine.IsolateLibrary option is experimental in 25.x. Opt in
          * only when the embedding process explicitly supplies a polyglot
          * isolate library; ordinary strict/adversarial contexts remain on the

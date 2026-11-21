@@ -48,7 +48,6 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
-    private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
         this(language, program, "<anonymous>");
@@ -107,13 +106,13 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private Evaluator evaluator(OresContext context) {
-        Evaluator current = evaluator;
-        if (current != null) return current;
-        synchronized (this) {
-            current = evaluator;
-            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId);
-            return current;
-        }
+        /*
+         * This RootNode may be parse-cached and executed by many contexts.
+         * Never retain an OresContext or mutable evaluator in the shared AST.
+         * Each context owns exactly one Evaluator for this shared code root.
+         */
+        return context.codeExecutionState(
+                this, () -> new Evaluator(program, context, codeUnitId));
     }
 
     private static boolean isControl(Object[] arguments, String command) {

@@ -11,7 +11,9 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -45,6 +47,11 @@ public final class OresContext implements AutoCloseable {
     // Per-actor mutable heaps/closures are never published into this store.
     private final SharedCodeImageStore sharedCodeImages = new SharedCodeImageStore();
     private final Map<String, Map<String, String>> linkedImportResolutions = new HashMap<>();
+    /*
+     * Mutable execution state is context-local even when AST/code plans are
+     * process-shared. Identity keys avoid accidental aliasing across roots.
+     */
+    private final IdentityHashMap<Object, Object> codeExecutionState = new IdentityHashMap<>();
 
     public Object asGuestHostValue(Object value) {
         requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java host argument conversion");
@@ -125,6 +132,23 @@ public final class OresContext implements AutoCloseable {
     public RuntimePermissions runtimePermissions() { return runtimePermissions; }
     public PermissionCheckMode permissionCheckMode() { return permissionCheckMode; }
     public ExecutionProfile executionProfile() { return executionProfile; }
+
+
+    /** Returns context-local runtime state for a process-shared code object. */
+    @SuppressWarnings("unchecked")
+    public synchronized <T> T codeExecutionState(Object key, Supplier<? extends T> factory) {
+        java.util.Objects.requireNonNull(key, "key");
+        java.util.Objects.requireNonNull(factory, "factory");
+        Object existing = codeExecutionState.get(key);
+        if (existing != null) return (T) existing;
+        T created = java.util.Objects.requireNonNull(factory.get(), "factory result");
+        codeExecutionState.put(key, created);
+        return created;
+    }
+
+    public synchronized int codeExecutionStateCount() {
+        return codeExecutionState.size();
+    }
 
     public Object lookupHostSymbol(String className) {
         requireCapability(IsolatePolicy.Capability.JAVA_INTEROP, "Java host import " + className);
@@ -408,6 +432,7 @@ public final class OresContext implements AutoCloseable {
             synchronized (this) {
                 linkedCodeUnits.clear();
                 linkedImportResolutions.clear();
+                codeExecutionState.clear();
                 sharedCodeImages.close();
             }
             garbageCollector.close();
