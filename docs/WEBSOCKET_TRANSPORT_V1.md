@@ -52,6 +52,15 @@ Native Image/AOT direction.
 `WebSocketOpeningRequest` reads one raw request head with a total byte bound
 and header-count bound. It requires CRLF line endings, ASCII without NUL,
 canonical origin-form request targets, and rejects obsolete folded headers.
+The current policy also rejects percent-encoded C0/space/DEL bytes,
+encoded path separators, and encoded percent signs at opening-request admission;
+applications requiring alternate URI encodings must define a reviewed
+canonicalization policy before enabling them. Bracketed IPv6 authorities are
+validated structurally (including canonical embedded IPv4 tails) without DNS
+resolution; ASCII-character filtering alone is not accepted as proof of an
+IPv6 address. These intentionally restrictive checks are admission policy, not
+a claim that RFC 6455 universally forbids these encodings.
+
 It retains duplicate detection before normalization: Host,
 Sec-WebSocket-Key, Sec-WebSocket-Version, Origin, Content-Length and
 Transfer-Encoding are singleton inputs. Upgrade and Connection may repeat and
