@@ -67,6 +67,20 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
                         + "mutable containers, foreign references, and capabilities are forbidden");
     }
 
+    /**
+     * A persistent subtree is an immutable *reference*, but deep equality
+     * between two different roots can recurse through thousands of HAMT
+     * descendants and is not bounded by the update path. Treat nonidentical
+     * persistent roots as new values rather than walking their contents on
+     * every with(key, value) call. This changes no Map equality semantics.
+     */
+    private static boolean sameUpdateValue(Object left, Object right) {
+        if (left == right) return true;
+        if (left instanceof PersistentActorMap || right instanceof PersistentActorMap)
+            return false;
+        return Objects.equals(left, right); // closed immutable scalar set
+    }
+
     private static int hash(String key) {
         int h = key.hashCode();
         return h ^ (h >>> 16);
@@ -187,7 +201,7 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
         }
         if (node instanceof Leaf leaf) {
             if (leaf.hash == entry.hash && leaf.key.equals(entry.key)) {
-                return Objects.equals(leaf.value, entry.value) ? node : entry;
+                return sameUpdateValue(leaf.value, entry.value) ? node : entry;
             }
             added.set = true;
             if (leaf.hash == entry.hash) {
@@ -203,7 +217,7 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
             for (int i = 0; i < collision.leaves.length; i++) {
                 Leaf old = collision.leaves[i];
                 if (old.key.equals(entry.key)) {
-                    if (Objects.equals(old.value, entry.value)) return node;
+                    if (sameUpdateValue(old.value, entry.value)) return node;
                     Leaf[] copy = collision.leaves.clone();
                     copy[i] = entry;
                     return new Collision(collision.hash, copy);
