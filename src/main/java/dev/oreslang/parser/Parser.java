@@ -888,7 +888,7 @@ public final class Parser {
                 : validateReturnFirstType(prefixReturnType, annotations);
         Ast.EffectSpec effects = parseCheckedEffects();
         List<Ast.Stmt> body = prefixReturnType != null
-                ? parseReturnFirstCallableBody()
+                ? parseReturnFirstCallableBody(!effects.isEmpty())
                 : parseFreeCallableBody(arrowReturn && actorKind == Ast.ActorKind.NONE);
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body, specs, effects);
@@ -978,11 +978,19 @@ public final class Parser {
      * statement semantics. Neither marker, '<-' nor U+2022 BULLET, changes
      * lexical scope, effects or the callable's declared return type.
      */
-    private List<Ast.Stmt> parseReturnFirstCallableBody() {
+    private List<Ast.Stmt> parseReturnFirstCallableBody(boolean inlineEffects) {
         if (check(LBRACE)) return parseBlock();
-        // The begin keyword is an optional unambiguous body delimiter. Keeping
-        // it contextual preserves use of identifiers named begin elsewhere.
-        matchContextualKeyword("begin");
+        // Retain optional begin; :: is the other exact delimiter after a
+        // complete checked effect list. Both use explicit statement returns,
+        // never a legacy comma-tail implicit result.
+        boolean explicitBegin = matchContextualKeyword("begin");
+        boolean explicitColonColon = !explicitBegin && match(DOUBLE_COLON);
+        if (inlineEffects && !explicitBegin && !explicitColonColon) {
+            throw error(peek(), "return-first effects require begin, :: or braces before the body");
+        }
+        if (explicitColonColon && (check(LBRACE) || !isImplicitNewlineTerminator())) {
+            throw error(peek(), "return-first :: requires statements/end on a later physical line");
+        }
         localTypeScopes.push(new java.util.HashSet<>());
         try {
             List<Ast.Stmt> body = parseUntil(END);
@@ -2261,7 +2269,7 @@ public final class Parser {
             throw error(peek(), "return-first methods require an executable callable body");
         }
         if (prefixReturnType != null) {
-            body = parseReturnFirstCallableBody();
+            body = parseReturnFirstCallableBody(!effects.isEmpty());
         } else if (mods.isAbstract || implicitAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
