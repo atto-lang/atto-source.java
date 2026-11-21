@@ -47,6 +47,19 @@ public final class GuestCallDepthGuard {
      * @return exact nested-depth token required by leave()
      */
     public static int enter() {
+        return enter(MANAGED_FRAME_CHARGE_BYTES);
+    }
+
+    /**
+     * Reserve the complete typed frame, not an extra allocation on top of
+     * the legacy 32-byte frame. The byte count is computed by the compiler
+     * bridge before admitting the next native JVM call.
+     */
+    static int enter(int reservedFrameBytes) {
+        if (reservedFrameBytes < MANAGED_FRAME_CHARGE_BYTES
+                || reservedFrameBytes > ActorFrameArena.DEFAULT_MAX_BYTES) {
+            throw new IllegalArgumentException("invalid guarded guest frame reservation");
+        }
         ActorGuestStack actorStack = ActorRuntime.currentActorGuestStack();
         ActorFrameArena arena = ActorRuntime.currentActorFrameArena();
         Scope scope = CURRENT.get();
@@ -83,7 +96,7 @@ public final class GuestCallDepthGuard {
         try {
             if (arena != null) {
                 scope.frames.addLast(
-                        arena.push(scope.execution, MANAGED_FRAME_CHARGE_BYTES));
+                        arena.push(scope.execution, reservedFrameBytes));
             }
         } catch (RuntimeException failure) {
             if (actorStack != null) {
@@ -120,6 +133,40 @@ public final class GuestCallDepthGuard {
         scope.arena.write(scope.execution, frame, 0, descriptor);
     }
 
+    /** Typed primitive slots share the one guarded frame and its byte quota. */
+    static void writeScalarSlots(int enteredDepth, byte[] encoded) {
+        Scope scope = requireInvocationScope(enteredDepth);
+        if (encoded == null || encoded.length % GuestScalarFrameCodec.SLOT_BYTES != 0) {
+            throw new IllegalArgumentException("invalid typed argument slots");
+        }
+        if (scope.arena == null) return;
+        ActorFrameArena.FrameRef ref = scope.frames.peekLast();
+        if (ref == null) throw new IllegalStateException("missing guest scalar frame");
+        scope.arena.write(scope.execution, ref, 16, encoded);
+    }
+
+    static byte[] readScalarSlots(int enteredDepth, int bytes) {
+        Scope scope = requireInvocationScope(enteredDepth);
+        if (bytes < 0 || bytes % GuestScalarFrameCodec.SLOT_BYTES != 0) {
+            throw new IllegalArgumentException("invalid typed argument slot length");
+        }
+        if (scope.arena == null) return new byte[0];
+        ActorFrameArena.FrameRef ref = scope.frames.peekLast();
+        if (ref == null) throw new IllegalStateException("missing guest scalar frame");
+        return scope.arena.read(scope.execution, ref, 16, bytes);
+    }
+
+    static boolean hasActorFrame(int enteredDepth) {
+        return requireInvocationScope(enteredDepth).arena != null;
+    }
+
+    /** A corrupted or unbalanced trusted evaluator frame cannot be recovered by guest code. */
+    static void poisonMalformedInvocation(int enteredDepth) {
+        Scope scope = requireInvocationScope(enteredDepth);
+        if (scope.actorStack != null) scope.actorStack.poison();
+        if (scope.arena != null) scope.arena.poisonFromGuestGuard();
+    }
+
     /** Package-private read returns a defensive copy, never frame backing bytes. */
     static byte[] readInvocationDescriptor(int enteredDepth) {
         Scope scope = requireInvocationScope(enteredDepth);
@@ -135,6 +182,7 @@ public final class GuestCallDepthGuard {
                 || scope.actorStack != ActorRuntime.currentActorGuestStack()
                 || scope.arena != ActorRuntime.currentActorFrameArena()) {
             if (scope != null && scope.actorStack != null) scope.actorStack.poison();
+            if (scope != null && scope.arena != null) scope.arena.poisonFromGuestGuard();
             throw new IllegalStateException("guest invocation descriptor outside active frame");
         }
         return scope;
