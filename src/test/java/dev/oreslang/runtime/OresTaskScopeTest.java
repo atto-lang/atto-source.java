@@ -385,7 +385,7 @@ final class OresTaskScopeTest {
     }
 
     @Test
-    void retirementFailureSealsScopeAndCannotBecomeSuccessfulDrain()
+    void retirementFailurePoisonsScopeWithoutCatchableDrainWitness()
             throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresTaskScope scope = new OresTaskScope(scheduler);
@@ -398,19 +398,55 @@ final class OresTaskScopeTest {
             OresFuture<Void> drained = scope.quiesce();
 
             assertEquals(7, child.get(5, TimeUnit.SECONDS));
-            java.util.concurrent.ExecutionException observed =
-                    assertThrows(
-                            java.util.concurrent.ExecutionException.class,
-                            () -> drained.get(5, TimeUnit.SECONDS));
-            assertSame(retirementFailure, observed.getCause());
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (scope.compilerRetirementFailure() == null
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1L);
+            }
+
+            assertSame(retirementFailure, scope.compilerRetirementFailure());
             assertFalse(scope.isOpen(),
                     "failed retirement must seal the scope against new children");
             assertEquals(1, scope.activeChildren(),
                     "failed child remains pinned as a fail-closed reclamation witness");
+            assertFalse(drained.isDone(),
+                    "failed transfer release must not become a catchable scope-exit witness");
+            assertThrows(
+                    java.util.concurrent.TimeoutException.class,
+                    () -> drained.get(100, TimeUnit.MILLISECONDS));
             assertThrows(
                     IllegalStateException.class,
                     () -> scope.fork(resume -> OresScheduler.done(1)));
         }
+    }
+
+    @Test
+    void neverStartedRetirementFailurePinsSyntheticJoinSlot() {
+        OresScheduler scheduler = new OresScheduler(1);
+        scheduler.close();
+        OresTaskScope scope = new OresTaskScope(scheduler);
+        RuntimeException retirementFailure =
+                new RuntimeException("never-started retirement failed");
+
+        java.util.concurrent.RejectedExecutionException admission =
+                assertThrows(
+                        java.util.concurrent.RejectedExecutionException.class,
+                        () -> scope.forkCompilerAdmitted(
+                                resume -> OresScheduler.done(1),
+                                () -> { throw retirementFailure; }));
+
+        assertEquals(1, admission.getSuppressed().length);
+        assertSame(retirementFailure, admission.getSuppressed()[0]);
+        assertSame(retirementFailure, scope.compilerRetirementFailure());
+        assertFalse(scope.isOpen());
+        assertEquals(1, scope.activeChildren(),
+                "failed never-started rollback must retain its join slot");
+        OresFuture<Void> drained = scope.quiesce();
+        assertFalse(drained.isDone());
+        assertThrows(
+                java.util.concurrent.TimeoutException.class,
+                () -> drained.get(100, TimeUnit.MILLISECONDS));
     }
 
 }
