@@ -6,3 +6,4 @@
 # Slug or numeric-ID changes require a new exact independent review.
 # Proposed narrow private carrier for v3 exact-tree tests; requires exact independent review before merge.
 # Review-only candidate (NOT an approved destination): ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
+opto-sync-test/go-java-validation 1323598177
