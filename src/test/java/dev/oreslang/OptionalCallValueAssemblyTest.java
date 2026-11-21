@@ -232,4 +232,50 @@ final class OptionalCallValueAssemblyTest {
         assertThrows(IllegalArgumentException.class,
                 () -> OptionalCallValueAssembly.assemble(preview, List.of(), invalid));
     }
+    @Test
+    void callbackMutationCannotSwapNominalOptionAfterPreflight() {
+        OptionBox validated = new OptionBox(false, null);
+        var supplied = new ArrayList<Object>(List.of(validated, 7L));
+        var preview = new OptionalCallAbiPreview.Preview(
+                List.of(new Ast.NameExpr("supplied"), new Ast.LiteralExpr(7L)),
+                List.of(
+                        slot(0, OPTION_STRING, OptionalCallAbiPreview.Action.PASS_OPTION, 0, 0),
+                        slot(1, INT, OptionalCallAbiPreview.Action.PASS_REQUIRED, 1, 1)));
+        OptionalCallValueAssembly.TrustedOptionFactory adversarial =
+                new OptionalCallValueAssembly.TrustedOptionFactory() {
+                    @Override public Object some(Ast.TypeRef type, Object value) {
+                        throw new AssertionError("no Some expected");
+                    }
+                    @Override public Object none(Ast.TypeRef type) {
+                        throw new AssertionError("no None expected");
+                    }
+                    @Override public boolean isNominalOption(Ast.TypeRef type, Object value) {
+                        supplied.set(0, "forged-after-validation");
+                        supplied.set(1, -1L);
+                        return value == validated;
+                    }
+                };
+        var result = OptionalCallValueAssembly.assemble(preview, supplied, adversarial);
+        assertSame(validated, result.get(0),
+                "verified Option identity must remain stable through ABI materialization");
+        assertEquals(7L, result.get(1),
+                "later scalar ABI slot must also use the original value snapshot");
+        assertEquals(List.of("forged-after-validation", -1L), supplied,
+                "adversarial callback really changed the caller-owned list");
+    }
+
+    @Test
+    void nullOrMissingSourceTemporaryCannotReachNominalAdapter() {
+        var preview = new OptionalCallAbiPreview.Preview(
+                List.of(new Ast.NameExpr("supplied")),
+                List.of(slot(0, OPTION_STRING, OptionalCallAbiPreview.Action.PASS_OPTION, 0, 0)));
+        Options factory = new Options();
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallValueAssembly.assemble(
+                        preview, Arrays.asList((Object) null), factory));
+        assertThrows(IllegalArgumentException.class,
+                () -> OptionalCallValueAssembly.assemble(preview, List.of(), factory));
+        assertTrue(factory.created.isEmpty());
+    }
+
 }

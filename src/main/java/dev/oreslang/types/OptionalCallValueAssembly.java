@@ -50,19 +50,31 @@ public final class OptionalCallValueAssembly {
         Objects.requireNonNull(evaluatedSourceValues, "evaluated source values");
         Objects.requireNonNull(optionFactory, "trusted Option factory");
 
-        if (checkedPreview.sourceExpressions().size() != evaluatedSourceValues.size()) {
+        // Snapshot caller-owned source temporaries before invoking the
+        // trusted adapter. Otherwise a factory callback can replace a value
+        // between nominal preflight and ABI materialization, making a
+        // validated Option<T> slot receive a different (forged) object.
+        // This is a shallow snapshot of already-evaluated guest values; the
+        // owning compiler/runtime must separately enforce deep immutability
+        // and borrowed-lifetime rules for mutable payloads.
+        // Cheap preflight before making any O(n) snapshot of a caller-owned
+        // vector. Check the immutable snapshot again afterward to detect a
+        // size-changing caller or concurrent mutation before adapter effects.
+        int expected = checkedPreview.sourceExpressions().size();
+        if (evaluatedSourceValues.size() != expected)
             throw new IllegalArgumentException(
                     "source values do not match the verified evaluated-source count");
+        List<?> sourceValues;
+        try {
+            sourceValues = List.copyOf(evaluatedSourceValues);
+        } catch (NullPointerException nullTemporary) {
+            throw new IllegalArgumentException(
+                    "a source temporary is null; use a nominal Option.None value",
+                    nullTemporary);
         }
-
-        // Validate the entire source list before producing any new Option
-        // objects. Null is not an Oreslang value; a guest None is an Option
-        // object, not a Java null in the argument vector.
-        for (int source = 0; source < evaluatedSourceValues.size(); source++) {
-            if (evaluatedSourceValues.get(source) == null) {
-                throw new IllegalArgumentException(
-                        "a source temporary is null; use a nominal Option.None value");
-            }
+        if (checkedPreview.sourceExpressions().size() != sourceValues.size()) {
+            throw new IllegalArgumentException(
+                    "source values do not match the verified evaluated-source count");
         }
 
         // Validate ALL supplied nominal Option values BEFORE creating any
@@ -77,11 +89,11 @@ public final class OptionalCallValueAssembly {
                     && !slot.calleeType().inferArguments();
             if (slot.action() == OptionalCallAbiPreview.Action.PASS_OPTION || requiredOption) {
                 int source = slot.evaluatedSourceIndex();
-                if (source < 0 || source >= evaluatedSourceValues.size()) {
+                if (source < 0 || source >= sourceValues.size()) {
                     throw new IllegalArgumentException("missing supplied nominal Option");
                 }
                 Ast.TypeRef payload = slot.calleeType().arguments().getFirst();
-                if (!optionFactory.isNominalOption(payload, evaluatedSourceValues.get(source))) {
+                if (!optionFactory.isNominalOption(payload, sourceValues.get(source))) {
                     throw new IllegalArgumentException(
                             "supplied Option value fails nominal identity validation");
                 }
@@ -95,10 +107,10 @@ public final class OptionalCallValueAssembly {
                 adapted = optionFactory.none(slot.calleeType().arguments().getFirst());
             } else {
                 int source = slot.evaluatedSourceIndex();
-                if (source < 0 || source >= evaluatedSourceValues.size()) {
+                if (source < 0 || source >= sourceValues.size()) {
                     throw new IllegalArgumentException("missing checked source temporary");
                 }
-                Object supplied = evaluatedSourceValues.get(source);
+                Object supplied = sourceValues.get(source);
                 adapted = slot.action() == OptionalCallAbiPreview.Action.WRAP_SOME
                         ? optionFactory.some(slot.calleeType().arguments().getFirst(), supplied)
                         : supplied;
