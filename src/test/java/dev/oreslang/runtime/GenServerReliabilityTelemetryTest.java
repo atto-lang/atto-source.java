@@ -36,7 +36,19 @@ final class GenServerReliabilityTelemetryTest {
         assertTrue(calls.cancel(cancelled));
 
         var pending = calls.register(target(1));
-        calls.closePending(new IllegalStateException("shutdown detail is not telemetry"));
+        var secret = new IllegalStateException(
+                "secret shutdown detail must not cross the call boundary");
+        calls.closePending(secret);
+        var closed = assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                pending.future()::get);
+        var projected = assertInstanceOf(
+                GenServerPendingCalls.GenServerCallClosedException.class,
+                closed.getCause());
+        assertNull(projected.getCause());
+        assertEquals(0, projected.getSuppressed().length);
+        assertEquals(IllegalStateException.class.getName(), projected.diagnosticType());
+        assertFalse(projected.getMessage().contains("secret shutdown detail"));
 
         var s = kernel.snapshot();
         assertEquals(4L, s.counters().get(ActorReliabilityKernel.EventKind.CALL_REGISTERED));
