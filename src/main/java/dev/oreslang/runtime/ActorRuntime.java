@@ -2554,7 +2554,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private record MessageEnvelope(Object value, Runnable release) implements AutoCloseable {
+    /** Runtime-only immutable admission metadata, never part of guest message graphs. */
+    private record MessageEnvelope(
+            Object value, Runnable release, OresAsyncTrace.Trace causalTrace)
+            implements AutoCloseable {
         @Override
         public void close() {
             if (release != null) release.run();
@@ -2712,7 +2715,8 @@ public final class ActorRuntime implements AutoCloseable {
     private record ContinuationEnvelope(
             ActorContinuation continuation,
             Object value,
-            Throwable failure) { }
+            Throwable failure,
+            OresAsyncTrace.Trace causalTrace) { }
 
     /**
      * Internal non-error control transfer used by compiler-generated state
@@ -4250,6 +4254,21 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = cell.kind.memoryIsolated() ? isolateCopy(message) : freezeForTransport(message);
+        // Capture causality only after ownership/transport checks succeeded.
+        // A copy-on-child trace is owned by this one admitted mailbox envelope.
+        // Never embed it in a guest message graph or reuse the sender's mutable Trace.
+        OresAsyncTrace.SourceSite actorSite =
+                OresAsyncTrace.SourceSite.unknown("actor-runtime", null);
+        boolean restricted = cell.kind == ActorKind.UNTRUSTED
+                || (sender != null && sender.kind == ActorKind.UNTRUSTED);
+        OresAsyncTrace.Frame receivingActor = new OresAsyncTrace.Frame(
+                restricted ? "<redacted-actor>" : "actor:" + ref.id().value(),
+                actorSite);
+        OresAsyncTrace.Trace parentTrace = restricted ? null : OresAsyncTrace.current();
+        OresAsyncTrace.Trace messageTrace = parentTrace == null
+                ? OresAsyncTrace.root(receivingActor)
+                : parentTrace.child(receivingActor, actorSite);
+        messageTrace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, actorSite);
         Runnable release;
         if (cell.kind.memoryIsolated()) {
             MemoryReservation reservation;
@@ -4267,7 +4286,7 @@ public final class ActorRuntime implements AutoCloseable {
             release = () -> cell.releaseSharedInbox(bytes);
         }
 
-        MessageEnvelope envelope = new MessageEnvelope(prepared, release);
+        MessageEnvelope envelope = new MessageEnvelope(prepared, release, messageTrace);
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
         try {
@@ -6223,6 +6242,40 @@ public final class ActorRuntime implements AutoCloseable {
             schedule();
         }
 
+        @FunctionalInterface
+        private interface CausalAction {
+            void run() throws Exception;
+        }
+
+        /** Install only for the owning turn; always restore the pooled carrier's prior trace. */
+        private void withCausalTrace(OresAsyncTrace.Trace trace, CausalAction action)
+                throws Exception {
+            if (trace == null) {
+                action.run();
+                return;
+            }
+            try (OresAsyncTrace.Scope ignored = OresAsyncTrace.install(trace)) {
+                try {
+                    action.run();
+                } catch (ActorTurnSuspendedSignal suspended) {
+                    // Scheduler control transfer is not an exception or guest failure.
+                    throw suspended;
+                } catch (Exception | Error failure) {
+                    if (!(failure instanceof VirtualMachineError)
+                            && !(failure instanceof ThreadDeath)
+                            && !(failure instanceof LinkageError)) {
+                        OresAsyncTrace.attach(failure, trace);
+                    }
+                    throw failure;
+                }
+            }
+        }
+
+        private OresAsyncTrace.Trace forkDeferredTrace() {
+            OresAsyncTrace.Trace current = OresAsyncTrace.current();
+            return current == null ? null : current.fork();
+        }
+
         private void suspendOn(OresFuture<?> awaited, ActorContinuation continuation) {
             Objects.requireNonNull(awaited, "awaited");
             Objects.requireNonNull(continuation, "continuation");
@@ -6234,6 +6287,8 @@ public final class ActorRuntime implements AutoCloseable {
                         "actor turn is already suspended; compiler emitted overlapping await state");
             }
 
+            // Capture at suspension, not on an arbitrary Future-completion thread.
+            OresAsyncTrace.Trace suspendedTrace = OresAsyncTrace.current();
             logicalTurnSuspended = true;
             try {
                 OresFuture.RuntimeWaiterRegistration registration =
@@ -6242,7 +6297,8 @@ public final class ActorRuntime implements AutoCloseable {
                                 new ContinuationEnvelope(
                                         continuation,
                                         value,
-                                        unwrapCompletionFailure(failure)),
+                                        unwrapCompletionFailure(failure),
+                                        suspendedTrace),
                                 "resume"));
 
                 OresFuture.RuntimeWaiterRegistration previous =
@@ -6271,7 +6327,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             enqueueContinuation(
                     nextTickContinuations,
-                    new ContinuationEnvelope(continuation, null, null),
+                    new ContinuationEnvelope(continuation, null, null, forkDeferredTrace()),
                     "next_tick");
         }
 
@@ -6283,13 +6339,14 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (delay.isNegative()) throw new IllegalArgumentException("actor timer delay cannot be negative");
 
+            OresAsyncTrace.Trace deferredTrace = forkDeferredTrace();
             AtomicReference<ActorTimerWheel.Handle> holder = new AtomicReference<>();
             ActorTimerWheel.Handle delegate = actorTimerWheel.schedule(delay, () -> {
                 ActorTimerWheel.Handle handle = holder.get();
                 if (handle != null) timers.remove(handle);
                 enqueueContinuation(
                         readyContinuations,
-                        new ContinuationEnvelope(continuation, null, null),
+                        new ContinuationEnvelope(continuation, null, null, deferredTrace),
                         "timer");
             });
             holder.set(delegate);
@@ -6494,10 +6551,11 @@ public final class ActorRuntime implements AutoCloseable {
                     long continuationDeadline = armMessageDeadline("await continuation");
                     boolean suspendedAgain = false;
                     try {
-                        continuation.continuation().resume(
-                                continuation.value(),
-                                continuation.failure(),
-                                context);
+                        withCausalTrace(continuation.causalTrace(), () ->
+                                continuation.continuation().resume(
+                                        continuation.value(),
+                                        continuation.failure(),
+                                        context));
                     } catch (ActorTurnSuspendedSignal suspended) {
                         suspendedAgain = true;
                     } finally {
@@ -6519,10 +6577,11 @@ public final class ActorRuntime implements AutoCloseable {
                     beginMessageBudget();
                     long eventDeadline = armMessageDeadline("actor continuation event");
                     try {
-                        readyEvent.continuation().resume(
-                                readyEvent.value(),
-                                readyEvent.failure(),
-                                context);
+                        withCausalTrace(readyEvent.causalTrace(), () ->
+                                readyEvent.continuation().resume(
+                                        readyEvent.value(),
+                                        readyEvent.failure(),
+                                        context));
                     } catch (ActorTurnSuspendedSignal suspended) {
                         return;
                     } finally {
@@ -6540,7 +6599,8 @@ public final class ActorRuntime implements AutoCloseable {
                     beginMessageBudget();
                     long tickDeadline = armMessageDeadline("next_tick continuation");
                     try {
-                        nextTick.continuation().resume(null, null, context);
+                        withCausalTrace(nextTick.causalTrace(), () ->
+                                nextTick.continuation().resume(null, null, context));
                     } catch (ActorTurnSuspendedSignal suspended) {
                         return;
                     } finally {
@@ -6562,7 +6622,12 @@ public final class ActorRuntime implements AutoCloseable {
                         long messageDeadline = armMessageDeadline("inbox message");
                         try {
                             try {
-                                behavior.onMessage((M) envelope.value(), context);
+                                withCausalTrace(envelope.causalTrace(), () -> {
+                                    behavior.onMessage((M) envelope.value(), context);
+                                    if (kind.memoryIsolated() && !trustedFactory) {
+                                        validatePrivateBehaviorState(ref.id(), behavior);
+                                    }
+                                });
                             } catch (ActorTurnSuspendedSignal suspended) {
                                 // The live Oreslang frame is already captured in
                                 // the continuation registered by suspendOn().
@@ -6571,9 +6636,6 @@ public final class ActorRuntime implements AutoCloseable {
                                 messageSuspended = true;
                                 suspendedInboxEnvelope = envelope;
                                 return;
-                            }
-                            if (kind.memoryIsolated() && !trustedFactory) {
-                                validatePrivateBehaviorState(ref.id(), behavior);
                             }
                         } finally {
                             disarmMessageDeadline(messageDeadline);

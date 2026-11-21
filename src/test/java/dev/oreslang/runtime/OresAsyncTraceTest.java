@@ -161,6 +161,33 @@ final class OresAsyncTraceTest {
         assertTrue(trace.render().contains("Worker.receive_message"));
     }
     @Test
+    void unenteredActorBoundaryIsNeverCountedAsAVisitedActor() {
+        OresAsyncTrace.Trace waiting = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("ActorPending", site(2)));
+        waiting.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, site(3));
+        assertTrue(waiting.actorVisits().isEmpty(),
+                "a queued or rejected message is not an actor visit");
+
+        OresAsyncTrace.Trace sibling = waiting.fork();
+        try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(sibling)) {
+            assertTrue(sibling.actorVisits().isEmpty(),
+                    "forking an unentered actor must not inherit pending admission");
+        }
+        OresAsyncTrace.Trace descendant = waiting.child(
+                new OresAsyncTrace.Frame("ChildNotAdmitted", site(4)), site(4));
+        assertTrue(descendant.actorVisits().isEmpty(),
+                "a pending child does not become a completed parent visit");
+
+        try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(waiting)) {
+            assertEquals(1, waiting.actorVisits().size());
+        }
+        try (OresAsyncTrace.Scope resumed = OresAsyncTrace.install(waiting)) {
+            assertEquals(1, waiting.actorVisits().size(),
+                    "resume must not add a duplicate visit");
+        }
+    }
+
+    @Test
     void tenHopActorChainSurvivesUnrelatedAwaitEventElision() {
         OresAsyncTrace.Trace trace = OresAsyncTrace.root(
                 new OresAsyncTrace.Frame("entry", site(1)));
@@ -168,7 +195,7 @@ final class OresAsyncTraceTest {
             OresAsyncTrace.SourceSite handoff = site(20 + actor);
             trace = trace.child(new OresAsyncTrace.Frame("Actor" + actor, handoff), handoff);
             trace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, handoff);
-            try (OresAsyncTrace.Scope executed = OresAsyncTrace.install(trace)) {
+            try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(trace)) {
                 for (int await = 0; await < 150; await++) {
                     trace.awaitAt(site(1000 + actor * 150 + await));
                 }
@@ -197,6 +224,33 @@ final class OresAsyncTraceTest {
     }
 
     @Test
+    void forkOfMessageTraceCopiesBoundedHistoryWithoutInventingAnAdditionalCall() {
+        OresAsyncTrace.Trace parent = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("actor-A", site(1)));
+        parent.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, site(1));
+        try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(parent)) {
+            parent.awaitAt(site(2));
+        }
+
+        OresAsyncTrace.Trace sibling = parent.fork();
+        assertEquals(parent.events(), sibling.events());
+        assertEquals(parent.actorVisits(), sibling.actorVisits());
+        assertEquals(parent.elidedActorVisits(), sibling.elidedActorVisits());
+
+        parent.awaitAt(site(3));
+        sibling.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, site(4));
+        // The newly created sibling actor visit is not confirmed until entry.
+        assertEquals(1, sibling.actorVisits().size());
+        try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(sibling)) { }
+
+        assertEquals(1, parent.actorVisits().size());
+        assertEquals(2, sibling.actorVisits().size());
+        assertEquals(3, parent.events().size());
+        assertEquals(3, sibling.events().size());
+        assertNotEquals(parent.events(), sibling.events());
+    }
+
+    @Test
     void twoHundredActorVisitsKeepLastSixteenAndMarkEarlierElision() {
         OresAsyncTrace.Trace trace = OresAsyncTrace.root(
                 new OresAsyncTrace.Frame("entry", site(1)));
@@ -204,7 +258,7 @@ final class OresAsyncTraceTest {
             OresAsyncTrace.SourceSite handoff = site(10 + actor);
             trace = trace.child(new OresAsyncTrace.Frame("Actor" + actor, handoff), handoff);
             trace.boundary(OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE, handoff);
-            try (OresAsyncTrace.Scope executed = OresAsyncTrace.install(trace)) { }
+            try (OresAsyncTrace.Scope entered = OresAsyncTrace.install(trace)) { }
         }
         assertEquals(16, trace.actorVisits().size());
         assertEquals(184, trace.elidedActorVisits());
@@ -326,7 +380,7 @@ final class OresAsyncTraceTest {
                 12,
                 7,
                 "g1");
-        assertEquals("https://example.test/pkg/main.ores", hostile.sourceId());
+        assertEquals("main.ores", hostile.sourceId());
 
         OresAsyncTrace.Trace trace = OresAsyncTrace.root(
                 new OresAsyncTrace.Frame("worker", hostile));
@@ -337,19 +391,56 @@ final class OresAsyncTraceTest {
                         OresAsyncTrace.LogicalAsyncStackTrace.class,
                         failure.getSuppressed()[0]);
 
-        assertTrue(logical.logicalTrace().contains("https://example.test/pkg/main.ores"));
+        assertTrue(logical.logicalTrace().contains("main.ores"));
         assertFalse(logical.logicalTrace().contains("alice"));
         assertFalse(logical.logicalTrace().contains("super-secret"));
         assertFalse(logical.logicalTrace().contains("abc123"));
         assertFalse(logical.logicalTrace().contains("private"));
         assertEquals(
-                "https://example.test/pkg/main.ores",
+                "main.ores",
                 logical.getStackTrace()[0].getFileName());
 
         String json = OresDiagnosticRenderer.renderJson(failure);
-        assertTrue(json.contains("https://example.test/pkg/main.ores"), json);
+        assertTrue(json.contains("main.ores"), json);
         assertFalse(json.contains("super-secret"), json);
         assertFalse(json.contains("abc123"), json);
+    }
+
+    @Test
+    void sourceSiteRejectsOversizedIdsAndRedactsPrivateFilesystemLocations() {
+        String secretUrl = "https://name:password@internal.example/"
+                + "very-private/".repeat(100_000) + "confidential.ores";
+        OresAsyncTrace.SourceSite tooLong =
+                OresAsyncTrace.SourceSite.unknown(secretUrl, "generation");
+        assertEquals("<source-id-too-long>", tooLong.sourceId());
+        assertEquals("<source-id-too-long>",
+                OresAsyncTrace.SourceSite.unknown("/private/".repeat(100_000), null)
+                        .sourceId());
+        assertEquals("worker.ores", OresAsyncTrace.SourceSite.unknown(
+                "/home/user/private/worker.ores", null).sourceId());
+        assertEquals("worker.ores", OresAsyncTrace.SourceSite.unknown(
+                "C:\\Users\\hidden\\worker.ores", null).sourceId());
+        assertEquals("worker.ores", OresAsyncTrace.SourceSite.unknown(
+                "file:///private/worker.ores?token=secret", null).sourceId());
+        assertEquals("src/workers/worker.ores", OresAsyncTrace.SourceSite.unknown(
+                "src/workers/worker.ores", null).sourceId());
+        assertEquals("<remote-source>", OresAsyncTrace.SourceSite.unknown(
+                "https://name:password@internal.example", null).sourceId());
+        assertEquals("a".repeat(4096), OresAsyncTrace.SourceSite.unknown(
+                "a".repeat(4096), null).sourceId());
+        assertEquals("<source-id-too-long>", OresAsyncTrace.SourceSite.unknown(
+                "a".repeat(4097), null).sourceId());
+
+        OresAsyncTrace.Trace trace = OresAsyncTrace.root(
+                new OresAsyncTrace.Frame("actor", tooLong));
+        IllegalStateException failure = new IllegalStateException("actor failed");
+        OresAsyncTrace.attach(failure, trace);
+        String text = OresDiagnosticRenderer.renderText(failure);
+        String json = OresDiagnosticRenderer.renderJson(failure);
+        assertTrue(text.contains("<source-id-too-long>"), text);
+        assertTrue(json.contains("<source-id-too-long>"), json);
+        assertFalse(text.contains("password") || text.contains("confidential"));
+        assertFalse(json.contains("password") || json.contains("confidential"));
     }
 
     @Test
