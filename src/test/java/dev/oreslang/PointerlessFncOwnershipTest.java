@@ -207,6 +207,7 @@ final class PointerlessFncOwnershipTest {
                   val Array<int> values = new Array<int>();
                   val first = rt mut borrow values;
                   val second = rt borrow values;
+                  first.add(1); // first is still live: the loans overlap
                   return;
                 }
                 """)));

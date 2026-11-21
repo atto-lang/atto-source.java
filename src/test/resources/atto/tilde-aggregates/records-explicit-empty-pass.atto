@@ -1,4 +1,4 @@
 fnc read(): void {
-    const empty_row = Record.of();
+    const empty_row = ~record();
     return;
 }

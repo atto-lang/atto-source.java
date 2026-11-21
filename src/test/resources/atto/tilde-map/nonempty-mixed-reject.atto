@@ -1,4 +1,4 @@
 fnc read(): void {
-    const Map<string, int> bad = Map.of("ready": 1);
+    const Map<string, int> bad = ~map("ready": 1);
     return;
 }

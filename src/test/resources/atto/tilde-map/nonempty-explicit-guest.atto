@@ -1,9 +1,9 @@
 pub fnc main(): void {
-    const flags = Map.of<Symbol, bool>(
+    const flags = ~map<Symbol, bool>(
         #ready => true,
         #done => false
     );
-    const counts = Map.of<string, int>(
+    const counts = ~map<string, int>(
         "alpha" => 1,
         "beta" => 2
     );

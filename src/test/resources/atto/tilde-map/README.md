@@ -1,20 +1,23 @@
-# Nonempty typed Map.of: staged guest conformance
+# Nonempty typed Map: DRAFT guest conformance
 
-These fixtures exercise the canonical `Map.of<K,V>(key => value, ...)` factory,
-with directly typed contextual `Map.of(key => value, ...)` cases.
-Java #2735 must be integrated with the constructor-removal branch before the
-positive fixtures can establish compiled guest behavior.
+These fixture cases target a **narrow scalar-only** nonempty Map constructor
+stacked on #2725, not a complete collection implementation.
 
-- `Map.of<K,V>(...)` constructs an OresKeyedMap, not an unchecked Java host map.
-- Static type checking must validate key/value types and ownership, and reject
-  untyped `Map.of(...)` where no supported Map<K,V> witness is available.
-- Duplicate logical String/Symbol keys must reject the whole staged Map
-  transaction, not publish a partially initialized value.
-- Evaluation order is source order. External effects of argument evaluation
-  are not rolled back on transactional construction failure.
-- Map spreads and mixed record-style entries must reject; unsupported value
-  shapes must fail at compilation, not fall back to reflection.
-- All removed `~map(...)`, contextual `~(... => ...)`, and typed tilde
-  spellings reject at parse time. They are not positive guest fixtures.
-- The .atto programs, expected stdout, and tests are **AUTHORED / NOT_EXECUTED**.
-  Exact-head JDK25/JUnit/Truffle execution and Native Image proof remain pending.
+- Explicit `~map<K,V>(k => v)` and directly context-typed
+  `~map(k => v)` / `~(k => v)` construct the canonical guest
+  `OresKeyedMap` with ordered, atomic batch commit.
+- Static typechecking verifies every entry against the explicit K/V.
+  Ownership checking rejects borrow and move-only payloads for now.
+- Runtime preflights duplicate *logical* String and Symbol keys, then
+  validates the entire staged batch with existing OresKeyedMap quotas.
+  Failure cannot publish a partially built Map.
+- Expressions evaluate once, left to right; **external side effects of
+  user expressions are not rolled back**. Only construction/storage is
+  atomic. No entries are made visible before the final commit.
+- `~map()` without a directly declared `Map<K,V>`, alias/generic
+  type witnesses, map spread, mutable/lookup guest APIs and actor transport
+  remain rejected; `~()` still rejects as ambiguous.
+- Positive guest .atto files, negative source files and stdout receipts
+  are **AUTHORED, NOT_EXECUTED** unless supported by exact-head JVM
+  compiler/Truffle logs. Isolated parser and Map-storage CI are distinct
+  proofs and cannot certify compiled guest behavior.

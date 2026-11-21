@@ -8977,7 +8977,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.ContextualEmptyMapExpr) {
                 throw new IllegalArgumentException(
-                        "unresolved Map.of() cannot execute without typed Map<K,V> admission");
+                        "unresolved ~map() cannot execute without typed Map<K,V> admission");
             }
             if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
                 // Defensive runtime check: only canonical, fully concrete

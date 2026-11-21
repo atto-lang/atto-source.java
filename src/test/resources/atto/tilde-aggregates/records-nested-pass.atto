@@ -1,4 +1,4 @@
 fnc read(): int {
-    const row = Record.of(meta: Record.of(age: 37), "first name": "Ada");
+    const row = ~(meta: ~record(age: 37), "first name": "Ada");
     return row.meta.age;
 }

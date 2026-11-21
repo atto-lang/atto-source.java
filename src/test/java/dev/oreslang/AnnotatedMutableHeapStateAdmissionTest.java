@@ -104,6 +104,7 @@ final class AnnotatedMutableHeapStateAdmissionTest {
                   let mut Inventory owner = new Inventory();
                   const writer = rt mut borrow owner;
                   const another_writer = rt mut borrow owner;
+                  writer.available = 9; // writer is still live: the loans overlap
                   return;
                 }
                 """;

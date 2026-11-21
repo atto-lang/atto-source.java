@@ -6260,7 +6260,7 @@ public final class TypeChecker {
             if (witness == null) {
                 throw new IllegalArgumentException(
                         "nonempty Map literal requires a directly declared Map<K,V> "
-                                + "or explicit Map.of<K,V>(...) type witness");
+                                + "or explicit ~map<K,V>(...) type witness");
             }
             // Use the same narrow, compiler-owned typed-map proof as the
             // already admitted empty constructor. This rejects aliases,
@@ -6290,7 +6290,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ContextualEmptyMapExpr) {
             throw new IllegalArgumentException(
-                    "Map.of() requires a directly declared Map<K,V> type; "
+                    "~map() requires a directly declared Map<K,V> type; "
                             + "unresolved contextual map literals cannot be lowered");
         }
         if (expr instanceof Ast.TypedEmptyAggregateExpr typed) {
@@ -8679,10 +8679,10 @@ public final class TypeChecker {
                             && guardsProvablyDisjoint(previous.guard(), arm.guard());
                     boolean literalExcluded = literalExcludedByGuard(previous, arm)
                             || literalExcludedByGuard(arm, previous);
-                    // A guarded arm is conditional: overlap with it is resolved by
-                    // source order (refinement then fallback). Two unguarded
-                    // overlapping arms still need an explicit 'match first'.
-                    boolean guardedOrder = previous.guard() != null || arm.guard() != null;
+                    // Refinement then fallback (an earlier guarded arm, a later unguarded
+                    // arm) is resolved by source order. Two overlapping unguarded arms,
+                    // or two overlapping guarded arms, still need 'match first'.
+                    boolean guardedOrder = previous.guard() != null && arm.guard() == null;
                     if (!patternDisjoint && !guardDisjoint && !literalExcluded && !guardedOrder) {
                         throw new IllegalArgumentException(
                                 "ordinary match requires provably disjoint explicit patterns "

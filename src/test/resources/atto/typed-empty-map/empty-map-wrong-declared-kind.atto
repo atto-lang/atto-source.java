@@ -1,4 +1,4 @@
 fnc read(): void {
-    const int invalid = Map.of();
+    const int invalid = ~map();
     return;
 }

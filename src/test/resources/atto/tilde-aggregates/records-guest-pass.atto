@@ -1,6 +1,6 @@
 pub fnc main(): void {
-    const first = Record.of(name: "Ada", age: 37);
-    const second = Record.of(name: "Grace", active: true,);
+    const first = ~(name: "Ada", age: 37);
+    const second = ~record(name: "Grace", active: true,);
     stdio.println(first.name);
     stdio.println(second.name);
     return;

@@ -1,6 +1,6 @@
 pub fnc main(): void {
-    const Map<string, int> scores = Map.of();
-    const flags: Map<Symbol, bool> = Map.of();
+    const Map<string, int> scores = ~map();
+    const flags: Map<Symbol, bool> = ~map();
     stdio.println(scores.size);
     stdio.println(flags.size);
     return;

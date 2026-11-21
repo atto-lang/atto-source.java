@@ -15,9 +15,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * A declaration's canonical Tuple[T1, T2] return type must agree with
- * independent positional tuple literals. Canonical Tuple.of() guest lowering is
- * separately stacked in Java #2735; these tests must not certify it.
- * Authored tests are NOT execution evidence until a real runner executes them.
+ * ~tuple(v1, v2) values. Authored tests are NOT execution evidence until
+ * the exact source head runs JUnit and compiled Truffle guest code.
  */
 final class TupleReturnTypeContractTest {
     @Test
@@ -32,7 +31,7 @@ final class TupleReturnTypeContractTest {
     void nestedTuplesResolveInReturnsParametersAndCalls() {
         String program = """
                 fnc make(): Tuple[int, Tuple[string, string]] {
-                  return (7, ("left", "right"));
+                  return ~tuple(7, ~tuple("left", "right"));
                 }
                 fnc pass(Tuple[int, Tuple[string, string]] value):
                     Tuple[int, Tuple[string, string]] {
@@ -51,7 +50,7 @@ final class TupleReturnTypeContractTest {
     void legacyAngleTupleMayReturnToCanonicalBracketTuple() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc old(): Tuple<string, string> {
-                  return ("left", "right");
+                  return ~tuple("left", "right");
                 }
                 fnc canonical(): Tuple[string, string] {
                   return old();
@@ -68,7 +67,7 @@ final class TupleReturnTypeContractTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 type Tuple<T> = T;
                 fnc make(): Tuple[string, string] {
-                  return ("left", "right");
+                  return ~tuple("left", "right");
                 }
                 pub fnc main(): void {
                   val result: Tuple[string, string] = make();
@@ -80,11 +79,11 @@ final class TupleReturnTypeContractTest {
     @Test
     void rejectsWrongElementTypesOrArityOnReturn() {
         for (String wrong : new String[]{
-                "(1, \"right\")",
-                "(\"left\", 2)",
-                "tuple(\"only-one\")",
-                "(\"one\", \"two\", \"three\")",
-                "(\"left\", true)"
+                "~tuple(1, \"right\")",
+                "~tuple(\"left\", 2)",
+                "~tuple(\"only-one\")",
+                "~tuple(\"one\", \"two\", \"three\")",
+                "~tuple(\"left\", true)"
         }) {
             String program = "fnc make(): Tuple[string, string] { return " + wrong + "; }";
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
@@ -98,7 +97,7 @@ final class TupleReturnTypeContractTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         fnc make(): Tuple[string, string] {
-                          val array: Array[string] = arr["left", "right"];
+                          val array: Array[string] = ~array("left", "right");
                           return array;
                         }
                         """)));
@@ -109,10 +108,10 @@ final class TupleReturnTypeContractTest {
     void emptyAndSingletonCanonicalTuplesPreserveExactArity() throws Exception {
         String program = """
                 fnc empty(): Tuple[] {
-                  return tuple();
+                  return ~tuple();
                 }
                 fnc singleton(): Tuple[int] {
-                  return tuple(9);
+                  return ~tuple(9);
                 }
                 pub routine main(): void {
                   val zero: Tuple[] = empty();
@@ -136,7 +135,7 @@ final class TupleReturnTypeContractTest {
         }) {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class, () -> Parser.parse(program), program);
-            assertTrue(error.getMessage().contains("structural") || error.getMessage().contains("removed"), error::getMessage);
+            assertTrue(error.getMessage().contains("constructs a value, not a type"), error::getMessage);
         }
     }
 
@@ -171,7 +170,7 @@ final class TupleReturnTypeContractTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         fnc wrong(): Tuple[string, string] | Tuple[int, int] {
-                          return arr["left", "right"];
+                          return ~array("left", "right");
                         }
                         """)));
         assertTrue(error.getMessage().contains("return value"), error::getMessage);
@@ -179,15 +178,13 @@ final class TupleReturnTypeContractTest {
 
     @Test
     void inferredTupleGenericMarkerCannotBeSmuggledIntoEmptyShape() {
-        for (String annotation : new String[]{"Tuple<>[]"}) {
+        for (String annotation : new String[]{"Tuple<>[]", "~tuple<>[]"}) {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class, () -> Parser.parse(
-                            "fnc invalid(): " + annotation + " { return tuple(); }"), annotation);
+                            "fnc invalid(): " + annotation + " { return ~tuple(); }"), annotation);
             assertTrue(error.getMessage().contains("sequence type shape cannot be empty"),
                     error::getMessage);
         }
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(
-                "fnc invalid(): ~tuple<>[] { return tuple(); }"));
     }
 
     @Test
@@ -207,7 +204,7 @@ final class TupleReturnTypeContractTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         fnc make(): Tuple[string, string] {
-                          return arr["left", "right"];
+                          return ~array("left", "right");
                         }
                         """)));
         assertTrue(error.getMessage().contains("return value"), error::getMessage);
@@ -218,7 +215,7 @@ final class TupleReturnTypeContractTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         pub fnc main(): void {
-                          val tuple: Tuple[string, string] = arr["left", "right"];
+                          val tuple: Tuple[string, string] = ~array("left", "right");
                           return;
                         }
                         """)));
@@ -251,7 +248,7 @@ final class TupleReturnTypeContractTest {
                           return ~tuple<string, string>("left", "right");
                         }
                         """));
-        assertTrue(error.getMessage().contains("removed"), error::getMessage);
+        assertTrue(error.getMessage().contains("requires checked"), error::getMessage);
     }
 
     private static String readFixture(String name) throws Exception {
