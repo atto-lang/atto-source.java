@@ -4,6 +4,9 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -46,6 +49,45 @@ final class DopInvertedGuestAdmissionTest {
                 () -> OresCompiler.parseAndTypeCheck(source));
         assertTrue(compiler.getMessage().contains(MISSING_BACKEND),
                 "compiler must reject unimplemented guest storage ABI");
+    }
+
+    // A Java parser-only rejection must consume the exact same canonical
+    // AttoLang source bytes as LLVM #1403. Renaming, rewriting, or normalizing
+    // a fixture must not preserve false cross-backend fixture equivalence.
+    private static String gitBlobSha1(byte[] bytes) throws Exception {
+        MessageDigest sha = MessageDigest.getInstance("SHA-1");
+        sha.update(("blob " + bytes.length + "\0").getBytes(StandardCharsets.UTF_8));
+        sha.update(bytes);
+        return HexFormat.of().formatHex(sha.digest());
+    }
+
+    @Test
+    void canonicalAttoSourcesArePinnedToSharedGitBlobs() throws Exception {
+        var expected = java.util.Map.of(
+                "swap-reuse.atto", "8f5599a9e0b11ded2929110b4936441fceb2ef21",
+                "removed-index-trap.atto", "c3c87cfd2515707932734e183bb5768436526a96");
+        for (var entry : expected.entrySet()) {
+            Path file = Path.of("contracts", "dop-inverted-v1", entry.getKey());
+            assertFalse(Files.isSymbolicLink(file), "canonical source may not be a symlink");
+            byte[] source = Files.readAllBytes(file);
+            assertTrue(source.length < 65_536, "canonical fixture must remain bounded");
+            assertEquals(entry.getValue(), gitBlobSha1(source),
+                    "canonical AttoLang fixture diverged from LLVM exact Git blob");
+        }
+    }
+
+    @Test
+    void invertedSchemaCanNeverBeTreatedAsAnOrdinaryExecutableStruct() {
+        for (String source : List.of(
+                "define inverted struct Row as value: int; token: int; end",
+                "define module Data\n  define inverted struct Row as value: int; token: int; end\nend")) {
+            var program = Parser.parse(source);
+            assertThrows(IllegalArgumentException.class, () -> OresCompiler.analyze(program),
+                    "already-parsed inverted metadata must not bypass the type checker");
+            assertTrue(assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source))
+                    .getMessage().contains(MISSING_BACKEND));
+        }
     }
 
     @Test

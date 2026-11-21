@@ -1,0 +1,9 @@
+// Native Java/Graal guest: state-owned nominal immutable snapshot.
+define pub class GraphSnapshot as
+  pub val int steps;
+  pub constructor(int steps) { self.steps = steps; }
+end
+pub fnc main(): int {
+  val GraphSnapshot state = new GraphSnapshot(42);
+  return state.steps;
+}

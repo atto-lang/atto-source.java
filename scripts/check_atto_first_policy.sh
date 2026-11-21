@@ -43,8 +43,10 @@ fi
 # Metadata cannot establish semantic correctness; it makes exceptions auditable.
 field_value() {
   local label="$1" line
-  line="$(grep -i -m1 -E "^[[:space:]]*${label}:[[:space:]]*" "$body" || true)"
-  [[ -n "$line" ]] || return 1
+  # Reject conflicting and repeated authority fields; only one claim
+  # per evidence label can be accepted for subsequent semantic review.
+  line="$(grep -i -E "^[[:space:]]*${label}:[[:space:]]*" "$body" || true)"
+  [[ -n "$line" && "$line" != *$'\n'* ]] || return 1
   printf '%s\n' "${line#*:}" | sed -E 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 valid_field() {
