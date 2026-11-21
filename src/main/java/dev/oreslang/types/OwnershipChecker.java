@@ -1280,6 +1280,15 @@ public final class OwnershipChecker {
                                 "rt copy of move-only values requires the Symbol.rtCopy copy-contract lowering; "
                                         + "this current-main convergence patch fails closed instead of aliasing");
                     }
+                    // A computed expression can be provisionally classified COPY
+                    // even when its result type is unresolved (for example,
+                    // arithmetic over an unknown name). This second, independent
+                    // closed-world proof prevents a synthetic/standalone AST
+                    // from laundering an unknown value through rt copy.
+                    if (!isCopyType(source.type)) {
+                        throw error("rt copy requires a statically resolved Copy type; "
+                                + "an inferred or unknown expression result is not Copy proof");
+                    }
                     yield source;
                 }
                 case "share" -> {
