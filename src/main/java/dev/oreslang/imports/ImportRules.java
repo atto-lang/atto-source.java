@@ -1,6 +1,7 @@
 package dev.oreslang.imports;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.stdlib.CoreLibrarySources;
 
 import java.util.List;
 import java.util.regex.Pattern;
@@ -75,6 +76,16 @@ public final class ImportRules {
         }
         if (imported.path().length() > 4096 || imported.path().chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("import path contains invalid control characters or is too long");
+        }
+
+        // G0: std unsafe is not implemented. Never fall back to a user package,
+        // imported source alias, or a host bridge on any guest/compiler path.
+        // The future native-host-only gate must replace this with a verified
+        // execution-domain check, not a manifest-controlled boolean.
+        if (CoreLibrarySources.isUnsafeStdImport(imported.path())) {
+            throw new SecurityException(
+                    "unsafe standard-library package is unavailable to guest source: "
+                            + imported.path());
         }
 
         if (!isJavaPath(imported.path()) && isExplicitSelfPath(imported.path())) {

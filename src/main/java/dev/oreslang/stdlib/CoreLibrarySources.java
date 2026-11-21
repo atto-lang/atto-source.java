@@ -69,11 +69,77 @@ public final class CoreLibrarySources {
         return isStdImport(importPath);
     }
 
+    /**
+     * Reserved unsafe standard-library namespace. A path boundary is mandatory:
+     * std/unsafe_math is not std/unsafe. Accept historical spelling variants
+     * solely so none can escape into the generic package/filesystem resolver.
+     * No native FFI package is shipped by this registry yet.
+     */
+    public static boolean isUnsafeStdImport(String importPath) {
+        if (importPath == null) return false;
+        String path = importPath.replace('\\', '/');
+        // Package aliases must be interpreted after lexical dot-segment
+        // normalization. Otherwise std/./unsafe can escape an exact-root
+        // check and reach a resolver that canonicalizes the path later.
+        if (path.startsWith("std/") || path.startsWith("ores.std/")) {
+            java.util.ArrayDeque<String> segments = new java.util.ArrayDeque<>();
+            for (String component : path.split("/", -1)) {
+                if (component.isEmpty() || component.equals(".")) continue;
+                if (component.equals("..")) {
+                    if (segments.size() > 1) segments.removeLast();
+                    else return true; // Noncanonical escape from std root: fail closed.
+                } else {
+                    segments.addLast(component);
+                }
+            }
+            path = String.join("/", segments);
+        } else if (path.indexOf('/') >= 0) {
+            // A relative import can normalize into a compiler-owned stdlib
+            // identity (./std/unsafe or pkg/../std/unsafe). Reject its final
+            // identity, never let the filesystem linker decide after admission.
+            java.util.ArrayDeque<String> segments = new java.util.ArrayDeque<>();
+            for (String component : path.split("/", -1)) {
+                if (component.isEmpty() || component.equals(".")) continue;
+                if (component.equals("..")) {
+                    if (!segments.isEmpty()) segments.removeLast();
+                } else {
+                    segments.addLast(component);
+                }
+            }
+            path = String.join("/", segments);
+        }
+        for (String root : new String[] {
+                "ores.std/unsafe", "std/unsafe", "ores.std.unsafe",
+                "std.unsafe", "ores.std:unsafe", "std:unsafe"}) {
+            if (path.equals(root) || path.equals(root + ".ores")
+                    || path.startsWith(root + "/") || path.startsWith(root + ".")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Prevent linked import metadata from laundering the compiler-owned unsafe
+     * module behind a benign path. Resolve/import unit IDs are not source paths,
+     * and must be checked independently of the original import declaration.
+     */
+    public static boolean isUnsafeStdUnitId(String unitId) {
+        if (unitId == null) return false;
+        String normalized = unitId.replace('\\', '/');
+        // Linked source identity adds only the compiler-owned '@' marker.
+        // Reuse the import-path classifier so dotted and colon aliases cannot
+        // bypass the link gate when a package resolver supplies a unit ID.
+        return normalized.startsWith("@")
+                && isUnsafeStdImport(normalized.substring(1));
+    }
+
     /** Reserve canonical library roots before filesystem/ORESLANG_PATH fallback. */
     public static boolean isReservedOresLibraryImport(String importPath) {
         if (importPath == null) return false;
         String normalized = importPath.replace('\\', '/');
-        return normalized.equals("ores.core")
+        return isUnsafeStdImport(importPath)
+                || normalized.equals("ores.core")
                 || normalized.equals("ores.std")
                 || normalized.startsWith(CORE_IMPORT_PREFIX)
                 || normalized.startsWith(STD_IMPORT_PREFIX);

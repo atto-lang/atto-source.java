@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.stdlib.CoreLibrarySources;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -37,12 +38,16 @@ final class ImportGraph {
         ImportRules.validate(imported);
         if (ImportRules.isJavaPath(imported.path())) return null;
 
+        rejectUnsafeUnitId(unitId); // Check before path normalization can erase @std/unsafe.
         String normalizedUnitId = normalizeUnitId(unitId);
+        rejectUnsafeUnitId(normalizedUnitId);
         String resolved = importResolutions
                 .getOrDefault(normalizedUnitId, Map.of())
                 .get(imported.path());
         if (resolved != null) {
+            rejectUnsafeUnitId(resolved); // Linked graph metadata is untrusted.
             String normalizedResolved = normalizeUnitId(resolved);
+            rejectUnsafeUnitId(normalizedResolved);
             rejectSelfImport(normalizedUnitId, imported.path(), normalizedResolved);
             if (!available.contains(normalizedResolved)) {
                 throw new IllegalArgumentException(
@@ -58,6 +63,7 @@ final class ImportGraph {
                 ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
                 : Path.of(raw).normalize();
         String candidate = normalizeUnitId(candidatePath.toString());
+        rejectUnsafeUnitId(candidate);
         if (!available.contains(candidate) && !candidate.endsWith(".ores") && !candidate.endsWith(".java")) {
             if (available.contains(candidate + ".ores")) candidate += ".ores";
             else if (available.contains(candidate + ".java")) candidate += ".java";
@@ -82,6 +88,10 @@ final class ImportGraph {
             Set<String> available,
             Map<String, Map<String, String>> importResolutions) {
         LinkedHashMap<String, Set<String>> dependencies = new LinkedHashMap<>();
+        for (String suppliedUnitId : programs.keySet()) {
+            rejectUnsafeUnitId(suppliedUnitId);
+            rejectUnsafeUnitId(normalizeUnitId(suppliedUnitId));
+        }
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             LinkedHashSet<String> resolved = new LinkedHashSet<>();
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
@@ -101,6 +111,10 @@ final class ImportGraph {
             Map<String, Ast.Program> programs,
             Map<String, Map<String, String>> importResolutions) {
         Set<String> available = programs.keySet();
+        for (String suppliedUnitId : available) {
+            rejectUnsafeUnitId(suppliedUnitId);
+            rejectUnsafeUnitId(normalizeUnitId(suppliedUnitId));
+        }
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             String importer = entry.getKey();
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
@@ -237,6 +251,13 @@ final class ImportGraph {
         visiting.remove(component);
         visited.add(component);
         ordered.add(components.get(component));
+    }
+
+    private static void rejectUnsafeUnitId(String unitId) {
+        if (CoreLibrarySources.isUnsafeStdUnitId(unitId)) {
+            throw new SecurityException(
+                    "unsafe standard-library linked unit is unavailable to guest source: " + unitId);
+        }
     }
 
     private static void rejectSelfImport(String importerId, String importPath, String targetId) {
