@@ -17,6 +17,8 @@ public final class ControlPlaneArena32Test {
         try (var a = new ControlPlaneArena32(2); var b = new ControlPlaneArena32(2)) {
             long parent = a.allocate();
             long child = a.allocate();
+            check((((int) parent) & ((1 << 20) - 1)) == 1, "control low 20 bits contain slot+1");
+            check((((int) parent) >>> 20) == 1, "control high 12 bits contain generation");
             check((int) parent == (int) b.allocate(), "numeric collision is legitimate");
             denied(() -> b.readI64(parent, 0)); // 64-bit trusted owner witness blocks collision
             denied(() -> a.writeRef32(parent, b.allocate())); // b quota or foreign witness
@@ -72,6 +74,7 @@ public final class ControlPlaneArena32Test {
                 limited.drop(current);
                 current = limited.allocate();
             }
+            check((((int) current) >>> 20) == 4095, "last generation is 12-bit maximum");
             limited.drop(current);
             denied(limited::allocate);
         }
