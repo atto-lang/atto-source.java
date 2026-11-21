@@ -16,6 +16,37 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void rejectsAmbiguousHostAndOversizedFieldsBeforeGuestAdmission() throws Exception {
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+              stdio.println(server.port);
+              val request = await server.accept();
+              stdio.println(request.target);
+              await request.respond(200, "text/plain", "ok");
+              await server.shutdown(1000);
+              return;
+            }
+            """, port -> {
+                for (String headers : new String[] {
+                        "Host: localhost\r\nHost: other.test\r\n",
+                        "Host: localhost\r\nhOsT: other.test\r\n",
+                        "Host: \r\n", "", "Host: localhost, other.test\r\n",
+                        "Host: localhost\r\nX-Large: " + "x".repeat(12000) + "\r\n"}) {
+                    try (var socket = new java.net.Socket("127.0.0.1", port)) {
+                        socket.setSoTimeout(3000);
+                        socket.getOutputStream().write(("GET /invalid HTTP/1.1\r\n" + headers
+                                + "Connection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                        String wire = new String(socket.getInputStream().readAllBytes(), StandardCharsets.US_ASCII);
+                        assertTrue(wire.startsWith("HTTP/1.1 400"), wire);
+                    }
+                }
+                assertEquals("ok", request(port, "GET", "/ok", "").body());
+            });
+        assertTrue(output.endsWith("/ok\n"), output);
+        assertFalse(output.contains("/invalid"), output);
+    }
+
     @Test void sharedSupervisorDispatchKeepsOneInstanceAndDrainsAllLanes() throws Exception {
         String output = run("""
             pub define class Dispatcher as
