@@ -3,7 +3,9 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/runtime/ControlPlaneArena32.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/test/java/dev/oreslang/runtime/ControlPlaneArena32Test.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorRuntimeNativeControlCountersTest.java'
       - '.github/workflows/control-plane-ref32-ffm.yml'
   workflow_dispatch:
 permissions:
@@ -28,5 +30,10 @@ jobs:
           trap 'rm -rf "$temp"' EXIT
           javac -Xlint:all -Werror -d "$temp"             src/main/java/dev/oreslang/runtime/ControlPlaneArena32.java             src/test/java/dev/oreslang/runtime/ControlPlaneArena32Test.java
           java -cp "$temp" dev.oreslang.runtime.ControlPlaneArena32Test
+      - name: Run Java 25 actor runtime native-control integration (host only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Dmaven.compiler.release=25 -Dtest=ActorRuntimeNativeControlCountersTest test
       - name: Scope of test
-        run: echo 'HOST-ONLY Java FFM control heap test; not guest compilation, integrated scheduler, zero managed allocations, or full process zero GC'
+        run: echo 'HOST-ONLY Java FFM and ActorRuntime control integration; no compiled Atto guest or whole-process zero GC'
