@@ -175,6 +175,27 @@ final class OwnershipBangAliasesTest {
     }
 
     @Test
+    void typedTopicPublishAcceptsCheckedShareBangScalar() {
+        // This is the existing async Topic.publish typecheck path; it does NOT
+        // assert atomic RELIABLE try_publish, admission receipts or guest code.
+        String source = """
+                pub suspends fnc main(): void {
+                  val String event = "ready";
+                  val group = actor.group("payments");
+                  val topic = group.topic<String>("events", "reliable", 1);
+                  val admitted = topic.publish(%s);
+                  return;
+                }
+                """;
+        for (String spelling : new String[]{
+                "rt share event", "share! event", "share!event"}) {
+            assertDoesNotThrow(
+                    () -> OresCompiler.parseAndTypeCheck(source.formatted(spelling)),
+                    "typed Topic.publish must pass the same ownership check: " + spelling);
+        }
+    }
+
+    @Test
     void pubSubShareBangCannotBypassUnloweredTryPublishCompilerGate() {
         // Unlowered try_publish must be rejected by the compiler, not silently
         // aliased to async Topic.publish or recognized only by the parser.
