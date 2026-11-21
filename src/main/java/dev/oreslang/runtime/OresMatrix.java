@@ -68,6 +68,10 @@ public final class OresMatrix implements ImmutableGuestValue {
                 if (columnCount == 0) {
                     throw new IllegalArgumentException("matrix rows cannot be empty");
                 }
+                // Reject oversized shapes before traversing a potentially huge
+                // or lazily generated guest row sequence. Recheck below once
+                // the actual real/complex storage domain has been established.
+                checkedElements(rowCount, columnCount, false, "matrix literal");
             } else if (row.size() != columnCount) {
                 throw new IllegalArgumentException(
                         "matrix literal must be rectangular; row " + r + " has "
@@ -191,9 +195,50 @@ public final class OresMatrix implements ImmutableGuestValue {
         return OresVector.fromMatrix(matmul(other.asMatrix()));
     }
 
+    /**
+     * Compute an internal dense vector outer-Hermitian product without building
+     * a temporary quadratic List<List<OresComplex>> graph. Both output storage
+     * and exact finite arithmetic work are preflighted before any result arrays
+     * are allocated. Retain complex storage even when inputs are purely real,
+     * matching the previous OresComplex-based outer product representation.
+     */
+    static OresMatrix outerHermitian(OresVector left, OresVector right) {
+        if (left == null || right == null) {
+            throw new IllegalArgumentException("outer-product vectors are required");
+        }
+        int rows = left.length();
+        int cols = right.length();
+        int elements = checkedElements(rows, cols, true, "vector outer Hermitian");
+        if ((long) elements > MAX_EXACT_MATMUL_TERM_PRODUCTS) {
+            throw new IllegalArgumentException(
+                    "vector outer Hermitian exceeds exact-reference work budget: terms="
+                            + elements + " limit=" + MAX_EXACT_MATMUL_TERM_PRODUCTS);
+        }
+
+        double[] outReal = new double[elements];
+        double[] outImaginary = new double[elements];
+        OresMatrix lhs = left.asMatrix();
+        OresMatrix rhs = right.asMatrix();
+        for (int r = 0; r < rows; r++) {
+            int offset = r * cols;
+            for (int c = 0; c < cols; c++) {
+                Complex128Math.Value value = Complex128Math.multiply(
+                        lhs.real[r], lhs.imag(r),
+                        rhs.real[c], -rhs.imag(c));
+                outReal[offset + c] = value.real();
+                outImaginary[offset + c] = value.imaginary();
+            }
+        }
+        return new OresMatrix(rows, cols, outReal, outImaginary, false);
+    }
+
     public OresMatrix scale(Object scalar) {
         OresComplex factor = OresComplex.of(scalar);
-        boolean complex = isComplex() || factor.imaginary() != 0.0;
+        // Storage domain is determined by scalar type, not its current
+        // imaginary value. A complex scalar with +0i or -0i still yields
+        // Matrix<complex> and must return OresComplex from get()/trace().
+        boolean complex = isComplex() || scalar instanceof OresComplex;
+        checkedElements(rows, cols, complex, "matrix scalar multiplication output");
         double[] outReal = new double[real.length];
         double[] outImaginary = complex ? new double[real.length] : null;
         for (int i = 0; i < real.length; i++) {
@@ -206,8 +251,9 @@ public final class OresMatrix implements ImmutableGuestValue {
 
     public OresMatrix divide(Object scalar) {
         OresComplex divisor = OresComplex.of(scalar);
+        boolean complex = isComplex() || scalar instanceof OresComplex;
+        checkedElements(rows, cols, complex, "matrix scalar division output");
         double[] outReal = new double[real.length];
-        boolean complex = isComplex() || divisor.imaginary() != 0.0;
         double[] outImaginary = complex ? new double[real.length] : null;
         for (int i = 0; i < real.length; i++) {
             OresComplex value = new OresComplex(real[i], imag(i)).div(divisor);

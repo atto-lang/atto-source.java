@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /** Immutable dense column vector backed by the same matrix reference core. */
@@ -57,17 +56,7 @@ public final class OresVector implements ImmutableGuestValue {
     }
 
     public OresMatrix outerHermitian(OresVector other) {
-        if (other == null) throw new IllegalArgumentException("outer-product vector is required");
-        List<List<?>> rows = new ArrayList<>(length());
-        for (int i = 0; i < length(); i++) {
-            List<Object> row = new ArrayList<>(other.length());
-            OresComplex left = OresComplex.of(get(i));
-            for (int j = 0; j < other.length(); j++) {
-                row.add(left.mul(OresComplex.of(other.get(j)).conjugate()));
-            }
-            rows.add(row);
-        }
-        return OresMatrix.fromRows(rows);
+        return OresMatrix.outerHermitian(this, other);
     }
 
     @Override
