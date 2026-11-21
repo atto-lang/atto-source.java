@@ -1,0 +1,78 @@
+name: Actor init scalar JVM/JUnit guest — exact-source proof
+on:
+  push:
+    branches:
+      - feat/actor-init-admission-v1-20261029
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  scalar-actor-init-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact submitted actor init source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact head and source blobs
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)"
+          for file in \
+            src/main/java/dev/oreslang/ast/Ast.java \
+            src/main/java/dev/oreslang/parser/Parser.java \
+            src/main/java/dev/oreslang/types/TypeChecker.java \
+            src/main/java/dev/oreslang/types/OwnershipChecker.java \
+            src/main/java/dev/oreslang/types/ReturnCleanupChecker.java \
+            src/main/java/dev/oreslang/nodes/OresEvalRootNode.java \
+            src/main/java/dev/oreslang/runtime/ActorRuntime.java \
+            src/main/java/dev/oreslang/runtime/ActorInitPublicationGate.java \
+            .github/workflows/actor-init-scalar-guest.yml \
+            src/test/java/dev/oreslang/ActorInitReservedAdmissionTest.java \
+            src/test/java/dev/oreslang/runtime/ActorInitPublicationGateTest.java \
+            src/test/java/dev/oreslang/runtime/SourceActorCodeExecutorTest.java; do
+            git ls-files --error-unmatch -- "$file" >/dev/null
+            test "$(git hash-object "$file")" = "$(git rev-parse "HEAD:$file")"
+            echo "ACTOR_INIT_SOURCE_BLOB $file $(git hash-object "$file")"
+          done
+          echo "ACTOR_INIT_HEAD=$EXPECTED_SHA"
+          echo "ACTOR_INIT_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Install exact GraalVM and Maven
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute parser, bootstrap and guest suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn -version
+          mvn -B -ntp -Dtest=ActorInitReservedAdmissionTest,ActorInitPublicationGateTest,SourceActorCodeExecutorTest test
+          for entry in \
+            dev.oreslang.ActorInitReservedAdmissionTest:22 \
+            dev.oreslang.runtime.ActorInitPublicationGateTest:10 \
+            dev.oreslang.runtime.SourceActorCodeExecutorTest:5; do
+            class="${entry%%:*}"
+            expected="${entry##*:}"
+            xml="target/surefire-reports/TEST-${class}.xml"
+            test -s "$xml"
+            grep -Eq '<testsuite[^>]*tests="'"$expected"'"' "$xml"
+            for field in errors failures skipped; do
+              grep -Eq '<testsuite[^>]*'"${field}"'="0"' "$xml"
+            done
+            echo "ACTOR_INIT_SUITE_PASS class=$class tests=$expected"
+          done
+          # JVM JUnit + Graal guest only. This job does not build Native Image.
+          echo "ACTOR_INIT_SCALAR_JVM_JUNIT_GUEST_PASS tests=37 native_image=NOT_EXECUTED"

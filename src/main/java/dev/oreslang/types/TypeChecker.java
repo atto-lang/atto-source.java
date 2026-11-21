@@ -110,6 +110,12 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    /** True only while checking a direct 'await spawn Actor(...)' operand. */
+    private boolean checkingDirectAwaitedSpawn;
+    /** Active lexical state-loan binder; only held during inline callback checking. */
+    private String currentActorStateLoanBinder;
+    /** Immutable per-field labels cannot be written even in critical[write]. */
+    private Set<String> currentImmutableActorStateLoanFields = Set.of();
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -1500,6 +1506,12 @@ public final class TypeChecker {
             }
         }
 
+        if (klass.actorKind() != Ast.ActorKind.NONE
+                && klass.methods().stream().anyMatch(m -> m.name().equals("init"))
+                && klass.methods().stream().anyMatch(m -> m.name().equals("on_start"))) {
+            throw new IllegalArgumentException(
+                    "actor init and on_start are competing startup hooks");
+        }
         for (Ast.MethodDecl method : klass.methods()) {
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
@@ -1511,6 +1523,19 @@ public final class TypeChecker {
                                 + "' is reserved by the non-overridable actor transport/lifecycle API");
             }
 
+            boolean actorInitHook = klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("init");
+            if (actorInitHook) {
+                if (method.isStatic() || method.isAbstract() || method.async()
+                        || method.suspends() || method.visibility() != Ast.Visibility.PRIVATE
+                        || method.explicitReceiverType() != null
+                        || !method.genericParameters().isEmpty()
+                        || !method.effects().isEmpty()
+                        || !method.returnType().name().equals("state")
+                        || !method.returnType().arguments().isEmpty())
+                    throw new IllegalArgumentException(
+                            "actor init must be private, synchronous, nongeneric and return state");
+            }
             boolean actorStartupHook = method.name().equals("on_start");
             boolean actorReceiveHook = klass.actorKind() != Ast.ActorKind.NONE
                     && method.name().equals("receive");
@@ -1670,6 +1695,86 @@ public final class TypeChecker {
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             defineImplicitArguments(env, methodArgumentTypes);
+            if (actorInitHook) {
+                if (method.body().size() != 1
+                        || !(method.body().getFirst() instanceof Ast.ReturnStmt returned)
+                        || !(returned.value() instanceof Ast.InitStateExpr state)) {
+                    throw new IllegalArgumentException(
+                            "actor init must contain exactly 'return state { ... };'");
+                }
+                if (method.parameters().size() > 32) {
+                    throw new IllegalArgumentException(
+                            "actor init exceeds the bounded 32-argument runtime ABI");
+                }
+                java.util.Set<String> params = new java.util.HashSet<>();
+                for (Ast.Param param : method.parameters()) {
+                    if (param.mutable() || param.structural() || param.type().isBorrow()
+                            || !param.type().arguments().isEmpty()
+                            || !java.util.Set.of("int", "bool", "float", "string", "String")
+                                    .contains(param.type().name()))
+                        throw new IllegalArgumentException(
+                                "actor init parameter '" + param.name()
+                                        + "' requires a scalar ABI until ActorRef transfer is proven");
+                    params.add(param.name());
+                }
+                if (!klass.parents().isEmpty() || !klass.interfaces().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor init inheritance and interface inheritance require "
+                                    + "a linked complete-state ABI");
+                }
+                java.util.Map<String, Ast.FieldDecl> stateFields = new java.util.LinkedHashMap<>();
+                for (Ast.FieldDecl field : klass.fields()) {
+                    if (!isActorStateSchemaField(field)) {
+                        throw new IllegalArgumentException(
+                                "actor init requires state { ... }, not legacy free-standing fields");
+                    }
+                    if (field.initializer() != null) {
+                        throw new IllegalArgumentException(
+                                "actor init supplies a complete state; declaration field initializers are forbidden");
+                    }
+                    if (field.type() == null || field.type().isBorrow()
+                            || field.type().inferArguments()
+                            || !field.type().arguments().isEmpty()
+                            || !java.util.Set.of("int", "bool", "float", "string", "String")
+                                    .contains(field.type().name())) {
+                        throw new IllegalArgumentException(
+                                "actor init state field '" + field.name()
+                                        + "' requires the proven scalar-only state ABI");
+                    }
+                    stateFields.put(field.name(), field);
+                }
+                if (state.fields().size() != stateFields.size()) {
+                    throw new IllegalArgumentException(
+                            "actor init must initialize every declared state field exactly once");
+                }
+                for (Ast.ObjectField entry : state.fields()) {
+                    Ast.FieldDecl field = stateFields.remove(entry.name());
+                    if (field == null) {
+                        throw new IllegalArgumentException(
+                                "actor init has unknown or repeated state field '" + entry.name() + "'");
+                    }
+                    boolean namedParam = entry.value() instanceof Ast.NameExpr name
+                            && params.contains(name.name());
+                    boolean scalarLiteral = entry.value() instanceof Ast.LiteralExpr literal
+                            && (literal.value() instanceof Long
+                                || literal.value() instanceof Double
+                                || literal.value() instanceof String
+                                || literal.value() instanceof Boolean);
+                    if (!namedParam && !scalarLiteral) {
+                        throw new IllegalArgumentException(
+                                "actor init state values must be a parameter or scalar literal "
+                                        + "until pure-effect lowering is implemented");
+                    }
+                    Type actual = typeOf(entry.value(), env, generics, callableSelf);
+                    requireAssignable(actual, classFieldType(klass, field),
+                            "actor init state field '" + entry.name() + "'");
+                }
+                if (!stateFields.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor init did not initialize state keys " + stateFields.keySet());
+                }
+                continue;
+            }
             Type returns = resolve(method.returnType(), generics, callableSelf);
             if (actorStartupHook && returns != Primitive.VOID) {
                 throw new IllegalArgumentException(
@@ -2509,6 +2614,13 @@ public final class TypeChecker {
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                if (currentActorStateLoanBinder != null
+                        && indexed.receiver() instanceof Ast.NameExpr loan
+                        && loan.name().equals(currentActorStateLoanBinder)) {
+                    throw new IllegalArgumentException(
+                            "actor state loan does not admit indexed writes; "
+                                    + "use a statically checked mutable state field");
+                }
                 if (indexed.receiver() instanceof Ast.NameExpr namespace
                         && modules.containsKey(namespace.name())) {
                     throw new IllegalArgumentException(
@@ -2801,6 +2913,14 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "spread expressions are only valid as arguments to a variadic callable");
         }
+        if (expr instanceof Ast.SpawnNamedArgExpr) {
+            throw new IllegalArgumentException(
+                    "named spawn argument can only occur within spawn Actor(label: value)");
+        }
+        if (expr instanceof Ast.InitStateExpr) {
+            throw new IllegalArgumentException(
+                    "state { ... } may only be returned by an actor init lifecycle");
+        }
         if (expr instanceof Ast.RuntimeCallExpr runtime) {
             if (runtime.operation().equals("spawn")) {
                 if (runtime.arguments().size() != 1
@@ -2832,11 +2952,56 @@ public final class TypeChecker {
                                     + "request-dispatch adapter yet. Use an explicit transport "
                                     + "binding once the runtime provides one.");
                 }
-                if (!created.arguments().isEmpty()) {
+                Ast.MethodDecl init = actorClass.methods().stream()
+                        .filter(m -> m.name().equals("init")).findFirst().orElse(null);
+                // Without a runtime no-early-publication proof, never hand
+                // a provisional reference for an init actor to guest source.
+                // Only direct await spawn returns after startup readiness.
+                if (init != null && !checkingDirectAwaitedSpawn) {
                     throw new IllegalArgumentException(
-                            "actor '" + actorClass.name()
-                                    + "' does not accept constructor/startup arguments; "
-                                    + "initialize actor-local state with fields and on_start()");
+                            "actor with init requires direct 'await spawn' "
+                                    + "to prevent early ActorRef publication");
+                }
+                if (init == null && !created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor '" + actorClass.name() + "' has no init hook for spawn arguments");
+                }
+                if (init != null) {
+                    if (created.arguments().size() != init.parameters().size()) {
+                        throw new IllegalArgumentException(
+                                "actor spawn must provide all init parameters exactly once");
+                    }
+                    java.util.Map<String, Ast.Param> names = new java.util.LinkedHashMap<>();
+                    for (Ast.Param p : init.parameters()) names.put(p.name(), p);
+                    for (Ast.Expr exprArg : created.arguments()) {
+                        if (!(exprArg instanceof Ast.SpawnNamedArgExpr named)) {
+                            throw new IllegalArgumentException(
+                                    "actor spawn parameters must use label: value");
+                        }
+                        Ast.Param param = names.remove(named.label());
+                        if (param == null)
+                            throw new IllegalArgumentException(
+                                    "actor spawn has duplicate or unknown init label '" + named.label() + "'");
+                        // This first implementation has no general source-task
+                        // continuation lowering for spawn argument expressions.
+                        // Requiring a plain local value or literal also denies
+                        // side effects while validating the entire named call.
+                        if (!(named.value() instanceof Ast.NameExpr)
+                                && !(named.value() instanceof Ast.LiteralExpr)) {
+                            throw new IllegalArgumentException(
+                                    "actor init spawn arguments must be local values "
+                                            + "or scalar literals until effect-safe lowering exists");
+                        }
+                        Type actual = typeOf(named.value(), env, generics, self);
+                        Type expected = resolveParam(param, generics, self);
+                        requireReadonlyCapabilityPreserved(actual, expected,
+                                "actor spawn init argument '" + named.label() + "'");
+                        requireAssignable(actual, expected,
+                                "actor spawn init argument '" + named.label() + "'");
+                    }
+                    if (!names.isEmpty())
+                        throw new IllegalArgumentException(
+                                "actor spawn missing init labels " + names.keySet());
                 }
                 Type actorType = resolve(created.type(), generics, self);
                 return new Named("ActorRef", List.of(actorType));
@@ -3236,6 +3401,7 @@ public final class TypeChecker {
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
                 if (actorSelf && (member.member().equals("on_start")
+                        || member.member().equals("init")
                         || member.member().equals("receive"))) {
                     throw new IllegalArgumentException(
                             member.member()
@@ -3278,7 +3444,18 @@ public final class TypeChecker {
                                     false,
                                     Primitive.VOID);
                     boolean previousMaySuspend = currentMaySuspend;
+                    String previousLoanBinder = currentActorStateLoanBinder;
+                    Set<String> previousImmutableFields = currentImmutableActorStateLoanFields;
                     currentMaySuspend = false;
+                    currentActorStateLoanBinder = lambda.parameters().size() == 1
+                            ? lambda.parameters().getFirst().name() : null;
+                    Set<String> immutableFields = new HashSet<>();
+                    for (Ast.FieldDecl field : currentClassOwner.fields()) {
+                        if (isActorStateSchemaField(field)
+                                && field.bindingKind() != Ast.BindingKind.LET)
+                            immutableFields.add(field.name());
+                    }
+                    currentImmutableActorStateLoanFields = Set.copyOf(immutableFields);
                     try {
                         validateLambdaAgainstExpected(
                                 lambda,
@@ -3288,6 +3465,8 @@ public final class TypeChecker {
                                 self);
                     } finally {
                         currentMaySuspend = previousMaySuspend;
+                        currentActorStateLoanBinder = previousLoanBinder;
+                        currentImmutableActorStateLoanFields = previousImmutableFields;
                     }
                     return Primitive.VOID;
                 }
@@ -4385,7 +4564,16 @@ public final class TypeChecker {
             return new Named("Future", List.of(Primitive.VOID));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
-            Type awaitedType = typeOf(awaited.expression(), env, generics, self);
+            boolean previousAwaitedSpawn = checkingDirectAwaitedSpawn;
+            checkingDirectAwaitedSpawn =
+                    awaited.expression() instanceof Ast.RuntimeCallExpr runtime
+                            && runtime.operation().equals("spawn");
+            Type awaitedType;
+            try {
+                awaitedType = typeOf(awaited.expression(), env, generics, self);
+            } finally {
+                checkingDirectAwaitedSpawn = previousAwaitedSpawn;
+            }
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
                     && named.arguments().size() == 1) {
@@ -6018,6 +6206,14 @@ public final class TypeChecker {
             Set<String> generics,
             Type self,
             boolean writing) {
+        if (writing && currentActorStateLoanBinder != null
+                && member.receiver() instanceof Ast.NameExpr binder
+                && binder.name().equals(currentActorStateLoanBinder)
+                && currentImmutableActorStateLoanFields.contains(member.member())) {
+            throw new IllegalArgumentException(
+                    "actor state field '" + member.member()
+                            + "' is immutable and cannot be rebound under critical[write]");
+        }
         Type rawReceiver;
         if (member.receiver() instanceof Ast.NameExpr name && env.lookup(name.name()) != null) {
             Env.Binding binding = env.lookup(name.name());
@@ -8088,6 +8284,10 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
+            // Init is not a callable slot and its return marker 'state' is
+            // not an ordinary named type. Keep it out of every class shape.
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("init")) continue;
             mergeMember(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
                     callableContractType(method.genericParameters(), method.parameters(), method.returnType(), method.async(), false, generics, self),
@@ -8482,6 +8682,8 @@ public final class TypeChecker {
             Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return;
         for (Ast.MethodDecl method : klass.methods()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("init")) continue;
             if (!method.isStatic()) names.add(method.name());
         }
         for (Ast.TypeRef parentRef : klass.parents()) {
@@ -8606,6 +8808,10 @@ public final class TypeChecker {
 
         Map<CallableSelector, CallableTarget> local = new LinkedHashMap<>();
         for (Ast.MethodDecl method : klass.methods()) {
+            // Reserved init belongs to the actor bootstrap ABI, not the
+            // dynamically inherited or overloaded callable-slot registry.
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("init")) continue;
             CallableSelector selector = CallableSelector.of(method);
             CallableTarget previous = local.putIfAbsent(selector, new CallableTarget(klass, method));
             if (previous != null) {

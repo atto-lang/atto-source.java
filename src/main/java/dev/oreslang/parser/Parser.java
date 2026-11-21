@@ -999,6 +999,29 @@ public final class Parser {
                 mods = mergeModifiers(mods, parseModifiers());
             }
             validateActorMethodModifiers(mods);
+            // Actor init is a reserved one-shot lifecycle hook, never an ordinary
+            // callable method. Until the complete-state builder, spawn argument
+            // ABI and pre-publication atomic install are all implemented,
+            // accepting an ordinary init() would be unsound: guest code could
+            // call it repeatedly or publish partially initialized state.
+            if (check(IDENT) && peek().lexeme().equals("init")) {
+                if (!annotations.isEmpty() || mods.visibility != Ast.Visibility.PRIVATE
+                        || mods.isStatic || mods.async || mods.suspends || mods.generator
+                        || mods.isAbstract || mods.nonLexical || mods.trapped
+                        || explicitFnc || explicitMethod)
+                    throw error(peek(), "actor init is a private synchronous one-shot lifecycle hook");
+                if (methods.stream().anyMatch(m -> m.name().equals("init")))
+                    throw error(peek(), "actor init may be declared only once");
+                Ast.MethodDecl init = parseMethod(annotations, mods);
+                if (!init.genericParameters().isEmpty()
+                        || init.explicitReceiverType() != null
+                        || !init.returnType().name().equals("state")
+                        || !init.returnType().arguments().isEmpty()
+                        || !init.effects().equals(Ast.EffectSpec.none()))
+                    throw error(previous(), "actor init must declare -> state without generics or checked effects");
+                methods.add(init);
+                continue;
+            }
             if (check(IDENT) && peek().lexeme().equals("handle_state")) {
                 throw error(peek(), "handle_state is a sealed runtime actor intrinsic");
             }
@@ -4349,13 +4372,26 @@ public final class Parser {
             consume(RPAREN, "expected ')' after explicit tuple");
             return new Ast.TupleExpr(items);
         }
+        if (isContextualIdentifier("state") && checkNext(LBRACE)) {
+            advance();
+            return new Ast.InitStateExpr(
+                    parseObjectLiteral(Ast.ObjectKind.RECORD, List.of()).fields());
+        }
         if (match(IDENT, SHARED, UNTRUSTED)) {
             return new Ast.NameExpr(previous().lexeme());
         }
         if (match(SPAWN)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after actor type");
-            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+            List<Ast.Expr> args = new ArrayList<>();
+            if (!check(RPAREN)) {
+                do {
+                    String label = consume(IDENT,
+                            "actor spawn arguments must be named: label: value").lexeme();
+                    consume(COLON, "actor spawn arguments require 'label: value'");
+                    args.add(new Ast.SpawnNamedArgExpr(label, parseExpression()));
+                } while (match(COMMA));
+            }
             consume(RPAREN, "expected ')' after actor spawn arguments");
             // Keep actor creation semantically distinct from ordinary class construction.
             // RuntimeCallExpr is an internal intrinsic encoding; source syntax is only

@@ -394,6 +394,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 Map<CallableSelector, Ast.MethodDecl> local = new HashMap<>();
                 for (Ast.MethodDecl method : klass.methods()) {
+                    // init never becomes a callable vtable slot: the runtime
+                    // consumes its checked, pure state expression once during
+                    // actor startup, before any user mailbox turn.
+                    if (klass.actorKind() != Ast.ActorKind.NONE
+                            && method.name().equals("init")) continue;
                     CallableSelector selector = CallableSelector.of(method);
                     if (local.putIfAbsent(selector, method) != null) {
                         throw new IllegalArgumentException(
@@ -545,7 +550,16 @@ public final class OresEvalRootNode extends RootNode {
         public ActorRuntime.ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorRuntime.ActorContext<Object> actorContext) {
+            return initializeActor(actorTypeName, actorContext, List.of());
+        }
+
+        @Override
+        public ActorRuntime.ActorOwnedGuestState initializeActor(
+                String actorTypeName,
+                ActorRuntime.ActorContext<Object> actorContext,
+                List<Object> initArguments) {
             Objects.requireNonNull(actorContext, "actorContext");
+            Objects.requireNonNull(initArguments, "initArguments");
             SharedCodeImageStore.CodeImage image =
                     actorContext.codeImage().orElseThrow(
                             () -> new SecurityException(
@@ -577,6 +591,73 @@ public final class OresEvalRootNode extends RootNode {
                 fields.put(field.name(), UNINITIALIZED_FIELD);
             }
             OresObject object = new OresObject(this, klass, fields);
+
+            Ast.MethodDecl init = klass.methods().stream()
+                    .filter(m -> m.name().equals("init")).findFirst().orElse(null);
+            if (init != null) {
+                if (klass.methods().stream().anyMatch(m -> m.name().equals("on_start")))
+                    throw new IllegalStateException("actor init cannot coexist with on_start");
+                if (!klass.parents().isEmpty() || !klass.interfaces().isEmpty()) {
+                    throw new SecurityException(
+                            "actor init has no checked inherited/interface state layout ABI");
+                }
+                if (init.async() || init.suspends() || init.isStatic()
+                        || !init.genericParameters().isEmpty()
+                        || !init.effects().isEmpty()
+                        || !init.returnType().name().equals("state")
+                        || init.body().size() != 1
+                        || !(init.body().getFirst() instanceof Ast.ReturnStmt returned)
+                        || !(returned.value() instanceof Ast.InitStateExpr state))
+                    throw new IllegalStateException("invalid actor init lifecycle body");
+                if (init.parameters().size() != initArguments.size())
+                    throw new IllegalArgumentException("actor init argument arity mismatch");
+                for (int i = 0; i < init.parameters().size(); i++) {
+                    Ast.Param param = init.parameters().get(i);
+                    if (param.mutable() || param.structural() || param.type().isBorrow()
+                            || !param.type().arguments().isEmpty())
+                        throw new SecurityException("actor init parameter ABI is not scalar-only");
+                    requireActorInitScalarType(param.type(), initArguments.get(i),
+                            "actor init parameter '" + param.name() + "'");
+                }
+                LinkedHashMap<String, Ast.FieldDecl> schema = new LinkedHashMap<>();
+                for (Ast.FieldDecl field : classFields) {
+                    if (!isActorStateSchemaField(field) || field.initializer() != null)
+                        throw new SecurityException(
+                                "actor init requires one complete state schema without legacy fields");
+                    schema.put(field.name(), field);
+                }
+                if (schema.size() != fields.size())
+                    throw new SecurityException("actor init field layout is not unique");
+                Env initEnv = new Env(null, false, klass);
+                bindCallableArguments(initEnv, init.parameters(), initArguments,
+                        "actor " + klass.name() + ".init");
+                LinkedHashMap<String, Object> prepared = new LinkedHashMap<>();
+                for (Ast.ObjectField entry : state.fields()) {
+                    boolean permitted = entry.value() instanceof Ast.LiteralExpr
+                            || (entry.value() instanceof Ast.NameExpr name
+                                && init.parameters().stream()
+                                    .anyMatch(p -> p.name().equals(name.name())));
+                    Ast.FieldDecl declared = schema.get(entry.name());
+                    if (!permitted || declared == null || prepared.containsKey(entry.name()))
+                        throw new SecurityException(
+                                "actor init must supply exactly the declared state fields "
+                                        + "using only scalar parameters or literals");
+                    Object value = eval(entry.value(), initEnv);
+                    requireActorInitScalarType(declared.type(), value,
+                            "actor init state field '" + entry.name() + "'");
+                    prepared.put(entry.name(), value);
+                }
+                if (!prepared.keySet().equals(fields.keySet()))
+                    throw new IllegalStateException(
+                            "actor init must construct every state field exactly once");
+                // The temporary map cannot escape: the state object only
+                // becomes ready after this complete, validated install.
+                fields.putAll(prepared);
+                return new SourceActorState(
+                        actorContext.self().id(), actorTypeName, object);
+            }
+            if (!initArguments.isEmpty())
+                throw new SecurityException("actor has no init hook for startup arguments");
 
             // Field initializers are actor-local state construction. They run
             // only after ActorRuntime has installed this actor's execution
@@ -743,6 +824,31 @@ public final class OresEvalRootNode extends RootNode {
             return klass;
         }
 
+        /**
+         * Runtime backstop: a host bridge or linked code path must not bypass
+         * the source type checker and install a value with the wrong scalar
+         * representation. Complex ownership and ActorRef require their own ABI.
+         */
+        private static void requireActorInitScalarType(
+                Ast.TypeRef type, Object value, String label) {
+            if (type == null || type.isBorrow() || type.inferArguments()
+                    || !type.arguments().isEmpty()) {
+                throw new SecurityException(label + " has no scalar initialization ABI");
+            }
+            boolean valid = switch (type.name()) {
+                case "int" -> value instanceof Long || value instanceof Integer;
+                case "bool" -> value instanceof Boolean;
+                case "float" -> value instanceof Double d && Double.isFinite(d);
+                case "string", "String" -> value instanceof String;
+                default -> false;
+            };
+            if (!valid) {
+                throw new SecurityException(
+                        label + " does not match its declared immutable scalar type "
+                                + type.name());
+            }
+        }
+
         private void executeActorStartup(OresObject object, Ast.MethodDecl startup) {
             executeActorLifecycleMethod(object, startup, "on_start");
         }
@@ -883,6 +989,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation methodInvocation(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("init"))
+                throw new SecurityException(
+                        "actor init is a once-only runtime lifecycle, not guest-callable");
             return new Invocation(this, InvocationKind.METHOD, receiver, method, objectArguments(args));
         }
 
@@ -5034,6 +5144,16 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.RuntimeCallExpr runtime,
                 Env env,
                 SourceValueCont continuation) {
+            if (runtime.operation().equals("spawn")) {
+                // Spawn inputs are type-checked non-suspending scalars. Never
+                // accidentally pass this compiler intrinsic to rt ownership.
+                try {
+                    continuation.accept(task, eval(runtime, env), null);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                }
+                return;
+            }
             if (runtime.operation().equals("cooperate")) {
                 if (!runtime.arguments().isEmpty()) {
                     continuation.accept(
@@ -7537,6 +7657,10 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.SpreadExpr) {
                 throw new IllegalArgumentException("spread expressions are only valid inside call argument lists");
             }
+            if (expr instanceof Ast.SpawnNamedArgExpr || expr instanceof Ast.InitStateExpr) {
+                throw new SecurityException(
+                        "spawn labels and init state are compiler-owned expressions");
+            }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
                 if (runtime.operation().equals("spawn")) {
                     if (runtime.arguments().size() != 1
@@ -7544,12 +7668,54 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException(
                                 "internal spawn intrinsic requires exactly one actor target");
                     }
-                    if (!created.arguments().isEmpty()) {
-                        throw new IllegalArgumentException(
-                                "actor spawn arguments are not enabled; initialize actor-local state with fields and on_start()");
-                    }
                     Ast.ClassDecl actorClass =
                             requireLocalActorClass(created.type().name());
+                    Ast.MethodDecl init = actorClass.methods().stream()
+                            .filter(m -> m.name().equals("init")).findFirst().orElse(null);
+                    if (init == null && !created.arguments().isEmpty())
+                        throw new IllegalArgumentException(
+                                "actor has no init hook for spawn arguments");
+                    LinkedHashMap<String, Ast.Expr> namedInputs = new LinkedHashMap<>();
+                    // Validate the *entire* call, including effect safety,
+                    // before evaluating even the first expression. This also
+                    // prevents the unchecked evaluator path from turning a
+                    // malformed source-level spawn into side effects.
+                    for (Ast.Expr raw : created.arguments()) {
+                        if (!(raw instanceof Ast.SpawnNamedArgExpr named))
+                            throw new IllegalArgumentException(
+                                    "actor spawn requires label: value arguments");
+                        if (!(named.value() instanceof Ast.NameExpr)
+                                && !(named.value() instanceof Ast.LiteralExpr))
+                            throw new SecurityException(
+                                    "actor spawn init has no effect-safe expression lowering");
+                        if (namedInputs.putIfAbsent(named.label(), named.value()) != null)
+                            throw new IllegalArgumentException(
+                                    "duplicate actor spawn init label '" + named.label() + "'");
+                    }
+                    if (init != null) {
+                        if (namedInputs.size() != init.parameters().size())
+                            throw new IllegalArgumentException(
+                                    "actor spawn has missing or excess init parameters");
+                        for (Ast.Param parameter : init.parameters()) {
+                            if (!namedInputs.containsKey(parameter.name()))
+                                throw new IllegalArgumentException(
+                                        "actor spawn missing init label '" + parameter.name() + "'");
+                        }
+                    }
+                    LinkedHashMap<String, Object> provided = new LinkedHashMap<>();
+                    // Eagerly read scalar values in source order, then bind by
+                    // declaration label. No argument expression has effects.
+                    for (Map.Entry<String, Ast.Expr> input : namedInputs.entrySet())
+                        provided.put(input.getKey(), eval(input.getValue(), env));
+                    List<Object> startupValues = new ArrayList<>();
+                    if (init != null) {
+                        for (Ast.Param parameter : init.parameters()) {
+                            Object value = provided.get(parameter.name());
+                            requireActorInitScalarType(parameter.type(), value,
+                                    "spawn init input '" + parameter.name() + "'");
+                            startupValues.add(value);
+                        }
+                    }
                     requireSupportedActorExecutionPolicy(actorClass);
                     ActorRuntime.ActorKind runtimeKind =
                             switch (actorClass.actorKind()) {
@@ -7562,7 +7728,8 @@ public final class OresEvalRootNode extends RootNode {
                     return context.actors().spawnCodeActor(
                             runtimeKind,
                             this,
-                            created.type().name());
+                            created.type().name(),
+                            startupValues);
                 }
                 if (runtime.operation().equals("cooperate")) {
                     if (!runtime.arguments().isEmpty()) {
@@ -8871,6 +9038,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation prepareBoundMethodInvocation(OresObject receiver, String name, List<Object> args, Ast.ClassDecl accessClass) {
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE && name.equals("init"))
+                throw new SecurityException("actor init is runtime-only, never guest-callable");
             CallableSelector selector = CallableSelector.instance(name, args.size());
             Ast.MethodDecl method = findMethod(receiver.klass, selector);
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());

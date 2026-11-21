@@ -212,6 +212,10 @@ public final class OwnershipChecker {
         }
     }
 
+    /** Restricted ownership context for a reserved actor init state result. */
+    private boolean checkingActorInit;
+    /** Prevent guest-visible provisional references on an init actor. */
+    private boolean checkingDirectAwaitedSpawn;
     private Ast.ClassDecl initializingClass;
     // A deliberately conservative one-write constructor ledger. A later CFG
     // refinement may permit mutually exclusive writes, but this checker must
@@ -337,8 +341,15 @@ public final class OwnershipChecker {
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            boolean previousActorInit = checkingActorInit;
+            checkingActorInit = klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("init");
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                checkingActorInit = previousActorInit;
+                scope.close();
+            }
         }
     }
 
@@ -968,6 +979,33 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.SpawnNamedArgExpr) {
+            throw error("named actor spawn arguments have no standalone ownership value");
+        }
+        if (expr instanceof Ast.InitStateExpr state) {
+            if (!checkingActorInit) {
+                throw error("complete state literal is reserved for one-shot actor init");
+            }
+            Set<String> keys = new HashSet<>();
+            for (Ast.ObjectField field : state.fields()) {
+                if (!keys.add(field.name())) {
+                    throw error("duplicate actor init state field '" + field.name() + "'");
+                }
+                if (!(field.value() instanceof Ast.NameExpr)
+                        && !(field.value() instanceof Ast.LiteralExpr)) {
+                    throw error("actor init state requires pure scalar values");
+                }
+                ValueInfo value = checkExpr(field.value(), scope, false);
+                if (value.kind != ValueKind.COPY
+                        || !actorInitScalarType(value.type)) {
+                    throw error("actor init cannot install borrowed or owned aliases into state");
+                }
+            }
+            // The type checker establishes exact schema and state-field types.
+            // This ownership pass independently verifies that no borrowed or
+            // move-only payload crosses the unpublished initialization boundary.
+            return new ValueInfo(Ast.TypeRef.simple("state"), ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.MatchExpr match) {
             ValueInfo subject = checkExpr(match.subject(), scope, false);
             VarState source = match.subject() instanceof Ast.NameExpr name
@@ -1060,8 +1098,30 @@ public final class OwnershipChecker {
                         || !(runtime.arguments().getFirst() instanceof Ast.NewExpr created)) {
                     throw error("internal spawn intrinsic requires exactly one actor target");
                 }
-                if (!created.arguments().isEmpty()) {
-                    throw error("actor spawn arguments are not enabled; initialize actor-local state with fields and on_start()");
+                Ast.ClassDecl spawnClass = findClass(created.type().name());
+                if (spawnClass != null
+                        && spawnClass.methods().stream()
+                            .anyMatch(m -> m.name().equals("init"))
+                        && !checkingDirectAwaitedSpawn) {
+                    throw error("actor init requires direct await spawn before "
+                            + "a guest ActorRef may be used");
+                }
+                Set<String> labels = new HashSet<>();
+                for (Ast.Expr input : created.arguments()) {
+                    if (!(input instanceof Ast.SpawnNamedArgExpr named)
+                            || !labels.add(named.label())) {
+                        throw error("actor spawn requires unique named init arguments");
+                    }
+                    if (!(named.value() instanceof Ast.NameExpr)
+                            && !(named.value() instanceof Ast.LiteralExpr)) {
+                        throw error("actor spawn input is not a pure scalar value");
+                    }
+                    ValueInfo argument = checkExpr(named.value(), scope, false);
+                    if (argument.kind != ValueKind.COPY
+                            || !actorInitScalarType(argument.type)) {
+                        throw error("actor spawn cannot transfer ownership, "
+                                + "borrowed values or unverified capabilities through init");
+                    }
                 }
                 return new ValueInfo(
                         new Ast.TypeRef(
@@ -1396,7 +1456,16 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             checkSuspensionBorrows(scope, "await");
-            ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            boolean previousAwaitedSpawn = checkingDirectAwaitedSpawn;
+            checkingDirectAwaitedSpawn =
+                    awaited.expression() instanceof Ast.RuntimeCallExpr runtime
+                            && runtime.operation().equals("spawn");
+            ValueInfo awaitedValue;
+            try {
+                awaitedValue = checkExpr(awaited.expression(), scope, consuming);
+            } finally {
+                checkingDirectAwaitedSpawn = previousAwaitedSpawn;
+            }
             if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
                 Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -3197,6 +3266,12 @@ public final class OwnershipChecker {
             scanExpr(e.condition(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.whenTrue(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.whenFalse(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.SpawnNamedArgExpr e) {
+            scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.InitStateExpr e) {
+            for (Ast.ObjectField field : e.fields()) {
+                scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
+            }
         } else if (expr instanceof Ast.RuntimeCallExpr e) {
             for (Ast.Expr arg : e.arguments()) {
                 scanExpr(arg, locals, outer, recursiveBinding, captures, false);
@@ -4675,6 +4750,13 @@ public final class OwnershipChecker {
         if (left.name().equals("$infer$")) return right;
         if (right.name().equals("$infer$")) return left;
         return Ast.TypeRef.union(List.of(left, right));
+    }
+
+    private static boolean actorInitScalarType(Ast.TypeRef type) {
+        return type != null && !type.isBorrow() && !type.inferArguments()
+                && type.arguments().isEmpty()
+                && Set.of("int", "bool", "float", "string", "String")
+                        .contains(type.name());
     }
 
     private ValueKind kindOfType(Ast.TypeRef type) {
