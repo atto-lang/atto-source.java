@@ -1,0 +1,92 @@
+name: Atto Java procedural negated conditional exact-head regression
+# Source-owned execution only. Never mirror private code into an unapproved carrier.
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/test/java/dev/oreslang/AttoDoNegatedConditionalParserTest.java'
+      - '.github/workflows/atto-java-do-negated-conditional-exact-head.yml'
+  push:
+    branches:
+      - feat/atto-java-do-negated-conditional-parser-20261120
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parser-and-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact head with no persisted token
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Authenticate exact source commit and clean workspace
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+          test -f src/main/java/dev/oreslang/parser/Parser.java
+          test -f src/test/java/dev/oreslang/AttoDoNegatedConditionalParserTest.java
+          echo "ATTO_SOURCE_COMMIT=$(git rev-parse HEAD)"
+          echo "ATTO_SOURCE_TREE=$(git rev-parse HEAD^{tree})"
+          for file in src/main/java/dev/oreslang/parser/Parser.java src/test/java/dev/oreslang/AttoDoNegatedConditionalParserTest.java; do
+            test "$(git hash-object "$file")" = "$(git rev-parse "HEAD:$file")"
+            printf 'ATTO_SOURCE_BLOB=%s:%s\n' "$file" "$(git rev-parse "HEAD:$file")"
+          done
+      - name: Install GraalVM JDK 25
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: graalvm
+          java-version: '25'
+      - name: Run actual parser and existing guard guest regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -DfailIfNoTests=true \
+            -Dtest=AttoDoNegatedConditionalParserTest,AttoGuardLanguageTest,AttoCallableVersionParserTest \
+            clean test
+      - name: Require nonempty, unskipped, distinct JUnit executions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, xml.etree.ElementTree as ET
+          wanted = {
+              "dev.oreslang.AttoDoNegatedConditionalParserTest": {
+                  "proceduralNegatedHeadsUseTheSameCheckedConditionalAst",
+                  "inversionAppliesOnlyToTheInitialConditionNotElif",
+                  "nonProceduralKeywordHeadsRetainCompatibility",
+                  "unsupportedBindingsAndMalformedProceduralHeadsFailClosed",
+              },
+              "dev.oreslang.AttoGuardLanguageTest": set(),
+              "dev.oreslang.AttoCallableVersionParserTest": set(),
+          }
+          for suite, methods in wanted.items():
+              report = pathlib.Path("target/surefire-reports") / ("TEST-" + suite + ".xml")
+              if not report.is_file() or report.is_symlink() or report.stat().st_size == 0:
+                  raise SystemExit(f"missing or invalid JUnit report: {report}")
+              root = ET.parse(report).getroot()
+              cases = root.findall(".//testcase")
+              names = [case.attrib.get("name") for case in cases]
+              if not cases or len(names) != len(set(names)):
+                  raise SystemExit(f"empty or duplicate JUnit cases: {suite}")
+              if not methods.issubset(set(names)):
+                  raise SystemExit(f"missing required Java parser cases in {suite}: {methods - set(names)}")
+              for bad in ("failure", "error", "skipped"):
+                  if root.find(f".//{bad}") is not None:
+                      raise SystemExit(f"nonpassing JUnit case: {suite} / {bad}")
+              counts = [int(root.attrib.get(k, "0")) for k in ("tests", "errors", "failures", "skipped")]
+              if counts[0] != len(cases) or any(counts[1:]):
+                  raise SystemExit(f"invalid JUnit suite totals: {suite}: {counts}")
+              print(f"ATTO_JUNIT_EXECUTED={suite}:{len(cases)}")
+          print("ATTO_NEGATED_CONDITIONAL_JAVA_PARSER=EXECUTED")
+          print("ATTO_NATIVE_IMAGE=NOT_EXECUTED")
+          print("ATTO_ALL_BACKEND_PARITY=NOT_CERTIFIED")
+          PY
