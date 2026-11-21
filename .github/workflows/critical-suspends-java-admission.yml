@@ -19,6 +19,10 @@ on:
       - 'src/test/java/dev/oreslang/runtime/CriticalGateTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorCriticalGateIdentityTest.java'
       - 'src/test/java/dev/oreslang/CriticalActorGuestExecutionTest.java'
+      - 'src/test/java/dev/oreslang/ActorBorrowCompilerAdmissionTest.java'
+      - 'tools/VerifyAssuranceSurefire.java'
+      - 'tools/verify-critical-guest-inputs.sh'
+      - 'tools/test-critical-guest-inputs.sh'
       - 'examples/critical-actor-checked-v1.ores'
       - 'examples/critical-actor-checked-v1.atto'
       - 'examples/critical-actor-early-return-v1.ores'
@@ -35,8 +39,11 @@ jobs:
   critical-guest-verification:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      EXPECTED_SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout immutable original Java PR head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -50,6 +57,18 @@ jobs:
           bash scripts/verify-raw-worktree.sh "$EXPECTED"
           echo "SOURCE_COMMIT=$EXPECTED"
           echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - name: Verify original-head Java and Atto inputs (host-only integrity)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Self-verification must be in the immutable workflow, not solely
+          # inside a script whose own worktree bytes might have been replaced.
+          for input in tools/verify-critical-guest-inputs.sh tools/test-critical-guest-inputs.sh; do
+            test "$(git hash-object --no-filters "$input")" = "$(git rev-parse "HEAD:$input")"
+          done
+          bash -n tools/verify-critical-guest-inputs.sh tools/test-critical-guest-inputs.sh
+          bash tools/test-critical-guest-inputs.sh
+          bash tools/verify-critical-guest-inputs.sh
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
@@ -57,43 +76,84 @@ jobs:
       - name: Compile critical AST, Task authority and .ores Truffle guest tests
         run: |
           set -euo pipefail
+          java tools/VerifyAssuranceSurefire.java --self-test
           mvn -B -ntp -Dores.runtime.carriers=java \
             -DfailIfNoTests=true -DskipTests=false -Dmaven.test.skip=false \
-            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,TaskCaptureAdmissionIdentityTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest,CriticalTicketCleanupTest \
+            -Dtest=CriticalBodyEffectsTest,CriticalSuspendsV1SyntaxTest,TaskCaptureAdmissionIdentityTest,CriticalGateTest,ActorCriticalGateIdentityTest,CriticalActorGuestExecutionTest,CriticalTicketCleanupTest,ActorBorrowCompilerAdmissionTest \
             clean test
           test -s target/classes/dev/oreslang/compiler/OresCompiler.class
           sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class
-          # A compiled class alone is not guest-execution evidence. Require
-          # Surefire's concrete JUnit XML and both real guest test cases.
-          guest_report=target/surefire-reports/TEST-dev.oreslang.CriticalActorGuestExecutionTest.xml
-          syntax_report=target/surefire-reports/TEST-dev.oreslang.CriticalSuspendsV1SyntaxTest.xml
-          capture_report=target/surefire-reports/TEST-dev.oreslang.TaskCaptureAdmissionIdentityTest.xml
-          cleanup_report=target/surefire-reports/TEST-dev.oreslang.nodes.CriticalTicketCleanupTest.xml
-          for report in "$guest_report" "$syntax_report" "$capture_report" "$cleanup_report" \
-            target/surefire-reports/TEST-dev.oreslang.CriticalBodyEffectsTest.xml \
-            target/surefire-reports/TEST-dev.oreslang.runtime.CriticalGateTest.xml \
-            target/surefire-reports/TEST-dev.oreslang.runtime.ActorCriticalGateIdentityTest.xml; do
-            test -s "$report"
-            # A file created by a skipped or empty suite is not test evidence.
-            grep -Eq 'tests="[1-9][0-9]*"' "$report"
-            ! grep -Eq '(skipped|failures|errors)="[1-9][0-9]*"' "$report"
+          # Stronger than grep on XML fragments: inspect suite identity,
+          # every testcase result, counts, duplicates, and exact required names.
+          java tools/VerifyAssuranceSurefire.java target/surefire-reports
+          # No pass-only receipt after altered compiler/fixture inputs, even if
+          # a Git assume-unchanged/skip-worktree bit hides them from git status.
+          for input in tools/verify-critical-guest-inputs.sh tools/test-critical-guest-inputs.sh; do
+            test "$(git hash-object --no-filters "$input")" = "$(git rev-parse "HEAD:$input")"
           done
-          grep -Fq 'name="actorCriticalGuestReturnsExpectedValueAndReleasesBeforeStop' "$guest_report"
-          grep -Fq 'name="earlyReturnInsideCriticalReleasesGuardBeforeActorStop' "$guest_report"
-          grep -Fq 'name="canonicalAttoActorCriticalGuestMatchesLegacyGuestOutput' "$guest_report"
-          grep -Fq 'name="canonicalAttoEarlyReturnGuestReleasesBeforeStop' "$guest_report"
-          grep -Fq 'name="concurrentRetypingCannotPublishPartialTaskEpochBeforeCriticalAdmission' "$syntax_report"
-          grep -Fq 'name="newerConcurrentOwnershipAttemptSupersedesBlockedOlderAttempt' "$syntax_report"
-          grep -Fq 'name="criticalTaskPublicationIsAtomicAgainstConcurrentTypingRevocation' "$syntax_report"
-          grep -Fq 'name="rawHostAstAndForgedEpochCannotPublishTaskCaptures' "$capture_report"
-          grep -Fq 'name="untypedNoncriticalTaskCannotAcquireExecutableOwnership' "$capture_report"
-          grep -Fq 'name="successfulTypeRecheckRevokesPreviouslyExecutableNoncriticalTask' "$capture_report"
-          grep -Fq 'name="failedTypeRecheckRevokesPreviouslyExecutableNoncriticalTask' "$capture_report"
-          grep -Fq 'name="publicStagedCapturePublisherCannotMintTaskTransferAuthority' "$capture_report"
-          grep -Fq 'name="immediateTicketIsReleasedAfterFailedSchedulerTransition' "$cleanup_report"
-          grep -Fq 'name="queuedTicketIsRetractedWithoutReleasingAnotherOwner' "$cleanup_report"
-          grep -Fq 'name="retiredAdmissionIsSafeToUnwind' "$cleanup_report"
-          grep -Fq 'name="cancellationRacingWithPromotionCannotLeakActorOwnedTicket' "$cleanup_report"
+          bash tools/verify-critical-guest-inputs.sh
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_HEAD"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          mkdir -p target/atto-guest-evidence
+          compiler_sha="$(sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class | cut -d ' ' -f1)"
+          fixture_sha="$(sha256sum examples/critical-actor-checked-v1.atto | cut -d ' ' -f1)"
+          [[ "$compiler_sha" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$fixture_sha" =~ ^[a-f0-9]{64}$ ]]
+          printf '{"classification":"SCOPED_SUREFIRE_CASES_OBSERVED","proof":"NOT_INDEPENDENTLY_VERIFIED","guest":"CANDIDATE_ONLY","run_id":"%s","attempt":"%s","head":"%s","tree":"%s","job":"%s","compiler_class_sha256":"%s","fixture_sha256":"%s"}\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')" "$GITHUB_JOB" \
+            "$compiler_sha" "$fixture_sha" \
+            > target/atto-guest-evidence/suite-gate-completed.json
+      - name: Record scoped exact-head Java/Truffle guest canary evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_HEAD"
+          mkdir -p target/atto-guest-evidence
+          printf '{"classification":"JVM_TRUFFLE_ATTO_GUEST_CANDIDATE_UNVERIFIED","proof":"NOT_INDEPENDENTLY_VERIFIED","native_aot":"NOT_EXECUTED","actor_borrow_refinement":"NOT_EXECUTED","source_head":"%s","source_tree":"%s","run_id":"%s","attempt":"%s","job":"%s"}\n' \
+            "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')" \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_JOB" \
+            > target/atto-guest-evidence/checkout.json
+          sha256sum examples/critical-actor-checked-v1.atto \
+            examples/critical-actor-early-return-v1.atto \
+            > target/atto-guest-evidence/fixture-sha256.txt
+          if test -s target/classes/dev/oreslang/compiler/OresCompiler.class; then
+            sha256sum target/classes/dev/oreslang/compiler/OresCompiler.class \
+              > target/atto-guest-evidence/compiler-class-sha256.txt
+          fi
+          # Preserve all eight actual Surefire suites inspected above, not
+          # just the guest subset. A failure may leave only partial XML;
+          # an independent reviewer must then reject the absent pass-only
+          # receipt / missing complete suite manifest.
+          for suite in \
+            dev.oreslang.CriticalActorGuestExecutionTest \
+            dev.oreslang.ActorBorrowCompilerAdmissionTest \
+            dev.oreslang.CriticalSuspendsV1SyntaxTest \
+            dev.oreslang.TaskCaptureAdmissionIdentityTest \
+            dev.oreslang.nodes.CriticalTicketCleanupTest \
+            dev.oreslang.CriticalBodyEffectsTest \
+            dev.oreslang.runtime.CriticalGateTest \
+            dev.oreslang.runtime.ActorCriticalGateIdentityTest; do
+            file="target/surefire-reports/TEST-${suite}.xml"
+            if test -s "$file"; then
+              cp -- "$file" target/atto-guest-evidence/
+            fi
+          done
+          # Manifest does not itself prove execution; it binds the uploaded
+          # report bytes to the candidate GitHub artifact archive digest.
+          if compgen -G 'target/atto-guest-evidence/TEST-*.xml' >/dev/null; then
+            (cd target/atto-guest-evidence &&
+              sha256sum TEST-*.xml > surefire-xml-sha256.txt)
+          fi
+      - name: Upload scoped evidence without asserting proof before independent verification
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: java-truffle-atto-guest-source-only-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/atto-guest-evidence/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Mark evidence scope
         run: |
           echo "Scoped Java admission/host-ticket tests plus Truffle polyglot actor-critical guest fixture."
