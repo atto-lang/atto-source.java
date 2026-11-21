@@ -2434,7 +2434,9 @@ public final class TypeChecker {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")
-                    || name.name().equals("Channel") || name.name().equals("SelectCase") || name.name().equals("SelectSet")) return new Named("$" + name.name() + "Factory", List.of());
+                    || name.name().equals("Channel") || name.name().equals("BoundedQueue")
+                    || name.name().equals("SelectCase") || name.name().equals("SelectSet"))
+                return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
@@ -3019,6 +3021,41 @@ public final class TypeChecker {
                 Type element = resolve(channelArgument, generics, self);
                 validateChannelPayloadType(element, "Channel.new");
                 return new Named("Channel", List.of(element));
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr queueCall
+                    && queueCall.receiver() instanceof Ast.NameExpr factory
+                    && factory.name().equals("BoundedQueue")
+                    && queueCall.member().equals("new")) {
+                if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "BoundedQueue.new<T>(capacity[, max_pending]) requires exactly one explicit element type");
+                }
+                if (call.arguments().size() < 1 || call.arguments().size() > 2) {
+                    throw new IllegalArgumentException(
+                            "BoundedQueue.new<T> expects capacity and optional max_pending");
+                }
+                requireAssignable(
+                        typeOf(call.arguments().getFirst(), env, generics, self),
+                        Primitive.INT,
+                        "BoundedQueue.new capacity");
+                if (call.arguments().size() == 2) {
+                    requireAssignable(
+                            typeOf(call.arguments().get(1), env, generics, self),
+                            Primitive.INT,
+                            "BoundedQueue.new max_pending");
+                }
+                Ast.TypeRef queueArgument = call.typeArguments().getFirst();
+                if (queueArgument.isNamedParameter()
+                        || (queueArgument.name().equals("_")
+                                && queueArgument.arguments().isEmpty()
+                                && !queueArgument.inferArguments())) {
+                    throw new IllegalArgumentException(
+                            "BoundedQueue.new<T> requires one positional concrete payload type");
+                }
+                Type element = resolve(queueArgument, generics, self);
+                validateChannelPayloadType(element, "BoundedQueue.new");
+                return new Named("BoundedQueue", List.of(element));
             }
 
             if (call.callee() instanceof Ast.MemberExpr selectCaseCall
@@ -3853,6 +3890,67 @@ public final class TypeChecker {
                     case "is_closed" -> new Function(List.of(), Primitive.BOOL);
                     default -> throw new IllegalArgumentException(
                             "unknown Channel member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named queueType
+                    && queueType.name().equals("BoundedQueue")
+                    && queueType.arguments().size() == 1) {
+                Type element = queueType.arguments().getFirst();
+                Type ticket = new Named("QueueTicket", List.of());
+                Type push = new Named("QueuePush", List.of(element));
+                Type pop = new Named("QueuePop", List.of(element));
+                return switch (member.member()) {
+                    case "new_ticket" -> new Function(List.of(), ticket);
+                    case "try_push" -> new Function(
+                            List.of(element, ticket), push);
+                    case "push_async" -> new Function(
+                            List.of(element, ticket),
+                            new Named("Future", List.of(push)));
+                    case "try_pop" -> new Function(List.of(), pop);
+                    case "pop_async" -> new Function(
+                            List.of(), new Named("Future", List.of(pop)));
+                    case "close" -> new Function(List.of(), Primitive.BOOL);
+                    case "is_closed" -> new Function(List.of(), Primitive.BOOL);
+                    case "capacity", "generation", "pending_registrations" ->
+                            new Function(List.of(), Primitive.INT);
+                    default -> throw new IllegalArgumentException(
+                            "unknown BoundedQueue member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named ticketType
+                    && ticketType.name().equals("QueueTicket")
+                    && ticketType.arguments().isEmpty()) {
+                return switch (member.member()) {
+                    case "cancel", "is_cancelled", "is_settled" ->
+                            new Function(List.of(), Primitive.BOOL);
+                    case "generation", "id" ->
+                            new Function(List.of(), Primitive.INT);
+                    default -> throw new IllegalArgumentException(
+                            "unknown QueueTicket member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named pushType
+                    && pushType.name().equals("QueuePush")
+                    && pushType.arguments().size() == 1) {
+                return switch (member.member()) {
+                    case "status" -> new Named("$builtin$Symbol", List.of());
+                    case "take_value" -> new Function(
+                            List.of(),
+                            new Named("Option", List.of(pushType.arguments().getFirst())));
+                    default -> throw new IllegalArgumentException(
+                            "unknown QueuePush member '" + member.member() + "'");
+                };
+            }
+            if (sumReceiver instanceof Named popType
+                    && popType.name().equals("QueuePop")
+                    && popType.arguments().size() == 1) {
+                return switch (member.member()) {
+                    case "status" -> new Named("$builtin$Symbol", List.of());
+                    case "take_value" -> new Function(
+                            List.of(),
+                            new Named("Option", List.of(popType.arguments().getFirst())));
+                    default -> throw new IllegalArgumentException(
+                            "unknown QueuePop member '" + member.member() + "'");
                 };
             }
             Type ioMember = builtinIoMember(sumReceiver, member.member());
@@ -5825,6 +5923,38 @@ public final class TypeChecker {
                 && isSendSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
             return;
         }
+        if (type instanceof Named named
+                && named.name().equals("BoundedQueue")
+                && named.arguments().size() == 1
+                && isSendSafe(
+                        named.arguments().getFirst(),
+                        new LinkedHashSet<>(),
+                        Map.of())) {
+            return;
+        }
+        if (type instanceof Named named
+                && named.name().equals("QueueTicket")
+                && named.arguments().isEmpty()) {
+            return;
+        }
+        if (type instanceof Named named
+                && named.name().equals("QueuePush")
+                && named.arguments().size() == 1
+                && isSendSafe(
+                        named.arguments().getFirst(),
+                        new LinkedHashSet<>(),
+                        Map.of())) {
+            return;
+        }
+        if (type instanceof Named named
+                && named.name().equals("QueuePop")
+                && named.arguments().size() == 1
+                && isSendSafe(
+                        named.arguments().getFirst(),
+                        new LinkedHashSet<>(),
+                        Map.of())) {
+            return;
+        }
         if (type == Primitive.VOID
                 || !isSendSafe(type, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
@@ -5880,7 +6010,9 @@ public final class TypeChecker {
                 || named.name().equals("RefCell") || named.name().equals("RwLock")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("ActorStream") || named.name().equals("StreamOperator")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
+                || named.name().equals("Channel") || named.name().equals("BoundedQueue")
+                || named.name().equals("QueueTicket") || named.name().equals("QueuePush")
+                || named.name().equals("QueuePop") || named.name().equals("SelectCase")
                 || named.name().equals("SelectSet") || named.name().equals("SelectResult")
                 || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
@@ -6002,7 +6134,8 @@ public final class TypeChecker {
                 "Box", "Arc", "Weak", "Rc", "RefCell", "RwLock",
                 "Mutex", "MutexGuard", "SharedMutex",
                 "Future", "Iterator", "AsyncIterator", "ActorStream", "StreamOperator",
-                "Channel", "SelectCase", "SelectSet", "SelectResult")
+                "Channel", "BoundedQueue", "QueueTicket", "QueuePush", "QueuePop",
+                "SelectCase", "SelectSet", "SelectResult")
                 .contains(named.name())) {
             return false;
         }
@@ -9664,6 +9797,22 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 validateChannelPayloadType(element, "Channel<T>");
                 yield new Named("Channel", List.of(element));
+            }
+            case "BoundedQueue", "QueuePush", "QueuePop" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " requires exactly one explicit type argument");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                validateChannelPayloadType(element, ref.name() + "<T>");
+                yield new Named(ref.name(), List.of(element));
+            }
+            case "QueueTicket" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "QueueTicket does not accept type arguments");
+                }
+                yield new Named("QueueTicket", List.of());
             }
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
