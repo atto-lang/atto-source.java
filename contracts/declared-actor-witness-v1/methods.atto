@@ -1,0 +1,5 @@
+namespace foo;
+// Static mtd witness only: no mailbox/critical lowering yet.
+pub mtd (Foo f) bar(int x): int {
+    return x;
+}

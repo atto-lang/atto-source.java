@@ -7,9 +7,13 @@ on:
       - 'src/main/java/dev/oreslang/parser/Parser.java'
       - 'src/main/java/dev/oreslang/ast/Ast.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/types/ActorContractWitness.java'
+      - 'src/main/java/dev/oreslang/types/ManifestActorContractBuild.java'
       - 'src/test/java/dev/oreslang/CrossFileActorReceiverBindingTest.java'
       - 'src/test/java/dev/oreslang/NamespaceActorReceiverSecurityTest.java'
       - 'src/test/java/dev/oreslang/NamespaceActorStateAttachmentTest.java'
+      - 'src/test/java/dev/oreslang/DeclaredActorContractWitnessTest.java'
+      - 'contracts/declared-actor-witness-v1/**'
       - 'contracts/namespace-actor-state-v1/**'
       - 'src/test/java/dev/oreslang/ActorReceiverBinderTest.java'
       - 'src/test/java/dev/oreslang/ExternalActorReceiverAstAdmissionTest.java'
@@ -49,7 +53,11 @@ jobs:
               contracts/cross-file-actor-mtd-v1/file2.atto \
               contracts/namespace-actor-state-v1/actor.atto \
               contracts/namespace-actor-state-v1/state.atto \
-              contracts/namespace-actor-state-v1/methods.atto; do
+              contracts/namespace-actor-state-v1/methods.atto \
+              contracts/declared-actor-witness-v1/contract.atto \
+              contracts/declared-actor-witness-v1/actor.atto \
+              contracts/declared-actor-witness-v1/methods.atto \
+              contracts/declared-actor-witness-v1/state.atto; do
             test -s "$file"
             printf 'RECEIPT fixture_sha256='
             sha256sum "$file"
@@ -69,7 +77,7 @@ jobs:
           set -euo pipefail
           java -version
           mvn -version
-          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
+          mvn -B -ntp -Dtest=CrossFileActorReceiverBindingTest,NamespaceActorReceiverSecurityTest,NamespaceActorStateAttachmentTest,DeclaredActorContractWitnessTest,ActorReceiverBinderTest,ExternalActorReceiverAstAdmissionTest -DfailIfNoTests=true test
 
       - name: Verify real unskipped Surefire evidence
         shell: bash
@@ -79,6 +87,7 @@ jobs:
               CrossFileActorReceiverBindingTest \
               NamespaceActorReceiverSecurityTest \
               NamespaceActorStateAttachmentTest \
+              DeclaredActorContractWitnessTest \
               ActorReceiverBinderTest \
               ExternalActorReceiverAstAdmissionTest; do
             report="target/surefire-reports/TEST-dev.oreslang.${suite}.xml"

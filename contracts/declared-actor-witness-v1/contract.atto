@@ -1,0 +1,5 @@
+namespace foo;
+// Nominal actor interface; NOT a module contract.
+define pub interface ActorXYZ as
+    fnc bar(int x): int;
+end
