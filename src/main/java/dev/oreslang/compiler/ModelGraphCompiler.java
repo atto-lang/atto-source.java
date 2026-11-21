@@ -36,6 +36,10 @@ public final class ModelGraphCompiler {
     private static final int MAX_STATIC_ARGS = 32;
     private static final int MAX_TOTAL_STATIC_ARGS = 16384;
     private static final int MAX_MODEL_IDENTIFIER_LENGTH = 128;
+    // Verify resource costs before digesting/lowering an adversarial expression.
+    // Both limits count syntax-tree work, not merely textual source length.
+    private static final int MAX_OPERATION_EXPRESSION_NODES = 1024;
+    private static final int MAX_OPERATION_EXPRESSION_DEPTH = 96;
 
     public record StaticArg(
             String parameterName,
@@ -131,6 +135,18 @@ public final class ModelGraphCompiler {
                             "MODEL_CONFIG_ARITY: missing required model parameter '"
                                     + parameter.name() + "'");
                 }
+                // Reject forged runtime values at the construction boundary,
+                // not only later when computing the configured graph digest.
+                if (value == null) {
+                    fail("MODEL_INVALID_CONST",
+                            "model parameter '" + parameter.name() + "' cannot be null");
+                }
+                requireSameType(
+                        literalType(value),
+                        parameter.type(),
+                        "MODEL_CONFIG_TYPE_MISMATCH",
+                        "model parameter '" + parameter.name() + "'");
+                canonicalConstant(value); // validates finite floats and canonical UTF-8
                 values.put(parameter.name(), value);
             }
             return Collections.unmodifiableMap(values);
@@ -601,14 +617,22 @@ public final class ModelGraphCompiler {
                 "MODEL_INVALID_OP_SIGNATURE",
                 "operation '" + sourceName + "' return type");
         Ast.ReturnStmt returned = (Ast.ReturnStmt) operation.body().getFirst();
-        if (!pureExpression(returned.value(), parameters)) {
+        if (!pureExpression(returned.value(), parameters, new int[1], 0)) {
             fail("MODEL_EFFECTFUL_BODY",
                     "operation '" + sourceName
                             + "' contains calls, mutation, allocation or unsupported effects");
         }
     }
 
-    private static boolean pureExpression(Ast.Expr expression, Set<String> parameters) {
+    private static boolean pureExpression(
+            Ast.Expr expression, Set<String> parameters, int[] visited, int depth) {
+        if (depth > MAX_OPERATION_EXPRESSION_DEPTH
+                || ++visited[0] > MAX_OPERATION_EXPRESSION_NODES) {
+            fail("MODEL_EXPRESSION_BUDGET",
+                    "model operation expression exceeds depth "
+                            + MAX_OPERATION_EXPRESSION_DEPTH + " or node budget "
+                            + MAX_OPERATION_EXPRESSION_NODES);
+        }
         if (expression instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
             return value instanceof Long || value instanceof Double
@@ -620,7 +644,7 @@ public final class ModelGraphCompiler {
         }
         if (expression instanceof Ast.UnaryExpr unary) {
             return Set.of("+", "-", "!", "~").contains(unary.operator())
-                    && pureExpression(unary.operand(), parameters);
+                    && pureExpression(unary.operand(), parameters, visited, depth + 1);
         }
         if (expression instanceof Ast.BinaryExpr binary) {
             return Set.of(
@@ -628,13 +652,13 @@ public final class ModelGraphCompiler {
                     "==", "!=", "eq", "neq", "<", "<=", ">", ">=",
                     "&&", "||", "and", "or", "^^", "xor")
                     .contains(binary.operator())
-                    && pureExpression(binary.left(), parameters)
-                    && pureExpression(binary.right(), parameters);
+                    && pureExpression(binary.left(), parameters, visited, depth + 1)
+                    && pureExpression(binary.right(), parameters, visited, depth + 1);
         }
         if (expression instanceof Ast.ConditionalExpr conditional) {
-            return pureExpression(conditional.condition(), parameters)
-                    && pureExpression(conditional.whenTrue(), parameters)
-                    && pureExpression(conditional.whenFalse(), parameters);
+            return pureExpression(conditional.condition(), parameters, visited, depth + 1)
+                    && pureExpression(conditional.whenTrue(), parameters, visited, depth + 1)
+                    && pureExpression(conditional.whenFalse(), parameters, visited, depth + 1);
         }
         return false;
     }

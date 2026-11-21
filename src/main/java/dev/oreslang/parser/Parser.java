@@ -6104,7 +6104,55 @@ public final class Parser {
         return false;
     }
 
+    /**
+     * Model defaults and static arguments must not feed arbitrarily deep or
+     * large expressions to the general recursive-descent expression parser.
+     * These source positions only admit inert scalars/config references after
+     * semantic validation, so apply an early lexical cost ceiling as well.
+     * The scan is non-consuming and stops at the caller's comma or ')' token.
+     */
+    private void preflightModelExpression(String where) {
+        int nestedParens = 0;
+        int nestedBrackets = 0;
+        int nestedBraces = 0;
+        int tokensInExpression = 0;
+        final int maximumTokens = 512;
+        final int maximumDepth = 48;
+        for (int index = current; index < tokens.size(); index++) {
+            Token.Type type = tokens.get(index).type();
+            if (type == EOF) break;
+            if (nestedParens == 0 && nestedBrackets == 0 && nestedBraces == 0
+                    && (type == COMMA || type == RPAREN)) break;
+            if (++tokensInExpression > maximumTokens) {
+                throw error(tokens.get(index),
+                        "MODEL_EXPRESSION_BUDGET: " + where
+                                + " exceeds " + maximumTokens + " source tokens");
+            }
+            switch (type) {
+                case LPAREN -> nestedParens++;
+                case RPAREN -> nestedParens--;
+                case LBRACKET -> nestedBrackets++;
+                case RBRACKET -> nestedBrackets--;
+                case LBRACE -> nestedBraces++;
+                case RBRACE -> nestedBraces--;
+                default -> { }
+            }
+            // Alternating () [] {} must not multiply the effective recursion
+            // ceiling: bound the aggregate nesting depth, not each family.
+            if (nestedParens + nestedBrackets + nestedBraces > maximumDepth) {
+                throw error(tokens.get(index),
+                        "MODEL_EXPRESSION_BUDGET: " + where
+                                + " exceeds " + maximumDepth + " nested delimiters");
+            }
+            if (nestedParens < 0 || nestedBrackets < 0 || nestedBraces < 0) {
+                // Let the ordinary parser diagnose the malformed delimiters.
+                break;
+            }
+        }
+    }
+
     private Ast.Expr parseModelExpression(String where) {
+        preflightModelExpression(where);
         try {
             return parseExpression();
         } catch (IllegalArgumentException failure) {
