@@ -398,4 +398,55 @@ final class ValuePipeOperatorTest {
         assertTrue(aliased.getMessage().contains("first-class callable"), aliased::toString);
     }
 
+    @Test
+    void rejectsStaticallyKnownNonCallableStagesBeforeGuestExecution() {
+        Ast.Program valuePipeline = Parser.parse("""
+                fnc broken(): int {
+                    val stage = 7;
+                    return 1 |> stage;
+                }
+                """);
+        IllegalArgumentException pipelineFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(valuePipeline));
+        assertTrue(pipelineFailure.getMessage().contains("non-callable"),
+                pipelineFailure::toString);
+
+        // The same type rule must apply to ordinary calls: pipe lowering
+        // must not create a weaker dynamic dispatch exception.
+        Ast.Program ordinaryCall = Parser.parse("""
+                fnc broken(): int {
+                    val stage = 7;
+                    return stage(1);
+                }
+                """);
+        IllegalArgumentException directFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(ordinaryCall));
+        assertTrue(directFailure.getMessage().contains("non-callable"),
+                directFailure::toString);
+    }
+
+    @Test
+    void executesZeroArgumentRootWithNamedCallStages() throws Exception {
+        String sourceText = """
+                fnc fn1(): int { return 2; }
+                fnc fn2(int n): int { return n * 3; }
+                fnc fn3(int n): int { return n + 10; }
+                pub fnc main(): void {
+                    stdio.println(fn1() |> fn2() |> fn3());
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(sourceText)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, sourceText, "named-value-pipe.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("16", output.toString(StandardCharsets.UTF_8).trim());
+    }
+
 }
