@@ -1666,6 +1666,13 @@ public final class ActorRuntime implements AutoCloseable {
         Object prepared = isPrivateKind(cell.kind)
                 ? isolateCopy(value)
                 : freezeForTransport(value);
+        // A mutable sender graph may change between preflight and detachment.
+        // Authorize the immutable snapshot that is actually published.
+        validateMessageGraph(prepared);
+        rejectDataFreezeCapabilities(prepared, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
         long bytes = estimateFrozenBytes(
                 prepared,
                 new IdentityHashMap<>(),
@@ -4565,6 +4572,17 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
+        // Never treat an advisory preflight of attacker-controlled collections
+        // as authorization for a later, potentially different detached graph.
+        validateMessageGraph(prepared);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
+        requireMutexTransport(cell, prepared, new IdentityHashMap<>(), 0);
+        requireOwnedActorRefs(prepared, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.SHARED) {
+            requireOwnedSharedHandles(prepared, new IdentityHashMap<>(), 0);
+        }
         Runnable release;
         if (isPrivateKind(cell.kind)) {
             MemoryReservation reservation;
@@ -5163,6 +5181,10 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
+        if (value instanceof OresEnumSymbol) {
+            // Local symbol values are data, not an untrusted export grant.
+            throw new SecurityException("untrusted enum Symbol export requires recipient authorization");
+        }
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
@@ -5347,7 +5369,10 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object freeze(Object value) {
         validateMessageGraph(value);
         rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0);
-        return freeze(value, new IdentityHashMap<>(), 0);
+        Object detached = freeze(value, new IdentityHashMap<>(), 0);
+        validateMessageGraph(detached);
+        rejectDataFreezeCapabilities(detached, new IdentityHashMap<>(), 0);
+        return detached;
     }
 
     private static Object freezeForTransport(Object value) {
@@ -5710,6 +5735,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
+        if (value instanceof OresEnumSymbol symbol) return symbol.declaration().transportLogicalBytes();
         if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         return -1L;
@@ -5761,6 +5787,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
+        if (value instanceof OresEnumSymbol symbol) return symbol.declaration().transportLogicalBytes();
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
@@ -5805,7 +5832,8 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static boolean isScalar(Object value) {
-        return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
+        return value == null || value instanceof String || value instanceof OresEnumSymbol
+                || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId

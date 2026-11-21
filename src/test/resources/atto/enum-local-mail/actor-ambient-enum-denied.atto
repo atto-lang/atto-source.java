@@ -1,0 +1,17 @@
+define enum Light as
+  Red
+  Green
+  Yellow
+end
+
+// Actor isolation must not admit ambient same-file enum metadata
+// merely because the resulting symbol has immutable value semantics.
+// Explicit authenticated type import remains required.
+define actor Receiver as
+  receive(ActorMail<Light> mail): void {
+    if mail.value eq Light.Red then
+      stdio.println("red");
+    fi
+    return;
+  }
+end

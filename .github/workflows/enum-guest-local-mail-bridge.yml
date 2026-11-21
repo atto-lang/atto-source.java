@@ -1,0 +1,44 @@
+name: AttoLang nominal enum guest-to-mailbox bridge
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  enum-guest-and-local-mail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify immutable source identity
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "EXACT_HEAD_SHA=$EXPECTED_HEAD"
+          echo "EXACT_HEAD_TREE=$(git rev-parse HEAD^{tree})"
+          echo "EXACT_RUN_ATTEMPT=${{ github.run_attempt }}"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: graalvm
+          java-version: '25'
+          cache: maven
+      - name: Execute real guest and local actor-mail JUnit
+        run: >-
+          mvn -B -ntp -Dtest=EnumSymbolCompilerBridgeGuestTest,OresEnumSymbolActorMailTest
+          -DfailIfNoTests=true test
+      - name: Publish actual Surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: enum-guest-local-mail-reports
+          path: target/surefire-reports/
+          if-no-files-found: warn
