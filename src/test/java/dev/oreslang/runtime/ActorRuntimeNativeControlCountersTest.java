@@ -1,0 +1,53 @@
+package dev.oreslang.runtime;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.time.Duration;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+/**
+ * Exercises real Java actor registration and asynchronous STOP retirement
+ * against a separate FFM CONTROL root. JVM carrier/metadata allocations are
+ * still managed; this test does not claim compiled Atto or process zero-GC.
+ */
+@Timeout(30)
+final class ActorRuntimeNativeControlCountersTest {
+    @Test
+    void startupActorAdmissionRollbackAndQuiescentShutdown() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        try {
+            long before = runtime.sharedMemoryBytes();
+            assertEquals(0, runtime.nativeControlReservedBytes());
+            assertThrows(IllegalStateException.class, runtime::nativeControlActorReservations);
+            runtime.enableNativeControlCounters();
+            assertEquals(44L, runtime.nativeControlReservedBytes());
+            assertEquals(before + 44L, runtime.sharedMemoryBytes(),
+                    "native CONTROL root must count against the aggregate runtime budget");
+            assertEquals(0L, runtime.nativeControlActorReservations());
+            assertThrows(IllegalStateException.class, runtime::enableNativeControlCounters);
+
+            ActorRuntime.ActorRef<String> first =
+                    runtime.spawnPrivate(() -> (message, context) -> {});
+            assertEquals(1, runtime.actorCount());
+            assertEquals(1L, runtime.nativeControlActorReservations(),
+                    "native control reservation reflects actual actor admission");
+            runtime.stop(first);
+            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (System.nanoTime() < deadline &&
+                    (runtime.actorCount() != 0 ||
+                     runtime.nativeControlActorReservations() != 0)) {
+                Thread.sleep(1);
+            }
+            assertEquals(0, runtime.actorCount(), "actor STOP must physically unregister");
+            assertEquals(0L, runtime.nativeControlActorReservations(),
+                    "control native count is reclaimed only after actor retirement");
+        } finally {
+            runtime.close();
+        }
+        assertEquals(0, runtime.nativeControlReservedBytes(),
+                "control backing is invalidated after carrier quiescence");
+        assertThrows(IllegalStateException.class, runtime::nativeControlActorReservations);
+        System.out.println("PASS java actor-native CONTROL registration and STOP (HOST only, not Atto guest)");
+    }
+}
