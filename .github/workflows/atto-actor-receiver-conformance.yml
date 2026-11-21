@@ -1,0 +1,47 @@
+name: Atto actor receiver exact-head conformance
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/parser/Parser.java'
+      - 'src/main/java/dev/oreslang/types/OwnershipChecker.java'
+      - 'src/test/java/dev/oreslang/ActorForwardNamespaceReceiverTest.java'
+      - 'src/test/java/dev/oreslang/ExplicitReceiverMtdV1Test.java'
+      - 'src/test/resources/atto/mtd-receiver-v1/**'
+      - '.github/workflows/atto-actor-receiver-conformance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actor-receiver-guest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact PR head and print immutable fixture identities
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          printf 'ATTO_COMPILER_SHA=%s\\n' "$EXPECTED_SHA"
+          git hash-object src/test/resources/atto/mtd-receiver-v1/declared-actors-type-first.atto
+          git hash-object src/test/resources/atto/mtd-receiver-v1/multi-actor-namespace.atto
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile Java frontend and run real Atto two-actor guests
+        run: |
+          mvn -B -ntp -Dtest=ActorForwardNamespaceReceiverTest,ExplicitReceiverMtdV1Test test

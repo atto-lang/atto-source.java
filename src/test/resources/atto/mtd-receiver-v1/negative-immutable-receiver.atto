@@ -1,0 +1,7 @@
+// Must fail typecheck: a read receiver may not mutate its owner.
+define class Point as
+  pub let int x = 0;
+end
+mtd (self: Point) illegal_write(): void {
+  self.x = 42;
+}

@@ -1,0 +1,6 @@
+// Must fail parser admission: external methods never attach to actors.
+define actor Counter as
+end
+mtd (mut self: Counter) bypass_state(): void {
+  return;
+}

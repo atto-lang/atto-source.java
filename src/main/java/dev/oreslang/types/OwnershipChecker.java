@@ -90,6 +90,12 @@ public final class OwnershipChecker {
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    // Nominal actor identity must not depend on unqualified name lookup.
+    // Two modules may each declare an actor named Worker, and an ambiguous
+    // string-based findClass("Worker") cannot determine whether a self
+    // capability may escape. Track the exact PARAM binding by identity.
+    private final Set<VarState> actorSelfBindings =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
     /** Exact immutable Program identity checked by this ownership pass. */
@@ -327,6 +333,10 @@ public final class OwnershipChecker {
     }
 
     private Ast.ClassDecl initializingClass;
+    // The exact receiver owner while checking a method. Unqualified names
+    // can be ambiguous when sibling modules both declare actor Worker;
+    // method/field ownership checks must use this AST identity instead.
+    private Ast.ClassDecl currentReceiverClass;
     // A deliberately conservative one-write constructor ledger. A later CFG
     // refinement may permit mutually exclusive writes, but this checker must
     // never permit a fixed slot to be assigned twice along a path.
@@ -412,7 +422,14 @@ public final class OwnershipChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
-                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                if (klass.actorKind() != Ast.ActorKind.NONE
+                        && method.explicitReceiverType() == null) {
+                    // Legacy actor-body methods have an implicit mutable
+                    // mailbox-turn receiver. An explicitly declared actor
+                    // method MUST instead honor its declared loan mode:
+                    // '(Foo self)' is read-only and '(Foo mut self)' is
+                    // exclusive. Otherwise ordinary external mtd could
+                    // mutate actor-owned state through an immutable receiver.
                     scope.define("self", new VarState(
                             Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),
                             false,
@@ -450,11 +467,20 @@ public final class OwnershipChecker {
                                         Origin.PARAM));
                     }
                 }
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    actorSelfBindings.add(scope.lookup("self"));
+                }
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             defineImplicitArguments(scope, method.parameters());
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            Ast.ClassDecl previousReceiverClass = currentReceiverClass;
+            currentReceiverClass = klass;
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                currentReceiverClass = previousReceiverClass;
+                scope.close();
+            }
         }
     }
 
@@ -1640,7 +1666,7 @@ public final class OwnershipChecker {
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
                     requireUsable(receiverState, receiverName.name(), false);
                     Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
-                    Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+                    Ast.ClassDecl klass = classForReceiver(member.receiver(), concreteReceiver);
                     if (klass != null) {
                         ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                         if (target != null) {
@@ -1748,7 +1774,7 @@ public final class OwnershipChecker {
                         "ActorOutputStream", List.of(Ast.TypeRef.inferred()), false);
                 return new ValueInfo(outputStream, ValueKind.MOVE_ONLY, null);
             }
-            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            Ast.ClassDecl klass = classForReceiver(member.receiver(), concreteReceiver);
             if (klass != null) {
                 ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                 if (target != null) {
@@ -2406,6 +2432,20 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            // Actor control operations mutate mailbox/lifecycle ownership,
+            // even if the method body accesses no actor fields. Do not let
+            // an explicit read-only actor receiver acquire that authority.
+            if (member.receiver() instanceof Ast.NameExpr receiverName
+                    && receiverName.name().equals("self")
+                    && java.util.Set.of("send", "end", "endWithCleanup")
+                            .contains(member.member())) {
+                VarState actorSelf = scope.lookup("self");
+                if (actorSelf != null && isActorConfinedBorrow(actorSelf)
+                        && actorSelf.kind != ValueKind.MUT_BORROW) {
+                    throw error("actor control operation '" + member.member()
+                            + "' requires exclusive mutable actor self");
+                }
+            }
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
             ValueInfo stringCall = checkBuiltinStringCall(member, call.arguments(), scope);
@@ -2718,7 +2758,7 @@ public final class OwnershipChecker {
                         isCopyType(mapValue) ? ValueKind.COPY : ValueKind.MOVE_ONLY,
                         null);
             }
-            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            Ast.ClassDecl klass = classForReceiver(member.receiver(), concreteReceiver);
             ResolvedMethod target = klass == null ? null
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (target != null) {
@@ -4760,9 +4800,16 @@ public final class OwnershipChecker {
         return type;
     }
 
-    private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
-        Ast.TypeRef type = receiverType(receiver, scope);
+    private Ast.ClassDecl classForReceiver(Ast.Expr receiver, Ast.TypeRef type) {
+        if (receiver instanceof Ast.NameExpr name && name.name().equals("self")
+                && currentReceiverClass != null) {
+            return currentReceiverClass;
+        }
         return type == null ? null : findClass(type.name());
+    }
+
+    private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
+        return classForReceiver(receiver, receiverType(receiver, scope));
     }
 
     private Map<String, Ast.TypeRef> genericBindings(List<String> names, List<Ast.TypeRef> arguments) {
@@ -5298,12 +5345,12 @@ public final class OwnershipChecker {
         VarState current = state;
         Set<VarState> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         while (current != null && seen.add(current)) {
-            if ("self".equals(current.debugName)
-                    && current.kind == ValueKind.MUT_BORROW
+            if (actorSelfBindings.contains(current)
+                    && "self".equals(current.debugName)
+                    && (current.kind == ValueKind.MUT_BORROW
+                            || current.kind == ValueKind.IMM_BORROW)
                     && current.origin == Origin.PARAM) {
-                Ast.TypeRef type = current.type.isBorrow() ? current.type.borrowedTarget() : current.type;
-                Ast.ClassDecl klass = findClass(type.name());
-                return klass != null && klass.actorKind() != Ast.ActorKind.NONE;
+                return true;
             }
             current = current.aliasSource != null ? current.aliasSource : current.borrowSource;
         }
@@ -5796,12 +5843,16 @@ public final class OwnershipChecker {
             VarState source = capture.source;
 
             if (isDirectActorSelfCapture(capture) && isActorConfinedBorrow(source)) {
+                // Preserve the original actor self loan across deferred select.
+                // A read-only receiver must never become a mutable mailbox
+                // capability when a continuation frame is reconstructed.
                 VarState self = new VarState(
                         source.type,
                         false,
-                        ValueKind.MUT_BORROW,
+                        source.kind,
                         Origin.PARAM);
                 continuation.define(capture.name, self);
+                actorSelfBindings.add(self);
                 continue;
             }
 
