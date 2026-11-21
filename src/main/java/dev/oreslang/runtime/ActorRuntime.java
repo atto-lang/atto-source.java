@@ -1509,6 +1509,132 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorContext<Object> context) throws Exception;
     }
 
+    /**
+     * A queue authorization decision evaluated against the *currently admitted*
+     * runtime mailbox envelope, never against a guest-supplied sender ID.
+     */
+    public enum QueueOperation {
+        ACTIVATE, SEND, CANCEL, RECEIVE, CLOSE, TERMINAL_ACK, RETIRE
+    }
+
+    /**
+     * Runtime-bound authority for a structured child queue actor.
+     *
+     * <p>Only ActorRuntime can construct this object. The direct spawning parent
+     * is supervisor. Producer grants are installed/revoked only during mailbox
+     * turns actually sent by that supervisor, and all authorization uses the
+     * active transport envelope's sender and recipient. No guest payload
+     * fields, first-sender-wins enrollment or forgeable ActorId constructor
+     * can confer authority. This is a HOST runtime contract: guest lowering
+     * and source-level capabilities remain an explicit unimplemented gate.</p>
+     */
+    public final class QueueCommandAuthority {
+        private final ActorCell<?> owner;
+        private final ActorId supervisor;
+        private final ActorId[] producerGrants = new ActorId[2];
+        private long grantRevision;
+
+        private QueueCommandAuthority(ActorCell<?> owner) {
+            this.owner = Objects.requireNonNull(owner, "queue owner");
+            if (owner.parent == null) {
+                throw new IllegalArgumentException(
+                        "queue authority requires a structured parent actor");
+            }
+            this.supervisor = owner.parent.ref.id();
+        }
+
+        private ActorId admittedSender() {
+            if (currentActor.get() != owner || owner.stopped.get()
+                    || owner.finalized) {
+                throw new SecurityException(
+                        "queue authority is usable only during its owning actor turn");
+            }
+            ActorInboxMail<?> mail = owner.activeMail;
+            if (mail == null || !owner.ref.id().equals(mail.recipient())) {
+                throw new SecurityException(
+                        "queue authority requires an admitted owner mailbox envelope");
+            }
+            ActorCell<?> parentCell = actors.get(supervisor);
+            if (parentCell != owner.parent || parentCell.stopped.get()
+                    || parentCell.finalized) {
+                throw new SecurityException(
+                        "queue supervisor has retired or lost structured ownership");
+            }
+            return mail.sender().orElseThrow(() -> new SecurityException(
+                    "host-origin or missing-sender mail cannot carry queue authority"));
+        }
+
+        private void requireSupervisor() {
+            if (!supervisor.equals(admittedSender())) {
+                throw new SecurityException(
+                        "only the runtime-bound spawning parent can change producer grants");
+            }
+        }
+
+        /** Runtime authenticated queue incarnation, not a guest-chosen epoch. */
+        public ActorId queueActorId() {
+            admittedSender();
+            return owner.ref.id();
+        }
+
+        /** Bind a producer actor by verified runtime ID; never accept a guest token. */
+        public synchronized void grantProducer(int slot, ActorId producer) {
+            requireSupervisor();
+            if (slot < 0 || slot >= producerGrants.length) {
+                throw new IllegalArgumentException("invalid queue producer slot");
+            }
+            Objects.requireNonNull(producer, "producer");
+            if (producer.equals(supervisor) || producer.equals(owner.ref.id())) {
+                throw new SecurityException(
+                        "queue supervisor and queue actor cannot impersonate producers");
+            }
+            ActorCell<?> grantee = actors.get(producer);
+            if (grantee == null || grantee.stopped.get() || grantee.finalized) {
+                throw new SecurityException("queue producer must be a live actor in this runtime");
+            }
+            for (int index = 0; index < producerGrants.length; index++) {
+                if (index != slot && producer.equals(producerGrants[index])) {
+                    throw new SecurityException("queue producer may own only one slot");
+                }
+            }
+            long next = Math.addExact(grantRevision, 1L);
+            producerGrants[slot] = producer;
+            grantRevision = next;
+        }
+
+        /** Revoke grants at the owning mailbox's single linearization point. */
+        public synchronized void revokeProducer(int slot) {
+            requireSupervisor();
+            if (slot < 0 || slot >= producerGrants.length) {
+                throw new IllegalArgumentException("invalid queue producer slot");
+            }
+            long next = Math.addExact(grantRevision, 1L);
+            producerGrants[slot] = null;
+            grantRevision = next;
+        }
+
+        public synchronized boolean permits(QueueOperation operation, int slot) {
+            Objects.requireNonNull(operation, "queue operation");
+            ActorId sender = admittedSender();
+            ActorCell<?> senderCell = actors.get(sender);
+            return switch (operation) {
+                case ACTIVATE, RECEIVE, CLOSE, TERMINAL_ACK, RETIRE ->
+                        sender.equals(supervisor);
+                case SEND, CANCEL -> slot >= 0
+                        && slot < producerGrants.length
+                        && sender.equals(producerGrants[slot])
+                        && senderCell != null
+                        && !senderCell.stopped.get()
+                        && !senderCell.finalized;
+            };
+        }
+
+        public synchronized long grantRevision() {
+            admittedSender();
+            return grantRevision;
+        }
+    }
+
     public interface ActorContext<M> {
         ActorRef<M> self();
         ActorRuntime runtime();
@@ -1526,6 +1652,14 @@ public final class ActorRuntime implements AutoCloseable {
          * executing. Startup/factory code has no current mail.
          */
         default Optional<ActorInboxMail<M>> currentMail() {
+            return Optional.empty();
+        }
+
+        /**
+         * Runtime-internal queue authority, available only to structured
+         * children. This has no guest-language lowering or interop exposure.
+         */
+        default Optional<QueueCommandAuthority> queueCommandAuthority() {
             return Optional.empty();
         }
 
@@ -6017,6 +6151,8 @@ public final class ActorRuntime implements AutoCloseable {
         /** Mutable source actor state, created on this actor's dispatcher. */
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
+        /** Lazy, actor-owned authority; do not allocate for unused actors. */
+        private QueueCommandAuthority queueAuthority;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
@@ -6098,6 +6234,8 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
             this.parent = parent;
+            // Queue authority is constructed only on first explicitly trusted
+            // actor-context request, not for every ordinary child actor.
             int mailboxCapacity = policy.maxMailboxMessages() >
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
                     ? Integer.MAX_VALUE
@@ -6601,6 +6739,13 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     @Override public Optional<ActorInboxMail<M>> currentMail() {
                         return Optional.ofNullable(activeMail);
+                    }
+                    @Override public Optional<QueueCommandAuthority> queueCommandAuthority() {
+                        if (parent == null) return Optional.empty();
+                        if (queueAuthority == null) {
+                            queueAuthority = new QueueCommandAuthority(ActorCell.this);
+                        }
+                        return Optional.of(queueAuthority);
                     }
                     @Override public Optional<SharedCodeImageStore.CodeImage> codeImage() {
                         return Optional.ofNullable(codeImage);
