@@ -1,0 +1,22 @@
+fnc double_with_local(int n): int {
+  val int intermediate = n + n;
+  return intermediate;
+}
+
+define actor Worker as
+  receive(ActorMail<String> mail): void {
+    self.send(double_with_local(3));
+    self.end();
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = spawn Worker();
+  await worker.get_ready();
+  worker.send("go");
+  val next = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(next.value);
+  await worker.get_done();
+  return;
+}

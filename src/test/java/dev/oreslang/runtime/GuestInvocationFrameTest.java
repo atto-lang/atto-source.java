@@ -156,6 +156,53 @@ final class GuestInvocationFrameTest {
     }
 
     @Test
+    void primitiveParametersLiveInActorOwnedFrameBytesAndSurviveTailRewrite() throws Exception {
+        ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(1, 1, 8);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<ActorFrameArena> arena = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(factory -> (message, turn) -> {
+                arena.set(ActorRuntime.currentActorFrameArena());
+                try (GuestInvocationFrame frame = GuestInvocationFrame.enter(0, 2)) {
+                    assertTrue(frame.hasActorOwnedScalarSlots());
+                    long[] input = new long[]{Long.MIN_VALUE, Long.MAX_VALUE};
+                    frame.writeScalarArguments(input);
+                    input[0] = 12;
+                    assertEquals(Long.MIN_VALUE, frame.readScalarArgument(0));
+                    assertEquals(Long.MAX_VALUE, frame.readScalarArgument(1));
+                    assertEquals(GuestCallDepthGuard.MANAGED_FRAME_CHARGE_BYTES,
+                            arena.get().usedBytes());
+                    frame.tailTransfer(0, 1, 1);
+                    frame.writeScalarArguments(new long[]{-7});
+                    assertEquals(-7L, frame.readScalarArgument(0));
+                    assertEquals(0L, frame.readScalarArgument(1),
+                            "tail transfer must scrub the vacated parameter slot");
+                    assertEquals(1, arena.get().liveFrames());
+                    assertThrows(IllegalArgumentException.class,
+                            () -> frame.readScalarArgument(2));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> frame.writeScalarArguments(new long[]{1, 2, 3}));
+                }
+                assertEquals(0, arena.get().usedBytes());
+                turn.self().stop();
+            });
+            actor.send("run");
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "actor failed: " + actor.failure());
+            assertTrue(arena.get().isRetired());
+        }
+    }
+
+    @Test
+    void nonActorScalarSlotAccessDoesNotPretendToAllocateAnActorStack() {
+        try (GuestInvocationFrame frame = GuestInvocationFrame.enter(0, 2)) {
+            assertFalse(frame.hasActorOwnedScalarSlots());
+            frame.writeScalarArguments(new long[]{3, 4});
+            assertThrows(IllegalStateException.class,
+                    () -> frame.readScalarArgument(0));
+        }
+    }
+
+    @Test
     void invalidFrameDescriptorsFailBeforeTouchingCarrierDepth() {
         assertThrows(IllegalArgumentException.class, () -> GuestInvocationFrame.enter(-1, 0));
         assertThrows(IllegalArgumentException.class, () -> GuestInvocationFrame.enter(0, -1));

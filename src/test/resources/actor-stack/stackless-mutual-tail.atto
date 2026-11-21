@@ -1,0 +1,33 @@
+fnc alternating_a(int n): int {
+  if n == 0; do
+    return 1;
+  else
+    return alternating_b(n - 1);
+  fi
+}
+
+fnc alternating_b(int n): int {
+  if n == 0; do
+    return 0;
+  else
+    return alternating_a(n - 1);
+  fi
+}
+
+define actor Worker as
+  receive(ActorMail<String> mail): void {
+    self.send(alternating_a(100000));
+    self.end();
+    return;
+  }
+end
+
+pub suspends routine main(): void {
+  val worker = spawn Worker();
+  await worker.get_ready();
+  worker.send("go");
+  val next = (await worker.outputs.next()).value.unwrap();
+  stdio.stdout.write(next.value);
+  await worker.get_done();
+  return;
+}

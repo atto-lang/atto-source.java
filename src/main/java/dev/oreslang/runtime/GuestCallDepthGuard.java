@@ -140,6 +140,47 @@ public final class GuestCallDepthGuard {
         return scope;
     }
 
+    /**
+     * Primitive scalar parameter slots occupy bytes [16,32) of the existing
+     * 32-byte actor-owned guard frame. These are guest-owned integer values,
+     * never Java object references. No additional frame is reserved.
+     */
+    static boolean hasActorInvocationFrame(int enteredDepth) {
+        return requireInvocationScope(enteredDepth).arena != null;
+    }
+
+    static void writeScalarArgument(int enteredDepth, int index, long value) {
+        Scope scope = requireInvocationScope(enteredDepth);
+        if (index < 0 || index >= 2) {
+            throw new IllegalArgumentException("scalar argument index outside two-slot frame");
+        }
+        if (scope.arena == null) return;
+        ActorFrameArena.FrameRef ref = scope.frames.peekLast();
+        if (ref == null) throw new IllegalStateException("missing scalar argument frame");
+        byte[] bytes = new byte[Long.BYTES];
+        for (int i = 0; i < Long.BYTES; i++) {
+            bytes[i] = (byte) (value >>> (56 - 8 * i));
+        }
+        scope.arena.write(scope.execution, ref, 16 + index * Long.BYTES, bytes);
+    }
+
+    static long readScalarArgument(int enteredDepth, int index) {
+        Scope scope = requireInvocationScope(enteredDepth);
+        if (index < 0 || index >= 2) {
+            throw new IllegalArgumentException("scalar argument index outside two-slot frame");
+        }
+        if (scope.arena == null) {
+            throw new IllegalStateException("scalar parameter storage requires actor frame ownership");
+        }
+        ActorFrameArena.FrameRef ref = scope.frames.peekLast();
+        if (ref == null) throw new IllegalStateException("missing scalar argument frame");
+        byte[] bytes = scope.arena.read(scope.execution, ref,
+                16 + index * Long.BYTES, Long.BYTES);
+        long result = 0;
+        for (byte value : bytes) result = (result << 8) | (value & 0xffL);
+        return result;
+    }
+
     /** Pop the actor-owned frame before releasing its logical guest charge. */
     public static void leave(int enteredDepth) {
         Scope scope = CURRENT.get();
