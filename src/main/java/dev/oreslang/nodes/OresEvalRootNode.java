@@ -6,6 +6,8 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.types.AggregateConstructionPlan;
+import dev.oreslang.types.Types;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
@@ -4002,14 +4004,25 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ObjectExpr object,
                 Env env,
                 SourceValueCont continuation) {
+            if (object.explicitStruct()
+                    && object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                throw new IllegalArgumentException("spread into explicitly shaped structs is not yet supported");
+            }
+            AggregateConstructionPlan.Plan checkedPlan = null;
             if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
-                throw new IllegalArgumentException("unverified aggregate spread cannot execute");
+                try {
+                    checkedPlan = AggregateConstructionPlan.Checked.requireAdmitted(program, object);
+                } catch (RuntimeException unadmitted) {
+                    continuation.accept(task, null, unadmitted);
+                    return;
+                }
             }
             ArrayList<Object> values = new ArrayList<>();
             evalSuspendableObjectField(
                     task,
                     object,
                     env,
+                    checkedPlan,
                     values,
                     0,
                     (t, built, failure) ->
@@ -4023,41 +4036,60 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.ObjectExpr object,
                 Env env,
+                AggregateConstructionPlan.Plan checkedPlan,
                 ArrayList<Object> values,
                 int index,
                 SourceValueCont continuation) {
             if (index >= object.fields().size()) {
-                LinkedHashMap<String, Object> result = new LinkedHashMap<>();
-                if (object.explicitStruct()) {
-                    for (Ast.StructFieldSpec field : object.declaredFields()) {
-                        if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct field " + field.name());
-                        }
-                    }
-                }
-                for (Object value : values) {
-                    @SuppressWarnings("unchecked")
-                    Map.Entry<String, Object> entry =
-                            (Map.Entry<String, Object>) value;
+                boolean hasAggregateSpread = checkedPlan != null;
+                // Errors during terminal assembly must enter the same
+                // continuation channel as failures from awaited operands.
+                // Never strand a suspended source task by throwing out of
+                // its completion callback.
+                Object built;
+                try {
+                    LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                     if (object.explicitStruct()) {
-                        if (!result.containsKey(entry.getKey())) {
-                            throw new IllegalArgumentException(
-                                    "explicit struct initializer contains undeclared field " + entry.getKey());
+                        for (Ast.StructFieldSpec field : object.declaredFields()) {
+                            if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
+                                throw new IllegalArgumentException(
+                                        "duplicate explicit struct field " + field.name());
+                            }
                         }
-                        if (result.get(entry.getKey()) != UNINITIALIZED_FIELD) {
-                            throw new IllegalArgumentException(
-                                    "duplicate explicit struct initializer field " + entry.getKey());
-                        }
-                        result.put(entry.getKey(), entry.getValue());
-                    } else if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
-                        throw new IllegalArgumentException(
-                                "duplicate struct field " + entry.getKey());
                     }
+                    for (int fieldIndex = 0; fieldIndex < values.size(); fieldIndex++) {
+                        Ast.ObjectField field = object.fields().get(fieldIndex);
+                        Object value = values.get(fieldIndex);
+                        if (hasAggregateSpread) {
+                            applyScalarSpreadElement(
+                                    checkedPlan.orderedSteps().get(fieldIndex), value, result);
+                            continue;
+                        }
+                        String key = field.name();
+                        if (object.explicitStruct()) {
+                            if (!result.containsKey(key)) {
+                                throw new IllegalArgumentException(
+                                        "explicit struct initializer contains undeclared field " + key);
+                            }
+                            if (result.get(key) != UNINITIALIZED_FIELD) {
+                                throw new IllegalArgumentException(
+                                        "duplicate explicit struct initializer field " + key);
+                            }
+                            result.put(key, value);
+                        } else {
+                            result.put(key, value);
+                        }
+                    }
+                    if (hasAggregateSpread) {
+                        validateCompletedScalarAggregate(checkedPlan, result);
+                    }
+                    built = object.structuralRecord()
+                            ? new ReadonlyRecordValue(result)
+                            : new MutableStructValue(result);
+                } catch (RuntimeException assemblyFailure) {
+                    continuation.accept(task, null, assemblyFailure);
+                    return;
                 }
-                Object built = object.structuralRecord()
-                        ? new ReadonlyRecordValue(result)
-                        : new MutableStructValue(result);
                 continuation.accept(task, built, null);
                 return;
             }
@@ -4072,11 +4104,24 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        values.add(Map.entry(field.name(), value));
+                        // Snapshot spread fields at *this operand's* evaluation
+                        // point. A later initializer may mutate the source
+                        // before this continuation assembles the result.
+                        try {
+                            values.add(field.spread()
+                                    ? snapshotScalarSpreadFields(value,
+                                            ((AggregateConstructionPlan.SpreadFields)
+                                                    checkedPlan.orderedSteps().get(index)).fields())
+                                    : value);
+                        } catch (RuntimeException invalid) {
+                            continuation.accept(t, null, invalid);
+                            return;
+                        }
                         evalSuspendableObjectField(
                                 t,
                                 object,
                                 env,
+                                checkedPlan,
                                 values,
                                 index + 1,
                                 continuation);
@@ -7006,9 +7051,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
-                if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
-                    throw new IllegalArgumentException("unverified aggregate spread cannot execute");
+                boolean hasAggregateSpread =
+                        object.fields().stream().anyMatch(Ast.ObjectField::spread);
+                if (object.explicitStruct() && hasAggregateSpread) {
+                    throw new IllegalArgumentException("spread into explicitly shaped structs is not yet supported");
                 }
+                AggregateConstructionPlan.Plan checkedPlan = hasAggregateSpread
+                        ? AggregateConstructionPlan.Checked.requireAdmitted(program, object) : null;
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {
@@ -7018,9 +7067,15 @@ public final class OresEvalRootNode extends RootNode {
                         }
                     }
                 }
-                for (Ast.ObjectField field : object.fields()) {
-                    String key = field.name();
+                for (int fieldIndex = 0; fieldIndex < object.fields().size(); fieldIndex++) {
+                    Ast.ObjectField field = object.fields().get(fieldIndex);
                     Object value = eval(field.value(), env);
+                    if (hasAggregateSpread) {
+                        applyScalarSpreadElement(
+                                checkedPlan.orderedSteps().get(fieldIndex), value, result);
+                        continue;
+                    }
+                    String key = field.name();
                     if (object.explicitStruct()) {
                         if (!result.containsKey(key)) {
                             throw new IllegalArgumentException(
@@ -7031,9 +7086,14 @@ public final class OresEvalRootNode extends RootNode {
                                     "duplicate explicit struct initializer field " + key);
                         }
                         result.put(key, value);
-                    } else if (result.putIfAbsent(key, value) != null) {
-                        throw new IllegalArgumentException("duplicate struct field " + key);
+                    } else {
+                        // Duplicate explicitly written fields were rejected by
+                        // the AST; a later named field overrides a spread.
+                        result.put(key, value);
                     }
+                }
+                if (hasAggregateSpread) {
+                    validateCompletedScalarAggregate(checkedPlan, result);
                 }
                 return object.structuralRecord()
                         ? new ReadonlyRecordValue(result)
@@ -9914,6 +9974,111 @@ public final class OresEvalRootNode extends RootNode {
      * detachment/copy boundaries. Concrete structs use mutable owned maps; the
      * static binding/borrow checker decides whether a particular reference may write.
      */
+    /**
+     * Stage-one executable aggregate expansion: copy only immutable scalars
+     * from a tagged Oreslang closed aggregate. Arbitrary Java Maps and guest
+     * capabilities must never acquire spread authority by host shape.
+     *
+     * The destination is still local/unpublished and is abandoned on failure.
+     * No resource-owning nested values are admitted by the type/ownership pass.
+     */
+    private static boolean isScalarAggregateValue(Object value) {
+        return value instanceof Long || value instanceof Integer
+                || value instanceof Double || value instanceof Boolean
+                || value instanceof String;
+    }
+
+    /**
+     * Evaluated spread operand with immutable, Copy-only scalar slots.
+     * Prevents evaluation-order drift across synchronous/awaiting interpreters.
+     */
+    private record ScalarSpreadSnapshot(Map<String, Object> fields) {
+        private ScalarSpreadSnapshot {
+            // This constructor is private; callers pass only an unaliased
+            // freshly populated snapshot map. Avoid copying its entries twice.
+            fields = java.util.Collections.unmodifiableMap(fields);
+        }
+    }
+
+    private static boolean matchesScalarType(Object value, Types.Type type) {
+        if (type == Types.Primitive.INT) {
+            return value instanceof Long || value instanceof Integer;
+        }
+        if (type == Types.Primitive.FLOAT) return value instanceof Double;
+        if (type == Types.Primitive.BOOL) return value instanceof Boolean;
+        if (type == Types.Primitive.STRING) return value instanceof String;
+        return false;
+    }
+
+    /** Never enumerate runtime fields outside the statically proven projection. */
+    private static ScalarSpreadSnapshot snapshotScalarSpreadFields(
+            Object source, Map<String, Types.Type> admittedFields) {
+        Map<String, Object> fields;
+        if (source instanceof ReadonlyRecordValue record) fields = record;
+        else if (source instanceof MutableStructValue struct) fields = struct;
+        else throw new IllegalArgumentException(
+                "aggregate spread requires a closed Oreslang record/struct runtime tag");
+
+        LinkedHashMap<String, Object> snapshot = new LinkedHashMap<>();
+        for (Map.Entry<String, Types.Type> expected : admittedFields.entrySet()) {
+            String key = expected.getKey();
+            if (!fields.containsKey(key)) {
+                throw new IllegalArgumentException("missing checked aggregate spread field '" + key + "'");
+            }
+            Object value = fields.get(key);
+            if (!matchesScalarType(value, expected.getValue())) {
+                throw new IllegalArgumentException("aggregate spread scalar type mismatch for '" + key + "'");
+            }
+            snapshot.put(key, value);
+        }
+        return new ScalarSpreadSnapshot(snapshot);
+    }
+
+    /**
+     * Last line of defense against interpreter/continuation drift: the
+     * constructed row must contain exactly the compiler-admitted fields with
+     * their final checked Copy-only scalar types. This check applies to the
+     * unpublished candidate, before guest code can observe its result.
+     */
+    private static void validateCompletedScalarAggregate(
+            AggregateConstructionPlan.Plan plan, Map<String, Object> result) {
+        Map<String, Types.Type> expected = plan.resolvedFields();
+        if (result.size() != expected.size()
+                || !result.keySet().equals(expected.keySet())) {
+            throw new IllegalArgumentException(
+                    "aggregate spread produced a row outside its checked static shape");
+        }
+        for (Map.Entry<String, Types.Type> field : expected.entrySet()) {
+            if (!matchesScalarType(result.get(field.getKey()), field.getValue())) {
+                throw new IllegalArgumentException(
+                        "aggregate spread result violates checked field type '"
+                                + field.getKey() + "'");
+            }
+        }
+    }
+
+    private static void applyScalarSpreadElement(
+            AggregateConstructionPlan.Step step,
+            Object value,
+            LinkedHashMap<String, Object> result) {
+        if (step instanceof AggregateConstructionPlan.SpreadFields spread) {
+            ScalarSpreadSnapshot snapshot = value instanceof ScalarSpreadSnapshot saved
+                    ? saved : snapshotScalarSpreadFields(value, spread.fields());
+            if (!snapshot.fields().keySet().equals(spread.fields().keySet())) {
+                throw new IllegalArgumentException(
+                        "spread snapshot differs from the checked field projection");
+            }
+            result.putAll(snapshot.fields());
+            return;
+        }
+        if (!(step instanceof AggregateConstructionPlan.NamedField named)
+                || !matchesScalarType(value, named.type())) {
+            throw new IllegalArgumentException(
+                    "aggregate spread requires a checked Copy scalar initializer");
+        }
+        result.put(named.name(), value);
+    }
+
     /** Runtime tag for closed mutable struct values; never conflated with generic maps. */
     private static final class MutableStructValue
             extends LinkedHashMap<String, Object> {

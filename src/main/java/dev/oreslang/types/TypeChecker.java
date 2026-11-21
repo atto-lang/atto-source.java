@@ -73,6 +73,9 @@ public final class TypeChecker {
     private final Set<String> inferredTypeNames = new HashSet<>();
     /** Short named inference is resolved only for otherwise unbound capitalized row type names. */
     private final IdentityHashMap<Ast.BindingStmt, String> shortInferredTypeNames = new IdentityHashMap<>();
+    /** Staged identity-bound plans, not executable until the full type pass succeeds. */
+    private final IdentityHashMap<Ast.ObjectExpr, AggregateConstructionPlan.Plan>
+            stagedAggregatePlans = new IdentityHashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -149,6 +152,8 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
+        AggregateConstructionPlan.Checked.recordTypedUnit(
+                program, checker.stagedAggregatePlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -207,6 +212,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
+        AggregateConstructionPlan.Checked.recordTypedUnit(
+                program, checker.stagedAggregatePlans);
         return new TypeCheckResult(program, checker.warnings, checker.shortInferredTypeNames);
     }
 
@@ -4193,10 +4200,10 @@ public final class TypeChecker {
             return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+            boolean hasAggregateSpread = object.fields().stream().anyMatch(Ast.ObjectField::spread);
+            if (object.explicitStruct() && hasAggregateSpread) {
                 throw new IllegalArgumentException(
-                        "aggregate spread is parsed but not yet type/ownership/lowering checked; "
-                                + "use explicit static field initializers until the v1 contract is implemented");
+                        "aggregate spread into explicitly shaped structs requires checked partial-initialization lowering");
             }
             if (object.explicitStruct()) {
                 Map<String, Type> members = new LinkedHashMap<>();
@@ -4246,21 +4253,43 @@ public final class TypeChecker {
                 return Record.struct(members);
             }
 
-            Map<String, Type> members = new LinkedHashMap<>();
-            for (Ast.ObjectField field : object.fields()) {
-                Type exactValueType = typeOf(field.value(), env, generics, self);
-                if (members.putIfAbsent(
-                        field.name(),
-                        object.inferredFieldTypes()
-                                ? widenCollectionElement(exactValueType)
-                                : exactValueType) != null) {
-                    throw new IllegalArgumentException(
-                            "duplicate struct field '" + field.name() + "'");
+            // Compiler-generated, source-ordered static construction recipe.
+            // OwnershipChecker separately verifies each spread's source
+            // lifetime/copy authority before interpreter or code generation.
+            AggregateConstructionPlan.Builder plan =
+                    new AggregateConstructionPlan.Builder(object);
+            for (int position = 0; position < object.fields().size(); position++) {
+                Ast.ObjectField field = object.fields().get(position);
+                if (field.spread()) {
+                    if (field.value() instanceof Ast.NameExpr sourceName) {
+                        Env.Binding owner = env.lookup(sourceName.name());
+                        if (owner != null && owner.hasUninitializedFields()) {
+                            throw new IllegalArgumentException(
+                                    "aggregate spread cannot copy a partially initialized struct '"
+                                            + sourceName.name() + "'");
+                        }
+                    }
+                    plan.addSpread(position, typeOf(field.value(), env, generics, self));
+                } else {
+                    Type fieldType = typeOf(field.value(), env, generics, self);
+                    plan.addNamed(position, field.name(),
+                            object.inferredFieldTypes()
+                                    ? widenCollectionElement(fieldType)
+                                    : fieldType);
                 }
             }
-            if (object.structuralRecord()) return new Record(members, true, AggregateKind.RECORD);
-            if (object.inferredStruct()) return Record.struct(members);
-            throw new IllegalArgumentException("unknown anonymous aggregate kind " + object.kind());
+            AggregateConstructionPlan.Plan checked = plan.finish();
+            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                // Not executable authority until the ownership checker
+                // independently validates the full compilation unit.
+                AggregateConstructionPlan.Plan previous =
+                        stagedAggregatePlans.putIfAbsent(object, checked);
+                if (previous != null && !previous.equals(checked)) {
+                    throw new IllegalStateException(
+                            "inconsistent aggregate plans within one type-checking pass");
+                }
+            }
+            return checked.resultType();
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();

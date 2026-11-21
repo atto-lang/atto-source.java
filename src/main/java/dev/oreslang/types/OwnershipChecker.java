@@ -44,6 +44,9 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     /** Only bindings admitted as new short aliases by the type checker. */
     private final Map<Ast.BindingStmt, String> validatedShortAliases;
+    /** Staged until the entire unit's ownership validation completes. */
+    private final Set<Ast.ObjectExpr> validatedAggregateSpreads =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private int mutexCriticalSectionDepth;
     private int loopDepth;
     private boolean currentAsyncGenerator;
@@ -71,6 +74,8 @@ public final class OwnershipChecker {
             Ast.Program program, Map<Ast.BindingStmt, String> validatedShortAliases) {
         OwnershipChecker checker = new OwnershipChecker(program, validatedShortAliases);
         checker.validate(program);
+        AggregateConstructionPlan.Checked.admitAfterOwnership(
+                program, checker.validatedAggregateSpreads);
         return program;
     }
 
@@ -105,6 +110,8 @@ public final class OwnershipChecker {
             checker.classes.put(name, declaration);
         }
         checker.validate(program);
+        AggregateConstructionPlan.Checked.admitAfterOwnership(
+                program, checker.validatedAggregateSpreads);
         return program;
     }
 
@@ -1389,9 +1396,9 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.tupleType(slots), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
-                throw error("aggregate spread requires field-wise ownership, borrow and exception-path proof; "
-                        + "unsupported at this frontend stage");
+            boolean hasAggregateSpread = object.fields().stream().anyMatch(Ast.ObjectField::spread);
+            if (object.explicitStruct() && hasAggregateSpread) {
+                throw error("aggregate spread into an explicit struct requires a checked initialization plan");
             }
             LinkedHashMap<String, Ast.TypeRef> members = new LinkedHashMap<>();
             if (object.explicitStruct()) {
@@ -1402,6 +1409,47 @@ public final class OwnershipChecker {
                 }
             }
             for (Ast.ObjectField field : object.fields()) {
+                if (field.spread()) {
+                    // Stage-one domain is a stable immutable source binding
+                    // or a newly constructed literal. Mutable struct carriers
+                    // require a synchronized/borrow-checked snapshot protocol.
+                    if (!(field.value() instanceof Ast.NameExpr)
+                            && !(field.value() instanceof Ast.ObjectExpr)) {
+                        throw error("aggregate spread scalar-only stage requires a direct closed aggregate binding or literal");
+                    }
+                    if (field.value() instanceof Ast.NameExpr name) {
+                        VarState sourceOwner = scope.lookup(name.name());
+                        if (sourceOwner == null) {
+                            throw error("aggregate spread source must be a local owned binding");
+                        }
+                        if (sourceOwner.mutable) {
+                            throw error("aggregate spread from a mutable referent requires a checked snapshot/borrow lease");
+                        }
+                    }
+                    // A scalar-only projection preserves the source binding.
+                    // Never consume the aggregate as a whole or silently move
+                    // non-Copy fields out of it.
+                    ValueInfo source = checkExpr(field.value(), scope, false);
+                    if (isBorrowValue(source) || containsMutexGuardType(source.type)
+                            || !source.type.isClosedAggregateType()) {
+                        throw error("aggregate spread requires a directly owned closed aggregate");
+                    }
+                    for (Map.Entry<String, Ast.TypeRef> item :
+                            source.type.aggregateMembers().entrySet()) {
+                        Ast.TypeRef fieldType = item.getValue();
+                        if (!isCopyType(fieldType)
+                                || !(fieldType.name().equals("int")
+                                || fieldType.name().equals("float")
+                                || fieldType.name().equals("bool")
+                                || fieldType.name().equals("string")
+                                || fieldType.name().equals("String"))) {
+                            throw error("aggregate spread scalar-only stage rejects field '"
+                                    + item.getKey() + "'");
+                        }
+                        members.put(item.getKey(), fieldType);
+                    }
+                    continue;
+                }
                 ValueInfo info = checkExpr(field.value(), scope, true);
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a struct");
@@ -1409,12 +1457,23 @@ public final class OwnershipChecker {
                 if (isBorrowValue(info)) {
                     throw error("borrowed references cannot be stored in an owned struct until explicit container lifetimes are supported");
                 }
+                if (hasAggregateSpread
+                        && (!isCopyType(info.type)
+                        || !(info.type.name().equals("int")
+                        || info.type.name().equals("float")
+                        || info.type.name().equals("bool")
+                        || info.type.name().equals("string")
+                        || info.type.name().equals("String")))) {
+                    throw error("aggregate spread scalar-only stage rejects initializer field '"
+                            + field.name() + "'");
+                }
                 if (!object.explicitStruct()) members.put(field.name(), info.type);
             }
             Ast.TypeRef type;
             if (object.structuralRecord()) type = Ast.TypeRef.readonlyRecordType(members);
             else if (object.inferredStruct() || object.explicitStruct()) type = Ast.TypeRef.structType(members);
             else throw error("unknown anonymous aggregate kind " + object.kind());
+            if (hasAggregateSpread) validatedAggregateSpreads.add(object);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);

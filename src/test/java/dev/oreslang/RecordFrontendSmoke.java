@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.AggregateConstructionPlan;
 import dev.oreslang.types.OwnershipChecker;
 
 import java.util.Map;
@@ -17,20 +18,165 @@ public final class RecordFrontendSmoke {
     private RecordFrontendSmoke() { }
 
     public static void main(String[] args) {
-        // Parser acceptance does not imply semantic admission. Test both
-        // independent checkers so bypassing one cannot silently accept an
-        // aggregate spread before field-wise ownership/lowering is proved.
-        Ast.Program stageOneSpread = Parser.parse("""
-                fnc blocked(): int {
-                    const base = infer struct{x: 1};
-                    const next = infer struct{...base, y: 2};
-                    return next.x;
+        // A mutable aggregate can change underneath a spread copy; until a
+        // synchronized/borrowed snapshot proof lands, the ownership pass
+        // must reject mutable source bindings even if fields are scalars.
+        Ast.Program mutableSpread = Parser.parse("""
+                fnc blocked_mutable_source(): int {
+                    val source = infer struct{x: 1};
+                    const copy = record{...source};
+                    return copy.x;
                 }
                 """);
-        denied(() -> TypeChecker.check(stageOneSpread),
-                "unimplemented spread shape must fail closed");
-        denied(() -> OwnershipChecker.check(stageOneSpread),
-                "unimplemented spread ownership must fail closed");
+        denied(() -> OwnershipChecker.check(mutableSpread),
+                "mutable aggregate source must not bypass snapshot lease admission");
+
+        // A later type error cannot publish an earlier, fully parsed spread
+        // candidate. Previously the checker recorded candidates as it went,
+        // leaving an orphan proof after a failed compilation unit.
+        Ast.Program partlyTyped = Parser.parse("""
+                fnc earlier(): int {
+                    const base = record{x: 1};
+                    const copy = record{...base, y: 2};
+                    return copy.x;
+                }
+                fnc later(): int {
+                    return "wrong return type";
+                }
+                """);
+        Ast.ObjectExpr orphan = aggregateBinding(partlyTyped, "copy");
+        denied(() -> TypeChecker.checkTypesWithDiagnostics(partlyTyped),
+                "later type error must fail the full compilation unit");
+        // Ownership intentionally does not prove return type assignability;
+        // however an independent check must reject the missing exact-program
+        // type proof rather than convert an orphan into executable authority.
+        deniedState(() -> OwnershipChecker.check(partlyTyped),
+                "ownership-only pass must reject a type-invalid program");
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(partlyTyped, orphan),
+                "standalone ownership cannot promote an orphan type candidate");
+
+        // Type checking alone cannot authorize interpreter spread execution.
+        // A structurally equal parse never inherits another AST's approval.
+        String sourceWithSpread = """
+                fnc prove(): int {
+                    const base = record{x: 1};
+                    const copy = record{...base, y: 2};
+                    return copy.x;
+                }
+                """;
+        Ast.Program firstParse = Parser.parse(sourceWithSpread);
+        TypeChecker.TypeCheckResult typedSpread =
+                TypeChecker.checkTypesWithDiagnostics(firstParse);
+        Ast.ObjectExpr exactSpread = aggregateBinding(firstParse, "copy");
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(typedSpread.program(), exactSpread),
+                "type-only aggregate is not executable");
+        OwnershipChecker.check(typedSpread.program(), typedSpread.shortInferredAliases());
+        check(AggregateConstructionPlan.Checked.requireAdmitted(typedSpread.program(), exactSpread)
+                        .resolvedFields().containsKey("y"),
+                "whole-program ownership approval admits exact original AST");
+        Ast.Program secondParse = Parser.parse(sourceWithSpread);
+        Ast.ObjectExpr equalButForeign = aggregateBinding(secondParse, "copy");
+        check(exactSpread != equalButForeign && exactSpread.equals(equalButForeign),
+                "equal-shaped AST identity regression setup");
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(secondParse, equalButForeign),
+                "structurally identical reparse may not inherit approval");
+        // A different compilation-unit wrapper can reuse the SAME inner AST
+        // object. Equality and object identity of the spread are insufficient:
+        // executable authority must also require an exact-program proof.
+        Ast.Program graftedProgram = new Ast.Program(
+                typedSpread.program().namespace(),
+                typedSpread.program().imports(),
+                typedSpread.program().modules());
+        check(graftedProgram != typedSpread.program()
+                        && aggregateBinding(graftedProgram, "copy") == exactSpread,
+                "cross-unit AST graft regression setup");
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(
+                        graftedProgram, exactSpread),
+                "approved spread AST must not carry authority to another program");
+        deniedState(() -> OwnershipChecker.check(graftedProgram),
+                "independent ownership pass cannot import the original program's type proof");
+        TypeChecker.TypeCheckResult independentlyChecked =
+                TypeChecker.checkTypesWithDiagnostics(graftedProgram);
+        Ast.ObjectExpr independentlyTypedSpread =
+                aggregateBinding(independentlyChecked.program(), "copy");
+        OwnershipChecker.check(independentlyChecked.program(),
+                independentlyChecked.shortInferredAliases());
+        check(AggregateConstructionPlan.Checked.requireAdmitted(
+                        independentlyChecked.program(), independentlyTypedSpread)
+                        .resolvedFields().containsKey("y"),
+                "new compilation unit succeeds only after its own full two-pass checks");
+
+
+        // An ownership failure in a separate callable must prevent approval
+        // of earlier successfully checked aggregates in the same program.
+        String rejectedUnit = """
+                fnc good(): int {
+                    const base = record{x: 1};
+                    const copy = record{...base};
+                    return copy.x;
+                }
+                fnc bad(): int {
+                    val mutable = infer struct{x: 1};
+                    const unsafe = record{...mutable};
+                    return unsafe.x;
+                }
+                """;
+        Ast.Program badProgram = Parser.parse(rejectedUnit);
+        TypeChecker.TypeCheckResult badTyped =
+                TypeChecker.checkTypesWithDiagnostics(badProgram);
+        Ast.ObjectExpr premature = aggregateBinding(badProgram, "copy");
+        denied(() -> OwnershipChecker.check(
+                        badTyped.program(), badTyped.shortInferredAliases()),
+                "mutable source rejects the complete ownership pass");
+        deniedState(() -> AggregateConstructionPlan.Checked.requireAdmitted(badTyped.program(), premature),
+                "failed whole-unit ownership cannot leave prior spread admitted");
+
+        // Closed scalar spreads now pass the actual front-end chain.
+        // Non-scalar or unowned sources still fail independently at the type
+        // and ownership gates. Guest execution is a separate release gate.
+        acceptedThroughFullFrontend("""
+                fnc copy_scalars(): int {
+                    const base = infer struct{x: 1};
+                    const next = infer struct{...base, y: 2};
+                    const row = record{...next, x: 42};
+                    return row.x;
+                }
+                """);
+        acceptedThroughFullFrontend("""
+                fnc retype_rightmost(): string {
+                    const first = record{x: 1, y: true};
+                    const second = record{x: "two"};
+                    const result = record{...first, ...second, x: "last"};
+                    return result.x;
+                }
+                """);
+        acceptedThroughFullFrontend("""
+                fnc plain_struct_to_readonly_record(): int {
+                    const base = infer struct{x: 1};
+                    const copy = record{...base, y: true};
+                    return copy.x;
+                }
+                """);
+        Ast.Program incorrectlyNarrowed = Parser.parse("""
+                fnc wrong_return(): int {
+                    const base = record{x: 1};
+                    const copy = record{...base, x: "changed"};
+                    return copy.x;
+                }
+                """);
+        denied(() -> TypeChecker.check(incorrectlyNarrowed),
+                "type-changing override cannot retain previous scalar type");
+        Ast.Program nestedSpread = Parser.parse("""
+                fnc blocked(): int {
+                    const base = record{nested: record{x: 1}};
+                    const next = record{...base, y: 2};
+                    return next.y;
+                }
+                """);
+        denied(() -> TypeChecker.check(nestedSpread),
+                "non-scalar spread shape must fail closed");
+        denied(() -> OwnershipChecker.check(nestedSpread),
+                "non-scalar spread ownership must fail closed");
         accepted("""
                 fnc read(): string {
                     const Person first = infer record{name: "Ada", age: 37};
@@ -242,6 +388,37 @@ public final class RecordFrontendSmoke {
 
     private static void accepted(String source) {
         TypeChecker.check(Parser.parse(source));
+    }
+
+    /** Scalar spread admission must run the production type + ownership handoff. */
+    private static void acceptedThroughFullFrontend(String source) {
+        TypeChecker.TypeCheckResult typed =
+                TypeChecker.checkTypesWithDiagnostics(Parser.parse(source));
+        OwnershipChecker.check(typed.program(), typed.shortInferredAliases());
+    }
+
+    private static Ast.ObjectExpr aggregateBinding(Ast.Program program, String bindingName) {
+        return program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .flatMap(fn -> fn.body().stream())
+                .filter(Ast.BindingStmt.class::isInstance)
+                .map(Ast.BindingStmt.class::cast)
+                .filter(binding -> binding.name().equals(bindingName))
+                .map(Ast.BindingStmt::initializer)
+                .filter(Ast.ObjectExpr.class::isInstance)
+                .map(Ast.ObjectExpr.class::cast)
+                .findFirst().orElseThrow();
+    }
+
+    private static void deniedState(Runnable action, String label) {
+        try {
+            action.run();
+        } catch (IllegalStateException expected) {
+            return;
+        }
+        throw new AssertionError("unexpected authorization: " + label);
     }
 
     private static void check(boolean condition, String message) {

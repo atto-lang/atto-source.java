@@ -38,7 +38,15 @@ public final class TreeShaker {
             Set<String> retainedSymbols,
             Set<String> removedSymbols,
             Map<String, Object> compileTimeConstants,
-            Set<String> rootSymbols) {
+            Set<String> rootSymbols,
+            boolean needsSpreadRecheck) {
+        public Result(Ast.Program program, Set<String> retainedSymbols,
+                Set<String> removedSymbols, Map<String, Object> compileTimeConstants,
+                Set<String> rootSymbols) {
+            this(program, retainedSymbols, removedSymbols,
+                    compileTimeConstants, rootSymbols, false);
+        }
+
         public Result {
             retainedSymbols = Set.copyOf(retainedSymbols);
             removedSymbols = Set.copyOf(removedSymbols);
@@ -84,6 +92,8 @@ public final class TreeShaker {
         private final ArrayDeque<String> work = new ArrayDeque<>();
 
         private Ast.Program rewritten;
+        /** Rebuilt spread nodes are no longer the checked AST identities. */
+        private boolean needsSpreadRecheck;
 
         Engine(Ast.Program input, BuildOptions options) {
             this.input = input;
@@ -110,7 +120,8 @@ public final class TreeShaker {
             Ast.Program pruned = pruneProgram(rewritten);
             LinkedHashSet<String> removed = new LinkedHashSet<>(symbols.keySet());
             removed.removeAll(retained);
-            return new Result(pruned, retained, removed, constantValues, roots);
+            return new Result(pruned, retained, removed,
+                    constantValues, roots, needsSpreadRecheck);
         }
 
         private void collectConstants() {
@@ -390,11 +401,15 @@ public final class TreeShaker {
                 return new Ast.TupleExpr(elements);
             }
             if (expression instanceof Ast.ObjectExpr object) {
+                if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                    needsSpreadRecheck = true;
+                }
                 List<Ast.ObjectField> fields = new ArrayList<>();
                 for (Ast.ObjectField field : object.fields()) {
-                    fields.add(Ast.ObjectField.named(
-                            field.name(),
-                            substitute(field.value(), substitutions, shadowed)));
+                    Ast.Expr value = substitute(field.value(), substitutions, shadowed);
+                    fields.add(field.spread()
+                            ? Ast.ObjectField.spreading(value)
+                            : Ast.ObjectField.named(field.name(), value));
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }
@@ -1002,11 +1017,15 @@ public final class TreeShaker {
                 return new Ast.TupleExpr(elements);
             }
             if (expression instanceof Ast.ObjectExpr object) {
+                if (object.fields().stream().anyMatch(Ast.ObjectField::spread)) {
+                    needsSpreadRecheck = true;
+                }
                 List<Ast.ObjectField> fields = new ArrayList<>();
                 for (Ast.ObjectField field : object.fields()) {
-                    fields.add(Ast.ObjectField.named(
-                            field.name(),
-                            rewriteExpression(field.value(), module, locals)));
+                    Ast.Expr value = rewriteExpression(field.value(), module, locals);
+                    fields.add(field.spread()
+                            ? Ast.ObjectField.spreading(value)
+                            : Ast.ObjectField.named(field.name(), value));
                 }
                 return new Ast.ObjectExpr(fields, object.kind(), object.declaredFields());
             }

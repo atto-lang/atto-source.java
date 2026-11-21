@@ -4,6 +4,7 @@ import dev.oreslang.compiler.BuildOptions;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.TreeShaker;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.types.AggregateConstructionPlan;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +15,100 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class TreeShakerTest {
+    @Test
+    void aggregateSpreadSurvivesRewriteAndConstantCallSpecialization() {
+        // The ordinary rewrite and the constant-call inlining/substitution
+        // path both reconstruct aggregate AST nodes. Neither may turn a
+        // spread item (name == null) into a named initializer.
+        TreeShaker.Result result = OresCompiler.compileForBuild("""
+                fnc extend(int n): record{foo: int, bar: int} {
+                    return record{...record{foo: 5}, bar: n};
+                }
+
+                pub fnc main(): void {
+                    const base = record{foo: 1};
+                    const copy = record{...base, bar: 2};
+                    const inlined = extend(9);
+                    stdio.println(copy.foo);
+                    stdio.println(inlined.bar);
+                    return;
+                }
+                """, BuildOptions.executable(Map.of()));
+
+        Ast.FunctionDecl main = result.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(function -> function.name().equals("main"))
+                .findFirst().orElseThrow();
+
+        Ast.BindingStmt copy = main.body().stream()
+                .filter(Ast.BindingStmt.class::isInstance)
+                .map(Ast.BindingStmt.class::cast)
+                .filter(binding -> binding.name().equals("copy"))
+                .findFirst().orElseThrow();
+        Ast.ObjectExpr copied = assertInstanceOf(Ast.ObjectExpr.class, copy.initializer());
+        assertEquals(2, copied.fields().size());
+        assertTrue(copied.fields().getFirst().spread());
+        assertNull(copied.fields().getFirst().name());
+        assertEquals("bar", copied.fields().get(1).name());
+
+        Ast.BindingStmt inlined = main.body().stream()
+                .filter(Ast.BindingStmt.class::isInstance)
+                .map(Ast.BindingStmt.class::cast)
+                .filter(binding -> binding.name().equals("inlined"))
+                .findFirst().orElseThrow();
+        Ast.ObjectExpr specialized = assertInstanceOf(Ast.ObjectExpr.class, inlined.initializer(),
+                "constant-call inlining should retain aggregate literal identity");
+        assertTrue(specialized.fields().getFirst().spread());
+        assertNull(specialized.fields().getFirst().name());
+        assertEquals("bar", specialized.fields().get(1).name());
+
+        // Compiler entry point must revalidate both new optimizer-created ASTs
+        // rather than inherit the input program's identity-bound authority.
+        assertFalse(result.needsSpreadRecheck(),
+                "compileForBuild must not return a pending spread validation");
+        assertDoesNotThrow(() -> AggregateConstructionPlan.Checked.requireAdmitted(result.program(), copied));
+        assertDoesNotThrow(() -> AggregateConstructionPlan.Checked.requireAdmitted(result.program(), specialized));
+    }
+
+    @Test
+    void rawOptimizerCannotTransferSpreadAdmissionByASTEquality() {
+        String source = """
+                pub fnc main(): void {
+                    const base = record{x: 1};
+                    const copy = record{...base, x: 2};
+                    stdio.println(copy.x);
+                    return;
+                }
+                """;
+        TreeShaker.Result raw = TreeShaker.shake(
+                OresCompiler.parseAndTypeCheck(source),
+                BuildOptions.executable(Map.of()));
+        assertTrue(raw.needsSpreadRecheck(),
+                "rewritten aggregate AST nodes must invalidate original checked identity");
+        Ast.ObjectExpr rawCopy = raw.program().modules().stream()
+                .flatMap(m -> m.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(f -> f.name().equals("main"))
+                .flatMap(f -> f.body().stream())
+                .filter(Ast.BindingStmt.class::isInstance)
+                .map(Ast.BindingStmt.class::cast)
+                .filter(b -> b.name().equals("copy"))
+                .map(Ast.BindingStmt::initializer)
+                .filter(Ast.ObjectExpr.class::isInstance)
+                .map(Ast.ObjectExpr.class::cast)
+                .findFirst().orElseThrow();
+        assertThrows(IllegalStateException.class,
+                () -> AggregateConstructionPlan.Checked.requireAdmitted(raw.program(), rawCopy),
+                "raw tree shaking must never inherit type or ownership admission");
+
+        TreeShaker.Result admitted = OresCompiler.compileForBuild(
+                source, BuildOptions.executable(Map.of()));
+        assertFalse(admitted.needsSpreadRecheck());
+    }
+
     @Test
     void cliDefinesOverrideEnvironmentDefinesDeterministically() {
         Map<String, String> merged = BuildOptions.mergeDefines(
