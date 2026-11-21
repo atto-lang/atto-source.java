@@ -80,5 +80,42 @@ final class ActorTraceContractIntegrationTest {
         Path destination = Path.of("target", "actor-trace-graal.json");
         Files.createDirectories(destination.getParent());
         Files.writeString(destination, json.toString() + "\n", StandardCharsets.UTF_8);
+
+        // V2 uses the real admitted and handler-observed mail IDs from this
+        // completed JVM actor run. Its order is reconstructed AFTER quiescence:
+        // no claim of online linearization capture or compiled .atto execution.
+        StringBuilder v2 = new StringBuilder(8000);
+        v2.append("{\"schema\":\"atto.actor-trace.v2\",\"complete\":true,");
+        v2.append("\"producer\":{\"backend\":\"java\",\"subject\":\"runtime_host\",");
+        v2.append("\"emission\":\"reconstructed_after_quiescence\"},\"events\":[");
+        int eventSeq = 0;
+        v2.append("{\"seq\":").append(eventSeq++)
+                .append(",\"kind\":\"actor_spawn\",\"actor_id\":\"graal_actor\",");
+        v2.append("\"generation\":1,\"serial\":true}");
+        for (String id : admitted) {
+            v2.append(",{\"seq\":").append(eventSeq++)
+                    .append(",\"kind\":\"send_accept\",\"actor_id\":\"graal_actor\",");
+            v2.append("\"generation\":1,\"message_id\":\"").append(id).append("\"}");
+        }
+        for (var envelope : observed) {
+            String id = envelope.value();
+            v2.append(",{\"seq\":").append(eventSeq++)
+                    .append(",\"kind\":\"receive_start\",\"actor_id\":\"graal_actor\",");
+            v2.append("\"generation\":1,\"message_id\":\"").append(id)
+                    .append("\",\"receiver_id\":\"carrier\"}");
+            v2.append(",{\"seq\":").append(eventSeq++)
+                    .append(",\"kind\":\"receive_complete\",\"actor_id\":\"graal_actor\",");
+            v2.append("\"generation\":1,\"message_id\":\"").append(id)
+                    .append("\",\"receiver_id\":\"carrier\"}");
+        }
+        v2.append(",{\"seq\":").append(eventSeq++)
+                .append(",\"kind\":\"actor_close\",\"actor_id\":\"graal_actor\",");
+        v2.append("\"generation\":1}");
+        v2.append(",{\"seq\":").append(eventSeq++)
+                .append(",\"kind\":\"actor_retire\",\"actor_id\":\"graal_actor\",");
+        v2.append("\"generation\":1}]}");
+        assertEquals(75, eventSeq, "unexpected JVM host actor trace event count");
+        Files.writeString(Path.of("target", "actor-trace-graal-v2.json"),
+                v2.toString() + "\n", StandardCharsets.UTF_8);
     }
 }

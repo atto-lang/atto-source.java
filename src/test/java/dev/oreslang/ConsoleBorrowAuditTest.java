@@ -178,8 +178,8 @@ final class ConsoleBorrowAuditTest {
                     () -> OresCompiler.parseAndTypeCheck(PAYLOAD + """
                             pub fnc main():int {
                               val mutex = Mutex.new(new ConsolePayload());
-                              val guard = mutex.lock();
-                            """ + operation + "(guard); guard.release(); return 0;}"));
+                              val lock_guard = mutex.lock();
+                            """ + operation + "(lock_guard); lock_guard.release(); return 0;}"));
             assertTrue(failure.getMessage().contains("guard") || failure.getMessage().contains("MutexGuard"),
                     failure.getMessage());
         }
@@ -190,9 +190,9 @@ final class ConsoleBorrowAuditTest {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(PAYLOAD + """
                 pub fnc main():int {
                   val mutex = Mutex.new(new ConsolePayload());
-                  val guard = mutex.lock();
-                  stdio.println("value=", guard.value);
-                  guard.release(); return 0;
+                  val lock_guard = mutex.lock();
+                  stdio.println("value=", lock_guard.value);
+                  lock_guard.release(); return 0;
                 }
                 """));
     }

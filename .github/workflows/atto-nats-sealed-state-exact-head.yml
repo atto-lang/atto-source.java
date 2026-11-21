@@ -1,0 +1,67 @@
+name: AttoNATS sealed actor state — exact source parser / loan checks
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/ast/Ast.java"
+      - "src/main/java/dev/oreslang/parser/Parser.java"
+      - "src/main/java/dev/oreslang/types/TypeChecker.java"
+      - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
+      - "src/test/java/dev/oreslang/SealedActorStateAdmissionTest.java"
+      - "src/main/java/dev/oreslang/runtime/SealedActorStateRegion.java"
+      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/test/java/dev/oreslang/runtime/SealedActorStateRegionTest.java"
+      - ".github/workflows/atto-nats-sealed-state-exact-head.yml"
+  push:
+    branches:
+      - "feat/nats-sealed-state-ast-admission-20261111"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  java-sealed-ast-actual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact compiler PR head and source tree
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          echo "COMPILER_EXACT_HEAD=$(git rev-parse HEAD)"
+          echo "COMPILER_EXACT_TREE=$(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Execute sealed state parser, expansion and actor loan JUnit
+        shell: bash
+        env:
+          MAVEN_OPTS: -Xmx3g
+        run: |
+          set -euo pipefail
+          mvn -B -ntp '-P!native-thread-unix' \
+            '-Dtest=SealedActorStateAdmissionTest,ActorStateLoansTest,SealedActorStateRegionTest' \
+            -Dsurefire.failIfNoSpecifiedTests=true test
+          test -f target/surefire-reports/TEST-dev.oreslang.SealedActorStateAdmissionTest.xml
+          test -f target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateLoansTest.xml
+          test -f target/surefire-reports/TEST-dev.oreslang.runtime.SealedActorStateRegionTest.xml
+          grep -Fq 'tests="6"' target/surefire-reports/TEST-dev.oreslang.SealedActorStateAdmissionTest.xml
+          grep -Fq 'tests="7"' target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateLoansTest.xml
+          grep -Fq 'tests="6"' target/surefire-reports/TEST-dev.oreslang.runtime.SealedActorStateRegionTest.xml
+          ! grep -Eq '(failures|errors|skipped)="[1-9]' \
+            target/surefire-reports/TEST-dev.oreslang.SealedActorStateAdmissionTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.runtime.ActorStateLoansTest.xml \
+            target/surefire-reports/TEST-dev.oreslang.runtime.SealedActorStateRegionTest.xml
+          echo "SEALED_ACTOR_AST_TESTS=6_EXECUTED_PASS"
+          echo "ACTOR_STATE_LOAN_RUNTIME_TESTS=7_EXECUTED_PASS"
+          echo "ACTOR_SEALED_REGION_TURN_TESTS=6_EXECUTED_PASS"
+          echo "ATTO_SEALED_STATE_GUEST_EXECUTED=false"
+          echo "ATTO_NATS_REAL_BROKER_EXECUTED=false"

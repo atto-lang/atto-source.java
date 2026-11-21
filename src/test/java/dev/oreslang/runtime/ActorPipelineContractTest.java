@@ -99,6 +99,50 @@ final class ActorPipelineContractTest {
         }
     }
 
+    @Test void boundedIntegerGuestAdmissionMatchesNativeAndWasmSubset() {
+        var three = List.of(
+                new Stage("Parse", Role.DUPLEX, "int", "int"),
+                transform("Validate", "int", "int"),
+                new Stage("Sink", Role.DUPLEX, "int", "int"));
+        var edges = validateIntegerGuestV1(three);
+        assertEquals(2, edges.size());
+        assertEquals("Parse", edges.get(0).fromActor());
+        assertEquals("Validate", edges.get(0).toActor());
+        assertEquals("Sink", edges.get(1).toActor());
+
+        var largest = new java.util.ArrayList<Stage>();
+        largest.add(read("Source", "int"));
+        for (int i = 0; i < 14; ++i)
+            largest.add(transform("Transform" + i, "int", "int"));
+        largest.add(write("Sink", "int"));
+        assertEquals(15, validateIntegerGuestV1(largest).size());
+        largest.add(1, transform("Extra", "int", "int"));
+        assertThrows(IllegalArgumentException.class,
+                () -> validateIntegerGuestV1(largest),
+                "a seventeenth guest actor may not be allocated");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> validateIntegerGuestV1(List.of(read("Source", "int"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> validateIntegerGuestV1(List.of(
+                        read("Source", "string"), write("Sink", "string"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> validateIntegerGuestV1(List.of(
+                        read("Source", "int"), transform("Middle", "string", "string"),
+                        write("Sink", "string"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> validateIntegerGuestV1(List.of(
+                        new Stage("Root", Role.DUPLEX, "bool", "int"), write("Sink", "int"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> validateIntegerGuestV1(List.of(
+                        read("Source", "int"), new Stage("Sink", Role.DUPLEX, "int", "bool"))));
+
+        // The existing, independently supervised host transport retains its
+        // nominal generic schema; this helper is not a breaking host quota.
+        assertEquals(1, validate(List.of(read("Source", "string"),
+                write("Sink", "string"))).size());
+    }
+
     @Test void roleConstructorsCannotDeclareAmbiguousDirection() {
         assertThrows(IllegalArgumentException.class,
                 () -> new Stage("Source", Role.READABLE, "int", "int"));
